@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bedrock Private AI</title>
+<style>
+  /* Palette: warm/earthy, deliberately no green and no blue — clay, rust,
+     ochre, sand. "Technical" comes from the grid/scanline texture, sharp
+     HUD corner brackets, and monospace throughout, not from neon. */
+  :root {
+    color-scheme: dark;
+    --bg: #15110d;
+    --panel: #1d1712;
+    --panel2: #251e17;
+    --border: #3c2f24;
+    --border-bright: #5a4632;
+    --text: #f1e6d6;
+    --muted: #a48f77;
+    --accent: #c1622f;       /* burnt orange — user messages, primary actions */
+    --accent-dim: #7a3d1e;
+    --assistant: #a05a34;    /* sienna — assistant messages */
+    --good: #c99a3e;         /* ochre stands in for "success" (no green) */
+    --bad: #a8402a;          /* deep rust-red — errors */
+    --warn: #c9863a;         /* amber — needs-attention / approval */
+    --tier-runner: #b99b6b;  /* sand */
+    --tier-specialist: #c99a3e; /* ochre */
+    --tier-director: #d97a4a;   /* bright terracotta — the "deep" tier */
+    --glow: rgba(217,122,74,0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "SF Mono", "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 14px;
+  }
+  /* Faint technical grid over the whole page — the "matrix" texture,
+     rendered in the accent hue instead of green, and kept subtle so it
+     reads as texture, not decoration. */
+  body {
+    background-image:
+      linear-gradient(rgba(193,98,47,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(193,98,47,0.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+    background-position: -1px -1px;
+    position: relative;
+  }
+  /* Faint horizontal scanlines on top of the grid — same trick CRT/matrix
+     UIs use, dialed down so text stays perfectly legible. */
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 999;
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(0,0,0,0.05) 3px);
+  }
+  #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+  ::selection { background: var(--accent); color: #1a0f06; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 0; }
+
+  /* Reusable HUD corner brackets — sci-fi console feel on key panels. */
+  .hud { position: relative; }
+  .hud::before, .hud::after {
+    content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none;
+    border-color: var(--tier-director); opacity: 0.9;
+  }
+  .hud::before { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; }
+  .hud::after { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; }
+  .card.hud.tier-runner::before, .card.hud.tier-runner::after { border-color: var(--tier-runner); }
+  .card.hud.tier-specialist::before, .card.hud.tier-specialist::after { border-color: var(--tier-specialist); }
+  .card.hud.done::before, .card.hud.done::after { border-color: var(--good); }
+  .card.hud.failed::before, .card.hud.failed::after { border-color: var(--bad); }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+    flex-shrink: 0; letter-spacing: 0.02em;
+  }
+  header .title {
+    color: var(--text); font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; font-size: 13px;
+  }
+  header .title::before { content: "▍"; color: var(--accent); margin-right: 8px; animation: blink 1.4s steps(1) infinite; }
+  header .status { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  header .status.connected { color: var(--good); text-shadow: 0 0 8px var(--glow); }
+  header .status.disconnected { color: var(--bad); }
+  @keyframes blink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+  #body { flex: 1; display: flex; min-height: 0; }
+
+  /* ---- chat column ---- */
+  #chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #chat {
+    flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .msg {
+    padding: 10px 14px; border-left: 3px solid var(--muted); background: rgba(255,255,255,0.015);
+    white-space: pre-wrap; max-width: 90ch; line-height: 1.5;
+  }
+  .msg.user { border-color: var(--accent); }
+  .msg.assistant { border-color: var(--assistant); }
+  .msg.notice { border-color: var(--muted); color: var(--muted); font-style: italic; background: none; }
+  .msg.notice.error { border-color: var(--bad); color: var(--bad); }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; margin-left: 8px; vertical-align: middle; letter-spacing: 0.03em; }
+  .badge.checked { background: rgba(201,154,62,0.12); color: var(--good); border: 1px solid var(--good); }
+  .badge.needs-check { background: rgba(201,134,58,0.12); color: var(--warn); border: 1px solid var(--warn); }
+
+  #composer-area { background: var(--panel); border-top: 1px solid var(--border); flex-shrink: 0; padding: 12px 18px 14px; }
+  #tier-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  #tier-select {
+    background: #0c0906; color: var(--text); border: 1px solid var(--border-bright);
+    padding: 7px 8px; font-family: inherit; font-size: 12px; max-width: 280px;
+    text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  #tier-select:focus { outline: none; border-color: var(--accent); }
+  #tier-description { color: var(--muted); font-size: 12px; flex: 1; }
+  form#composer { display: flex; gap: 8px; }
+  form#composer input {
+    flex: 1; background: #0c0906; color: var(--text); border: 1px solid var(--border-bright);
+    padding: 11px 14px; font-family: inherit; font-size: 14px; transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  form#composer input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+  form#composer button {
+    font-family: inherit; font-weight: 700; border: 1px solid transparent;
+    padding: 0 18px; cursor: pointer; white-space: nowrap; text-transform: uppercase;
+    font-size: 12px; letter-spacing: 0.05em; transition: filter 0.15s, box-shadow 0.15s;
+  }
+  form#composer button:hover { filter: brightness(1.12); }
+  #send-btn { background: var(--accent); color: #1a0f06; }
+  #send-btn:hover { box-shadow: 0 0 14px var(--glow); }
+  #create-agent-btn { background: var(--tier-director); color: #1a0f06; }
+  #create-agent-btn:hover { box-shadow: 0 0 14px rgba(217,122,74,0.3); }
+  form#composer button:disabled { background: var(--border); color: var(--muted); cursor: default; filter: none; box-shadow: none; }
+
+  /* ---- right panel: running agents ---- */
+  #panel {
+    width: 330px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 14px;
+  }
+  #panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted);
+    margin: 2px 2px 12px; display: flex; align-items: center; gap: 6px;
+  }
+  #panel h2::before { content: "//"; color: var(--tier-director); }
+  #panel-empty { color: var(--muted); font-size: 12px; padding: 4px; line-height: 1.5; }
+  .card {
+    background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--muted);
+    padding: 11px 13px; margin-bottom: 12px; transition: opacity 0.4s;
+  }
+  .card.tier-runner { border-left-color: var(--tier-runner); }
+  .card.tier-specialist { border-left-color: var(--tier-specialist); }
+  .card.tier-director { border-left-color: var(--tier-director); }
+  .card.waiting_approval { border-left-color: var(--warn); }
+  .card.done { border-left-color: var(--good); }
+  .card.failed { border-left-color: var(--bad); }
+  .card.done, .card.failed { opacity: 0.65; }
+  .card .tier-name {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+  }
+  .card.tier-runner .tier-name { color: var(--tier-runner); }
+  .card.tier-specialist .tier-name { color: var(--tier-specialist); }
+  .card.tier-director .tier-name { color: var(--tier-director); }
+  .card .task-title { font-size: 13px; margin: 5px 0 7px; }
+  .card .current-line { font-size: 12px; color: var(--text); margin-bottom: 9px; opacity: 0.9; }
+  .card .track { background: #0c0906; height: 5px; overflow: hidden; border: 1px solid var(--border); }
+  .card .fill { height: 100%; background: var(--assistant); transition: width 0.5s ease; }
+  .card.tier-runner .fill { background: var(--tier-runner); }
+  .card.tier-specialist .fill { background: var(--tier-specialist); }
+  .card.tier-director .fill { background: var(--tier-director); }
+  .card.done .fill { background: var(--good); }
+  .card.failed .fill { background: var(--bad); }
+  .card .approve-row { margin-top: 9px; display: flex; gap: 8px; }
+  .card .approve-row button {
+    flex: 1; font-family: inherit; font-size: 11px; font-weight: 700; border: none;
+    padding: 7px 0; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .card .dismiss { float: right; cursor: pointer; color: var(--muted); font-size: 12px; }
+
+  /* ---- toast ---- */
+  #toasts { position: fixed; top: 18px; right: 346px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
+  .toast {
+    background: var(--panel2); border: 1px solid var(--good); color: var(--text);
+    padding: 11px 15px; font-size: 13px; max-width: 320px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5); animation: fadein 0.2s ease;
+  }
+  @keyframes fadein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+  #login {
+    height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px;
+  }
+  #login .panel-box {
+    padding: 32px 40px; background: var(--panel); border: 1px solid var(--border-bright);
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+  #login input {
+    background: #0c0906; color: var(--text); border: 1px solid var(--border-bright);
+    padding: 11px 14px; font-family: inherit; font-size: 14px; width: 260px; text-align: center;
+  }
+  #login input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+  #login button {
+    background: var(--accent); color: #1a0f06; border: none;
+    padding: 11px 20px; font-family: inherit; font-weight: 700; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px;
+  }
+  #login button:hover { box-shadow: 0 0 14px var(--glow); }
+  #login p { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="login">
+    <div class="panel-box hud">
+      <p>Bedrock Private AI &mdash; sign in to start</p>
+      <input id="login-name" placeholder="Your name" autofocus>
+      <button id="login-btn">Start</button>
+    </div>
+  </div>
+
+  <div id="main" style="display:none; flex-direction:column; height:100%;">
+    <header>
+      <span class="title">Bedrock Private AI</span>
+      <span class="status" id="status">connecting&hellip;</span>
+    </header>
+    <div id="body">
+      <div id="chat-col">
+        <div id="chat"></div>
+        <div id="composer-area">
+          <div id="tier-row">
+            <select id="tier-select"></select>
+            <span id="tier-description"></span>
+          </div>
+          <form id="composer">
+            <input id="prompt" placeholder="Type a message&hellip;" autocomplete="off">
+            <button id="send-btn" type="submit">Send</button>
+            <button id="create-agent-btn" type="button" title="Plan it with Deep Analysis, then run it">Create Agent</button>
+          </form>
+        </div>
+      </div>
+      <div id="panel" class="hud">
+        <h2>Running agents</h2>
+        <div id="panel-empty">Nothing running yet — send a message to start.</div>
+        <div id="cards"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
+</div>
+<script>
+/* Plain-language agent labels — mirrors the terminal client's
+ * bedrock/agentpack/friendly.py so every surface says the same thing. */
+function friendlyLine(role, status, taskTitle) {
+  const title = (taskTitle || "").toLowerCase();
+  if (role === "director") {
+    let action;
+    if (status === "error") action = "ran into a problem and stopped";
+    else if (status === "done") action = "finished checking this";
+    else if (title.includes("plan")) action = "breaking your request into steps";
+    else if (title.includes("synthesis") || title.includes("review")) action = "double-checking the results";
+    else action = "working out the best approach";
+    return "Planner: " + action;
+  }
+  const workerAction = {
+    idle: "waiting", thinking: "working on it", running_tool: "gathering information",
+    waiting_for_review: "waiting on a check", done: "finished", error: "ran into a problem",
+  }[status] || "working on it";
+  if (role === "specialist") {
+    const isResearch = ["research", "literature", "search", "compare"].some(k => title.includes(k));
+    return (isResearch ? "Researcher: " : "Assistant: ") + workerAction;
+  }
+  return "Assistant: " + workerAction;
+}
+
+function friendlyError(message) {
+  const m = (message || "").toLowerCase();
+  if (m.includes("budget")) return "This task used more thinking than expected and stopped early. Try a smaller question, or ask again.";
+  if (m.includes("citation")) return "The answer couldn't be backed up with a clear source, so it was sent back for another look.";
+  if (m.includes("connection") || m.includes("could not")) return "Can't reach the AI system right now. Check your connection and try again.";
+  return "Something went wrong finishing this. You can try again, or ask for a smaller piece of it.";
+}
+
+const API = ""; // same origin — this page is served by the agent-pack backend itself
+let sessionId = null;
+let userId = null;
+let tiers = [];
+
+// Every user-sent message becomes one "request," tracked independently so
+// several can run at once. A "hard" request spawns a multi-step plan
+// (task.planned) with its own sub-task ids; `finalTaskId` is whichever
+// task's completion actually carries this request's answer — see the
+// task.planned handler below for how that's learned.
+const requests = {};      // requestId -> request state
+const taskIndex = {};     // any task_id (root or sub-task) -> requestId
+
+const chatEl = document.getElementById("chat");
+const statusEl = document.getElementById("status");
+const promptEl = document.getElementById("prompt");
+const sendBtn = document.getElementById("send-btn");
+const createAgentBtn = document.getElementById("create-agent-btn");
+const tierSelect = document.getElementById("tier-select");
+const tierDescEl = document.getElementById("tier-description");
+const cardsEl = document.getElementById("cards");
+const panelEmptyEl = document.getElementById("panel-empty");
+const toastsEl = document.getElementById("toasts");
+
+function addMessage(kind, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + kind;
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function addNotice(text, isError) {
+  addMessage("notice" + (isError ? " error" : ""), text);
+}
+
+function showToast(text) {
+  const div = document.createElement("div");
+  div.className = "toast";
+  div.textContent = text;
+  toastsEl.appendChild(div);
+  setTimeout(() => div.remove(), 5000);
+}
+
+function truncate(text, n) {
+  text = text.trim();
+  return text.length > n ? text.slice(0, n - 1) + "…" : text;
+}
+
+// ---- the right-hand "running agents" panel -------------------------------
+
+function renderPanel() {
+  const list = Object.values(requests).sort((a, b) => b.startedAt - a.startedAt);
+  panelEmptyEl.style.display = list.length ? "none" : "block";
+  cardsEl.innerHTML = "";
+  for (const req of list) cardsEl.appendChild(renderCard(req));
+}
+
+function renderCard(req) {
+  const div = document.createElement("div");
+  div.className = `card hud tier-${req.tierKey} ${req.status}`;
+
+  const tierInfo = tiers.find(t => t.key === req.tierKey);
+  const tierLabel = tierInfo ? tierInfo.name : "Auto";
+
+  const header = document.createElement("div");
+  header.className = "tier-name";
+  header.textContent = tierLabel;
+  if (req.status === "done" || req.status === "failed") {
+    const x = document.createElement("span");
+    x.className = "dismiss";
+    x.textContent = "✕";
+    x.onclick = () => { delete requests[req.id]; renderPanel(); };
+    header.appendChild(x);
+  }
+  div.appendChild(header);
+
+  const title = document.createElement("div");
+  title.className = "task-title";
+  title.textContent = req.title;
+  div.appendChild(title);
+
+  const current = document.createElement("div");
+  current.className = "current-line";
+  current.textContent =
+    req.status === "done" ? "Done." :
+    req.status === "failed" ? "Something went wrong." :
+    req.status === "waiting_approval" ? "Waiting for you to check this." :
+    (req.currentLine || "Getting started…");
+  div.appendChild(current);
+
+  const track = document.createElement("div");
+  track.className = "track";
+  const fill = document.createElement("div");
+  fill.className = "fill";
+  fill.style.width = req.progressPct + "%";
+  track.appendChild(fill);
+  div.appendChild(track);
+
+  if (req.status === "waiting_approval") {
+    const row = document.createElement("div");
+    row.className = "approve-row";
+    const approveBtn = document.createElement("button");
+    approveBtn.textContent = "Approve";
+    approveBtn.style.background = "var(--good)";
+    approveBtn.style.color = "#06280f";
+    const rejectBtn = document.createElement("button");
+    rejectBtn.textContent = "Needs changes";
+    rejectBtn.style.background = "var(--bad)";
+    rejectBtn.style.color = "#2b0906";
+    approveBtn.onclick = () => decideApproval(req, "approve");
+    rejectBtn.onclick = () => decideApproval(req, "reject");
+    row.append(approveBtn, rejectBtn);
+    div.appendChild(row);
+  }
+
+  return div;
+}
+
+async function decideApproval(req, decision) {
+  try {
+    await fetch(`${API}/approvals`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: req.approvalTaskId, decision, approved_by: userId, comment: null }),
+    });
+    req.status = "running";
+    req.currentLine = decision === "approve" ? "Approved — finishing up…" : "Sending back for changes…";
+    renderPanel();
+  } catch (e) {
+    addNotice("Could not record your decision. Try again.", true);
+  }
+}
+
+// ---- launching a request ---------------------------------------------------
+
+async function launchRequest(text, forceTier) {
+  addMessage("user", text);
+  const bubble = addMessage("assistant", "Working on it…");
+
+  const requestId = "pending-" + Math.random().toString(36).slice(2);
+  requests[requestId] = {
+    id: requestId, originalMessage: text, finalTaskId: null,
+    title: truncate(text, 64), tierKey: forceTier || "auto",
+    status: "running", currentLine: "Sending your request…",
+    progressPct: 8, bubbleEl: bubble, startedAt: Date.now(),
+  };
+  renderPanel();
+
+  try {
+    const resp = await fetch(`${API}/messages`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, message: text, force_tier: forceTier || null }),
+    });
+    const data = await resp.json();
+    const req = requests[requestId];
+    delete requests[requestId];
+    req.id = data.task_id;
+    req.finalTaskId = data.task_id;
+    requests[req.id] = req;
+    taskIndex[data.task_id] = req.id;
+    req.currentLine = "Getting started…";
+    req.progressPct = 15;
+    renderPanel();
+  } catch (err) {
+    const req = requests[requestId];
+    req.status = "failed";
+    req.currentLine = "Could not send this request.";
+    bubble.textContent = "Could not send your message. Check your connection and try again.";
+    renderPanel();
+  }
+}
+
+// ---- live events --------------------------------------------------------------
+
+function connectEvents() {
+  const source = new EventSource(`${API}/sessions/${sessionId}/events`);
+  source.onerror = () => {
+    statusEl.textContent = "● disconnected";
+    statusEl.className = "status disconnected";
+  };
+  source.onopen = () => {
+    statusEl.textContent = "● connected";
+    statusEl.className = "status connected";
+  };
+
+  source.addEventListener("task.planned", (e) => {
+    const plan = JSON.parse(e.data).payload.plan;
+    const req = Object.values(requests).find(
+      r => r.originalMessage === plan.root_request && !r.nodeIds
+    );
+    if (!req) return;
+    req.nodeIds = plan.nodes.map(n => n.task_id);
+    req.finalTaskId = req.nodeIds[req.nodeIds.length - 1];
+    req.nodeIds.forEach(id => { taskIndex[id] = req.id; });
+    renderPanel();
+  });
+
+  const onAgentUpdate = (raw) => {
+    const envelope = JSON.parse(raw);
+    const p = envelope.payload;
+    const card = p.agent || p; // agent.started nests under "agent"; agent.status is flat
+    const taskId = card.current_task_id || card.task_id;
+    const req = requests[taskIndex[taskId]];
+    if (!req) return;
+    req.currentLine = friendlyLine(card.role, card.status, card.current_task_title || card.task_title);
+    if (req.nodeIds) {
+      const idx = req.nodeIds.indexOf(taskId);
+      const done = card.status === "done" ? 1 : 0.5;
+      req.progressPct = Math.min(95, Math.round(((idx + done) / req.nodeIds.length) * 100));
+    } else {
+      req.progressPct = card.status === "done" ? 95 : 55;
+    }
+    renderPanel();
+  };
+  source.addEventListener("agent.started", (e) => onAgentUpdate(e.data));
+  source.addEventListener("agent.status", (e) => onAgentUpdate(e.data));
+
+  source.addEventListener("approval.required", (e) => {
+    const p = JSON.parse(e.data).payload;
+    const req = requests[taskIndex[p.task_id]];
+    if (!req) return;
+    req.status = "waiting_approval";
+    req.approvalTaskId = p.task_id;
+    req.currentLine = p.reason || "This needs a human check before it's finished.";
+    renderPanel();
+  });
+
+  source.addEventListener("task.completed", async (e) => {
+    const p = JSON.parse(e.data).payload;
+    const req = requests[taskIndex[p.task_id]];
+    if (!req || p.task_id !== req.finalTaskId) return; // an intermediate step, not the final answer
+    let content = "(no answer produced)";
+    try {
+      const r = await fetch(`${API}/results/${p.result_ref}`);
+      content = (await r.json()).content || content;
+    } catch (err) {
+      content = friendlyError(String(err));
+    }
+    req.bubbleEl.textContent = content;
+    req.status = "done";
+    req.progressPct = 100;
+    renderPanel();
+    showToast(`✓ Ready: ${req.title}`);
+  });
+
+  source.addEventListener("task.failed", (e) => {
+    const p = JSON.parse(e.data).payload;
+    const req = requests[taskIndex[p.task_id]];
+    if (!req) return;
+    req.bubbleEl.textContent = friendlyError(p.error || "");
+    req.status = "failed";
+    req.progressPct = 100;
+    renderPanel();
+    showToast(`⚠ Needs a look: ${req.title}`);
+  });
+}
+
+// ---- tier picker ----------------------------------------------------------------
+
+async function loadTiers() {
+  try {
+    const resp = await fetch(`${API}/agent-tiers`);
+    const data = await resp.json();
+    tiers = data.tiers;
+  } catch (e) {
+    tiers = [];
+  }
+  tierSelect.innerHTML = "";
+  const autoOpt = document.createElement("option");
+  autoOpt.value = "";
+  autoOpt.textContent = "Auto (let the system decide)";
+  autoOpt.dataset.description = "Picks the right tier for your question automatically — simple, standard, or deep.";
+  tierSelect.appendChild(autoOpt);
+  for (const tier of tiers) {
+    const opt = document.createElement("option");
+    opt.value = tier.key;
+    opt.textContent = `${tier.name} (${tier.model_name})`;
+    opt.dataset.description = tier.description;
+    tierSelect.appendChild(opt);
+  }
+  updateTierDescription();
+}
+
+function updateTierDescription() {
+  const opt = tierSelect.options[tierSelect.selectedIndex];
+  tierDescEl.textContent = opt ? opt.dataset.description : "";
+}
+tierSelect.addEventListener("change", updateTierDescription);
+
+// ---- login / session bootstrap ---------------------------------------------------
+
+async function startSession() {
+  const resp = await fetch(`${API}/sessions`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
+  const data = await resp.json();
+  sessionId = data.session_id;
+  await loadTiers();
+  connectEvents();
+  statusEl.textContent = "● connected";
+  statusEl.className = "status connected";
+  promptEl.focus();
+}
+
+document.getElementById("login-btn").onclick = async () => {
+  const name = document.getElementById("login-name").value.trim();
+  if (!name) return;
+  userId = name;
+  document.getElementById("login").style.display = "none";
+  document.getElementById("main").style.display = "flex";
+  await startSession();
+};
+document.getElementById("login-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("login-btn").click();
+});
+
+document.getElementById("composer").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = promptEl.value.trim();
+  if (!text) return;
+  promptEl.value = "";
+  launchRequest(text, tierSelect.value || null);
+});
+
+createAgentBtn.addEventListener("click", () => {
+  const text = promptEl.value.trim();
+  if (!text) return;
+  promptEl.value = "";
+  launchRequest(text, "director");
+});
+</script>
+</body>
+</html>

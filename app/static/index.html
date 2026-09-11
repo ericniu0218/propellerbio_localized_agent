@@ -5,22 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bedrock Private AI</title>
 <style>
+  /* Palette: warm/earthy, deliberately no green and no blue — clay, rust,
+     ochre, sand. "Technical" comes from the grid/scanline texture, sharp
+     HUD corner brackets, and monospace throughout, not from neon. */
   :root {
     color-scheme: dark;
-    --bg: #0c0c0c;
-    --panel: #17181c;
-    --panel2: #1d1e24;
-    --border: #2a2b30;
-    --text: #e6e6e6;
-    --muted: #8a8d93;
-    --accent: #f0a45c;    /* orange — user messages, primary buttons */
-    --assistant: #4c8bf5; /* blue — assistant messages / Specialist tier */
-    --good: #3fb950;
-    --bad: #e5534b;
-    --warn: #d29922;
-    --tier-runner: #2dd4bf;
-    --tier-specialist: #4c8bf5;
-    --tier-director: #b98cff;
+    --bg: #15110d;
+    --panel: #1d1712;
+    --panel2: #251e17;
+    --border: #3c2f24;
+    --border-bright: #5a4632;
+    --text: #f1e6d6;
+    --muted: #a48f77;
+    --accent: #c1622f;       /* burnt orange — user messages, primary actions */
+    --accent-dim: #7a3d1e;
+    --assistant: #a05a34;    /* sienna — assistant messages */
+    --good: #c99a3e;         /* ochre stands in for "success" (no green) */
+    --bad: #a8402a;          /* deep rust-red — errors */
+    --warn: #c9863a;         /* amber — needs-attention / approval */
+    --tier-runner: #b99b6b;  /* sand */
+    --tier-specialist: #c99a3e; /* ochre */
+    --tier-director: #d97a4a;   /* bright terracotta — the "deep" tier */
+    --glow: rgba(217,122,74,0.18);
   }
   * { box-sizing: border-box; }
   html, body {
@@ -28,64 +34,116 @@
     font-family: "SF Mono", "Menlo", "Consolas", "Courier New", monospace;
     font-size: 14px;
   }
-  #app { display: flex; flex-direction: column; height: 100%; }
+  /* Faint technical grid over the whole page — the "matrix" texture,
+     rendered in the accent hue instead of green, and kept subtle so it
+     reads as texture, not decoration. */
+  body {
+    background-image:
+      linear-gradient(rgba(193,98,47,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(193,98,47,0.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+    background-position: -1px -1px;
+    position: relative;
+  }
+  /* Faint horizontal scanlines on top of the grid — same trick CRT/matrix
+     UIs use, dialed down so text stays perfectly legible. */
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 999;
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(0,0,0,0.05) 3px);
+  }
+  #app { display: flex; flex-direction: column; height: 100%; position: relative; }
+  ::selection { background: var(--accent); color: #1a0f06; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 0; }
+
+  /* Reusable HUD corner brackets — sci-fi console feel on key panels. */
+  .hud { position: relative; }
+  .hud::before, .hud::after {
+    content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none;
+    border-color: var(--tier-director); opacity: 0.9;
+  }
+  .hud::before { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; }
+  .hud::after { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; }
+  .card.hud.tier-runner::before, .card.hud.tier-runner::after { border-color: var(--tier-runner); }
+  .card.hud.tier-specialist::before, .card.hud.tier-specialist::after { border-color: var(--tier-specialist); }
+  .card.hud.done::before, .card.hud.done::after { border-color: var(--good); }
+  .card.hud.failed::before, .card.hud.failed::after { border-color: var(--bad); }
 
   header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
+    padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+    flex-shrink: 0; letter-spacing: 0.02em;
   }
-  header .title { color: var(--accent); font-weight: 600; }
-  header .status { color: var(--muted); }
-  header .status.connected { color: var(--good); }
+  header .title {
+    color: var(--text); font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; font-size: 13px;
+  }
+  header .title::before { content: "▍"; color: var(--accent); margin-right: 8px; animation: blink 1.4s steps(1) infinite; }
+  header .status { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  header .status.connected { color: var(--good); text-shadow: 0 0 8px var(--glow); }
   header .status.disconnected { color: var(--bad); }
+  @keyframes blink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
 
   #body { flex: 1; display: flex; min-height: 0; }
 
   /* ---- chat column ---- */
   #chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #chat {
-    flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px;
+    flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px;
   }
-  .msg { padding: 8px 12px; border-left: 3px solid var(--muted); white-space: pre-wrap; max-width: 90ch; }
+  .msg {
+    padding: 10px 14px; border-left: 3px solid var(--muted); background: rgba(255,255,255,0.015);
+    white-space: pre-wrap; max-width: 90ch; line-height: 1.5;
+  }
   .msg.user { border-color: var(--accent); }
   .msg.assistant { border-color: var(--assistant); }
-  .msg.notice { border-color: var(--muted); color: var(--muted); font-style: italic; }
+  .msg.notice { border-color: var(--muted); color: var(--muted); font-style: italic; background: none; }
   .msg.notice.error { border-color: var(--bad); color: var(--bad); }
-  .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 8px; vertical-align: middle; }
-  .badge.checked { background: rgba(63,185,80,0.15); color: var(--good); border: 1px solid var(--good); }
-  .badge.needs-check { background: rgba(210,153,34,0.15); color: var(--warn); border: 1px solid var(--warn); }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; margin-left: 8px; vertical-align: middle; letter-spacing: 0.03em; }
+  .badge.checked { background: rgba(201,154,62,0.12); color: var(--good); border: 1px solid var(--good); }
+  .badge.needs-check { background: rgba(201,134,58,0.12); color: var(--warn); border: 1px solid var(--warn); }
 
-  #composer-area { background: var(--panel); border-top: 1px solid var(--border); flex-shrink: 0; padding: 10px 16px 12px; }
-  #tier-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #composer-area { background: var(--panel); border-top: 1px solid var(--border); flex-shrink: 0; padding: 12px 18px 14px; }
+  #tier-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
   #tier-select {
-    background: #000; color: var(--text); border: 1px solid var(--border); border-radius: 4px;
-    padding: 6px 8px; font-family: inherit; font-size: 13px; max-width: 260px;
+    background: #0c0906; color: var(--text); border: 1px solid var(--border-bright);
+    padding: 7px 8px; font-family: inherit; font-size: 12px; max-width: 280px;
+    text-transform: uppercase; letter-spacing: 0.03em;
   }
+  #tier-select:focus { outline: none; border-color: var(--accent); }
   #tier-description { color: var(--muted); font-size: 12px; flex: 1; }
   form#composer { display: flex; gap: 8px; }
   form#composer input {
-    flex: 1; background: #000; color: var(--text); border: 1px solid var(--accent);
-    border-radius: 4px; padding: 10px 12px; font-family: inherit; font-size: 14px;
+    flex: 1; background: #0c0906; color: var(--text); border: 1px solid var(--border-bright);
+    padding: 11px 14px; font-family: inherit; font-size: 14px; transition: border-color 0.15s, box-shadow 0.15s;
   }
+  form#composer input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
   form#composer button {
-    font-family: inherit; font-weight: 600; border: none; border-radius: 4px;
-    padding: 0 16px; cursor: pointer; white-space: nowrap;
+    font-family: inherit; font-weight: 700; border: 1px solid transparent;
+    padding: 0 18px; cursor: pointer; white-space: nowrap; text-transform: uppercase;
+    font-size: 12px; letter-spacing: 0.05em; transition: filter 0.15s, box-shadow 0.15s;
   }
-  #send-btn { background: var(--accent); color: #2a1a03; }
-  #create-agent-btn { background: var(--tier-director); color: #1c0f2e; }
-  form#composer button:disabled { background: var(--border); color: var(--muted); cursor: default; }
+  form#composer button:hover { filter: brightness(1.12); }
+  #send-btn { background: var(--accent); color: #1a0f06; }
+  #send-btn:hover { box-shadow: 0 0 14px var(--glow); }
+  #create-agent-btn { background: var(--tier-director); color: #1a0f06; }
+  #create-agent-btn:hover { box-shadow: 0 0 14px rgba(217,122,74,0.3); }
+  form#composer button:disabled { background: var(--border); color: var(--muted); cursor: default; filter: none; box-shadow: none; }
 
   /* ---- right panel: running agents ---- */
   #panel {
-    width: 320px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border);
-    overflow-y: auto; padding: 12px;
+    width: 330px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 14px;
   }
-  #panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 4px 4px 10px; }
-  #panel-empty { color: var(--muted); font-size: 12px; padding: 4px; }
+  #panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted);
+    margin: 2px 2px 12px; display: flex; align-items: center; gap: 6px;
+  }
+  #panel h2::before { content: "//"; color: var(--tier-director); }
+  #panel-empty { color: var(--muted); font-size: 12px; padding: 4px; line-height: 1.5; }
   .card {
     background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--muted);
-    border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; transition: opacity 0.4s;
+    padding: 11px 13px; margin-bottom: 12px; transition: opacity 0.4s;
   }
   .card.tier-runner { border-left-color: var(--tier-runner); }
   .card.tier-specialist { border-left-color: var(--tier-specialist); }
@@ -93,55 +151,68 @@
   .card.waiting_approval { border-left-color: var(--warn); }
   .card.done { border-left-color: var(--good); }
   .card.failed { border-left-color: var(--bad); }
-  .card.done, .card.failed { opacity: 0.7; }
-  .card .tier-name { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
-  .card .task-title { font-size: 13px; margin: 4px 0 6px; }
-  .card .current-line { font-size: 12px; color: var(--text); margin-bottom: 8px; }
-  .card .track { background: #000; border-radius: 3px; height: 6px; overflow: hidden; }
-  .card .fill { height: 100%; border-radius: 3px; background: var(--assistant); transition: width 0.5s ease; }
+  .card.done, .card.failed { opacity: 0.65; }
+  .card .tier-name {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+  }
+  .card.tier-runner .tier-name { color: var(--tier-runner); }
+  .card.tier-specialist .tier-name { color: var(--tier-specialist); }
+  .card.tier-director .tier-name { color: var(--tier-director); }
+  .card .task-title { font-size: 13px; margin: 5px 0 7px; }
+  .card .current-line { font-size: 12px; color: var(--text); margin-bottom: 9px; opacity: 0.9; }
+  .card .track { background: #0c0906; height: 5px; overflow: hidden; border: 1px solid var(--border); }
+  .card .fill { height: 100%; background: var(--assistant); transition: width 0.5s ease; }
   .card.tier-runner .fill { background: var(--tier-runner); }
   .card.tier-specialist .fill { background: var(--tier-specialist); }
   .card.tier-director .fill { background: var(--tier-director); }
   .card.done .fill { background: var(--good); }
   .card.failed .fill { background: var(--bad); }
-  .card .approve-row { margin-top: 8px; display: flex; gap: 8px; }
+  .card .approve-row { margin-top: 9px; display: flex; gap: 8px; }
   .card .approve-row button {
-    flex: 1; font-family: inherit; font-size: 12px; font-weight: 600; border: none; border-radius: 4px;
-    padding: 6px 0; cursor: pointer;
+    flex: 1; font-family: inherit; font-size: 11px; font-weight: 700; border: none;
+    padding: 7px 0; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em;
   }
-  .card .done-line { font-size: 12px; color: var(--good); margin-top: 4px; }
   .card .dismiss { float: right; cursor: pointer; color: var(--muted); font-size: 12px; }
 
   /* ---- toast ---- */
-  #toasts { position: fixed; top: 16px; right: 336px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+  #toasts { position: fixed; top: 18px; right: 346px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
   .toast {
     background: var(--panel2); border: 1px solid var(--good); color: var(--text);
-    padding: 10px 14px; border-radius: 6px; font-size: 13px; max-width: 320px;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.4); animation: fadein 0.2s ease;
+    padding: 11px 15px; font-size: 13px; max-width: 320px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5); animation: fadein 0.2s ease;
   }
   @keyframes fadein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
 
   #login {
-    height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+    height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px;
+  }
+  #login .panel-box {
+    padding: 32px 40px; background: var(--panel); border: 1px solid var(--border-bright);
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
   }
   #login input {
-    background: #000; color: var(--text); border: 1px solid var(--accent); border-radius: 4px;
-    padding: 10px 14px; font-family: inherit; font-size: 14px; width: 260px; text-align: center;
+    background: #0c0906; color: var(--text); border: 1px solid var(--border-bright);
+    padding: 11px 14px; font-family: inherit; font-size: 14px; width: 260px; text-align: center;
   }
+  #login input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
   #login button {
-    background: var(--accent); color: #2a1a03; border: none; border-radius: 4px;
-    padding: 10px 18px; font-family: inherit; font-weight: 600; cursor: pointer;
+    background: var(--accent); color: #1a0f06; border: none;
+    padding: 11px 20px; font-family: inherit; font-weight: 700; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px;
   }
-  #login p { color: var(--muted); }
+  #login button:hover { box-shadow: 0 0 14px var(--glow); }
+  #login p { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; }
 </style>
 </head>
 <body>
 <div id="app">
 
   <div id="login">
-    <p>Bedrock Private AI &mdash; sign in to start</p>
-    <input id="login-name" placeholder="Your name" autofocus>
-    <button id="login-btn">Start</button>
+    <div class="panel-box hud">
+      <p>Bedrock Private AI &mdash; sign in to start</p>
+      <input id="login-name" placeholder="Your name" autofocus>
+      <button id="login-btn">Start</button>
+    </div>
   </div>
 
   <div id="main" style="display:none; flex-direction:column; height:100%;">
@@ -164,7 +235,7 @@
           </form>
         </div>
       </div>
-      <div id="panel">
+      <div id="panel" class="hud">
         <h2>Running agents</h2>
         <div id="panel-empty">Nothing running yet — send a message to start.</div>
         <div id="cards"></div>
@@ -269,7 +340,7 @@ function renderPanel() {
 
 function renderCard(req) {
   const div = document.createElement("div");
-  div.className = `card tier-${req.tierKey} ${req.status}`;
+  div.className = `card hud tier-${req.tierKey} ${req.status}`;
 
   const tierInfo = tiers.find(t => t.key === req.tierKey);
   const tierLabel = tierInfo ? tierInfo.name : "Auto";

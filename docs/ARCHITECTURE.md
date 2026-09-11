@@ -124,7 +124,8 @@ which implementation is active.
          mock)           BLAST/structure,
                          RDKit, sandbox,
                          ELN/LIMS stubs,
-                         doc templates)
+                         doc templates,
+                         meeting transcripts)
 
   Postgres: sessions, task graph, audit log, token usage, RAG cache table
   pgvector: RAG embeddings (default; Qdrant documented as a swap-in)
@@ -244,6 +245,14 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
    given.
 6. **Model versions**: see §3 caveat — recent releases, verify before
    procurement.
+7. **Meeting transcript RBAC**: `app/tools/meeting_transcripts.py` (added
+   after this doc's initial approval — see zoom-transcript-vault repo for
+   the ingestion side) does not yet filter results by the requesting
+   user's permissions the way `rag_search` does; the datacenter connector
+   it queries has no per-meeting access-group concept today. Worth a real
+   decision before this handles anything sensitive: either the datacenter
+   connector starts tagging transcripts with `access_groups` (same shape
+   `rag_search`'s documents use) or this tool grows its own filtering.
 
 ## 10. Build order (in progress)
 

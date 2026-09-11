@@ -1,0 +1,17 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+pyyaml>=6.0
+sqlalchemy>=2.0
+sse-starlette>=2.1
+httpx>=0.27
+psycopg2-binary>=2.9   # only needed when DATABASE_URL points at Postgres (real mode)
+
+# Optional biotech tool dependencies — imports are guarded so the app still
+# runs without them (stub results instead); install for real tool behavior.
+biopython>=1.83
+rdkit>=2024.3.1
+
+# Dev/test
+pytest>=8.0
+pytest-asyncio>=0.24

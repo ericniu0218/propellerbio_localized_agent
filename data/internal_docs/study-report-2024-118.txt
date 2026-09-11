@@ -1,0 +1,5 @@
+Study 2024-118 evaluated the pharmacokinetics of Compound BX-771 in a rodent model, dosed at 5, 15, and 45 mg/kg via oral gavage over 14 days.
+
+No dose-limiting toxicity was observed at 5 or 15 mg/kg. At 45 mg/kg, two of eight animals showed elevated ALT/AST at day 14, consistent with mild hepatic stress; the effect was reversible by day 21 in a satellite recovery cohort.
+
+The study concluded that 15 mg/kg represents the maximum tolerated dose under this dosing regimen and recommended this as the top dose for the subsequent 28-day GLP toxicology study.

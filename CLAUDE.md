@@ -60,6 +60,26 @@ MVP complete: chat UI, streaming Markdown responses, `/model`, `/clear`, `/help`
 
 Not yet built (deliberately): file attachments, RAG, authentication, conversation persistence, packaging as a standalone executable.
 
+## Agent-pack mode
+
+This client can now also connect to a separate project, the biotech
+"agent-pack" backend (a multi-agent system: Director/Specialist/Runner,
+sessions, human-approval gates — see that repo's `docs/ARCHITECTURE.md`).
+`app.py::main` dispatches to `agentpack_app.AgentPackApp` instead of the
+plain `BedrockApp` when `settings.backend == "agentpack"`
+(`BEDROCK_BACKEND=agentpack`). This is still the same terminal app, same
+"not a website" rule, same one-input-box-and-a-scrolling-chat screen — it
+just talks to a richer backend over REST + a live event stream instead of
+a single OpenAI-compatible model server, and adds two small pieces of UI
+for that: a quiet "what's happening now" strip and an inline
+approve/reject prompt for high-stakes answers. See `README.md`'s "Two
+modes" section for how to point it at the agent-pack server.
+
+Login is still a stand-in (a `BEDROCK_USER` env var, not real SSO) —
+authentication remains genuinely not built, per the line above; the
+agent-pack backend's `docs/WORKFLOW.md`/`docs/DEPLOYMENT.md` describe the
+intended Keycloak/OIDC login this client would eventually use instead.
+
 ## Development Philosophy
 
 Build the smallest working vertical slice first. Prioritise understandable, maintainable Python over abstraction. Explain important architectural decisions in plain English in docstrings, because some contributors are learning software development.

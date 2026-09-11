@@ -1,0 +1,82 @@
+/* Layout and colours for the chat screen. Textual CSS, not web CSS. */
+
+Screen {
+    background: $background;
+}
+
+/* ---- Top status bar ---------------------------------------------------- */
+
+StatusBar {
+    dock: top;
+    height: 1;
+    background: $panel;
+    padding: 0 1;
+}
+
+#status-title {
+    width: 1fr;
+    text-style: bold;
+    color: $accent;
+}
+
+#status-model {
+    width: auto;
+    color: $text-muted;
+    margin-right: 3;
+}
+
+#status-connection {
+    width: auto;
+}
+#status-connection.ok      { color: $success; }
+#status-connection.bad     { color: $error; }
+#status-connection.unknown { color: $warning; }
+
+/* ---- Conversation area -------------------------------------------------- */
+
+#chat {
+    padding: 1 2;
+}
+
+UserMessage, AssistantMessage, SystemNotice {
+    margin-bottom: 1;
+    padding: 0 1;
+    height: auto;
+}
+
+UserMessage {
+    border-left: thick $accent;
+    color: $text;
+}
+
+AssistantMessage {
+    border-left: thick $secondary;
+    background: transparent;
+}
+
+SystemNotice {
+    border-left: thick $foreground-muted;
+    color: $text-muted;
+    background: transparent;
+}
+SystemNotice.error {
+    border-left: thick $error;
+    color: $error;
+}
+
+/* Markdown widgets add their own padding; keep messages compact. */
+AssistantMessage MarkdownBlock, SystemNotice MarkdownBlock {
+    margin: 0 0 1 0;
+}
+
+/* ---- Input ------------------------------------------------------------- */
+
+#prompt {
+    dock: bottom;
+    margin: 0 2 1 2;
+    border: tall $accent;
+}
+#prompt:disabled {
+    border: tall $foreground-muted;
+    color: $text-muted;
+}

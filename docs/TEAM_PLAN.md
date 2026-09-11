@@ -1,5 +1,11 @@
 # Team Plan — What's Left, Who Owns It, How to Start
 
+**Browsable version with one-click copy on every Claude briefing:**
+https://claude.ai/code/artifact/a7273d50-adee-45e0-8ce9-11c9e4ea7d2e
+(private by default — share it with the team from the page's share menu).
+This file is the version-controlled source of truth; the page is a copy
+for day-to-day use.
+
 Status: current as of 2026-09-11. This is the handoff checklist from
 "working prototype" to "ready for a real biotech client" turned into six
 parallel workstreams for a 6-person team. Each section is self-contained:

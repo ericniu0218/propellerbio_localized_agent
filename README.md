@@ -52,6 +52,22 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 
 `Esc` stops a response that is still streaming.
 
+## AlphaFold 2 and PyMOL
+
+The first biotech workflow is implemented as private local tool adapters:
+validate a one-protein FASTA, run the official AlphaFold 2 Docker launcher,
+preserve its structure and confidence artifacts, render a PNG and session with
+open-source PyMOL, and record hashes and provenance in a per-run manifest.
+
+After operator provisioning, check it with `bedrock-biotech status` and run it
+with `bedrock-biotech fold candidate.fasta`. In agent-pack mode the equivalent
+commands are `/tools`, `/fold <fasta-path>`, and `/pymol [structure-path]`.
+Direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
+open the latest structure interactively in PyMOL.” Questions about the tools
+remain normal agent conversations.
+See [the integration guide](docs/BIOTECH_INTEGRATIONS.md) for the required
+database, container, GPU, privacy, and configuration steps.
+
 ## Configuration
 
 Settings are read from, highest priority first:

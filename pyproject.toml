@@ -24,6 +24,7 @@ dev = [
 # This is what makes the `bedrock` command exist after `pip install .`
 [project.scripts]
 bedrock = "bedrock.app:main"
+bedrock-biotech = "bedrock.biotech.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import AsyncIterator
 
 import pytest
 
 from bedrock.agentpack.models import AgentEvent
 from bedrock.agentpack_app import AgentPackApp
+from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.config import Settings
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
@@ -54,13 +56,48 @@ class FakeAgentPackClient:
         self.closed = True
 
 
+class FakeBiotechWorkflow:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.folded: list[Path] = []
+        self.opened: list[Path | None] = []
+
+    def status(self):
+        return (
+            ToolStatus("AlphaFold 2", True, ()),
+            ToolStatus("open-source PyMOL", True, ()),
+        )
+
+    async def predict_and_render(self, fasta_path: Path) -> ProteinWorkflowResult:
+        self.folded.append(fasta_path)
+        return ProteinWorkflowResult(
+            run_id="run_test",
+            run_dir=self.root,
+            structure_path=self.root / "ranked_0.pdb",
+            preview_path=self.root / "preview.png",
+            session_path=self.root / "structure.pse",
+            manifest_path=self.root / "manifest.json",
+        )
+
+    async def open_in_pymol(self, structure_path: Path | None = None) -> Path:
+        self.opened.append(structure_path)
+        return structure_path or self.root / "ranked_0.pdb"
+
+
 @pytest.fixture
 def fake_client() -> FakeAgentPackClient:
     return FakeAgentPackClient()
 
 
-def make_app(client: FakeAgentPackClient) -> AgentPackApp:
-    return AgentPackApp(settings=Settings(user_id="alice"), client=client)
+def make_app(
+    client: FakeAgentPackClient,
+    biotech_workflow: FakeBiotechWorkflow | None = None,
+) -> AgentPackApp:
+    return AgentPackApp(
+        settings=Settings(user_id="alice"),
+        client=client,
+        biotech_workflow=biotech_workflow,
+    )
 
 
 async def test_send_message_shows_final_answer_from_result_ref(fake_client: FakeAgentPackClient):
@@ -151,3 +188,51 @@ async def test_one_task_at_a_time(fake_client: FakeAgentPackClient):
 
         assert fake_client.sent_messages == [("sess_fake", "first question")]
         assert any("one at a time" in n.source for n in app.query(SystemNotice))
+
+
+async def test_fold_command_runs_alphafold_then_reports_pymol_artifacts(
+    fake_client: FakeAgentPackClient,
+    tmp_path: Path,
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await pilot.pause()
+
+        assert workflow.folded == [Path("/tmp/protein.fasta")]
+        notices = [notice.source for notice in app.query(SystemNotice)]
+        assert any("Protein prediction completed" in notice for notice in notices)
+        assert any("preview.png" in notice for notice in notices)
+
+
+async def test_pymol_command_opens_latest_structure(
+    fake_client: FakeAgentPackClient,
+    tmp_path: Path,
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/pymol", "enter")
+        await pilot.pause()
+
+        assert workflow.opened == [None]
+        assert any("Opened" in notice.source for notice in app.query(SystemNotice))
+
+
+async def test_natural_language_pymol_request_opens_latest_structure(
+    fake_client: FakeAgentPackClient,
+    tmp_path: Path,
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    request = "Please open the latest structure interactively in PyMOL"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*request, "enter")
+        await pilot.pause()
+
+        assert workflow.opened == [None]
+        assert any(request in str(message.content) for message in app.query(UserMessage))

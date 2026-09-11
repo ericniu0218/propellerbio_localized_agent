@@ -41,6 +41,7 @@ class BedrockApp(App[None]):
 
     def __init__(self, settings: Settings | None = None, backend: InferenceBackend | None = None) -> None:
         super().__init__()
+        self.theme = "textual-dark"  # always a dark, black-background terminal look
         self.settings = settings or load_settings()
         # Tests pass a fake backend; real runs build one from settings.
         self.backend: InferenceBackend = backend or create_backend(self.settings)
@@ -206,8 +207,22 @@ class BedrockApp(App[None]):
 
 
 def main() -> None:
-    """Entry point for the ``bedrock`` command."""
-    BedrockApp().run()
+    """Entry point for the ``bedrock`` command.
+
+    Dispatches on ``settings.backend`` (env var ``BEDROCK_BACKEND``, or the
+    config file — see ``bedrock.config.settings``): "openai" (default) runs
+    this single-model-server app unchanged; "agentpack" runs
+    ``AgentPackApp`` instead, which talks to the full biotech agent-pack
+    system. One command either way — IT/the employee never choose a
+    different program, just a setting.
+    """
+    settings = load_settings()
+    if settings.backend == "agentpack":
+        from bedrock.agentpack_app import AgentPackApp
+
+        AgentPackApp(settings=settings).run()
+    else:
+        BedrockApp(settings=settings).run()
 
 
 if __name__ == "__main__":

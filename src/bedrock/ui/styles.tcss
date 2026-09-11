@@ -32,6 +32,38 @@ StatusBar {
 #status-connection.bad     { color: $error; }
 #status-connection.unknown { color: $warning; }
 
+/* ---- Agent-pack mode: "what's happening now" strip ---------------------- */
+/* Quiet by design: docked under the status bar, muted colour, and hidden
+   entirely (see AgentPanel.watch_lines) whenever nothing is running, so the
+   idle screen looks exactly like the plain chat-only mode. */
+
+AgentPanel {
+    dock: top;
+    height: auto;
+    background: $panel;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* ---- Approval prompt ----------------------------------------------------- */
+
+ApprovalPrompt {
+    margin-bottom: 1;
+    padding: 1;
+    height: auto;
+    border-left: thick $warning;
+    background: transparent;
+}
+
+#approval-buttons {
+    height: auto;
+    margin-top: 1;
+}
+#approval-buttons Button {
+    margin-right: 2;
+    min-width: 16;
+}
+
 /* ---- Conversation area -------------------------------------------------- */
 
 #chat {

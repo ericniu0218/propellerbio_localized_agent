@@ -33,10 +33,12 @@ from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
 from bedrock.config import Settings, load_settings
+from bedrock.context import ContextStore
 from bedrock.inference.base import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
+from bedrock.ui.digest_command import run_digest_command
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 
 CONNECTION_CHECK_SECONDS = 10
@@ -62,6 +64,7 @@ class AgentPackApp(App[None]):
         self._waiting_for: str | None = None  # task_id we're showing an answer bubble for
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
+        self._context_store: ContextStore | None = None
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -127,6 +130,8 @@ class AgentPackApp(App[None]):
                 await self.action_clear_chat()
             case "exit" | "quit":
                 self.exit()
+            case "digest":
+                self.command_digest(command.args)
             case _:
                 await self.post_notice(
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",
@@ -156,6 +161,26 @@ class AgentPackApp(App[None]):
         await self.mount_message(self._answer_widget)
         self._answer_widget.update("_Working on it…_")
         self._set_input_busy(True)
+
+    # ---- Stored context ---------------------------------------------------------
+
+    @work(group="digest")
+    async def command_digest(self, args: str) -> None:
+        """``/digest`` in agent-pack mode.
+
+        No ``backend`` is passed, so digests here are the computed ones only.
+        That is the right call rather than an omission: this app has no direct
+        model connection - it talks to the agent system over REST - and the
+        summarising a model would do belongs on that backend, next to the
+        agents, not in the client. The computed digest is the same either way.
+        """
+        await run_digest_command(args, store=self.context_store, notify=self.post_notice)
+
+    @property
+    def context_store(self) -> ContextStore:
+        if self._context_store is None:
+            self._context_store = ContextStore(self.settings.context_dir)
+        return self._context_store
 
     # ---- Live events ------------------------------------------------------------
 

@@ -22,9 +22,11 @@ from textual.containers import VerticalScroll
 from textual.widgets import Footer, Input
 
 from bedrock.config import Settings, load_settings
+from bedrock.context import ContextStore
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
+from bedrock.ui.digest_command import run_digest_command
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 
 CONNECTION_CHECK_SECONDS = 10
@@ -48,6 +50,9 @@ class BedrockApp(App[None]):
         self.conversation = Conversation(system_prompt=self.settings.system_prompt)
         self.model_name: str | None = self.settings.model
         self._streaming = False
+        # Built lazily in command_digest: creating it touches the disk, and
+        # a user who never runs /digest should never pay for that.
+        self._context_store: ContextStore | None = None
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -111,6 +116,8 @@ class BedrockApp(App[None]):
                 self.exit()
             case "model":
                 await self.command_model(command.args)
+            case "digest":
+                self.command_digest(command.args)
             case _:
                 await self.post_notice(f"Unknown command `/{command.name}`. Type `/help` for a list.", kind="error")
 
@@ -133,6 +140,31 @@ class BedrockApp(App[None]):
             marker = "→" if model.id == self.model_name else " "
             lines.append(f"- {marker} `{model.id}`")
         await self.post_notice("\n".join(lines))
+
+    # ---- Stored context ---------------------------------------------------
+
+    @work(group="digest")
+    async def command_digest(self, args: str) -> None:
+        """Run ``/digest`` in a worker.
+
+        It is a worker because compressing a large file and then asking a model
+        to summarise it both take real time, and neither should freeze the
+        interface. The model is passed in so prose gets a written summary; for
+        structured data the digest is computed and the model is never called.
+        """
+        await run_digest_command(
+            args,
+            store=self.context_store,
+            notify=self.post_notice,
+            backend=self.backend,
+            model=self.model_name,
+        )
+
+    @property
+    def context_store(self) -> ContextStore:
+        if self._context_store is None:
+            self._context_store = ContextStore(self.settings.context_dir)
+        return self._context_store
 
     # ---- Chat -------------------------------------------------------------
 

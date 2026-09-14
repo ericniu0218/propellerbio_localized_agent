@@ -48,7 +48,7 @@ The client must never send prompts to external AI APIs, depend on OpenAI/Anthrop
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest              # 17 tests, no server needed
+pytest              # 69 tests, no server needed
 bedrock             # run the app (expects Ollama at http://localhost:11434 by default)
 ```
 
@@ -58,7 +58,15 @@ Tests drive the real Textual app headlessly with `FakeBackend` (`tests/conftest.
 
 MVP complete: chat UI, streaming Markdown responses, `/model`, `/clear`, `/help`, `/exit`, model indicator, connection indicator.
 
-Not yet built (deliberately): file attachments, RAG, authentication, conversation persistence, packaging as a standalone executable.
+Also built: `/digest` (`src/bedrock/context/`) - compresses any data into a
+small digest plus compressed, keyword-indexed chunks, so a local model can
+read a large file cheaply and still get exact detail on request. Generalised
+over data types by the `SourceAdapter` protocol, the same seam idea as
+`InferenceBackend`. See README's "Compressing data for the model" section.
+
+Not yet built (deliberately): file attachments in chat, embedding-based
+retrieval (`/digest` search is keyword/BM25), authentication, conversation
+persistence, packaging as a standalone executable.
 
 ## Agent-pack mode
 

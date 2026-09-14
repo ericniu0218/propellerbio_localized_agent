@@ -13,6 +13,10 @@ dependencies = [
     "textual>=3.0",
     "rich>=13.0",
     "httpx>=0.27",
+    # Compression for the /digest context store. Falls back to the standard
+    # library's lzma when missing, so this is a performance dependency
+    # rather than a hard one - see src/bedrock/context/codec.py.
+    "zstandard>=0.22",
 ]
 
 [project.optional-dependencies]

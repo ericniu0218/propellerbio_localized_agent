@@ -15,6 +15,8 @@ HELP_TEXT = """\
 |---|---|
 | `/model` | List available models |
 | `/model <name>` | Switch to a different model |
+| `/digest <path>` | Compress a file so a model can read it cheaply |
+| `/digest` | List and search what you have compressed |
 | `/clear` | Start a new conversation |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
@@ -33,7 +35,7 @@ class Command:
     args: str
 
 
-KNOWN_COMMANDS = {"model", "clear", "help", "exit", "quit"}
+KNOWN_COMMANDS = {"model", "digest", "clear", "help", "exit", "quit"}
 
 
 def parse_command(text: str) -> Command | None:

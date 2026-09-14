@@ -35,6 +35,7 @@ from pathlib import Path
 DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bedrock" / "config.toml"
+DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,10 @@ class Settings:
     """Identifies the employee to the agent-pack backend. A stand-in until
     real SSO login is wired into this client — see the note above."""
 
+    context_dir: str = str(DEFAULT_CONTEXT_DIR)
+    """Where `/digest` keeps compressed data. Local disk only - this never
+    leaves the machine, same rule as everything else here."""
+
     extra: dict = field(default_factory=dict)
     """Any unrecognised keys from the config file, kept for forward compatibility."""
 
@@ -88,7 +93,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
 
     known = {
         "backend", "api_base", "model", "api_key", "request_timeout",
-        "system_prompt", "agent_pack_api_base", "user_id",
+        "system_prompt", "agent_pack_api_base", "user_id", "context_dir",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -104,6 +109,11 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         or DEFAULT_AGENT_PACK_API_BASE
     )
     user_id = env.get("BEDROCK_USER") or file_values.get("user_id") or getpass.getuser()
+    context_dir = (
+        env.get("BEDROCK_CONTEXT_DIR")
+        or file_values.get("context_dir")
+        or str(DEFAULT_CONTEXT_DIR)
+    )
 
     return Settings(
         backend=backend,
@@ -114,5 +124,6 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         system_prompt=system_prompt,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,
+        context_dir=context_dir,
         extra=extra,
     )

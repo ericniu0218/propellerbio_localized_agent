@@ -151,3 +151,38 @@ async def test_one_task_at_a_time(fake_client: FakeAgentPackClient):
 
         assert fake_client.sent_messages == [("sess_fake", "first question")]
         assert any("one at a time" in n.source for n in app.query(SystemNotice))
+
+
+async def test_digest_works_in_agentpack_mode_without_a_model(fake_client, tmp_path):
+    """`/digest` is available in both modes.
+
+    This app has no direct model connection, so digests here are the computed
+    ones only - which for structured data is the better summary anyway. Note
+    the deliberate absence of ``workers.wait_for_complete()``: this app's event
+    listener runs for the life of the session and would never finish.
+    """
+    from textual.widgets import Input
+
+    path = tmp_path / "assay.csv"
+    path.write_text("sample,ph\n" + "\n".join(f"S{i:04d},{6.0 + i % 10 * 0.1:.1f}" for i in range(50)))
+
+    app = AgentPackApp(
+        settings=Settings(user_id="alice", context_dir=str(tmp_path / "context")),
+        client=fake_client,
+    )
+    async with app.run_test() as pilot:
+        app.query_one("#prompt", Input).value = f"/digest {path}"
+        await pilot.press("enter")
+
+        for _ in range(100):
+            await pilot.pause()
+            if app.context_store.list():
+                break
+
+        stored = app.context_store.list()
+        assert len(stored) == 1
+        assert stored[0].source_kind == "tabular"
+        assert stored[0].digest.generated_by == "rules"
+
+        notices = "\n".join(str(w.source) for w in app.query(SystemNotice))
+        assert "Compressed `assay.csv`" in notices

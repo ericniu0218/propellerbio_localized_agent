@@ -6,6 +6,8 @@ The app decides what to *do* with a command; this module only recognises it.
 
 from __future__ import annotations
 
+import re
+import shlex
 from dataclasses import dataclass
 
 HELP_TEXT = """\
@@ -50,3 +52,81 @@ def parse_command(text: str) -> Command | None:
         return None
     name, _, args = stripped[1:].partition(" ")
     return Command(name=name.lower(), args=args.strip())
+
+
+def parse_scientific_request(text: str) -> Command | None:
+    """Recognize clear requests to run the two locally integrated tools.
+
+    This intentionally handles action language, not every mention of a tool.
+    Questions and explanations still go to the agent. The returned value uses
+    the same small command interface as slash commands, so execution, errors,
+    and authorization behavior cannot drift between the two input styles.
+    """
+    stripped = text.strip()
+    if not stripped or not _looks_actionable(stripped):
+        return None
+
+    lowered = stripped.casefold()
+    path = _extract_supported_path(stripped)
+    mentions_alphafold = bool(re.search(r"\balpha\s*fold\s*2?\b", lowered))
+    requests_prediction = bool(
+        re.search(r"\b(fold|predict|prediction|model|run|use)\b", lowered)
+    )
+    if (mentions_alphafold and requests_prediction) or (
+        path and _has_suffix(path, (".fasta", ".fa", ".faa"))
+        and bool(re.search(r"\b(fold|predict(?:ion)?|structure prediction)\b", lowered))
+    ):
+        return Command("fold", path)
+
+    mentions_pymol = "pymol" in lowered
+    requests_view = bool(
+        re.search(r"\b(open|view|show|display|visuali[sz]e|launch|use)\b", lowered)
+    )
+    references_known_structure = bool(
+        re.search(r"\b(latest|last|recent|structure|prediction|result|it|this|that)\b", lowered)
+    )
+    if mentions_pymol and requests_view and (path or references_known_structure):
+        return Command("pymol", path)
+    return None
+
+
+def _looks_actionable(text: str) -> bool:
+    lowered = text.casefold().strip()
+    if re.match(r"^(how|what|why|where|when|does|is|are|explain|tell me)\b", lowered):
+        return False
+    if re.search(r"\b(explain|tell me|show me how)\b", lowered):
+        return False
+    if re.match(r"^(can|could|would|will)\s+(?!you\b)", lowered):
+        return False
+    return bool(
+        re.match(
+            r"^(?:please\s+)?(?:open|view|show|display|visuali[sz]e|launch|use|run|fold|predict|model)\b",
+            lowered,
+        )
+        or re.match(r"^(?:can|could|would|will)\s+you\b", lowered)
+        or re.match(r"^i(?:'d| would) like (?:you )?to\b", lowered)
+        or re.match(r"^i (?:want|need) (?:you )?to\b", lowered)
+        or re.match(r"^let(?:'s| us)\b", lowered)
+        or re.match(
+            r"^(?:alpha\s*fold\s*2?|pymol)\s*[:,]?\s*"
+            r"(?:please\s+)?(?:open|view|show|display|visuali[sz]e|launch|use|run|fold|predict|model)\b",
+            lowered,
+        )
+    )
+
+
+def _extract_supported_path(text: str) -> str:
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return ""
+    supported = (".fasta", ".fa", ".faa", ".pdb", ".cif", ".mmcif")
+    for word in reversed(words):
+        candidate = word.rstrip(".,!?;:")
+        if _has_suffix(candidate, supported):
+            return candidate
+    return ""
+
+
+def _has_suffix(value: str, suffixes: tuple[str, ...]) -> bool:
+    return value.casefold().endswith(suffixes)

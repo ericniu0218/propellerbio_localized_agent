@@ -48,7 +48,7 @@ The client must never send prompts to external AI APIs, depend on OpenAI/Anthrop
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest              # 69 tests, no server needed
+pytest              # 93 tests, no server needed
 bedrock             # run the app (expects Ollama at http://localhost:11434 by default)
 ```
 

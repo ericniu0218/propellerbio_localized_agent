@@ -10,6 +10,7 @@ from app.api import (
     routes_agent_tiers,
     routes_agents,
     routes_approval,
+    routes_auth,
     routes_history,
     routes_results,
     routes_session,
@@ -27,6 +28,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Biotech Agent Pack", version="0.1.0")
 
     app.include_router(routes_session.router)
+    app.include_router(routes_auth.router)
     app.include_router(routes_approval.router)
     app.include_router(routes_history.router)
     app.include_router(routes_agents.router)

@@ -1,0 +1,795 @@
+<title>Bedrock Handoff</title>
+<style>
+  :root{
+    --bg:#eee9df; --surface:#f8f5ee; --surface-2:#e7ded0; --border:#d5c9b3;
+    --text:#2a2015; --text-muted:#6e6048; --text-faint:#948566;
+    --accent:#b5502e; --accent-ink:#fff8f0; --accent-soft:#e7d2c3;
+    --code-bg:#221a12; --code-text:#f1e6d6; --code-border:#3d3226;
+    --ws1:#b5502e; --ws2:#9c7222; --ws3:#6f6a3a; --ws4:#8a4a2f; --ws5:#a45a3f; --ws6:#8a6f3f;
+    --shadow: 0 1px 2px rgba(42,32,21,0.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17130f; --surface:#1e1811; --surface-2:#261f16; --border:#3d3226;
+      --text:#f1e6d6; --text-muted:#a89078; --text-faint:#786a52;
+      --accent:#d97a4a; --accent-ink:#1c0f06; --accent-soft:#3a2417;
+      --code-bg:#100c08; --code-text:#f1e6d6; --code-border:#3d3226;
+      --ws1:#d97a4a; --ws2:#cf9d4f; --ws3:#a49c62; --ws4:#c1633c; --ws5:#d98a6a; --ws6:#b99b6b;
+      --shadow: 0 1px 2px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17130f; --surface:#1e1811; --surface-2:#261f16; --border:#3d3226;
+    --text:#f1e6d6; --text-muted:#a89078; --text-faint:#786a52;
+    --accent:#d97a4a; --accent-ink:#1c0f06; --accent-soft:#3a2417;
+    --code-bg:#100c08; --code-text:#f1e6d6; --code-border:#3d3226;
+    --ws1:#d97a4a; --ws2:#cf9d4f; --ws3:#a49c62; --ws4:#c1633c; --ws5:#d98a6a; --ws6:#b99b6b;
+    --shadow: 0 1px 2px rgba(0,0,0,0.35);
+  }
+
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"Newsreader","Iowan Old Style","Palatino Linotype",serif;
+    font-size:17px; line-height:1.6; padding-inline:20px;
+    overflow-x:hidden;
+  }
+  ::selection{ background:var(--accent); color:var(--accent-ink); }
+
+  .mono{ font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace; }
+  h1,h2,h3,.eyebrow,.chip,.label,code,pre,.btn,nav{ font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace; }
+
+  a{ color:var(--accent); }
+
+  /* ---------------- top bar / nav ---------------- */
+  nav.topbar{
+    position:sticky; top:0; z-index:20; background:var(--bg); max-width:100%;
+    border-bottom:1px solid var(--border); padding-block:12px;
+    margin-inline:-20px; padding-inline:20px; overflow:hidden;
+  }
+  .topbar-inner{
+    max-width:900px; margin:0 auto; display:flex; align-items:center; gap:14px;
+    flex-wrap:wrap; min-width:0;
+  }
+  .brand{ font-weight:700; font-size:13px; letter-spacing:0.06em; white-space:nowrap; }
+  .brand .dot{ color:var(--accent); }
+  .chips{ display:flex; gap:6px; flex-wrap:wrap; flex:1; min-width:0; }
+  .chip{
+    display:inline-flex; align-items:center; gap:5px; font-size:11px; letter-spacing:0.02em;
+    padding:4px 9px; border-radius:3px; border:1px solid var(--border); color:var(--text-muted);
+    text-decoration:none; background:var(--surface); white-space:nowrap;
+  }
+  .chip:hover{ border-color:var(--chip-color,var(--accent)); color:var(--text); }
+  .chip .sw{ width:7px; height:7px; border-radius:50%; background:var(--chip-color,var(--accent)); flex-shrink:0; }
+
+  /* ---------------- page shell ---------------- */
+  main{ max-width:700px; margin:0 auto; padding-block:44px 90px; }
+  .wide{ max-width:820px; margin-inline:auto; }
+
+  header.hero{ max-width:700px; margin:0 auto; padding-block:38px 8px; }
+  header.hero .kicker{
+    font-size:12px; letter-spacing:0.14em; text-transform:uppercase; color:var(--accent);
+    margin:0 0 14px;
+  }
+  header.hero h1{
+    font-size:clamp(28px,5vw,40px); line-height:1.08; margin:0 0 18px; letter-spacing:-0.01em;
+    text-wrap:balance;
+  }
+  header.hero p{ color:var(--text-muted); max-width:62ch; font-size:17px; }
+  header.hero .repos{
+    display:flex; flex-direction:column; gap:6px; margin-top:22px; font-size:14px;
+  }
+  header.hero .repos div{ display:flex; gap:8px; min-width:0; }
+  header.hero .repos a{ text-decoration:none; overflow-wrap:anywhere; min-width:0; }
+  header.hero .repos a:hover{ text-decoration:underline; }
+  header.hero .repos .rtag{ color:var(--text-faint); }
+
+  .readfirst{
+    background:var(--surface); border:1px solid var(--border); border-radius:6px;
+    padding:16px 18px; margin-top:26px; font-size:14.5px; color:var(--text-muted);
+    font-family:"Newsreader",serif;
+  }
+  .readfirst b{ color:var(--text); font-weight:600; }
+
+  .rule{ border:none; border-top:1px solid var(--border); margin:46px 0; max-width:700px; margin-inline:auto; }
+
+  /* ---------------- workstream sections ---------------- */
+  section.ws{
+    max-width:700px; margin:0 auto 6px; padding-left:20px;
+    border-left:3px solid var(--ws-color,var(--accent));
+  }
+  section.ws .eyebrow{
+    font-size:12px; letter-spacing:0.08em; color:var(--ws-color,var(--accent)); margin:0 0 8px;
+    display:flex; align-items:center; gap:8px;
+  }
+  section.ws .eyebrow .num{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:20px; height:20px; border-radius:3px; background:var(--ws-color,var(--accent));
+    color:var(--accent-ink); font-size:11px; font-weight:700;
+  }
+  section.ws h2{ font-size:23px; margin:0 0 6px; letter-spacing:-0.01em; text-wrap:balance; }
+  section.ws .owns{ color:var(--text-muted); font-size:15px; margin:0 0 22px; font-family:"Newsreader",serif; }
+
+  .block{ margin-bottom:22px; }
+  .block h3{
+    font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint);
+    margin:0 0 10px; font-weight:600;
+  }
+  .block p{ margin:0 0 10px; }
+  .block ol, .block ul{ margin:0; padding-left:1.25em; }
+  .block li{ margin-bottom:10px; }
+  .block li::marker{ color:var(--ws-color,var(--accent)); font-weight:700; }
+  .block code, .inline-code{
+    font-family:"JetBrains Mono",monospace; font-size:0.86em; background:var(--surface-2);
+    border:1px solid var(--border); border-radius:3px; padding:0.05em 0.4em;
+  }
+
+  .donewhen{
+    background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--ws-color,var(--accent));
+    border-radius:0 6px 6px 0; padding:14px 16px; font-size:15px;
+  }
+  .donewhen b{ display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+    color:var(--ws-color,var(--accent)); margin-bottom:6px; font-family:"JetBrains Mono",monospace; }
+
+  /* ---------------- terminal / prompt block ---------------- */
+  .terminal{
+    background:var(--code-bg); border:1px solid var(--code-border); border-radius:8px;
+    overflow:hidden; box-shadow:var(--shadow); margin-top:8px;
+  }
+  .terminal .bar{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:9px 12px; border-bottom:1px solid var(--code-border);
+    background:color-mix(in srgb, var(--code-bg) 85%, white 3%);
+  }
+  .terminal .bar .name{ font-size:11px; color:#a89078; letter-spacing:0.04em; }
+  .terminal .bar .dots{ display:flex; gap:5px; }
+  .terminal .bar .dots span{ width:8px; height:8px; border-radius:50%; background:#4a3c2c; }
+  .copybtn{
+    font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:0.03em;
+    background:transparent; border:1px solid #4a3c2c; color:#cbb89a; border-radius:4px;
+    padding:4px 10px; cursor:pointer; transition:background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .copybtn:hover{ border-color:var(--ws-color,#cbb89a); color:#fff; }
+  .copybtn.copied{ background:var(--ws-color,#3fb950); border-color:var(--ws-color,#3fb950); color:#100c08; }
+  .terminal pre{
+    margin:0; padding:16px 18px; color:var(--code-text); font-family:"JetBrains Mono",monospace;
+    font-size:13px; line-height:1.65; white-space:pre-wrap; overflow-x:auto;
+  }
+
+  /* ---------------- cross-team notes ---------------- */
+  .notes{ max-width:700px; margin:0 auto; }
+  .notes h2{ font-size:20px; margin:0 0 18px; }
+  .notes ul{ padding-left:1.1em; }
+  .notes li{ margin-bottom:12px; }
+  .notes li::marker{ color:var(--accent); }
+
+  footer{
+    max-width:700px; margin:60px auto 0; padding-top:22px; border-top:1px solid var(--border);
+    color:var(--text-faint); font-size:12.5px; font-family:"JetBrains Mono",monospace;
+  }
+
+  @media (max-width:520px){
+    body{ font-size:16px; }
+    section.ws{ padding-left:14px; }
+    .terminal pre{ font-size:12.3px; padding:14px; }
+  }
+</style>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,500&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<nav class="topbar">
+  <div class="topbar-inner">
+    <span class="brand">BEDROCK<span class="dot">·</span>HANDOFF</span>
+    <div class="chips">
+      <a class="chip" style="--chip-color:var(--ws1)" href="#ws1"><span class="sw"></span>01 Platform</a>
+      <a class="chip" style="--chip-color:var(--ws2)" href="#ws2"><span class="sw"></span>02 Identity</a>
+      <a class="chip" style="--chip-color:var(--ws3)" href="#ws3"><span class="sw"></span>03 Knowledge</a>
+      <a class="chip" style="--chip-color:var(--ws4)" href="#ws4"><span class="sw"></span>04 Intelligence</a>
+      <a class="chip" style="--chip-color:var(--ws5)" href="#ws5"><span class="sw"></span>05 Collaboration</a>
+      <a class="chip" style="--chip-color:var(--ws6)" href="#ws6"><span class="sw"></span>06 Frontend</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <p class="kicker">Handoff plan — updated 2026-09-11</p>
+  <h1>What's left, split six ways.</h1>
+  <p>
+    The agent pack works end to end today — routing, the Director/Specialist/
+    Runner loop, retry and escalation, audit logging, both frontends — but it
+    runs entirely on fake model responses against three sample documents.
+    Below is every real gap between that working prototype and something a
+    biotech client can actually run, split into six workstreams sized for a
+    six-person team. Most can proceed in parallel, against mock mode, without
+    waiting on each other.
+  </p>
+  <div class="repos">
+    <div><span class="rtag">backend&nbsp;&nbsp;</span><a href="https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack">github.com/Bedrock-Technical-Consulting/bedrock-agent-pack</a></div>
+    <div><span class="rtag">terminal&nbsp;&nbsp;</span><a href="https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai">github.com/Bedrock-Technical-Consulting/bedrock-private-ai</a></div>
+  </div>
+  <div class="readfirst">
+    <b>Read first, regardless of workstream:</b> <code class="inline-code">docs/ARCHITECTURE.md</code>,
+    <code class="inline-code">docs/WORKFLOW.md</code>, and <code class="inline-code">docs/UX.md</code> in the backend
+    repo. They're the design source of truth — if a task below conflicts with them, the docs win, or flag the conflict rather than silently picking one.
+  </div>
+  <div class="readfirst">
+    <b>How to use this page:</b> pick a workstream, clone what it needs, and paste its
+    briefing as your first message to a fresh Claude Code session. Split one
+    workstream across two people, or combine two, as your team's skills fall.
+  </div>
+</header>
+
+<hr class="rule">
+
+<!-- ===================== WORKSTREAM 1 ===================== -->
+<section class="ws" id="ws1" style="--ws-color:var(--ws1)">
+  <p class="eyebrow"><span class="num">01</span>PLATFORM &amp; DEPLOYMENT</p>
+  <h2>Off mock mode, onto real infrastructure</h2>
+  <p class="owns">Owns: GPU serving, the real database, CI, and the deployment guide.</p>
+
+  <div class="block">
+    <h3>What's built</h3>
+    <p>Mock mode (fake model replies, SQLite). <code class="inline-code">config/models.yaml</code> already names
+    the three target models. <code class="inline-code">app/models/http_client.py</code> exists but has never
+    been run against a real server. <code class="inline-code">docker-compose.yml</code> has a <code class="inline-code">real</code>
+    profile. <code class="inline-code">docs/HARDWARE.md</code> has a GPU memory budget.</p>
+  </div>
+
+  <div class="block">
+    <h3>What's missing, and how</h3>
+    <ol>
+      <li><b>GPU server + real models.</b> Confirm hardware against the budget in <code class="inline-code">docs/HARDWARE.md</code>.
+      Download the weights named in <code class="inline-code">config/models.yaml</code> onto that machine — no internet
+      access afterward, that's the air-gap rule. Serve each with vLLM or SGLang using the
+      <code class="inline-code">real</code> Compose profile as a starting point; you'll need to fix the volume paths
+      and <code class="inline-code">--model</code> args to match where weights actually land.</li>
+      <li><b>Verify <code class="inline-code">HTTPModelClient</code> against a live server.</b> Start one vLLM instance,
+      point <code class="inline-code">DIRECTOR_LLM_URL</code> at it, set <code class="inline-code">AGENT_PACK_MODE=real</code>, send one
+      message through the full API. Likely breakage: streaming-format differences between
+      vLLM versions, and whether <code class="inline-code">chat_template_kwargs</code> is really how your version wants
+      thinking-mode toggled — that's a guess in the code today.</li>
+      <li><b>Real Postgres + migrations.</b> Point <code class="inline-code">DATABASE_URL</code> at real Postgres. Add
+      Alembic, generate a migration matching <code class="inline-code">app/db/models.py</code>. From here on, schema
+      changes go through migrations, not the current auto-create.</li>
+      <li><b>CI.</b> A GitHub Actions workflow in both repos: install deps, run <code class="inline-code">pytest</code>.
+      Nothing runs tests today except a human typing the command.</li>
+      <li><b><code class="inline-code">docs/DEPLOYMENT.md</code>.</b> Written for an IT person who has never seen this
+      project — Compose, env vars (<code class="inline-code">.env.example</code> is the checklist), the air-gap check,
+      Postgres.</li>
+    </ol>
+  </div>
+
+  <div class="donewhen"><b>Done when</b>
+  <code class="inline-code">AGENT_PACK_MODE=real</code> answers a real question with a real model, end to end.
+  CI is green on a PR. A new IT person follows <code class="inline-code">docs/DEPLOYMENT.md</code> without asking you anything.</div>
+
+  <div class="terminal">
+    <div class="bar"><span class="name">claude — paste to start</span><div class="dots"><span></span><span></span><span></span></div></div>
+    <pre id="p1">I'm working on Workstream 1 (Platform &amp; Deployment) for the biotech
+agent-pack project. Clone
+https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack and
+read docs/ARCHITECTURE.md and docs/HARDWARE.md first.
+
+Today everything runs in AGENT_PACK_MODE=mock (fake model responses,
+SQLite). My job: get it running for real. Specifically:
+1. Help me stand up vLLM (or SGLang) serving the three models named in
+   config/models.yaml, using docker-compose.yml's `real` profile as a
+   starting point — I'll tell you what GPU hardware I actually have.
+2. Once one model server is up, help me verify app/models/http_client.py
+   actually works against it (it's never been tested against a real
+   server) — start with the Director model and one plain chat message
+   through the full API, fix whatever the response-format mismatch turns
+   out to be.
+3. Help me add Alembic migrations for the schema in app/db/models.py, and
+   switch DATABASE_URL to a real Postgres instance I'll provision.
+4. Add a GitHub Actions workflow that runs `pytest` on every push/PR in
+   this repo (and I'll paste you the frontend repo's structure separately
+   for the same treatment there).
+5. Once 1-4 work, help me write docs/DEPLOYMENT.md from scratch, assuming
+   the reader has never seen this project — Docker Compose, env vars,
+   the air-gap check, Postgres.
+
+Don't touch anything under app/sharing/, app/recipes/, app/uploads/, or
+app/auth/ (other teams own those) — flag it to me if my changes would
+affect their interfaces. Ask me before making assumptions about our
+actual GPU hardware or hosting environment; I'll tell you what we have.</pre>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== WORKSTREAM 2 ===================== -->
+<section class="ws" id="ws2" style="--ws-color:var(--ws2)">
+  <p class="eyebrow"><span class="num">02</span>IDENTITY &amp; ACCESS</p>
+  <h2>Real login, real permissions, a real review</h2>
+  <p class="owns">Owns: SSO, RBAC/workspaces, and the security pass.</p>
+
+  <div class="block">
+    <h3>What's built</h3>
+    <p>A trivial <code class="inline-code">user_id</code> string, trusted with no verification anywhere. A toy
+    <code class="inline-code">app/compliance/rbac.py::StaticPermissionSource</code> (in-memory, connected to nothing
+    real). Already decided with the client: departments and reviewers are admin-managed
+    in-app, not pulled from Keycloak.</p>
+  </div>
+
+  <div class="block">
+    <h3>What's missing, and how</h3>
+    <ol>
+      <li><b>Keycloak.</b> Stand it up (official Docker image), create a realm and an OIDC
+      client. Decide with IT how company accounts get in — directory sync, or manual.</li>
+      <li><b>JWT verification.</b> New <code class="inline-code">app/auth/</code>: a <code class="inline-code">verify_token()</code> function
+      checking signature/expiry/audience against Keycloak's JWKS endpoint, plus a
+      <code class="inline-code">get_current_user()</code> FastAPI dependency on every route. <b>This changes the
+      contract</b> — coordinate with Workstream 6 before shipping it.</li>
+      <li><b>Department/reviewer admin.</b> New <code class="inline-code">app/org/</code>: a <code class="inline-code">Department</code> model,
+      endpoints to assign a user to one and set its reviewer(s) — per the decision in
+      <code class="inline-code">docs/WORKFLOW.md</code> §1. Workstream 5's review flow depends on this.</li>
+      <li><b>Real workspaces + RBAC.</b> New <code class="inline-code">app/workspaces/</code>: <code class="inline-code">Workspace</code>
+      (personal/team/company) and <code class="inline-code">WorkspaceMembership</code>. Update
+      <code class="inline-code">app/tools/rag_search.py</code> to filter by real membership via a SQL join — its own
+      docstring already names this as the intended extension point.</li>
+      <li><b>Security review.</b> Sandbox escape vectors (<code class="inline-code">app/tools/sandbox.py</code>),
+      injection surface outside the ORM, whether the audit log is genuinely append-only
+      under real Postgres grants (<code class="inline-code">docs/ARCHITECTURE.md</code> §8 states the intent; nothing
+      enforces it on SQLite today).</li>
+    </ol>
+  </div>
+
+  <div class="donewhen"><b>Done when</b>
+  Logging in requires a real company account. A user genuinely cannot pull up another
+  team's documents through any path, including via an agent — test this adversarially,
+  don't just check that the UI hides it.</div>
+
+  <div class="terminal">
+    <div class="bar"><span class="name">claude — paste to start</span><div class="dots"><span></span><span></span><span></span></div></div>
+    <pre id="p2">I'm working on Workstream 2 (Identity &amp; Access) for the biotech
+agent-pack project. Clone
+https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack and
+read docs/ARCHITECTURE.md section 8 and docs/WORKFLOW.md sections 1-2
+first — that's the compliance/permissions design and the already-made
+decision that departments/reviewers are admin-managed in our own app, not
+pulled from Keycloak.
+
+Today there is no real authentication — any request just trusts a plain
+user_id string. My job:
+1. Help me stand up Keycloak (I'll handle the org-specific realm/client
+   config) and add an app/auth/ module that verifies its JWTs against the
+   JWKS endpoint, plus a get_current_user() FastAPI dependency.
+2. Help me figure out which existing routes (see app/api/) need that
+   dependency added, and what changes in the request/response shapes —
+   flag every contract change clearly, since Workstream 6 owns both
+   frontends and needs to know.
+3. Help me build app/org/ (Department model + admin endpoints for
+   department assignment and reviewer assignment) and app/workspaces/
+   (Workspace + WorkspaceMembership models).
+4. Help me rewrite app/tools/rag_search.py's permission filtering to use
+   real workspace membership via a SQL join instead of the current
+   StaticPermissionSource stub — its docstring already explains the
+   intended design.
+5. Once that's solid, help me do a security pass: check
+   app/tools/sandbox.py for escape vectors, check for injection surface
+   outside the ORM, and check what's needed to make the audit log
+   genuinely append-only on real Postgres (see ARCHITECTURE.md section 8).
+
+Don't change the agent/orchestrator logic (app/orchestrator/,
+app/agents/) beyond what's needed to thread the current user through —
+that's other teams' territory. Ask me before assuming how our company
+directory/SSO is actually organized.</pre>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== WORKSTREAM 3 ===================== -->
+<section class="ws" id="ws3" style="--ws-color:var(--ws3)">
+  <p class="eyebrow"><span class="num">03</span>KNOWLEDGE BASE &amp; INGESTION</p>
+  <h2>From three sample files to the company's real library</h2>
+  <p class="owns">Owns: the vector store, real document ingestion, and file uploads.</p>
+
+  <div class="block">
+    <h3>What's built</h3>
+    <p><code class="inline-code">app/tools/rag_search.py</code> and <code class="inline-code">literature_search.py</code> are real tool
+    interfaces — backed by a <code class="inline-code">KeywordOverlapIndex</code> reading 3 sample text files. No
+    vector DB, no embeddings, no real pipeline. No file upload capability anywhere yet.</p>
+  </div>
+
+  <div class="block">
+    <h3>What's missing, and how</h3>
+    <ol>
+      <li><b>A real vector store.</b> <code class="inline-code">pgvector</code> is the documented default
+      (<code class="inline-code">docs/ARCHITECTURE.md</code> §9) — add the extension to Postgres, create a real
+      <code class="inline-code">content_chunks</code> table (shape sketched in <code class="inline-code">docs/WORKFLOW.md</code> §8). Qdrant
+      is the documented alternative if the team prefers a dedicated service.</li>
+      <li><b>A self-hosted embedding model.</b> Must run locally — no external API calls
+      anywhere in this system. An open-weight embedding model served alongside the LLMs,
+      or via <code class="inline-code">sentence-transformers</code> on CPU/GPU, works.</li>
+      <li><b>Swap the search backend.</b> Replace <code class="inline-code">KeywordOverlapIndex</code> with a real
+      similarity query — both tool files already define a <code class="inline-code">VectorIndex</code> protocol
+      specifically so this swap doesn't touch calling code.</li>
+      <li><b>Document ingestion.</b> A script that walks the company's real SOPs/study
+      reports/protocols (ask where they actually live — don't assume), chunks, embeds, and
+      stores them with <code class="inline-code">doc_id</code>/<code class="inline-code">section</code> preserved for citations.</li>
+      <li><b>File uploads.</b> New <code class="inline-code">app/uploads/</code> per <code class="inline-code">docs/WORKFLOW.md</code> §5:
+      accept a file, extract text (<code class="inline-code">pypdf</code>, <code class="inline-code">python-docx</code>,
+      <code class="inline-code">openpyxl</code>/<code class="inline-code">pandas</code>, <code class="inline-code">python-pptx</code> — instrument CSVs already parse
+      via <code class="inline-code">app/tools/lab_connectors.py</code>), chunk into the same index, and have the Runner
+      produce a summary card. Build <code class="inline-code">app/schemas/brief.py</code> now if it doesn't exist —
+      shape is in <code class="inline-code">docs/UX.md</code> §5.</li>
+    </ol>
+  </div>
+
+  <div class="donewhen"><b>Done when</b>
+  Asking about a real company topic returns real company documents with correct,
+  clickable citations. Dragging in an actual SOP PDF produces a sensible summary card in
+  a reasonable time.</div>
+
+  <div class="terminal">
+    <div class="bar"><span class="name">claude — paste to start</span><div class="dots"><span></span><span></span><span></span></div></div>
+    <pre id="p3">I'm working on Workstream 3 (Knowledge Base &amp; Ingestion) for the biotech
+agent-pack project. Clone
+https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack and
+read app/tools/rag_search.py and app/tools/literature_search.py first —
+both already define the exact seam I need to build behind (a
+`VectorIndex` protocol), currently implemented by a toy keyword-matching
+class over 3 sample files in data/internal_docs/. Also skim
+docs/WORKFLOW.md section 8 for the planned content_chunks shape and
+docs/ARCHITECTURE.md section 9 for why pgvector is the default choice
+over Qdrant.
+
+My job:
+1. Help me add pgvector to our Postgres instance and design a real
+   content_chunks table (workspace_id/owner_id columns matter here even
+   though Workstream 2 owns the actual permission enforcement — leave
+   room for them).
+2. Help me pick and stand up a self-hosted embedding model — must run
+   locally, no external API calls allowed anywhere in this system.
+3. Help me replace KeywordOverlapIndex in both tool files with a real
+   pgvector similarity query, implementing the same VectorIndex protocol
+   so I don't have to touch app/agents/specialist.py.
+4. Help me write an ingestion script that chunks and embeds real
+   documents into that table, preserving doc_id/section for citations —
+   I'll tell you where our actual SOPs/study reports live once I know.
+5. Help me build app/uploads/: file upload endpoint, text extraction per
+   format (PDF/Word/Excel/CSV/PPTX), chunking into the same index, and a
+   Runner-generated summary card. If app/schemas/brief.py doesn't exist
+   yet, help me create it per docs/UX.md section 5's Bottom
+   line/Key findings/Key numbers/Open questions/Sources shape.
+
+Don't touch app/workspaces/ or app/auth/ (Workstream 2 owns those) —
+just leave workspace_id/owner_id columns for them to wire up permission
+checks against. Ask me before assuming where our real documents live or
+which embedding model to use if there's a licensing/procurement question.</pre>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== WORKSTREAM 4 ===================== -->
+<section class="ws" id="ws4" style="--ws-color:var(--ws4)">
+  <p class="eyebrow"><span class="num">04</span>AGENT INTELLIGENCE &amp; COMPLIANCE</p>
+  <h2>Make the Director actually plan</h2>
+  <p class="owns">Owns: dynamic planning, sandbox hardening, compliance readiness.</p>
+
+  <div class="block">
+    <h3>What's built</h3>
+    <p>A working reject/retry/escalate loop — but the Director's plan is always the same
+    hardcoded two-step shape (research → synthesis), see
+    <code class="inline-code">app/agents/director.py::plan</code>. The sandbox
+    (<code class="inline-code">app/tools/sandbox.py</code>) is a subprocess with basic resource limits, explicitly
+    documented as not network-isolated. The audit log is designed with 21 CFR Part 11 in
+    mind but never reviewed by a compliance professional.</p>
+  </div>
+
+  <div class="block">
+    <h3>What's missing, and how</h3>
+    <ol>
+      <li><b>Real dynamic planning.</b> Replace the hardcoded two-node template with a
+      model call asking the Director for a JSON task graph (nodes, dependencies,
+      assigned_to, domain, complexity). Real models don't always produce valid JSON on
+      the first try — add parse-and-retry, and fall back to today's two-node template if
+      it still fails. Keep that fallback; don't remove the safety net.</li>
+      <li><b>Sandbox hardening.</b> Replace the subprocess with real isolation — a
+      locked-down Docker container per execution (<code class="inline-code">--network=none</code>, cgroup limits, a
+      throwaway tmp mount) is the minimum; gVisor or Firecracker for more. Depends on
+      Workstream 1 for where this actually runs.</li>
+      <li><b>Prompt tuning against real models.</b> Only possible once Workstream 1 has a
+      live model. The JSON-producing prompts (<code class="inline-code">Runner.classify</code>,
+      <code class="inline-code">extract_entities</code>, the new planning prompt) were only validated against a
+      deterministic mock — expect real models to need tighter instructions or few-shot
+      examples.</li>
+      <li><b>Compliance-readiness document.</b> Not a sign-off — a clear mapping from each
+      relevant 21 CFR Part 11 requirement to how <code class="inline-code">app/compliance/audit.py</code> and
+      <code class="inline-code">AuditLogRow</code> address it, so an actual reviewer has something concrete instead
+      of reverse-engineering the code.</li>
+    </ol>
+  </div>
+
+  <div class="donewhen"><b>Done when</b>
+  Two genuinely different requests produce two genuinely different task graphs. The
+  sandbox can't reach the network or escape its filesystem — try to break it. A
+  compliance reviewer can read one document and know what to check.</div>
+
+  <div class="terminal">
+    <div class="bar"><span class="name">claude — paste to start</span><div class="dots"><span></span><span></span><span></span></div></div>
+    <pre id="p4">I'm working on Workstream 4 (Agent Intelligence &amp; Compliance) for the
+biotech agent-pack project. Clone
+https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack and
+read app/agents/director.py, app/orchestrator/loop.py, and
+docs/ARCHITECTURE.md section 8 first.
+
+Today the Director's plan() method always returns the same hardcoded
+2-node graph (a research step then a synthesis step) regardless of the
+request — it's a placeholder for real planning. My job:
+1. Help me replace that with a real model call: ask the Director's model
+   for a JSON task graph (nodes/dependencies/assigned_to/domain/
+   complexity), parse it, retry on invalid JSON, and fall back to
+   today's 2-node template if it still fails after retries — I want to
+   keep that fallback as a safety net, not remove it.
+2. Help me harden app/tools/sandbox.py — it currently runs untrusted
+   Python in a plain subprocess with resource limits only, no real
+   network isolation. I want to move it to a locked-down Docker container
+   per execution (--network=none, cgroup limits, throwaway tmp mount).
+3. Once Workstream 1 has a real model server up, help me test
+   app/agents/runner.py's JSON-producing prompts (classify,
+   extract_entities) against it and tighten them if the real model's
+   output doesn't parse as reliably as the mock's always did.
+4. Help me write a compliance-readiness document mapping
+   app/compliance/audit.py and app/db/models.py::AuditLogRow to specific
+   21 CFR Part 11 requirements — this is prep material for an actual
+   compliance reviewer, not a claim that we're compliant, so be precise
+   about what's actually implemented versus just designed-for.
+
+Don't touch app/tools/rag_search.py or anything under app/workspaces/ —
+other teams own those. Ask me before changing the TaskNode/TaskPlan
+schemas in a way that would break contracts/types.ts — coordinate any
+schema change with Workstream 6.</pre>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== WORKSTREAM 5 ===================== -->
+<section class="ws" id="ws5" style="--ws-color:var(--ws5)">
+  <p class="eyebrow"><span class="num">05</span>COLLABORATION FEATURES</p>
+  <h2>Sharing, reviews, recipes — the whole product layer</h2>
+  <p class="owns">Owns: everything in <code class="inline-code">docs/WORKFLOW.md</code> that isn't code yet.</p>
+
+  <div class="block">
+    <h3>What's built</h3>
+    <p>Nothing yet — this workstream is <code class="inline-code">docs/WORKFLOW.md</code> turned into code. Its event
+    types (<code class="inline-code">share.created</code>, <code class="inline-code">review.requested</code>, <code class="inline-code">review.decided</code>,
+    <code class="inline-code">item.updated</code>, <code class="inline-code">recipe.started</code>, <code class="inline-code">recipe.completed</code>,
+    <code class="inline-code">notification.created</code>) are documented but not yet added to
+    <code class="inline-code">app/schemas/enums.py::EventType</code>.</p>
+  </div>
+
+  <div class="block">
+    <h3>What's missing, and how</h3>
+    <ol>
+      <li><b>Sharing.</b> New <code class="inline-code">app/sharing/</code>: <code class="inline-code">SharedItem</code>,
+      <code class="inline-code">SharedItemVersion</code> (append-only, for "updated by X on Y"), <code class="inline-code">Review</code>.
+      <b>PHI check before any share completes</b> — reuse
+      <code class="inline-code">redact_phi()</code> and surface a plain warning if it finds something. This is a
+      hard requirement from the client, not optional polish.</li>
+      <li><b>Review queue.</b> Depends on Workstream 2's department/reviewer config. A
+      reviewer sees pending Company Knowledge submissions for their department and can
+      approve or reject with a comment.</li>
+      <li><b>Recipes.</b> New <code class="inline-code">app/recipes/</code>: a template string with
+      <code class="inline-code">{{field}}</code> placeholders plus a simple input schema, a run endpoint that
+      renders it and feeds <code class="inline-code">handle_message</code>. Ship the 10 starter recipes from
+      <code class="inline-code">docs/WORKFLOW.md</code> §6 as seed data.</li>
+      <li><b>Scheduling.</b> APScheduler, in-process — no new infrastructure, per the
+      decision already made with the client. A <code class="inline-code">Schedule</code> model, a background job.</li>
+      <li><b>Notifications.</b> New <code class="inline-code">app/notifications/</code>: a per-user SSE channel
+      separate from the existing per-session one, plus SMTP via the company's internal
+      relay (no relay exists in any config yet — get the address from Workstream 1/IT).</li>
+      <li><b>Compare / Catch-me-up.</b> New orchestrator entrypoints reusing Specialist +
+      Director, shaped like the existing "hard" path.</li>
+    </ol>
+  </div>
+
+  <div class="donewhen"><b>Done when</b>
+  Sharing something with what looks like patient data in it gets flagged before it
+  completes. A Company Knowledge submission is genuinely invisible company-wide until
+  the right reviewer approves it. A starter recipe runs end to end.</div>
+
+  <div class="terminal">
+    <div class="bar"><span class="name">claude — paste to start</span><div class="dots"><span></span><span></span><span></span></div></div>
+    <pre id="p5">I'm working on Workstream 5 (Collaboration Features) for the biotech
+agent-pack project. Clone
+https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack and
+read docs/WORKFLOW.md in full first — sections 3, 4, 6, and 7 are
+specifically what I'm building; the whole document hasn't been turned
+into code yet, I'm doing that now.
+
+My job, roughly in this order:
+1. Help me add the new event types this needs (share.created,
+   review.requested, review.decided, item.updated, recipe.started,
+   recipe.completed, notification.created) to
+   app/schemas/enums.py::EventType, additively — don't touch existing
+   event types.
+2. Help me build app/sharing/ (SharedItem, SharedItemVersion, Review) per
+   docs/WORKFLOW.md section 3. Critical requirement: before any share
+   completes, run app/compliance/phi_redaction.py::redact_phi on the
+   content and block/warn if it finds something — this came directly
+   from the client as a hard requirement, not something to skip for a
+   first pass.
+3. Help me build app/recipes/ (Recipe model with template + input schema,
+   a run endpoint reusing app/orchestrator/loop.py::handle_message) and
+   seed the 10 starter recipes listed in docs/WORKFLOW.md section 6.
+4. Help me add APScheduler-based scheduling (a Schedule model + a
+   background job) — no new external job infrastructure, that's already
+   been decided with the client.
+5. Help me build app/notifications/ — a new per-user SSE endpoint
+   (separate from the existing per-session one in app/api/sse.py) plus
+   an SMTP send; I'll get the actual relay address from IT.
+6. Help me add Compare and Catch-me-up as new orchestrator entrypoints,
+   modeled on the existing "hard" path in app/orchestrator/loop.py.
+
+This depends on Workstream 2's Department/Workspace models for the
+review-routing and sharing-target logic — if those aren't built yet,
+help me stub them clearly (e.g. a single hardcoded department) so I can
+keep moving, and flag the stub plainly in the code for later replacement.
+Ask me before assuming what the 10 starter recipes' exact wording should
+be — draft them, but check before finalizing.</pre>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ===================== WORKSTREAM 6 ===================== -->
+<section class="ws" id="ws6" style="--ws-color:var(--ws6)">
+  <p class="eyebrow"><span class="num">06</span>FRONTEND &amp; UX POLISH</p>
+  <h2>Both clients, accessibility, and the copy guide</h2>
+  <p class="owns">Owns: the terminal client, the web client, and how the system speaks.</p>
+
+  <div class="block">
+    <h3>What's built</h3>
+    <p>Both clients work end to end against mock mode: sessions, live agent status,
+    approvals, a tier picker and "Create Agent" shortcut (web client), a right-hand
+    running-agents panel. Neither streams token-by-token into the final answer. Neither
+    reconnects if the connection drops. No trust badges, no technical-details toggle, no
+    accessibility pass, no copy guide, no admin dashboard.</p>
+  </div>
+
+  <div class="block">
+    <h3>What's missing, and how</h3>
+    <ol>
+      <li><b>Token streaming.</b> The backend already emits <code class="inline-code">agent.token</code> events
+      with live text — both clients wait for <code class="inline-code">task.completed</code> instead (see
+      <code class="inline-code">agentpack_app.py</code>'s docstring: a request can involve multiple agents drafting in
+      sequence, so naive streaming looks like the answer rewriting itself). Fix: stream
+      only the <i>last</i> agent's tokens, using the <code class="inline-code">task.planned</code> event's node list
+      to know when you're on the final step.</li>
+      <li><b>Reconnection.</b> Wrap the SSE consumption in both clients in a
+      retry-with-backoff loop; on reconnect, re-fetch <code class="inline-code">/sessions/{id}/agents</code> and
+      <code class="inline-code">/history</code> to recover state.</li>
+      <li><b>Trust badges + technical-details toggle.</b> Add <code class="inline-code">friendly_label</code>/
+      <code class="inline-code">trust_status</code> to <code class="inline-code">AgentCard</code>/<code class="inline-code">AgentStatusPayload</code> (additive —
+      coordinate with anyone else mid-edit on those schemas), compute <code class="inline-code">trust_status</code>
+      from whether Director review happened, render a badge in both clients.</li>
+      <li><b>Accessibility pass.</b> A real keyboard-only and screen-reader pass on
+      <code class="inline-code">app/static/index.html</code>. Fix tab order, add ARIA labels on the custom dropdown
+      and approval buttons, check the earthy palette's contrast against WCAG AA — verify,
+      don't assume the muted tones pass.</li>
+      <li><b><code class="inline-code">docs/COPY_GUIDE.md</code>.</b> A table mapping every internal technical term to
+      the plain word shown in the UI, plus tone rules. Most of the mapping already exists
+      in <code class="inline-code">bedrock-private-ai</code>'s <code class="inline-code">agentpack/friendly.py</code> — explain the
+      reasoning, don't just restate the code.</li>
+      <li><b>Admin dashboard.</b> New <code class="inline-code">app/metrics/</code> — counters only (tasks completed,
+      docs condensed, recipes run, estimated minutes saved), admin-only endpoints, a page
+      showing adoption/most-used-recipes/review-queue-size. No content tracking, per the
+      client's requirement.</li>
+    </ol>
+  </div>
+
+  <div class="donewhen"><b>Done when</b>
+  The chat feels responsive even before real models exist. A dropped connection recovers
+  on its own. A screen-reader-only user can complete the 5-minute usability checklist in
+  <code class="inline-code">docs/UX.md</code> §9.</div>
+
+  <div class="terminal">
+    <div class="bar"><span class="name">claude — paste to start</span><div class="dots"><span></span><span></span><span></span></div></div>
+    <pre id="p6">I'm working on Workstream 6 (Frontend &amp; UX Polish) for the biotech
+agent-pack project. There are two repos:
+https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack
+(backend + a minimal reference web client at app/static/index.html) and
+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai (the
+terminal client). Clone both. Read docs/UX.md in the backend repo first —
+it's the plain-language design spec both frontends are built against —
+and skim bedrock-private-ai's agentpack_app.py and its NEXT_STEPS.md,
+which already documents most of what I'm about to ask for.
+
+My job:
+1. Help me add real token-by-token streaming into the final answer bubble
+   in both clients, using the agent.token events the backend already
+   sends. Read agentpack_app.py's docstring on handle_event first — there's
+   a specific reason it currently waits for task.completed instead
+   (multiple agents can draft in sequence), so the fix needs to detect
+   "this is the last agent" via the task.planned event's node list, not
+   just naively stream everything.
+2. Help me add reconnect-with-backoff to the SSE consumption in both
+   clients, re-fetching /sessions/{id}/agents and /sessions/{id}/history
+   on reconnect to recover state.
+3. Help me add friendly_label/trust_status fields to the backend's
+   AgentCard/AgentStatusPayload schemas (additive only — check
+   contracts/types.ts needs the same fields added) and render trust
+   badges plus a "Show technical details" toggle in both clients.
+4. Help me do an actual accessibility pass on app/static/index.html —
+   keyboard-only navigation, ARIA labels on the custom dropdown/approval
+   buttons, and check the earthy color palette's contrast ratios against
+   WCAG AA (don't assume they pass).
+5. Help me write docs/COPY_GUIDE.md in the backend repo, based on the
+   mapping logic already in bedrock-private-ai's
+   src/bedrock/agentpack/friendly.py.
+6. Help me build a small admin metrics dashboard — counters only (tasks
+   completed, docs condensed, recipes run, estimated time saved), no
+   content tracking, per docs/WORKFLOW.md section 6.
+
+Don't change the orchestrator/agent logic — only the event/schema fields
+needed for trust badges, and coordinate that specific change since other
+teams may be mid-edit on the same schema files. Ask me before deciding on
+exact copy/wording for the plain-language toggle or badges — draft
+options, then check with me.</pre>
+  </div>
+</section>
+
+<hr class="rule">
+
+<div class="notes">
+  <h2>Cross-team notes</h2>
+  <ul>
+    <li><b>Mock mode stays the default</b> for local development in every workstream
+    except 1 and 4 (which specifically need real models to finish). Don't require a GPU
+    to run tests.</li>
+    <li><b>Contract changes are additive, not breaking</b> — new fields, new event types,
+    new endpoints; never rename or remove something another team depends on without a
+    heads-up.</li>
+    <li><b>Update <code class="inline-code">contracts/types.ts</code></b> in the same change as any backend
+    schema/event addition — it's the frontend teams' source of truth and drifts silently
+    otherwise.</li>
+    <li><b>Run the existing suites before a PR</b> — <code class="inline-code">pytest</code> in the backend
+    (21 tests today), <code class="inline-code">pytest</code> in the frontend (34 tests today). If your change
+    breaks one, fix it or explain why in the PR, not after merge.</li>
+    <li><b>When in doubt about a company-specific detail</b> — real document locations,
+    real SSO setup, real SMTP relay, actual GPU hardware — ask the client rather than
+    guessing. Every stub in this codebase exists because that information wasn't
+    available yet, not because it doesn't matter.</li>
+  </ul>
+</div>
+
+<footer>docs/TEAM_PLAN.md — bedrock-agent-pack — six workstreams, one team</footer>
+
+<script>
+document.querySelectorAll('.terminal').forEach(function(term){
+  var bar = term.querySelector('.bar');
+  var pre = term.querySelector('pre');
+  var btn = document.createElement('button');
+  btn.className = 'copybtn';
+  btn.type = 'button';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', function(){
+    var text = pre.textContent;
+    var done = function(){
+      btn.textContent = 'Copied';
+      btn.classList.add('copied');
+      setTimeout(function(){ btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function(){ fallbackCopy(text, done); });
+    } else {
+      fallbackCopy(text, done);
+    }
+  });
+  bar.appendChild(btn);
+});
+function fallbackCopy(text, done){
+  var ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) {}
+  document.body.removeChild(ta);
+}
+</script>

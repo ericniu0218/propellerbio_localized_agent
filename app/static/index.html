@@ -210,8 +210,12 @@
   <div id="login">
     <div class="panel-box hud">
       <p>Bedrock Private AI &mdash; sign in to start</p>
+      <button id="sso-btn" style="display:none">Log in with company account</button>
       <input id="login-name" placeholder="Your name" autofocus>
       <button id="login-btn">Start</button>
+      <p id="login-note" style="text-transform:none; letter-spacing:normal; font-size:12px; max-width:260px; display:none">
+        No single sign-on configured on this server — using a plain name for testing.
+      </p>
     </div>
   </div>
 
@@ -570,14 +574,17 @@ function updateTierDescription() {
 tierSelect.addEventListener("change", updateTierDescription);
 
 // ---- login / session bootstrap ---------------------------------------------------
+//
+// Two ways in:
+// 1. Real SSO: /auth/login bounces the browser to Keycloak and back to
+//    /auth/callback, which creates the session server-side and redirects
+//    here with ?session_id=&user_id=&user_name= — we just pick that up.
+// 2. Plain name (no SSO configured on this server, e.g. local dev/tests):
+//    the old "type a name" flow, calling POST /sessions ourselves.
 
-async function startSession() {
-  const resp = await fetch(`${API}/sessions`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
-  });
-  const data = await resp.json();
-  sessionId = data.session_id;
+async function enterApp() {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("main").style.display = "flex";
   await loadTiers();
   connectEvents();
   statusEl.textContent = "● connected";
@@ -585,17 +592,59 @@ async function startSession() {
   promptEl.focus();
 }
 
+async function resumeFromSsoRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  const sid = params.get("session_id");
+  if (!sid) return false;
+  sessionId = sid;
+  userId = params.get("user_id") || params.get("user_name") || "you";
+  // Don't leave the session id sitting in the address bar / browser history.
+  window.history.replaceState({}, "", window.location.pathname);
+  await enterApp();
+  return true;
+}
+
+async function startSessionForName(name) {
+  userId = name;
+  const resp = await fetch(`${API}/sessions`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
+  const data = await resp.json();
+  sessionId = data.session_id;
+  await enterApp();
+}
+
+document.getElementById("sso-btn").onclick = () => {
+  window.location.href = `${API}/auth/login`;
+};
+
 document.getElementById("login-btn").onclick = async () => {
   const name = document.getElementById("login-name").value.trim();
   if (!name) return;
-  userId = name;
-  document.getElementById("login").style.display = "none";
-  document.getElementById("main").style.display = "flex";
-  await startSession();
+  await startSessionForName(name);
 };
 document.getElementById("login-name").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("login-btn").click();
 });
+
+(async function initLogin() {
+  const resumed = await resumeFromSsoRedirect();
+  if (resumed) return;
+  try {
+    const resp = await fetch(`${API}/auth/config`);
+    const { sso_enabled } = await resp.json();
+    if (sso_enabled) {
+      document.getElementById("sso-btn").style.display = "";
+      document.getElementById("login-name").style.display = "none";
+      document.getElementById("login-btn").style.display = "none";
+    } else {
+      document.getElementById("login-note").style.display = "";
+    }
+  } catch (e) {
+    document.getElementById("login-note").style.display = "";
+  }
+})();
 
 document.getElementById("composer").addEventListener("submit", (e) => {
   e.preventDefault();

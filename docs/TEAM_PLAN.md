@@ -24,6 +24,24 @@ without waiting on each other.
 **Repos:**
 - Backend: `https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack`
 - Terminal frontend: `https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai`
+- Zoom capture/datacenter handoff (independent service, not part of the
+  six workstreams below): `https://github.com/Bedrock-Technical-Consulting/zoom-transcript-vault`
+
+> **Not covered by any workstream below — added after this plan was
+> written:** a `meeting_transcripts` tool letting the AI answer
+> "what happened in meeting X" questions, in
+> [PR #1](https://github.com/Bedrock-Technical-Consulting/bedrock-agent-pack/pull/1)
+> on the backend repo (open, not merged). It queries the datacenter
+> connector `zoom-transcript-vault` pushes transcripts into, directly over
+> the internal network (never the public internet — this system is
+> air-gapped). Read the PR description and its follow-up comment before
+> touching related code. Two things it explicitly left as open questions
+> that overlap existing workstreams rather than deciding unilaterally:
+> per-meeting RBAC (overlaps **Workstream 2**'s real-permissions work —
+> see `docs/ARCHITECTURE.md` open question 7) and a citation-guardrail gap
+> in `_handle_normal` affecting `literature`/`internal_docs` too, not just
+> meetings (overlaps **Workstream 4** — see open question 8). Whoever picks
+> up either of those workstreams should read those two open questions first.
 
 **Read first, regardless of workstream:** `docs/ARCHITECTURE.md`,
 `docs/WORKFLOW.md`, `docs/UX.md` in the backend repo. They're the design

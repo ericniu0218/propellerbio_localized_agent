@@ -24,7 +24,19 @@ speaker attribution for free — every word in Bob's file was said by Bob, by
 construction. No diarisation model, no voice clustering, and better labels than
 either would produce.
 
-## Transcribing a recording
+## Using it
+
+```
+bedrock-meeting --list     # recordings on this machine
+bedrock-meeting            # the most recent one
+bedrock-meeting --notes my-notes.md --terms "pembrolizumab, site four, Priya Nair"
+```
+
+Writes `transcript.vtt` and `notes.md` next to the recording. With no model
+server reachable it still writes the transcript and says so, rather than
+failing outright.
+
+## Transcribing a recording (library)
 
 ```
 brew install whisper.cpp ffmpeg

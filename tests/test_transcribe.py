@@ -9,6 +9,7 @@ by hand against real audio; see docs/MEETINGS.md.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -223,3 +224,45 @@ def test_cues_render_back_to_parseable_vtt():
     assert [(c.speaker, c.text, c.start_ms) for c in reparsed] == [
         (c.speaker, c.text, c.start_ms) for c in cues
     ]
+
+
+# --- CLI helpers ---------------------------------------------------------
+
+
+def test_meeting_title_comes_from_zooms_folder_name():
+    from bedrock.meetings.cli import meeting_date, meeting_title
+
+    folder = Path("2026-09-15 09.00.12 Phase II weekly sync")
+    assert meeting_title(folder) == "Phase II weekly sync"
+    assert meeting_date(folder).isoformat() == "2026-09-15"
+
+
+def test_an_unrecognised_folder_name_still_yields_a_title():
+    from bedrock.meetings.cli import meeting_date, meeting_title
+
+    assert meeting_title(Path("some-export")) == "some-export"
+    assert meeting_date(Path("some-export")) is None
+
+
+def test_recordings_are_listed_oldest_first_and_empty_ones_skipped(tmp_path):
+    from bedrock.meetings.cli import recordings_in
+
+    older = tmp_path / "2026-09-01 10.00.00 Older"
+    newer = tmp_path / "2026-09-15 09.00.12 Newer"
+    empty = tmp_path / "2026-09-20 11.00.00 Empty"
+    for folder in (older, newer, empty):
+        folder.mkdir()
+    (older / "audio_only.m4a").write_bytes(b"")
+    (newer / "audio_only.m4a").write_bytes(b"")
+    os.utime(older, (1_600_000_000, 1_600_000_000))
+    os.utime(newer, (1_700_000_000, 1_700_000_000))
+
+    found = recordings_in(tmp_path)
+    assert [f.name for f in found] == [older.name, newer.name]
+    assert found[-1].name == newer.name  # the CLI's "most recent" default
+
+
+def test_no_zoom_folder_is_not_an_error(tmp_path):
+    from bedrock.meetings.cli import recordings_in
+
+    assert recordings_in(tmp_path / "nope") == []

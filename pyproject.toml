@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 bedrock = "bedrock.app:main"
 bedrock-biotech = "bedrock.biotech.cli:main"
+bedrock-meeting = "bedrock.meetings.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

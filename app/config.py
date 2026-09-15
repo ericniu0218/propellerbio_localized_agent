@@ -109,6 +109,25 @@ class Settings(BaseModel):
     # MockModelClient's token_delay_s.
     mock_token_delay_s: float = float(os.environ.get("MOCK_TOKEN_DELAY_S", "0"))
 
+    # SSO (Workstream 2 / docs/WORKFLOW.md section 1). Login is disabled
+    # (falls back to the old "type any name" behavior) unless all of these
+    # are set — that's what lets mock-mode demos and tests keep working
+    # without standing up Keycloak.
+    keycloak_base_url: str | None = os.environ.get("KEYCLOAK_BASE_URL")
+    keycloak_realm: str | None = os.environ.get("KEYCLOAK_REALM")
+    keycloak_client_id: str | None = os.environ.get("KEYCLOAK_CLIENT_ID")
+    keycloak_client_secret: str | None = os.environ.get("KEYCLOAK_CLIENT_SECRET")
+    # Where Keycloak should send the browser back to after login. Must
+    # exactly match a Redirect URI configured on the Keycloak client.
+    app_base_url: str = os.environ.get("APP_BASE_URL", "http://localhost:8000")
+
+    @property
+    def sso_enabled(self) -> bool:
+        return bool(
+            self.keycloak_base_url and self.keycloak_realm
+            and self.keycloak_client_id and self.keycloak_client_secret
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:

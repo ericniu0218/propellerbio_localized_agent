@@ -114,10 +114,25 @@ actual GPU hardware or hosting environment; I'll tell you what we have.
 **Owns:** real login, real permissions, security review.
 
 ### What's built
-A trivial `user_id` string with no verification anywhere. A toy
-`app/compliance/rbac.py::StaticPermissionSource` (in-memory, not
-connected to anything real). The decision (already made with the client):
-departments/reviewers are managed in-app, not pulled from Keycloak.
+**Update 2026-09-14: basic Keycloak login now works, end to end.**
+`app/auth/oidc.py` + `app/api/routes_auth.py` implement the full redirect
+round-trip (`/auth/login` → Keycloak → `/auth/callback`, with real
+signature/issuer/audience verification of the returned token) and the web
+client (`app/static/index.html`) now shows a real "Log in with company
+account" button when SSO is configured, falling back to the old
+"type a name" box when it isn't (so mock mode/tests/CI need no Keycloak).
+Verified against a real local Keycloak instance with 3 fake test users —
+logins correctly show up in the audit log under the real Keycloak
+username, not a typed name.
+
+**Still missing, unchanged from before:** a toy
+`app/compliance/rbac.py::StaticPermissionSource` (in-memory, not connected
+to anything real) — logging in doesn't yet restrict what anyone can see.
+No department/reviewer admin config, no real Workspace model, no security
+review. The decision (already made with the client): departments/
+reviewers are managed in-app, not pulled from Keycloak. Tasks 3-5 below
+are still fully open; only task 2 (JWT verification) is now done — treat
+its description as "done, see the note above" and focus on 3-5.
 
 ### What's missing and how to build it
 

@@ -101,6 +101,12 @@ def _record_path(meeting_id: str) -> Path:
     return _storage_dir() / f"{digest}.json"
 
 
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Unsigned: says the service is up, reveals nothing about what it holds."""
+    return JSONResponse({"ok": True})
+
+
 @app.post("/transcripts")
 async def store_transcript(request: Request) -> JSONResponse:
     body = (await request.body()).decode()

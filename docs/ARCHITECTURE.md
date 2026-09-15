@@ -253,6 +253,25 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
    decision before this handles anything sensitive: either the datacenter
    connector starts tagging transcripts with `access_groups` (same shape
    `rag_search`'s documents use) or this tool grows its own filtering.
+8. **Citation guardrail only runs on the hard/Director path**: this
+   predates the meeting_transcripts addition and isn't specific to it —
+   `app/orchestrator/loop.py::_handle_normal` (used for
+   `TaskComplexity.NORMAL`) never calls `Director.review()`, so a
+   citation-required domain (`literature`, `internal_docs`, `meetings`;
+   `regulatory`/`clinical` are safe because they're forced to `HARD` via
+   `_ALWAYS_HIGH_STAKES_DOMAINS` in `app/orchestrator/router.py`) can
+   complete with zero citations whenever the Runner's classifier — or the
+   mock heuristic — calls it merely "normal" rather than "hard". Confirmed
+   via `tests/test_meeting_domain_routing.py`'s
+   `test_a_raw_chat_message_reaches_the_real_tool_through_handle_message`.
+   Two ways to close it: run the citation check in `_handle_normal` too
+   (cheap, no model call, `Director.review`'s guardrail check is already
+   deterministic), or add every citation-required domain to
+   `_ALWAYS_HIGH_STAKES_DOMAINS` (more expensive — forces the full
+   Director path for what might be a simple, cheap lookup). Flagging for
+   Workstream 4 (Agent Intelligence & Compliance) rather than fixing
+   unilaterally here, since it changes shared orchestrator behavior for
+   `literature`/`internal_docs` too, not just meetings.
 
 ## 10. Build order (in progress)
 

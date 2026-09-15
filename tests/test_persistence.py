@@ -7,6 +7,8 @@ employee quits the terminal and comes back tomorrow.
 
 from datetime import datetime, timezone
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp, find_summaries
 from bedrock.config import Settings
 from bedrock.storage import ConversationStore, ConversationSummary
@@ -28,7 +30,7 @@ async def test_a_conversation_reopens_after_the_app_is_closed(fake_backend, stor
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"what is our VPN policy?", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
         first_id = app.conversation.id
 
@@ -48,14 +50,14 @@ async def test_a_resumed_conversation_keeps_its_context_for_the_next_question(fa
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"first question", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
 
     later_backend = FakeBackend()
     second = reopen(store, later_backend)
     async with second.run_test() as pilot:
         await pilot.pause()
         await pilot.press(*"follow-up question", "enter")
-        await second.workers.wait_for_complete()
+        await wait_for_app_workers(second)
         await pilot.pause()
 
     # The model is sent the whole history, including yesterday's turns.
@@ -76,14 +78,14 @@ async def test_the_question_is_saved_before_the_answer_arrives(fake_backend, sto
         saved = ConversationStore(store.directory).latest()
         assert [m.content for m in saved.messages] == ["slow question"]
 
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
 
 
 async def test_new_keeps_the_old_conversation_on_disk(fake_backend, store):
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"first conversation", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         first_id = app.conversation.id
 
         await pilot.press(*"/new", "enter")
@@ -92,7 +94,7 @@ async def test_new_keeps_the_old_conversation_on_disk(fake_backend, store):
         assert not app.query(UserMessage)  # screen is clear
 
         await pilot.press(*"second conversation", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
     first_questions = [s.excerpt for s in ConversationStore(store.directory).list()]
@@ -103,12 +105,12 @@ async def test_history_lists_saved_conversations_and_resume_reopens_one(fake_bac
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"older conversation", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         older_id = app.conversation.id
 
         await pilot.press(*"/new", "enter")
         await pilot.press(*"newer conversation", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
         await pilot.press(*"/history", "enter")
@@ -131,11 +133,11 @@ async def test_resume_accepts_an_id_and_rejects_nonsense(fake_backend, store):
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"first", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         first_id = app.conversation.id
         await pilot.press(*"/new", "enter")
         await pilot.press(*"second", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
         await pilot.press(*f"/resume {first_id}", "enter")
@@ -152,7 +154,7 @@ async def test_forget_deletes_the_conversation_from_disk(fake_backend, store):
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"something private", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
         assert len(ConversationStore(store.directory).list()) == 1
 
@@ -181,7 +183,7 @@ async def test_the_model_is_remembered_with_the_conversation(fake_backend, store
     app = make_app(fake_backend, store, model="test-model")
     async with app.run_test() as pilot:
         await pilot.press(*"hello", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
     # No configured model this time, and a server offering something different:
@@ -197,7 +199,7 @@ async def test_nothing_is_written_when_history_is_switched_off(fake_backend, tmp
     app = BedrockApp(settings=settings, backend=fake_backend)
     async with app.run_test() as pilot:
         await pilot.press(*"a private question", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
         await pilot.press(*"/history", "enter")
@@ -214,7 +216,7 @@ async def test_an_answer_stopped_half_way_is_still_saved(fake_backend, store):
         await pilot.press(*"a question with a long answer", "enter")
         await pilot.pause()
         await pilot.press("escape")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app, cancelled_groups=frozenset({"chat"}))
         await pilot.pause()
 
     saved = ConversationStore(store.directory).latest()
@@ -228,11 +230,11 @@ async def test_the_last_conversation_opened_comes_back_even_if_the_window_is_clo
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"platypus", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         platypus_id = app.conversation.id
         await pilot.press(*"/new", "enter")
         await pilot.press(*"bees", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
     # Next launch reopens "bees". The employee switches to "platypus", only
@@ -255,7 +257,7 @@ async def test_an_empty_new_conversation_does_not_replace_the_last_real_one(fake
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"bees", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         bees_id = app.conversation.id
         await pilot.press(*"/new", "enter")
         await pilot.pause()
@@ -271,11 +273,11 @@ async def test_resume_finds_a_conversation_by_words_from_its_title(fake_backend,
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"conversation 1 name it platypus", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         platypus_id = app.conversation.id
         await pilot.press(*"/new", "enter")
         await pilot.press(*"bees", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         bees_id = app.conversation.id
         await pilot.press("ctrl+l")  # the easy way to lose sight of a chat
         await pilot.pause()
@@ -294,10 +296,10 @@ async def test_resume_asks_instead_of_guessing_when_several_titles_match(fake_ba
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"notes on bees", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.press(*"/new", "enter")
         await pilot.press(*"more notes on wasps", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         current = app.conversation.id
         await pilot.pause()
 
@@ -344,7 +346,7 @@ async def test_resume_still_finds_a_conversation_after_the_model_renames_it(stor
     app = make_app(backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"conversation 1 name it platypus", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         platypus_id = app.conversation.id
         await pilot.press(*"/new", "enter")
         await pilot.pause()

@@ -9,6 +9,8 @@ import json
 
 from textual.widgets import Input
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp
 from bedrock.config import Settings
 from bedrock.models import Conversation
@@ -61,7 +63,7 @@ def system_text(backend: FakeBackend) -> str:
 async def send(app: BedrockApp, pilot, text: str) -> None:
     app.query_one("#prompt", Input).value = text
     await pilot.press("enter")
-    await app.workers.wait_for_complete()
+    await wait_for_app_workers(app)
     await pilot.pause()
 
 

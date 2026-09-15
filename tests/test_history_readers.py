@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp
 from bedrock.config import Settings
 from bedrock.models import Conversation, new_conversation_id
@@ -20,7 +22,7 @@ async def test_leaving_a_read_only_window_does_not_fork_remote_updates(store, ac
     original = saved(store)
     app = BedrockApp(Settings(model="test-model"), FakeBackend(), store)
     async with app.run_test():
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         other = ConversationStore(store.directory)
         remote = other.load(original.id)
         remote.add_user("new question in the writing window")
@@ -42,7 +44,7 @@ async def test_open_racing_remote_update_does_not_fork(store, monkeypatch):
     original = saved(store)
     app = BedrockApp(Settings(model="test-model"), FakeBackend(), store)
     async with app.run_test():
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await app.start_new_conversation()
         real_load = store.load
 
@@ -65,7 +67,7 @@ async def test_changed_message_content_is_still_saved(store):
     original = saved(store)
     app = BedrockApp(Settings(model="test-model"), FakeBackend(), store)
     async with app.run_test():
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         app.conversation.messages[-1].content = "completed streamed answer"
         assert app.save_conversation()
         assert store.load(original.id).messages[-1].content == "completed streamed answer"
@@ -76,7 +78,7 @@ async def test_stale_fallback_lock_fails_without_sleep_and_preserves_draft(store
     backend = FakeBackend()
     app = BedrockApp(Settings(model="test-model"), backend, store)
     async with app.run_test():
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         lock = store.directory / ".history-writer"
         lock.mkdir()
         monkeypatch.setattr("bedrock.storage.fcntl.flock", _no_flock)
@@ -93,7 +95,7 @@ async def test_stale_fallback_lock_fails_without_sleep_and_preserves_draft(store
             assert lock.is_dir()
         lock.rmdir()  # Simulate the operator recovering the crashed writer.
         await app.send_message("keep my draft")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         assert len(backend.requests) == 1
         assert len(store.load(original.id).messages) == 4
 

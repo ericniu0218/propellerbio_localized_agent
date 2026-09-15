@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 from textual.widgets import Button, Input
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp
 from bedrock.config import Settings, load_settings
 from bedrock.models import Conversation
@@ -200,7 +202,7 @@ async def test_competing_app_saves_create_complete_separate_branches(store):
         external.add_assistant("other answer")
         other.save(external)
         await app.send_message("my question")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         assert app.conversation.id != conversation.id
         assert [m.content for m in other.load(conversation.id).messages][-2:] == ["other question", "other answer"]
         ours = other.load(app.conversation.id)
@@ -222,7 +224,7 @@ async def test_unopened_history_is_never_loaded_for_titles(store, monkeypatch):
     backend = FakeBackend()
     app = BedrockApp(Settings(model="test-model"), backend, store)
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
         assert loaded == [app.conversation.id]
         assert len(backend.title_requests) == 1
@@ -234,7 +236,7 @@ async def test_mouse_scroll_survives_unfocused_sidebar_refresh(store):
         saved(store, str(number))
     app = BedrockApp(Settings(model="test-model"), FakeBackend(), store)
     async with app.run_test(size=(100, 25)) as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
         sidebar = app.query_one(ConversationList)
         app.query_one(Input).focus()
@@ -264,7 +266,7 @@ async def test_sidebar_timer_finds_other_windows_updates(store):
     saved(store)
     app = BedrockApp(Settings(model="test-model"), FakeBackend(), store)
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         other = ConversationStore(store.directory)
         added = saved(other, "new elsewhere")
         await asyncio.sleep(2.2)
@@ -287,7 +289,7 @@ async def test_forget_during_stream_cannot_be_undone_by_cleanup(store):
         await asyncio.sleep(0.15)
         assert app._streaming
         await app.command_forget()
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app, cancelled_groups=frozenset({"chat"}))
         await pilot.pause()
         assert not store.path_for(identifier).exists()
         assert not store.list()

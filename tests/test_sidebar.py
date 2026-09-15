@@ -1,5 +1,7 @@
 """The conversation sidebar, and the summary titles it shows."""
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp
 from bedrock.config import Settings
 from bedrock.models import Conversation
@@ -45,7 +47,7 @@ async def click_row(pilot, app: BedrockApp, option_id: str) -> None:
 
 async def chat(pilot, app: BedrockApp, text: str) -> str:
     await pilot.press(*text, "enter")
-    await app.workers.wait_for_complete()
+    await wait_for_app_workers(app)
     await pilot.pause()
     return app.conversation.id
 
@@ -101,7 +103,7 @@ async def test_a_title_is_only_requested_after_the_reply_finishes(fake_backend, 
         assert fake_backend.title_requests == []  # the employee's answer comes first
         assert fake_backend.topic_checks == []
 
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
         assert len(fake_backend.title_requests) == 1
         assert ConversationStore(store.directory).latest().generated_title == "Re slow question"
@@ -120,7 +122,7 @@ async def test_only_open_conversation_gets_a_title_at_startup(store):
     app = make_app(backend, store)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
         assert rows(app) == ["Re second old question", "Untitled"]
 
@@ -140,7 +142,7 @@ async def test_each_conversation_is_only_titled_once(fake_backend, store):
     second = make_app(again, ConversationStore(store.directory))
     async with second.run_test() as pilot:
         await pilot.pause()
-        await second.workers.wait_for_complete()
+        await wait_for_app_workers(second)
     assert again.title_requests == []  # already titled on disk
 
 
@@ -156,7 +158,7 @@ async def test_without_a_server_conversations_stay_untitled_and_are_retried_late
     second = make_app(online, ConversationStore(store.directory))
     async with second.run_test() as pilot:
         await pilot.pause()
-        await second.workers.wait_for_complete()
+        await wait_for_app_workers(second)
         await pilot.pause()
         assert rows(second) == ["Re what is our VPN policy"]
 
@@ -175,7 +177,7 @@ async def test_no_name_until_there_is_a_concrete_topic(store):
     second = make_app(relaunched, ConversationStore(store.directory))
     async with second.run_test() as pilot:
         await pilot.pause()
-        await second.workers.wait_for_complete()
+        await wait_for_app_workers(second)
         assert relaunched.title_requests == []
         assert rows(second) == ["Untitled"]
 

@@ -11,6 +11,8 @@ from uuid import UUID
 import pytest
 from textual.widgets import Input
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp
 from bedrock.config import Settings
 from bedrock.models import Conversation, new_conversation_id
@@ -66,13 +68,13 @@ async def test_background_title_in_another_window_does_not_fork_chat(store):
     backend = FakeBackend(topic_reply="NO")
     app = BedrockApp(Settings(model="test-model"), backend, store)
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         other = ConversationStore(store.directory)
         remote = other.load(original.id)
         remote.generated_title = "Salary Discussion"
         other.save(remote, touch=False)
         await app.send_message("next question")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         assert app.conversation.id == original.id
         assert app.conversation.generated_title == "Salary Discussion"
         assert len(other.list()) == 1
@@ -91,13 +93,13 @@ async def test_forget_removes_all_related_copies_but_not_same_title_chats(store)
         remote.add_assistant("its answer")
         other.save(remote)
         await app.send_message("question in my window")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         copy_id = app.conversation.id
         assert copy_id != original.id
         assert other.load(copy_id).family_id == remote.family_id
         pending_copy = other.load(copy_id)
         await app.command_forget()
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         assert {row.id for row in other.list()} == {unrelated.id}
         assert not other.path_for(original.id).exists()
         assert not other.path_for(copy_id).exists()
@@ -141,7 +143,7 @@ async def test_external_forget_blocks_requests_and_retains_the_draft(store):
     backend = FakeBackend()
     app = BedrockApp(Settings(model="test-model"), backend, store)
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         before = len(app.conversation.messages)
         ConversationStore(store.directory).delete(original.id)
         await app.send_message("please keep this draft")
@@ -151,7 +153,7 @@ async def test_external_forget_blocks_requests_and_retains_the_draft(store):
         assert any("deleted" in notice.source and "nothing was sent" in notice.source for notice in app.query(SystemNotice))
         await app.start_new_conversation()
         await app.send_message("a new question")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         assert len(backend.requests) == 1
         assert store.latest().id != original.id
 
@@ -161,7 +163,7 @@ async def test_delete_between_preflight_and_save_still_blocks_the_request(store,
     backend = FakeBackend()
     app = BedrockApp(Settings(model="test-model"), backend, store)
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         real_save = store.save
 
         def raced_save(conversation, touch=True, **kwargs):
@@ -235,7 +237,7 @@ async def test_idle_polling_does_not_scan_chat_files(store, monkeypatch):
     saved(store)
     app = BedrockApp(Settings(model="test-model"), FakeBackend(), store)
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await app.refresh_sidebar().wait()
 
         def unexpected_scan(*args, **kwargs):

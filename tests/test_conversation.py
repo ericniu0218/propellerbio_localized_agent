@@ -1,7 +1,7 @@
 """The data model on its own: no UI, no filesystem, no server."""
 
 import json
-from datetime import datetime
+from uuid import UUID
 
 from bedrock.models import Conversation, Message, Role, new_conversation_id
 
@@ -100,13 +100,11 @@ def test_unreadable_timestamps_fall_back_instead_of_raising():
     assert restored.created_at is not None
 
 
-def test_ids_are_unique_and_sort_chronologically():
+def test_ids_are_unique_random_uuids_without_timestamps():
     ids = [new_conversation_id() for _ in range(50)]
     assert len(set(ids)) == 50
 
-    # The prefix is a UTC timestamp, so an id made earlier always sorts first.
-    datetime.strptime(ids[0][:15], "%Y%m%d-%H%M%S")  # raises if the shape is wrong
-    assert "20250101-000000-aaaaaa" < min(ids)
+    assert all(len(identifier) == 32 and UUID(identifier).version == 4 for identifier in ids)
 
 
 def test_message_to_api_omits_local_bookkeeping():

@@ -36,6 +36,7 @@ from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
 from bedrock.storage import ConversationDeleted, ConversationStore, ConversationSummary, StorageConflict, StorageError, create_store
+from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
 from bedrock.titles import generate_title, wants_title
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
 from bedrock.ui.digest_command import run_digest_command
@@ -107,6 +108,9 @@ class BedrockApp(App[None]):
         self._titles_pending = False
         self._title_failures: set[str] = set()
         self._earliest_rendered = 0
+        # Recalled excerpts per conversation id, for this session only, so
+        # clicking away from a chat and back does not silently drop them.
+        self._recalled: dict[str, tuple[str, list[str]]] = {}
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -195,6 +199,8 @@ class BedrockApp(App[None]):
                 await self.command_resume(command.args)
             case "forget":
                 await self.command_forget()
+            case "recall" | "context":
+                await self.command_recall(command.args)
             case _:
                 await self.post_notice(f"Unknown command `/{command.name}`. Type `/help` for a list.", kind="error")
 
@@ -332,6 +338,8 @@ class BedrockApp(App[None]):
         self.workers.cancel_group(self, "chat")
         self._streaming = False
         self.conversation = conversation
+        if conversation.id in self._recalled:
+            conversation.recalled_context, conversation.recalled_from = self._recalled[conversation.id]
         if conversation.model:
             self.model_name = conversation.model
             self._refresh_status()
@@ -339,10 +347,79 @@ class BedrockApp(App[None]):
         # as the most recent, so it is the one that reopens next launch - even
         # if the employee only reads it and then closes the terminal window,
         # which ends the app without any quit-time save running.
-        self.save_conversation()
+        self.save_conversation(mark_access=True)
         await self.render_conversation(conversation)
         self.write_missing_titles()
         return conversation
+
+    async def command_recall(self, argument: str) -> None:
+        """``/recall <words>``: search past chats and pull matches into this one.
+
+        ``/recall`` alone says what is pulled in; ``/recall clear`` drops it.
+        """
+        if self.store is None:
+            await self.post_notice(HISTORY_DISABLED, kind="error")
+            return
+        conversation = self.conversation
+        if not argument:
+            if conversation.recalled_context:
+                await self.post_notice(
+                    f"This chat includes excerpts from {self._recall_sources(conversation.recalled_from)}. "
+                    "`/recall clear` removes them."
+                )
+            else:
+                await self.post_notice(
+                    "Nothing from past chats is pulled in. Use `/recall <what to look for>`, "
+                    "e.g. `/recall deploy workflow`, or just ask \"do you remember when we…\"."
+                )
+            return
+        if argument.casefold() in {"clear", "off", "none"}:
+            conversation.recalled_context = None
+            conversation.recalled_from = []
+            self._recalled.pop(conversation.id, None)
+            await self.post_notice("Removed the excerpts from past chats. Your next messages are sent without them.")
+            return
+        result = await self.recall_into(conversation, argument)
+        if result is None:
+            return
+        if not result.had_terms:
+            await self.post_notice("Add a few specific words to look for, e.g. `/recall deploy workflow`.", kind="error")
+        elif not result.hits:
+            await self.post_notice(f"Nothing in your past chats matches `{markdown_text(argument)}`.{self._partial(result)}", kind="error")
+        else:
+            await self.post_notice(
+                f"Pulled in excerpts from {self._recall_sources(conversation.recalled_from)}. "
+                f"They go to the model with your messages in this chat; `/recall clear` removes them.{self._partial(result)}"
+            )
+
+    async def recall_into(self, conversation: Conversation, request: str) -> RecallResult | None:
+        """Search saved chats off the UI thread and attach the matches to ``conversation``.
+
+        Returns None when history could not be read (the employee has been told).
+        The open chat and its linked copies are left out: they are already here.
+        """
+        exclude = {conversation.id} | ({conversation.family_id} if conversation.family_id else set())
+        try:
+            result = await asyncio.to_thread(search_history, self.store, request, exclude=exclude)
+        except StorageError as exc:
+            await self.post_notice(f"Could not search past chats: {exc}", kind="error")
+            return None
+        if result.hits:
+            conversation.recalled_context = build_context(result.hits)
+            conversation.recalled_from = [f"{hit.title} ({format_when(hit.updated_at)})" for hit in result.hits]
+            self._recalled[conversation.id] = (conversation.recalled_context, conversation.recalled_from)
+        return result
+
+    @staticmethod
+    def _partial(result: RecallResult) -> str:
+        if result.searched >= result.total:
+            return ""
+        return f" (Searched the {result.searched} most recent of {result.total} chats before the time limit.)"
+
+    @staticmethod
+    def _recall_sources(labels: list[str]) -> str:
+        names = [f"**{markdown_text(label)}**" for label in labels]
+        return f"{len(names)} past chat{'s' if len(names) != 1 else ''}: " + ", ".join(names)
 
     async def command_forget(self) -> None:
         """Delete the open conversation from disk and start fresh.
@@ -354,6 +431,7 @@ class BedrockApp(App[None]):
             await self.post_notice(HISTORY_DISABLED, kind="error")
             return
         forgotten = self.conversation.id
+        self._recalled.pop(forgotten, None)
         forgotten_family = self.conversation.family_id
         # Start the new conversation *first* and without saving, otherwise the
         # conversation being deleted would be written straight back to disk.
@@ -388,9 +466,9 @@ class BedrockApp(App[None]):
         """On startup, reopen the conversation the employee was last using.
 
         "Last using" is simply the file with the newest ``updated_at``. That
-        works because every way of using a conversation saves it: sending a
-        message, receiving a reply, switching away with ``/new``, and opening
-        it with ``/resume``. There is no separate "current conversation"
+        works because sending a message, receiving a reply, and explicitly
+        opening a chat with ``/resume`` record its use. Leaving an unchanged
+        transcript does not save it. There is no separate "current conversation"
         pointer to keep in sync.
         """
         if self.store is None:
@@ -463,27 +541,36 @@ class BedrockApp(App[None]):
         *,
         touch: bool = True,
         model: str | None = None,
+        mark_access: bool = False,
     ) -> bool:
         """Save the active transcript, including during cancelled-worker cleanup.
 
         Revision conflicts preserve the complete local branch as a separate
-        conversation. Other storage failures are reported through a toast.
+        conversation. Unchanged transcripts are skipped unless explicitly
+        opened. Other storage failures are reported through a toast.
         """
         conversation = conversation or self.conversation
         if self.store is None or not conversation.messages:
             return True
         if conversation.source_version > SCHEMA_VERSION:
             return False
+        messages_changed = self.store.messages_changed(conversation)
+        if not messages_changed and not mark_access:
+            return True
         conversation.model = self.model_name if model is None else model
         try:
-            self.store.save(conversation, touch=touch)
+            self.store.save(conversation, touch=touch, wait=False)
         except StorageConflict:
+            if not messages_changed:
+                # A remote edit raced an explicit open. Reading must never
+                # fork or overwrite the newer transcript.
+                return True
             # Preserve a complete question/reply branch; never interleave turns.
             old_id, old_revision = conversation.id, conversation.storage_revision
             conversation.id = new_conversation_id()
             conversation.storage_revision = None
             try:
-                self.store.save(conversation, touch=touch)
+                self.store.save(conversation, touch=touch, wait=False)
             except StorageError as exc:
                 conversation.id, conversation.storage_revision = old_id, old_revision
                 self.notify(str(exc), severity="error", timeout=8)
@@ -613,7 +700,7 @@ class BedrockApp(App[None]):
         try:
             # touch=False: getting a title is not "using" a conversation, so it
             # must not jump to the top of the list.
-            self.store.save(conversation, touch=False)
+            self.store.save(conversation, touch=False, wait=False)
         except StorageError as exc:
             self.notify(str(exc), severity="error", timeout=8)
             return
@@ -652,12 +739,38 @@ class BedrockApp(App[None]):
             return
         await self.mount_message(UserMessage(text))
 
-        reply_widget = AssistantMessage(self.model_name)
+        conversation, model_name, note = self.conversation, self.model_name, None
+        if self.store is not None and wants_recall(text):
+            # Plain-English recall ("do you remember when we..."). Block a second
+            # send while searching; the reply goes to this chat even if the
+            # employee switches away meanwhile.
+            self._streaming = True
+            try:
+                result = await self.recall_into(conversation, text)
+            finally:
+                self._streaming = False
+            if result is None:
+                pass
+            elif not result.had_terms:
+                note = NO_TOPIC
+            elif result.hits:
+                await self.post_notice(f"Looked back through your chats and pulled in {self._recall_sources(conversation.recalled_from)}.{self._partial(result)}")
+            else:
+                note = NOTHING_FOUND
+                await self.post_notice(f"Looked back through your past chats and found nothing that matches.{self._partial(result)}")
+            if conversation is not self.conversation:
+                # Switched chats while searching. The question is saved, but its
+                # widgets are gone, so say what happened instead of answering
+                # into another chat's screen.
+                self.notify("You switched chats while your past chats were being searched, so that question was not answered. Reopen the chat and send it again.", timeout=8)
+                return
+
+        reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)
-        self.stream_reply(reply_widget, self.conversation, self.model_name)
+        self.stream_reply(reply_widget, conversation, model_name, note)
 
     @work(exclusive=True, group="chat")
-    async def stream_reply(self, widget: AssistantMessage, conversation: Conversation, model_name: str) -> None:
+    async def stream_reply(self, widget: AssistantMessage, conversation: Conversation, model_name: str, note: str | None = None) -> None:
         """Background worker: pull fragments from the backend into the widget.
 
         Takes the conversation as an argument rather than reading
@@ -669,7 +782,7 @@ class BedrockApp(App[None]):
         prompt_box.placeholder = "Responding… (Esc to stop)"
         # Serialise the history *before* adding the empty reply placeholder,
         # otherwise the model would see a blank assistant turn at the end.
-        api_messages = conversation.to_api()
+        api_messages = conversation.to_api(note)
         reply = conversation.add_assistant()
         stream = widget.begin_stream()
         try:

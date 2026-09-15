@@ -164,9 +164,9 @@ async def test_delete_between_preflight_and_save_still_blocks_the_request(store,
         await app.workers.wait_for_complete()
         real_save = store.save
 
-        def raced_save(conversation, touch=True):
+        def raced_save(conversation, touch=True, **kwargs):
             ConversationStore(store.directory).delete(original.id)
-            return real_save(conversation, touch=touch)
+            return real_save(conversation, touch=touch, **kwargs)
 
         monkeypatch.setattr(store, "save", raced_save)
         await app.send_message("my draft")
@@ -182,7 +182,7 @@ def test_ids_keep_full_uuid_entropy_and_remain_compatible(monkeypatch):
     first, second = new_conversation_id(), new_conversation_id()
     assert first != second
     assert len(first.split("-")[-1]) == 32
-    assert first.startswith("20260915-000000-")
+    assert len(first) == 32  # No chat-start timestamp leaks through deletion markers.
 
 
 def _no_flock(*args):

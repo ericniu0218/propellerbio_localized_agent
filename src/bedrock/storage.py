@@ -20,6 +20,7 @@ from bedrock.models.conversation import SCHEMA_VERSION, UNTITLED, Conversation, 
 
 DIR_MODE = 0o700
 FILE_MODE = 0o600
+HISTORY_RESCAN_SECONDS = 60
 
 
 class StorageError(Exception):
@@ -70,20 +71,21 @@ class ConversationStore:
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
         self._summaries: dict[str, ConversationSummary] = {}
-        self._fingerprints: dict[str, tuple[int, int, int]] = {}
+        self._fingerprints: dict[str, tuple[int, int, int, int]] = {}
         self._mutex = threading.RLock()
         self._cleaned = False
         self._listed_signature: tuple[int, int, int] | None = None
+        self._last_scan = 0.0
 
     @contextmanager
-    def _directory_lock(self):
+    def _directory_lock(self, *, wait: bool = True):
         """Fallback for filesystems with atomic mkdir but no advisory locks.
 
         Never break a possibly active lock based on its age. A writer killed
         during this fallback leaves a lock that must be removed by its operator.
         """
         path = self.directory / ".history-writer"
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + (2 if wait else 0)
         while True:
             try:
                 path.mkdir(mode=DIR_MODE)
@@ -98,7 +100,7 @@ class ConversationStore:
             path.rmdir()
 
     @contextmanager
-    def _writer(self):
+    def _writer(self, *, wait: bool = True):
         """Serialize revision checks, writes and deletes across processes."""
         with self._mutex:
             self.directory.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
@@ -110,11 +112,13 @@ class ConversationStore:
             descriptor = os.open(self.directory / ".history.lock", os.O_CREAT | os.O_RDWR, FILE_MODE)
             try:
                 try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
                 except OSError as exc:
+                    if not wait and exc.errno in {errno.EAGAIN, errno.EACCES}:
+                        raise StorageError("History is busy in another window. Please retry.") from exc
                     if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.ENOLCK}:
                         raise
-                    with self._directory_lock():
+                    with self._directory_lock(wait=wait):
                         self._cleanup_temps()
                         yield
                 else:
@@ -135,13 +139,18 @@ class ConversationStore:
                     pass
         self._cleaned = True
 
-    def save(self, conversation: Conversation, touch: bool = True) -> Path:
+    @staticmethod
+    def messages_changed(conversation: Conversation) -> bool:
+        """Compare a digest, never retaining an extra transcript in memory."""
+        return _revision({"messages": [m.to_dict() for m in conversation.messages]}) != conversation.storage_messages_revision
+
+    def save(self, conversation: Conversation, touch: bool = True, *, wait: bool = True) -> Path:
         if conversation.source_version > SCHEMA_VERSION:
             raise StorageError("This conversation was written by a newer app version and is read-only. Use /new to chat.")
         path = self.path_for(conversation.id)
         temporary = None
         try:
-            with self._writer():
+            with self._writer(wait=wait):
                 self.ensure_available(conversation)
                 if path.exists():
                     disk = self._read(path)
@@ -172,6 +181,7 @@ class ConversationStore:
                 os.replace(temporary, path)
                 conversation.storage_revision = _revision(data)
                 conversation.storage_content_revision = _content_revision(data)
+                conversation.storage_messages_revision = _revision({"messages": data["messages"]})
                 conversation.storage_title = conversation.generated_title
                 self._summaries[conversation.id] = self._summary(data, conversation.id)
                 self._fingerprints[conversation.id] = self._fingerprint(path)
@@ -229,12 +239,28 @@ class ConversationStore:
             self.ensure_available(conversation)
             conversation.storage_revision = _revision(data)
             conversation.storage_content_revision = _content_revision(data)
+            # Compare against the normalized messages actually shown to the
+            # user, including when malformed legacy entries were skipped.
+            conversation.storage_messages_revision = _revision({"messages": [m.to_dict() for m in conversation.messages]})
             conversation.storage_title = conversation.generated_title
             return conversation
         except StorageError:
             raise
         except Exception as exc:
             raise StorageError(f"Could not load conversation {conversation_id}: {exc}") from exc
+
+    def read_text(self, conversation_id: str) -> str:
+        """The raw saved file, for ``bedrock/recall.py`` to search on demand.
+
+        Nothing is cached: recall reads one file at a time and lets it go.
+        """
+        if self._tombstone(conversation_id).exists():
+            raise ConversationDeleted("This conversation has been deleted.")
+        path = self.path_for(conversation_id)
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise StorageError(f"Could not read {path.name}: {exc}") from exc
 
     def latest(self, system_prompt: str | None = None) -> Conversation | None:
         for summary in self.list():
@@ -254,11 +280,12 @@ class ConversationStore:
             seen = set()
             if self.directory.exists() and not self._cleaned:
                 try:
-                    with self._writer():
+                    with self._writer(wait=False):
                         pass
                 except (OSError, StorageError):
                     self._cleaned = True  # A busy/read-only store still permits browsing.
             signature = self._directory_signature()
+            scan_started = time.monotonic()
             for path in self.directory.glob("*.json"):
                 try:
                     self.path_for(path.stem)
@@ -286,6 +313,7 @@ class ConversationStore:
             # Use the signature from BEFORE the scan. Local writes must never
             # acknowledge and hide a concurrent external directory change.
             self._listed_signature = signature
+            self._last_scan = scan_started
             return summaries[:limit] if limit is not None else summaries
 
     def ensure_available(self, conversation: Conversation) -> None:
@@ -295,8 +323,9 @@ class ConversationStore:
             raise ConversationDeleted("This conversation was deleted in another window. Use /new to continue.")
 
     def directory_changed(self) -> bool:
-        """One directory stat for idle polling, with no per-chat file checks."""
-        return self._directory_signature() != self._listed_signature
+        """Cheap polling plus a periodic scan for in-place external edits."""
+        return (self._directory_signature() != self._listed_signature
+                or time.monotonic() - self._last_scan >= HISTORY_RESCAN_SECONDS)
 
     def _directory_signature(self) -> tuple[int, int, int] | None:
         try:
@@ -306,9 +335,9 @@ class ConversationStore:
             return None
 
     @staticmethod
-    def _fingerprint(path: Path) -> tuple[int, int, int]:
+    def _fingerprint(path: Path) -> tuple[int, int, int, int]:
         stat = path.stat()
-        return stat.st_mtime_ns, stat.st_size, stat.st_ino
+        return stat.st_mtime_ns, stat.st_size, stat.st_ino, stat.st_ctime_ns
 
     @staticmethod
     def _summary(data: dict, conversation_id: str) -> ConversationSummary:

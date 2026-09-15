@@ -54,6 +54,7 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/resume <n or name>` | Reopen a saved conversation by number or title words |
 | `/new`           | Start a new conversation         |
 | `/forget`        | Delete this conversation from disk |
+| `/recall <words>`| Pull matching parts of past chats into this one (also `/context`); `/recall clear` removes them |
 | `/help`          | Show help                        |
 | `/exit`          | Quit (also `Ctrl+C`)             |
 
@@ -111,15 +112,16 @@ one away and starts fresh.
 
 Only the open conversation is loaded for chatting and title generation; old
 chats are not opened in the background to fill in titles. The sidebar caches
-small summaries. Every two seconds it checks the directory timestamp; it scans
-individual files only when that changes or you explicitly refresh history.
-Use `/history` to refresh after editing an existing JSON file in place.
+small summaries. Every two seconds it checks the directory timestamp. It scans
+file metadata when that changes, once per minute to catch edits made in place,
+or when you explicitly refresh history with `/history`.
 Legacy JSON files are parsed once to extract their summaries; message bodies
 are discarded after that scan. File reads for listing and opening run off the
 UI thread. Long chats initially display the last 50 messages; use **Load earlier
 messages** above them to reveal more, 50 at a time.
 
 Title and timestamp changes from another window merge into the existing chat.
+Leaving or closing a chat without editing its messages does not save a copy.
 If both windows change the transcript, a competing save keeps the local
 conversation as a linked copy and displays a notice. Replies stay paired
 with their original questions. `/forget` removes the whole linked family,
@@ -141,11 +143,31 @@ They are stored as one JSON file per conversation in
 - An empty deletion marker prevents an old window from recreating a forgotten
   chat or any of its linked copies. It contains no message text. A stale window
   blocks further messages, keeps the draft, and asks you to start with `/new`.
+  New chats use random IDs without start timestamps, including in marker names.
+  Existing IDs and markers remain compatible with older windows. Markers are
+  retained because deleting them could let an old window recreate a linked copy.
 
 On filesystems without advisory file locks, writes use an atomic directory
 lock. If a writer is killed while holding that fallback lock, the next save
-reports the stale `.history-writer` directory; remove it only after all writers
+reports the stale `.history-writer` directory without waiting on the UI; remove it only after all writers
 have stopped. Reading history remains available.
+
+### Recalling past chats
+
+Past chats stay on disk and are not loaded while you work. They are searched
+only when you ask:
+
+- `/recall deploy workflow` (or `/context deploy workflow`) searches saved chats
+  for those words and pulls the best matches into the open chat. `/recall`
+  shows what is pulled in; `/recall clear` removes it.
+- Plain English works too: "do you remember when we set up the deploy workflow?"
+  or "in a previous chat you wrote a SQL query for me" searches before answering.
+  If nothing matches, the model is told so, instead of guessing.
+
+The search is local keyword matching (`src/bedrock/recall.py`). At most three
+chats and about 6,000 characters of excerpts are sent. The excerpts go to your
+model with each message while that chat stays open, but are never saved into
+it, so `/forget` on the original chat still removes that text from the machine.
 
 ## Configuration
 

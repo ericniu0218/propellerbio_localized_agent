@@ -25,6 +25,8 @@ HELP_TEXT = """\
 | `/resume <number or name>` | Reopen a saved conversation, e.g. `/resume 2` or `/resume platypus` |
 | `/new` | Start a new conversation (also `/clear`) |
 | `/forget` | Delete this conversation from disk |
+| `/recall <what to look for>` | Pull matching parts of past chats into this one (also `/context`) |
+| `/recall` | Show what has been pulled in; `/recall clear` removes it |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
 
@@ -36,7 +38,9 @@ HELP_TEXT = """\
 - `Ctrl+B` shows or hides the conversation list; click a conversation to open it
 
 Conversations are saved on this machine as you go, and the most recent one
-reopens the next time you start. Nothing is sent anywhere but your model server.
+reopens the next time you start. Past chats stay on disk and are only searched
+when you use `/recall` or ask something like "do you remember when we set up the
+deploy workflow?". Nothing is sent anywhere but your model server.
 """
 
 
@@ -56,6 +60,8 @@ KNOWN_COMMANDS = {
     "history",
     "resume",
     "forget",
+    "recall",
+    "context",
     "help",
     "exit",
     "quit",

@@ -1,8 +1,73 @@
 # Meeting notes
 
-Turns a meeting transcript into notes someone will read. Runs entirely against
+Records a Zoom meeting, transcribes it here, and turns it into notes someone
+will read. Runs entirely against
 a model you host — Ollama on a laptop, vLLM on the company server. No audio,
 no transcript, and no notes leave the machine.
+
+## Why local recording, not cloud
+
+Zoom only produces transcripts for **cloud** recordings, and cloud recording is
+a paid feature. Local recording is on every plan including the free one, writes
+to the host's own disk, and uploads nothing — so we produce the transcript
+ourselves. For an air-gapped customer that is the better answer anyway: the
+audio never reaches a third party at all.
+
+Turn on, in the Zoom desktop client's Recording settings:
+
+- **Record a separate audio file for each participant who speaks**
+- Optionally *Record video during screen sharing* off, to keep files small
+
+That first setting is the important one. It makes Zoom write one full-length
+track per person with silence where they are not talking, which gives perfect
+speaker attribution for free — every word in Bob's file was said by Bob, by
+construction. No diarisation model, no voice clustering, and better labels than
+either would produce.
+
+## Transcribing a recording
+
+```
+brew install whisper.cpp ffmpeg
+mkdir -p ~/.cache/whisper-models && cd ~/.cache/whisper-models
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+curl -LO https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+```
+
+```python
+from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber, transcribe_recording
+
+transcriber = WhisperTranscriber(WhisperConfig(
+    model=Path("~/.cache/whisper-models/ggml-small.en.bin").expanduser(),
+    vad_model=Path("~/.cache/whisper-models/ggml-silero-v5.1.2.bin").expanduser(),
+    initial_prompt="pembrolizumab, Phase II enrollment, interim analysis, site four",
+))
+result = await transcribe_recording(Path("~/Documents/Zoom/2026-09-15 09.00.12 …"), transcriber)
+```
+
+A 100-second three-person meeting transcribes in about 6 seconds on an M-series
+laptop, and the whole path — audio to finished notes — took 27 seconds.
+
+### Two things that are not optional
+
+**VAD.** Without it, whisper's segment boundaries span silence: a cue begins
+where the previous one ended rather than where speech starts. On a
+per-participant track, which is mostly silence by design, that puts a line
+minutes from when it was said. Measured here: one speaker's opening line was
+reported at `00:00:00` without VAD and `00:00:08.830` with it, against a true
+8.9s. A missing VAD model is a readiness failure, not a downgrade.
+
+**Slicing per turn.** Even with VAD, running whisper across a whole track
+produces segments that bundle utterances twenty-five seconds apart under one
+timestamp. So speech regions are grouped into turns, each is cut out with
+ffmpeg, and all slices go to one whisper invocation — model loaded once per
+track — with each cue offset back onto the meeting timeline. Against synthetic
+ground truth: **18 of 18 turns matched, median timestamp error 0.15s, worst
+1.0s.**
+
+**Vocabulary.** Whisper renders unfamiliar proper nouns phonetically — it wrote
+"PREA" for "Priya" until the name was added to `initial_prompt`. Drug and assay
+names will be worse. A per-customer term list is the cheapest accuracy fix
+available.
 
 ## Try it
 
@@ -84,6 +149,14 @@ and record the name, revision, hash, and license alongside the deployment.
 
 - **No PHI redaction.** Meeting transcripts in a biotech company will discuss
   patients, and nothing on this path redacts anything.
+- **A verified timestamp is not a correct one.** The citation guard checks that
+  a timestamp exists in the transcript, not that it is the moment the quoted
+  thing was said. Observed once in testing: an action item cited a cue six
+  seconds after the one it came from. Real, and much smaller than a fabricated
+  citation, but not nothing.
+- **Whisper is not run against meetings with crosstalk.** Per-participant
+  tracks make overlapping speech easy in principle, but it has only been tested
+  on synthesised audio where nobody interrupts.
 - **The VTT parser is duplicated** in bedrock-agent-pack for its server-side
   `meeting_transcripts` tool. The repos share no package; keep them in step.
 - **Prompts are only hand-verified.** The tests fake the backend, so they check

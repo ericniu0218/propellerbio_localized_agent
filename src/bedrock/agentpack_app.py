@@ -41,7 +41,9 @@ from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
+from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
 
@@ -55,6 +57,8 @@ AGENTPACK_HELP_TEXT = """\
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/workspace` | List private team workspaces |
+| `/workspace help` | Show workspace actions |
 | `/clear` | Clear the conversation |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
@@ -91,6 +95,7 @@ class AgentPackApp(App[None]):
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
         self._context_store: ContextStore | None = None
+        self._workspace_session: WorkspaceCommandSession | None = None
         self._scientific_job_running = False
 
     # ---- Screen layout ------------------------------------------------------
@@ -161,9 +166,11 @@ class AgentPackApp(App[None]):
             case "clear":
                 await self.action_clear_chat()
             case "exit" | "quit":
-                self.exit()
+                await self.action_quit()
             case "digest":
                 self.command_digest(command.args)
+            case "workspace" | "team":
+                self.command_workspace(command.args)
             case "tools":
                 await self.show_tool_status()
             case "fold":
@@ -275,6 +282,30 @@ class AgentPackApp(App[None]):
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
 
+    # ---- Shared workspaces ------------------------------------------------------
+
+    @work(group="workspace")
+    async def command_workspace(self, args: str) -> None:
+        await self.workspace_session.run(args, self.post_notice)
+
+    @property
+    def workspace_session(self) -> WorkspaceCommandSession:
+        if self._workspace_session is None:
+            store = WorkspaceStore.for_user(
+                self.settings.workspace_dir,
+                self.settings.user_id,
+                self.settings.display_name,
+            )
+            self._workspace_session = WorkspaceCommandSession(
+                store,
+                self.context_store,
+                selection_changed=self._set_workspace_name,
+            )
+        return self._workspace_session
+
+    def _set_workspace_name(self, name: str | None) -> None:
+        self.query_one(StatusBar).workspace_name = name
+
     # ---- Live events ------------------------------------------------------------
 
     async def handle_event(self, event: AgentEvent) -> None:
@@ -371,6 +402,8 @@ class AgentPackApp(App[None]):
         self._set_input_busy(False)
 
     async def action_quit(self) -> None:
+        if self._workspace_session is not None:
+            self._workspace_session.close()
         await self.client.close()
         self.exit()
 

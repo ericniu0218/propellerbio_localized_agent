@@ -76,3 +76,28 @@ async def test_exit_command_closes_backend(fake_backend: FakeBackend):
         await pilot.press(*"/exit", "enter")
         await pilot.pause()
     assert app.return_value is None
+    assert fake_backend.closed is True
+
+
+async def test_workspace_command_is_native_and_updates_status(fake_backend, tmp_path):
+    app = BedrockApp(
+        settings=Settings(
+            model="test-model",
+            user_id="alice",
+            display_name="Alice",
+            context_dir=str(tmp_path / "context"),
+            workspace_dir=str(tmp_path / "workspaces"),
+        ),
+        backend=fake_backend,
+    )
+    async with app.run_test() as pilot:
+        await pilot.press(*"/workspace create Research", "enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app.workspace_session.store.list_workspaces()[0].name == "Research"
+        assert "space: Research" in str(app.query_one("#status-workspace").content)
+        assert any("Created and selected" in notice.source for notice in app.query(SystemNotice))
+
+        await pilot.press(*"/exit", "enter")
+        await pilot.pause()

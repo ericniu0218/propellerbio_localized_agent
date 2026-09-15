@@ -30,6 +30,21 @@ def test_environment_overrides_file(tmp_path: Path):
     assert settings.api_key == "secret"
 
 
+def test_workspace_identity_and_private_vault_are_configurable(tmp_path: Path):
+    settings = load_settings(
+        config_path=tmp_path / "missing.toml",
+        env={
+            "BEDROCK_USER": "alice-stable-id",
+            "BEDROCK_DISPLAY_NAME": "Alice Example",
+            "BEDROCK_WORKSPACE_DIR": str(tmp_path / "team-vault"),
+        },
+    )
+
+    assert settings.user_id == "alice-stable-id"
+    assert settings.display_name == "Alice Example"
+    assert settings.workspace_dir == str(tmp_path / "team-vault")
+
+
 def test_biotech_tool_settings_can_be_provisioned_without_hard_coded_paths(tmp_path: Path):
     settings = load_settings(
         config_path=tmp_path / "missing.toml",

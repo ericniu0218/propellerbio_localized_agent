@@ -13,18 +13,25 @@ from textual.widgets._markdown import MarkdownStream
 
 
 class StatusBar(Horizontal):
-    """Top bar: app name on the left, model + connection status on the right."""
+    """Top bar: app name on the left, current local context on the right."""
 
     model_name: reactive[str] = reactive("no model")
+    workspace_name: reactive[str | None] = reactive(None)
     connected: reactive[bool | None] = reactive(None)  # None = not checked yet
 
     def compose(self) -> ComposeResult:
         yield Label("Bedrock Private AI", id="status-title")
+        yield Label("", id="status-workspace")
         yield Label("", id="status-model")
         yield Label("", id="status-connection")
 
     def watch_model_name(self, value: str) -> None:
         self.query_one("#status-model", Label).update(f"model: {value}")
+
+    def watch_workspace_name(self, value: str | None) -> None:
+        self.query_one("#status-workspace", Label).update(
+            f"space: {value}" if value else ""
+        )
 
     def watch_connected(self, value: bool | None) -> None:
         label = self.query_one("#status-connection", Label)

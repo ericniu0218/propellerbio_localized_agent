@@ -48,11 +48,45 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/model <name>`  | Switch model                     |
 | `/digest <path>` | Compress a file into the store   |
 | `/digest`        | List / search what you stored    |
+| `/workspace`     | List private team workspaces     |
+| `/workspace help`| Show collaboration actions       |
 | `/clear`         | Start a new conversation         |
 | `/help`          | Show help                        |
 | `/exit`          | Quit (also `Ctrl+C`)             |
 
 `Esc` stops a response that is still streaming.
+
+## Private shared workspaces
+
+The Gmail reference's reusable-results feature is available here as a native
+terminal workflow. It has no browser UI, Gmail connection, hosted database, or
+external AI dependency. `/digest` prepares a compact local result;
+`/workspace publish` shows the exact digest and bounded source extract that
+would be shared; `/workspace confirm` writes that reviewed result to the
+private SQLite vault. Full compressed source chunks stay in the publisher's
+context store.
+
+```text
+/digest ./assay.csv
+/workspace create Research team
+/workspace publish a3f1c02d --title "Assay review"
+/workspace confirm
+/workspace items
+```
+
+Workspaces preserve owner/editor/viewer roles, single-use invitations,
+immutable artifacts and parent lineage, replay-safe publication, expiring
+hashed integration keys, deterministic folds, exports, and a resumable event
+feed. Use `/workspace help` for the full command set; `/team` is an alias.
+
+The default vault is local to one OS account. For several app instances to see
+the same records, they must use the same `BEDROCK_WORKSPACE_DIR` on the private
+host. The operator must provide a filesystem with reliable SQLite/POSIX
+locking and appropriate access controls. `BEDROCK_USER` is still a temporary
+identity stand-in, so workspace roles are collaboration guardrails rather than
+an authentication boundary until company SSO is wired in. See
+[the workspace guide](docs/SHARED_WORKSPACES.md) before provisioning a shared
+vault or integration.
 
 ## AlphaFold 2 and PyMOL
 
@@ -85,6 +119,9 @@ Settings are read from, highest priority first:
 | `BEDROCK_API_KEY`    | `api_key`         | none                         |
 | `BEDROCK_TIMEOUT`    | `request_timeout` | `120` seconds                |
 | `BEDROCK_CONTEXT_DIR`| `context_dir`     | `~/.local/share/bedrock/context` |
+| `BEDROCK_WORKSPACE_DIR`| `workspace_dir` | `~/.local/share/bedrock/workspaces` |
+| `BEDROCK_USER`       | `user_id`         | current local username       |
+| `BEDROCK_DISPLAY_NAME`| `display_name`   | `user_id`                    |
 |                      | `system_prompt`   | none                         |
 
 Example `~/.config/bedrock/config.toml` for a company inference server:
@@ -111,6 +148,7 @@ src/bedrock/
     agent_panel.py        The "what's happening now" strip (agent-pack mode)
     approval.py            Inline "waiting for you" approve/reject prompt
     commands.py           Slash-command parsing (pure functions)
+    workspace_command.py  Native picker, preview, publish, roles and export flow
     styles.tcss            Layout and colours (Textual CSS)
   inference/
     base.py              InferenceBackend protocol - the seam between UI and a plain model server
@@ -126,6 +164,11 @@ src/bedrock/
     store.py              Compressed, content-addressed store on local disk
     digest.py             Rules-based summary, optionally improved by a model
     search.py             BM25 keyword ranking over stored chunks
+  workspaces/
+    store.py              SQLite authorization, persistence, idempotency and events
+    processors.py         `/digest` corpus adapter and deterministic source fold
+    validation.py         Versioned artifact contract, size bounds and checksums
+    migrations/           Applied-once SQLite schema
   models/
     conversation.py      Message / Conversation data classes (openai mode only)
   config/

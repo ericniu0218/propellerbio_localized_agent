@@ -37,6 +37,7 @@ DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bedrock" / "config.toml"
 DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
+DEFAULT_WORKSPACE_DIR = Path.home() / ".local" / "share" / "bedrock" / "workspaces"
 DEFAULT_BIOTECH_WORK_DIR = Path.home() / ".local" / "share" / "bedrock" / "biotech"
 
 
@@ -69,9 +70,15 @@ class Settings:
     """Identifies the employee to the agent-pack backend. A stand-in until
     real SSO login is wired into this client — see the note above."""
 
+    display_name: str | None = None
+    """Name recorded on shared results. Defaults to ``user_id``."""
+
     context_dir: str = str(DEFAULT_CONTEXT_DIR)
     """Where `/digest` keeps compressed data. Local disk only - this never
     leaves the machine, same rule as everything else here."""
+
+    workspace_dir: str = str(DEFAULT_WORKSPACE_DIR)
+    """Directory containing the private SQLite shared-workspace vault."""
 
     biotech_work_dir: Path = DEFAULT_BIOTECH_WORK_DIR
     """Private working directory for scientific inputs, outputs, logs, and manifests."""
@@ -125,7 +132,8 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
 
     known = {
         "backend", "api_base", "model", "api_key", "request_timeout",
-        "system_prompt", "agent_pack_api_base", "user_id", "context_dir",
+        "system_prompt", "agent_pack_api_base", "user_id", "display_name",
+        "context_dir", "workspace_dir",
         "biotech_work_dir",
         "alphafold_launcher", "alphafold_data_dir", "alphafold_python",
         "alphafold_max_template_date", "alphafold_docker_image",
@@ -148,10 +156,18 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         or DEFAULT_AGENT_PACK_API_BASE
     )
     user_id = env.get("BEDROCK_USER") or file_values.get("user_id") or getpass.getuser()
+    display_name = (
+        env.get("BEDROCK_DISPLAY_NAME") or file_values.get("display_name") or user_id
+    )
     context_dir = (
         env.get("BEDROCK_CONTEXT_DIR")
         or file_values.get("context_dir")
         or str(DEFAULT_CONTEXT_DIR)
+    )
+    workspace_dir = (
+        env.get("BEDROCK_WORKSPACE_DIR")
+        or file_values.get("workspace_dir")
+        or str(DEFAULT_WORKSPACE_DIR)
     )
     biotech_work_dir = Path(
         env.get("BEDROCK_BIOTECH_WORK_DIR")
@@ -219,7 +235,9 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         system_prompt=system_prompt,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,
+        display_name=display_name,
         context_dir=context_dir,
+        workspace_dir=workspace_dir,
         biotech_work_dir=biotech_work_dir,
         alphafold_launcher=alphafold_launcher,
         alphafold_data_dir=alphafold_data_dir,

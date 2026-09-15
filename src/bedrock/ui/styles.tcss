@@ -19,7 +19,7 @@ StatusBar {
     color: $accent;
 }
 
-#status-model {
+#status-workspace, #status-model {
     width: auto;
     color: $text-muted;
     margin-right: 3;

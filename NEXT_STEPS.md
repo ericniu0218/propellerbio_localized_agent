@@ -66,17 +66,19 @@ authentication. To bring it up to par with the web client:
   today (it already talks to sessions by id) — the only change is *how*
   `user_id`/the session gets created, not the ongoing request shape.
 
-### 3. Sharing / uploads / recipes / workspaces
-`docs/WORKFLOW.md` on the backend specs a whole product layer — My
-Space/Team Spaces/Company Knowledge, drag-and-drop file summarization, a
-standard "brief" format with a length slider, reusable "recipes,"
-scheduling, notifications. **None of it is implemented in this client**,
-and most of it isn't implemented on the backend yet either (check the
-backend's current state before assuming). A terminal app is a bad fit for
-drag-and-drop file upload specifically — that will likely need either a
-file-path prompt (`/attach <path>`) here, or push people toward the web
-client for that particular workflow. Worth a real product decision before
-building it either place.
+### 3. Centralize shared workspaces after SSO
+The local workspace MVP is now implemented in this client. `/workspace`
+provides selection, invitations, roles, preview-before-publish from `/digest`,
+immutable results, folds, integration keys, export, and events in a private
+SQLite vault. See `docs/SHARED_WORKSPACES.md` for its contract and limits.
+
+It deliberately does not pretend that a file on one machine is a cross-device
+service. After OIDC identity is available, move `WorkspaceStore` behind the
+private agent-pack backend and retain the same artifact interface. That is the
+right point to add My Space/Company Knowledge, uploads, recipes, scheduling,
+notifications, a blob store for results over 256 KiB, and mutually untrusted
+multi-host access. The terminal UX should continue to use paths and explicit
+previews rather than browser drag-and-drop.
 
 ### 4. Streaming into the chat bubble
 Right now the chat bubble shows "Working on it…" and then the finished
@@ -100,7 +102,7 @@ network.
 
 ## Testing
 
-`pytest` (93 tests) covers the client's REST/SSE parsing
+`pytest` covers the client's REST/SSE parsing
 against a fake server and the full Textual app against a fake
 `AgentPackClient`. It does **not** cover the real backend's behavior —
 that's the other repo's test suite. When testing changes here against a

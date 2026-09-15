@@ -48,7 +48,7 @@ The client must never send prompts to external AI APIs, depend on OpenAI/Anthrop
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest              # 93 tests, no server needed
+pytest              # no model or agent-pack server needed
 bedrock             # run the app (expects Ollama at http://localhost:11434 by default)
 ```
 
@@ -63,6 +63,13 @@ small digest plus compressed, keyword-indexed chunks, so a local model can
 read a large file cheaply and still get exact detail on request. Generalised
 over data types by the `SourceAdapter` protocol, the same seam idea as
 `InferenceBackend`. See README's "Compressing data for the model" section.
+
+Also built: native shared workspaces (`src/bedrock/workspaces/` and
+`src/bedrock/ui/workspace_command.py`). Read `docs/SHARED_WORKSPACES.md` before
+changing workspace storage, artifact contracts, roles, invitations,
+integration keys, publish previews, folds, or events. The current vault is
+local SQLite and `BEDROCK_USER` is not authentication; preserve that explicit
+boundary until the workspace store moves behind verified company identity.
 
 Not yet built (deliberately): file attachments in chat, embedding-based
 retrieval (`/digest` search is keyword/BM25), authentication, conversation

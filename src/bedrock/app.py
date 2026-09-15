@@ -27,7 +27,9 @@ from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
+from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
 
@@ -53,6 +55,7 @@ class BedrockApp(App[None]):
         # Built lazily in command_digest: creating it touches the disk, and
         # a user who never runs /digest should never pay for that.
         self._context_store: ContextStore | None = None
+        self._workspace_session: WorkspaceCommandSession | None = None
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -113,11 +116,13 @@ class BedrockApp(App[None]):
             case "clear":
                 await self.action_clear_chat()
             case "exit" | "quit":
-                self.exit()
+                await self.action_quit()
             case "model":
                 await self.command_model(command.args)
             case "digest":
                 self.command_digest(command.args)
+            case "workspace" | "team":
+                self.command_workspace(command.args)
             case _:
                 await self.post_notice(f"Unknown command `/{command.name}`. Type `/help` for a list.", kind="error")
 
@@ -165,6 +170,30 @@ class BedrockApp(App[None]):
         if self._context_store is None:
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
+
+    # ---- Shared workspaces -----------------------------------------------
+
+    @work(group="workspace")
+    async def command_workspace(self, args: str) -> None:
+        await self.workspace_session.run(args, self.post_notice)
+
+    @property
+    def workspace_session(self) -> WorkspaceCommandSession:
+        if self._workspace_session is None:
+            store = WorkspaceStore.for_user(
+                self.settings.workspace_dir,
+                self.settings.user_id,
+                self.settings.display_name,
+            )
+            self._workspace_session = WorkspaceCommandSession(
+                store,
+                self.context_store,
+                selection_changed=self._set_workspace_name,
+            )
+        return self._workspace_session
+
+    def _set_workspace_name(self, name: str | None) -> None:
+        self.query_one(StatusBar).workspace_name = name
 
     # ---- Chat -------------------------------------------------------------
 
@@ -234,6 +263,8 @@ class BedrockApp(App[None]):
         self.workers.cancel_group(self, "chat")
 
     async def action_quit(self) -> None:
+        if self._workspace_session is not None:
+            self._workspace_session.close()
         await self.backend.close()
         self.exit()
 

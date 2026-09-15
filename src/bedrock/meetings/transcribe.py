@@ -90,6 +90,7 @@ class WhisperConfig:
     downgrade. Get it from huggingface.co/ggml-org/whisper-vad.
     """
     binary: str = "whisper-cli"
+    vad_binary: str = "whisper-vad-speech-segments"
     ffmpeg: str = "ffmpeg"
     threads: int = 4
     language: str = "en"
@@ -119,16 +120,25 @@ class WhisperTranscriber:
 
     def __init__(self, config: WhisperConfig, runner: CommandRunner | None = None) -> None:
         self.config = config
+        # An injected runner owns command resolution (and is the seam used by
+        # hermetic tests). Only the real subprocess runner depends on this
+        # process's PATH; model files are required in both cases.
+        self._check_host_tools = runner is None
         self.runner = runner or SubprocessCommandRunner()
 
     def readiness_issues(self) -> tuple[str, ...]:
         issues: list[str] = []
-        if shutil.which(self.config.binary) is None:
+        if self._check_host_tools and shutil.which(self.config.binary) is None:
             issues.append(
                 f"{self.config.binary} is not on PATH. Install it with "
                 "`brew install whisper.cpp`."
             )
-        if shutil.which(self.config.ffmpeg) is None:
+        if self._check_host_tools and shutil.which(self.config.vad_binary) is None:
+            issues.append(
+                f"{self.config.vad_binary} is not on PATH. Install it with "
+                "`brew install whisper.cpp`."
+            )
+        if self._check_host_tools and shutil.which(self.config.ffmpeg) is None:
             issues.append(
                 f"{self.config.ffmpeg} is not on PATH. Install it with `brew install ffmpeg`."
             )
@@ -167,7 +177,7 @@ class WhisperTranscriber:
         log = work_dir / f"{wav.stem}.vad.log"
         await self.runner.run(
             [
-                "whisper-vad-speech-segments",
+                self.config.vad_binary,
                 "-vm", str(self.config.vad_model),
                 "-f", str(wav),
                 "-t", str(self.config.threads),

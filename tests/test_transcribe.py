@@ -212,6 +212,23 @@ async def test_a_missing_vad_model_is_refused_up_front(tmp_path):
         await transcribe_recording(rec, transcriber, work_dir=tmp_path / "w")
 
 
+def test_real_runner_checks_every_executable_it_will_invoke(tmp_path):
+    config = make_config(tmp_path)
+    config = WhisperConfig(
+        model=config.model,
+        vad_model=config.vad_model,
+        binary="bedrock-missing-whisper",
+        vad_binary="bedrock-missing-vad",
+        ffmpeg="bedrock-missing-ffmpeg",
+    )
+
+    issues = WhisperTranscriber(config).readiness_issues()
+
+    assert any("bedrock-missing-whisper" in issue for issue in issues)
+    assert any("bedrock-missing-vad" in issue for issue in issues)
+    assert any("bedrock-missing-ffmpeg" in issue for issue in issues)
+
+
 # --- round trip ----------------------------------------------------------
 
 

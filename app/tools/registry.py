@@ -7,6 +7,7 @@ from app.tools.chemistry_tools import RDKitTool
 from app.tools.doc_templates import DocTemplateTool
 from app.tools.lab_connectors import ELNLIMSTool
 from app.tools.literature_search import LiteratureSearchTool
+from app.tools.meeting_transcripts import MeetingTranscriptsTool
 from app.tools.rag_search import RAGSearchTool
 from app.tools.sandbox import DataAnalysisSandboxTool
 from app.tools.sequence_tools import SequenceStructureTool
@@ -18,6 +19,7 @@ class ToolRegistry:
         for tool_cls in (
             RAGSearchTool,
             LiteratureSearchTool,
+            MeetingTranscriptsTool,
             SequenceStructureTool,
             RDKitTool,
             DataAnalysisSandboxTool,

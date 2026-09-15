@@ -36,6 +36,7 @@ _DOMAIN_TOOL: dict[TaskDomain, str | None] = {
     TaskDomain.REGULATORY: "rag_search",
     TaskDomain.CLINICAL: "rag_search",
     TaskDomain.LAB_DATA: None,
+    TaskDomain.MEETINGS: "meeting_transcripts",
     TaskDomain.GENERAL: None,
 }
 

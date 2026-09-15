@@ -64,6 +64,8 @@ def _fake_classification(prompt: str) -> str:
         domain, complexity = "chemistry", "normal"
     elif any(k in text for k in ("csv", "plate", "assay reading", "instrument")):
         domain, complexity = "lab_data", "normal"
+    elif any(k in text for k in ("meeting", "call", "standup", "stand-up", "said", "discuss", "sync")):
+        domain, complexity = "meetings", "normal"
     elif len(text.split()) <= 8:
         domain, complexity = "general", "simple"
     else:

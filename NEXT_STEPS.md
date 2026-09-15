@@ -42,16 +42,29 @@ Once the company's GPU server is up and `AGENT_PACK_MODE=real` on the
 backend, this client needs **no changes** — same REST/SSE contract either
 way. Just point `AGENT_PACK_API_BASE` at the real server.
 
-### 2. Real login (replace `BEDROCK_USER`)
-Right now `settings.user_id` is a plain environment variable — a
-stand-in, not authentication. The backend's plan (`docs/WORKFLOW.md` §1)
-is company SSO via Keycloak/OIDC. To wire that up here:
-- Add an OIDC device-code or browser-redirect flow (Textual can shell out
-  to the system browser and listen on a local port for the callback).
-- Send the resulting token as an `Authorization: Bearer <token>` header on
-  every `AgentPackClient` request instead of a plain `user_id` field.
-- The backend doesn't enforce auth yet either — this is a two-sided piece
-  of work, not just a client change.
+### 2. Real login (replace `BEDROCK_USER`) — backend + web client done, this one isn't
+As of 2026-09-14, the backend (`bedrock-agent-pack`, `app/auth/`) and the
+web reference client (`web-client/index.html`, and the original it's
+copied from) do real Keycloak login — a "Log in with company account"
+button, a verified redirect round-trip, sessions tied to the real
+Keycloak username. Tested end-to-end against a local Keycloak instance.
+
+**This terminal client still doesn't have it.** `settings.user_id` here
+is still just a plain environment variable — a stand-in, not
+authentication. To bring it up to par with the web client:
+- Add an OIDC browser-redirect flow: shell out to the system browser for
+  the Keycloak login step, and run a short-lived local HTTP server
+  (`http.server` or similar) on a loopback port to catch the redirect
+  back with the authorization code — Textual apps can do this fine, it's
+  just not built yet.
+- Reuse the backend's existing `/auth/login` and `/auth/callback` routes
+  rather than reimplementing the OIDC handshake here — point the local
+  callback server's redirect at wherever the backend already listens, or
+  add a client-specific redirect URI to the Keycloak client if a
+  different local port is needed.
+- Once a session is established this way, keep using `AgentPackClient` as
+  today (it already talks to sessions by id) — the only change is *how*
+  `user_id`/the session gets created, not the ongoing request shape.
 
 ### 3. Sharing / uploads / recipes / workspaces
 `docs/WORKFLOW.md` on the backend specs a whole product layer — My

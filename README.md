@@ -104,6 +104,16 @@ remain normal agent conversations.
 See [the integration guide](docs/BIOTECH_INTEGRATIONS.md) for the required
 database, container, GPU, privacy, and configuration steps.
 
+## Meeting notes
+
+`bedrock.meetings` turns a meeting transcript into notes, against a model you
+host. Give it the rough lines you typed during the call and it keeps your
+headings and fills in the detail underneath, citing timestamps — and it never
+cites a timestamp that was not said. Works on a laptop with Ollama; degrades to
+computed facts rather than failing when inference is unavailable. Run `bedrock-meeting` after a
+Zoom local recording and it writes the transcript and the notes next to it. See
+[the meeting notes guide](docs/MEETINGS.md).
+
 ## Configuration
 
 Settings are read from, highest priority first:

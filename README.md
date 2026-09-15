@@ -46,11 +46,29 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 |------------------|----------------------------------|
 | `/model`         | List models on the server        |
 | `/model <name>`  | Switch model                     |
+| `/digest <path>` | Compress a file into the store   |
+| `/digest`        | List / search what you stored    |
 | `/clear`         | Start a new conversation         |
 | `/help`          | Show help                        |
 | `/exit`          | Quit (also `Ctrl+C`)             |
 
 `Esc` stops a response that is still streaming.
+
+## AlphaFold 2 and PyMOL
+
+The first biotech workflow is implemented as private local tool adapters:
+validate a one-protein FASTA, run the official AlphaFold 2 Docker launcher,
+preserve its structure and confidence artifacts, render a PNG and session with
+open-source PyMOL, and record hashes and provenance in a per-run manifest.
+
+After operator provisioning, check it with `bedrock-biotech status` and run it
+with `bedrock-biotech fold candidate.fasta`. In agent-pack mode the equivalent
+commands are `/tools`, `/fold <fasta-path>`, and `/pymol [structure-path]`.
+Direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
+open the latest structure interactively in PyMOL.” Questions about the tools
+remain normal agent conversations.
+See [the integration guide](docs/BIOTECH_INTEGRATIONS.md) for the required
+database, container, GPU, privacy, and configuration steps.
 
 ## Configuration
 
@@ -66,6 +84,7 @@ Settings are read from, highest priority first:
 | `BEDROCK_MODEL`      | `model`           | first model the server lists |
 | `BEDROCK_API_KEY`    | `api_key`         | none                         |
 | `BEDROCK_TIMEOUT`    | `request_timeout` | `120` seconds                |
+| `BEDROCK_CONTEXT_DIR`| `context_dir`     | `~/.local/share/bedrock/context` |
 |                      | `system_prompt`   | none                         |
 
 Example `~/.config/bedrock/config.toml` for a company inference server:
@@ -101,6 +120,12 @@ src/bedrock/
     client.py             REST + live-event-stream client for the agent-pack backend
     friendly.py            Plain-language labels/errors (pure functions, no networking)
     models.py              AgentEvent / AgentCardState data classes
+  context/
+    ingest.py             `/digest`: compress any data into a small digest + chunks
+    adapters/             One file per data type; SourceAdapter is the seam
+    store.py              Compressed, content-addressed store on local disk
+    digest.py             Rules-based summary, optionally improved by a model
+    search.py             BM25 keyword ranking over stored chunks
   models/
     conversation.py      Message / Conversation data classes (openai mode only)
   config/
@@ -112,6 +137,51 @@ The important design decision: the UI never imports a concrete backend. It
 only knows the `InferenceBackend` protocol (`check_connection`, `list_models`,
 `stream_chat`, `close`). Swapping Ollama for the production server is a
 configuration change, not a code change.
+
+## Compressing data for the model (`/digest`)
+
+A 2 MB spreadsheet is roughly half a million tokens. No local model will read
+that, and gzipping it does not help - decompressing just gives you half a
+million tokens back. Fewer bytes on disk and fewer tokens in a prompt are two
+different problems, and `/digest` goes after both.
+
+```
+/digest ./assay.csv
+  Compressed `assay.csv` (tabular) -> a3f1c02d9b4e5f77
+  - Storage: 2.1 MB -> 447 kB (4.6x smaller)
+  - Context: ~259,000 tokens -> ~140 in the digest (1,864x cheaper to read)
+  - 801 chunks indexed for exact lookup
+
+/digest search contamination
+  assay.csv - rows 17226-17250 (chunk 689)
+  S017233,P42,9.91,adesai,CONTAMINATION suspected in plate P42
+```
+
+Each source is stored twice over: a **digest** small enough to hand a model on
+every turn, and the **full content**, compressed and keyword-indexed, for when
+an exact answer is needed. Nothing is lost - the rows are all still there.
+
+The generalisation over data types is `SourceAdapter`, the same kind of seam as
+`InferenceBackend`. Each adapter knows how its own data compresses best, which
+matters more than it sounds: a table's real schema and column statistics beat
+any prose description of them, and 30,000 log lines collapse to the four
+patterns they actually are.
+
+| Data | What the digest becomes |
+|---|---|
+| CSV / TSV | Schema, per-column type, ranges, distinct values, missing counts |
+| Log files | Repeated patterns with counts, level breakdown, time span |
+| JSON / JSONL | Field paths and types, with arrays collapsed to one entry |
+| Source code | Signatures and docstrings (Python parsed with `ast`) |
+| Text / Markdown | Size, heading outline, plus a model-written summary |
+
+Only the last row involves a language model, and only because prose has no
+structure to read. Everything else is computed, so the store works with no
+inference server running at all - and if the model is unreachable when it
+*would* have helped, ingest still succeeds with the computed digest.
+
+Adding a data type is one file in `src/bedrock/context/adapters/` plus a line
+in `registry.py`. Nothing in `ui/`, `app.py` or the store changes.
 
 ## Two modes
 

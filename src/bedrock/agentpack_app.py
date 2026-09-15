@@ -22,6 +22,7 @@ the employee.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -32,14 +33,35 @@ from textual.widgets import Footer, Input
 from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
+from bedrock.biotech import ProteinWorkflow, ToolIntegrationError
 from bedrock.config import Settings, load_settings
+from bedrock.context import ContextStore
 from bedrock.inference.base import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
-from bedrock.ui.commands import HELP_TEXT, Command, parse_command
+from bedrock.ui.commands import Command, parse_command, parse_scientific_request
+from bedrock.ui.digest_command import run_digest_command
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 
 CONNECTION_CHECK_SECONDS = 10
+
+AGENTPACK_HELP_TEXT = """\
+**Commands**
+
+| Command | What it does |
+|---|---|
+| `/fold <fasta-path>` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
+| `/pymol [structure-path]` | Open a structure, or the latest prediction, in PyMOL |
+| `/tools` | Check AlphaFold 2 and PyMOL configuration |
+| `/digest <path>` | Compress a file so a model can read it cheaply |
+| `/digest` | List and search what you have compressed |
+| `/clear` | Clear the conversation |
+| `/help` | Show this help |
+| `/exit` | Quit (also `Ctrl+C`) |
+
+You can also ask naturally, for example: “Run AlphaFold 2 on `candidate.fasta`”
+or “Open the latest structure interactively in PyMOL.”
+"""
 
 
 class AgentPackApp(App[None]):
@@ -50,7 +72,12 @@ class AgentPackApp(App[None]):
         Binding("ctrl+l", "clear_chat", "Clear"),
     ]
 
-    def __init__(self, settings: Settings | None = None, client: AgentPackClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        client: AgentPackClient | None = None,
+        biotech_workflow: ProteinWorkflow | None = None,
+    ) -> None:
         super().__init__()
         # Explicit, not just relying on Textual's default: this must always
         # be a dark, black-background terminal look, never a light theme.
@@ -58,10 +85,13 @@ class AgentPackApp(App[None]):
         self.settings = settings or load_settings()
         # Tests pass a fake client; real runs build one from settings.
         self.client = client or AgentPackClient(self.settings.agent_pack_api_base)
+        self.biotech_workflow = biotech_workflow or ProteinWorkflow.from_settings(self.settings)
         self.session_id: str | None = None
         self._waiting_for: str | None = None  # task_id we're showing an answer bubble for
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
+        self._context_store: ContextStore | None = None
+        self._scientific_job_running = False
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -117,21 +147,89 @@ class AgentPackApp(App[None]):
         if command is not None:
             await self.run_command(command)
         else:
-            await self.send_message(text)
+            scientific_request = parse_scientific_request(text)
+            if scientific_request is not None:
+                await self.mount_message(UserMessage(text))
+                await self.run_command(scientific_request)
+            else:
+                await self.send_message(text)
 
     async def run_command(self, command: Command) -> None:
         match command.name:
             case "help":
-                await self.post_notice(HELP_TEXT)
+                await self.post_notice(AGENTPACK_HELP_TEXT)
             case "clear":
                 await self.action_clear_chat()
             case "exit" | "quit":
                 self.exit()
+            case "digest":
+                self.command_digest(command.args)
+            case "tools":
+                await self.show_tool_status()
+            case "fold":
+                if not command.args:
+                    await self.post_notice(
+                        "Tell me which one-protein FASTA file to fold, or use `/fold <path>`.",
+                        kind="error",
+                    )
+                elif self._scientific_job_running:
+                    await self.post_notice("A scientific job is already running.", kind="error")
+                else:
+                    self._scientific_job_running = True
+                    self.fold_protein(_path_argument(command.args))
+            case "pymol":
+                self.open_pymol(_path_argument(command.args) if command.args else None)
             case _:
                 await self.post_notice(
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",
                     kind="error",
                 )
+
+    async def show_tool_status(self) -> None:
+        lines = ["**Scientific tools**", ""]
+        for status in self.biotech_workflow.status():
+            lines.append(f"- {'Ready' if status.ready else 'Not ready'}: **{status.name}**")
+            lines.extend(f"  - {issue}" for issue in status.issues)
+        await self.post_notice("\n".join(lines))
+
+    @work(exclusive=True, group="scientific")
+    async def fold_protein(self, fasta_path: Path) -> None:
+        await self.post_notice(
+            f"Started AlphaFold 2 for `{fasta_path}`. This may take a long time; the run is preserved if PyMOL rendering fails."
+        )
+        try:
+            result = await self.biotech_workflow.predict_and_render(fasta_path)
+        except ToolIntegrationError as exc:
+            await self.post_notice(str(exc), kind="error")
+        except asyncio.CancelledError:
+            await self.post_notice("The scientific job was cancelled.", kind="error")
+            raise
+        else:
+            lines = [
+                f"**Protein prediction completed** — run `{result.run_id}`",
+                "",
+                f"- Structure: `{result.structure_path}`",
+                f"- Provenance: `{result.manifest_path}`",
+            ]
+            if result.preview_path:
+                lines.append(f"- PyMOL preview: `{result.preview_path}`")
+            if result.session_path:
+                lines.append(f"- PyMOL session: `{result.session_path}`")
+            lines.extend(f"- Warning: {warning}" for warning in result.warnings)
+            lines.append("")
+            lines.append("Use `/pymol` to open the latest structure interactively.")
+            await self.post_notice("\n".join(lines))
+        finally:
+            self._scientific_job_running = False
+
+    @work(exclusive=True, group="pymol-open")
+    async def open_pymol(self, structure_path: Path | None) -> None:
+        try:
+            opened = await self.biotech_workflow.open_in_pymol(structure_path)
+        except ToolIntegrationError as exc:
+            await self.post_notice(str(exc), kind="error")
+        else:
+            await self.post_notice(f"Opened `{opened}` in PyMOL.")
 
     async def send_message(self, text: str) -> None:
         if self._waiting_for is not None:
@@ -156,6 +254,26 @@ class AgentPackApp(App[None]):
         await self.mount_message(self._answer_widget)
         self._answer_widget.update("_Working on it…_")
         self._set_input_busy(True)
+
+    # ---- Stored context ---------------------------------------------------------
+
+    @work(group="digest")
+    async def command_digest(self, args: str) -> None:
+        """``/digest`` in agent-pack mode.
+
+        No ``backend`` is passed, so digests here are the computed ones only.
+        That is the right call rather than an omission: this app has no direct
+        model connection - it talks to the agent system over REST - and the
+        summarising a model would do belongs on that backend, next to the
+        agents, not in the client. The computed digest is the same either way.
+        """
+        await run_digest_command(args, store=self.context_store, notify=self.post_notice)
+
+    @property
+    def context_store(self) -> ContextStore:
+        if self._context_store is None:
+            self._context_store = ContextStore(self.settings.context_dir)
+        return self._context_store
 
     # ---- Live events ------------------------------------------------------------
 
@@ -255,6 +373,14 @@ class AgentPackApp(App[None]):
     async def action_quit(self) -> None:
         await self.client.close()
         self.exit()
+
+
+def _path_argument(value: str) -> Path:
+    """Accept shell-style surrounding quotes without ever invoking a shell."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1]
+    return Path(value).expanduser()
 
 
 def main() -> None:

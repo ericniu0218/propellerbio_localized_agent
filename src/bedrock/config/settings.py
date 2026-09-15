@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,8 @@ from pathlib import Path
 DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bedrock" / "config.toml"
+DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
+DEFAULT_BIOTECH_WORK_DIR = Path.home() / ".local" / "share" / "bedrock" / "biotech"
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,40 @@ class Settings:
     """Identifies the employee to the agent-pack backend. A stand-in until
     real SSO login is wired into this client — see the note above."""
 
+    context_dir: str = str(DEFAULT_CONTEXT_DIR)
+    """Where `/digest` keeps compressed data. Local disk only - this never
+    leaves the machine, same rule as everything else here."""
+
+    biotech_work_dir: Path = DEFAULT_BIOTECH_WORK_DIR
+    """Private working directory for scientific inputs, outputs, logs, and manifests."""
+
+    alphafold_launcher: Path | None = None
+    """Path to AlphaFold 2's official ``docker/run_docker.py`` launcher."""
+
+    alphafold_data_dir: Path | None = None
+    """Path to the locally provisioned AlphaFold 2 model parameters and databases."""
+
+    alphafold_python: str = sys.executable
+    """Python executable belonging to the environment used by the AF2 Docker launcher."""
+
+    alphafold_max_template_date: str | None = None
+    """Required template cutoff date, recorded in every prediction manifest."""
+
+    alphafold_docker_image: str | None = None
+    """Pinned AlphaFold image tag or digest passed to the official launcher."""
+
+    alphafold_database_version: str | None = None
+    """Operator-assigned identifier for the provisioned database snapshot."""
+
+    alphafold_model_preset: str = "monomer_ptm"
+    alphafold_db_preset: str = "full_dbs"
+    alphafold_gpu_devices: str = "all"
+    alphafold_models_to_relax: str = "best"
+    biotech_max_sequence_length: int = 2500
+
+    pymol_executable: str = "pymol"
+    """Open-source PyMOL executable used for both headless rendering and desktop viewing."""
+
     extra: dict = field(default_factory=dict)
     """Any unrecognised keys from the config file, kept for forward compatibility."""
 
@@ -88,7 +125,14 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
 
     known = {
         "backend", "api_base", "model", "api_key", "request_timeout",
-        "system_prompt", "agent_pack_api_base", "user_id",
+        "system_prompt", "agent_pack_api_base", "user_id", "context_dir",
+        "biotech_work_dir",
+        "alphafold_launcher", "alphafold_data_dir", "alphafold_python",
+        "alphafold_max_template_date", "alphafold_docker_image",
+        "alphafold_database_version", "alphafold_model_preset",
+        "alphafold_db_preset", "alphafold_gpu_devices",
+        "alphafold_models_to_relax", "biotech_max_sequence_length",
+        "pymol_executable",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -104,6 +148,67 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         or DEFAULT_AGENT_PACK_API_BASE
     )
     user_id = env.get("BEDROCK_USER") or file_values.get("user_id") or getpass.getuser()
+    context_dir = (
+        env.get("BEDROCK_CONTEXT_DIR")
+        or file_values.get("context_dir")
+        or str(DEFAULT_CONTEXT_DIR)
+    )
+    biotech_work_dir = Path(
+        env.get("BEDROCK_BIOTECH_WORK_DIR")
+        or file_values.get("biotech_work_dir")
+        or DEFAULT_BIOTECH_WORK_DIR
+    ).expanduser()
+
+    alphafold_launcher_value = env.get("ALPHAFOLD_LAUNCHER") or file_values.get("alphafold_launcher")
+    alphafold_launcher = Path(alphafold_launcher_value).expanduser() if alphafold_launcher_value else None
+    alphafold_data_value = env.get("ALPHAFOLD_DATA_DIR") or file_values.get("alphafold_data_dir")
+    alphafold_data_dir = Path(alphafold_data_value).expanduser() if alphafold_data_value else None
+    alphafold_python = (
+        env.get("ALPHAFOLD_PYTHON") or file_values.get("alphafold_python") or sys.executable
+    )
+    alphafold_max_template_date = (
+        env.get("ALPHAFOLD_MAX_TEMPLATE_DATE")
+        or file_values.get("alphafold_max_template_date")
+        or None
+    )
+    alphafold_docker_image = (
+        env.get("ALPHAFOLD_DOCKER_IMAGE")
+        or file_values.get("alphafold_docker_image")
+        or None
+    )
+    alphafold_database_version = (
+        env.get("ALPHAFOLD_DATABASE_VERSION")
+        or file_values.get("alphafold_database_version")
+        or None
+    )
+    alphafold_model_preset = (
+        env.get("ALPHAFOLD_MODEL_PRESET")
+        or file_values.get("alphafold_model_preset")
+        or "monomer_ptm"
+    )
+    alphafold_db_preset = (
+        env.get("ALPHAFOLD_DB_PRESET")
+        or file_values.get("alphafold_db_preset")
+        or "full_dbs"
+    )
+    alphafold_gpu_devices = (
+        env.get("ALPHAFOLD_GPU_DEVICES")
+        or file_values.get("alphafold_gpu_devices")
+        or "all"
+    )
+    alphafold_models_to_relax = (
+        env.get("ALPHAFOLD_MODELS_TO_RELAX")
+        or file_values.get("alphafold_models_to_relax")
+        or "best"
+    )
+    biotech_max_sequence_length = int(
+        env.get("BEDROCK_MAX_SEQUENCE_LENGTH")
+        or file_values.get("biotech_max_sequence_length")
+        or 2500
+    )
+    pymol_executable = (
+        env.get("PYMOL_EXECUTABLE") or file_values.get("pymol_executable") or "pymol"
+    )
 
     return Settings(
         backend=backend,
@@ -114,5 +219,19 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         system_prompt=system_prompt,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,
+        context_dir=context_dir,
+        biotech_work_dir=biotech_work_dir,
+        alphafold_launcher=alphafold_launcher,
+        alphafold_data_dir=alphafold_data_dir,
+        alphafold_python=alphafold_python,
+        alphafold_max_template_date=alphafold_max_template_date,
+        alphafold_docker_image=alphafold_docker_image,
+        alphafold_database_version=alphafold_database_version,
+        alphafold_model_preset=alphafold_model_preset,
+        alphafold_db_preset=alphafold_db_preset,
+        alphafold_gpu_devices=alphafold_gpu_devices,
+        alphafold_models_to_relax=alphafold_models_to_relax,
+        biotech_max_sequence_length=biotech_max_sequence_length,
+        pymol_executable=pymol_executable,
         extra=extra,
     )

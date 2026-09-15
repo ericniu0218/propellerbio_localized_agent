@@ -28,3 +28,26 @@ def test_environment_overrides_file(tmp_path: Path):
     assert settings.api_base == "http://from-env/v1"
     assert settings.model == "env-model"
     assert settings.api_key == "secret"
+
+
+def test_biotech_tool_settings_can_be_provisioned_without_hard_coded_paths(tmp_path: Path):
+    settings = load_settings(
+        config_path=tmp_path / "missing.toml",
+        env={
+            "BEDROCK_BIOTECH_WORK_DIR": str(tmp_path / "runs"),
+            "ALPHAFOLD_LAUNCHER": str(tmp_path / "alphafold" / "run_docker.py"),
+            "ALPHAFOLD_DATA_DIR": str(tmp_path / "data"),
+            "ALPHAFOLD_MAX_TEMPLATE_DATE": "2026-01-01",
+            "ALPHAFOLD_DOCKER_IMAGE": "alphafold@sha256:test",
+            "ALPHAFOLD_DATABASE_VERSION": "2026-01-01",
+            "PYMOL_EXECUTABLE": "/opt/pymol/bin/pymol",
+        },
+    )
+
+    assert settings.biotech_work_dir == tmp_path / "runs"
+    assert settings.alphafold_launcher == tmp_path / "alphafold" / "run_docker.py"
+    assert settings.alphafold_data_dir == tmp_path / "data"
+    assert settings.alphafold_max_template_date == "2026-01-01"
+    assert settings.alphafold_docker_image == "alphafold@sha256:test"
+    assert settings.alphafold_database_version == "2026-01-01"
+    assert settings.pymol_executable == "/opt/pymol/bin/pymol"

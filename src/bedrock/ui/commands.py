@@ -21,7 +21,10 @@ HELP_TEXT = """\
 | `/digest` | List and search what you have compressed |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
-| `/clear` | Start a new conversation |
+| `/history` | List saved conversations |
+| `/resume <number or name>` | Reopen a saved conversation, e.g. `/resume 2` or `/resume platypus` |
+| `/new` | Start a new conversation (also `/clear`) |
+| `/forget` | Delete this conversation from disk |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
 
@@ -29,7 +32,11 @@ HELP_TEXT = """\
 
 - `Enter` sends your message
 - `Esc` stops a response that is still streaming
-- `Ctrl+L` clears the screen (same as `/clear`)
+- `Ctrl+L` starts a new conversation (same as `/new`)
+- `Ctrl+B` shows or hides the conversation list; click a conversation to open it
+
+Conversations are saved on this machine as you go, and the most recent one
+reopens the next time you start. Nothing is sent anywhere but your model server.
 """
 
 
@@ -39,7 +46,20 @@ class Command:
     args: str
 
 
-KNOWN_COMMANDS = {"model", "digest", "workspace", "team", "clear", "help", "exit", "quit"}
+KNOWN_COMMANDS = {
+    "model",
+    "digest",
+    "workspace",
+    "team",
+    "clear",
+    "new",
+    "history",
+    "resume",
+    "forget",
+    "help",
+    "exit",
+    "quit",
+}
 
 
 def parse_command(text: str) -> Command | None:
@@ -57,64 +77,26 @@ def parse_command(text: str) -> Command | None:
 
 
 def parse_scientific_request(text: str) -> Command | None:
-    """Recognize clear requests to run the two locally integrated tools.
-
-    This intentionally handles action language, not every mention of a tool.
-    Questions and explanations still go to the agent. The returned value uses
-    the same small command interface as slash commands, so execution, errors,
-    and authorization behavior cannot drift between the two input styles.
-    """
+    """Recognize explicit requests to run locally integrated scientific tools."""
     stripped = text.strip()
     if not stripped or not _looks_actionable(stripped):
         return None
-
     lowered = stripped.casefold()
     path = _extract_supported_path(stripped)
-    mentions_alphafold = bool(re.search(r"\balpha\s*fold\s*2?\b", lowered))
-    requests_prediction = bool(
-        re.search(r"\b(fold|predict|prediction|model|run|use)\b", lowered)
-    )
-    if (mentions_alphafold and requests_prediction) or (
-        path and _has_suffix(path, (".fasta", ".fa", ".faa"))
-        and bool(re.search(r"\b(fold|predict(?:ion)?|structure prediction)\b", lowered))
-    ):
+    if (re.search(r"\balpha\s*fold\s*2?\b", lowered) and re.search(r"\b(fold|predict|prediction|model|run|use)\b", lowered)) or (path and _has_suffix(path, (".fasta", ".fa", ".faa")) and re.search(r"\b(fold|predict(?:ion)?|structure prediction)\b", lowered)):
         return Command("fold", path)
-
-    mentions_pymol = "pymol" in lowered
-    requests_view = bool(
-        re.search(r"\b(open|view|show|display|visuali[sz]e|launch|use)\b", lowered)
-    )
-    references_known_structure = bool(
-        re.search(r"\b(latest|last|recent|structure|prediction|result|it|this|that)\b", lowered)
-    )
-    if mentions_pymol and requests_view and (path or references_known_structure):
+    if "pymol" in lowered and re.search(r"\b(open|view|show|display|visuali[sz]e|launch|use)\b", lowered) and (path or re.search(r"\b(latest|last|recent|structure|prediction|result|it|this|that)\b", lowered)):
         return Command("pymol", path)
     return None
 
 
 def _looks_actionable(text: str) -> bool:
     lowered = text.casefold().strip()
-    if re.match(r"^(how|what|why|where|when|does|is|are|explain|tell me)\b", lowered):
-        return False
-    if re.search(r"\b(explain|tell me|show me how)\b", lowered):
+    if re.match(r"^(how|what|why|where|when|does|is|are|explain|tell me)\b", lowered) or re.search(r"\b(explain|tell me|show me how)\b", lowered):
         return False
     if re.match(r"^(can|could|would|will)\s+(?!you\b)", lowered):
         return False
-    return bool(
-        re.match(
-            r"^(?:please\s+)?(?:open|view|show|display|visuali[sz]e|launch|use|run|fold|predict|model)\b",
-            lowered,
-        )
-        or re.match(r"^(?:can|could|would|will)\s+you\b", lowered)
-        or re.match(r"^i(?:'d| would) like (?:you )?to\b", lowered)
-        or re.match(r"^i (?:want|need) (?:you )?to\b", lowered)
-        or re.match(r"^let(?:'s| us)\b", lowered)
-        or re.match(
-            r"^(?:alpha\s*fold\s*2?|pymol)\s*[:,]?\s*"
-            r"(?:please\s+)?(?:open|view|show|display|visuali[sz]e|launch|use|run|fold|predict|model)\b",
-            lowered,
-        )
-    )
+    return bool(re.match(r"^(?:please\s+)?(?:open|view|show|display|visuali[sz]e|launch|use|run|fold|predict|model)\b", lowered) or re.match(r"^(?:can|could|would|will)\s+you\b", lowered) or re.match(r"^i(?:'d| would) like (?:you )?to\b", lowered) or re.match(r"^i (?:want|need) (?:you )?to\b", lowered) or re.match(r"^let(?:'s| us)\b", lowered) or re.match(r"^(?:alpha\s*fold\s*2?|pymol)\s*[:,]?\s*(?:please\s+)?(?:open|view|show|display|visuali[sz]e|launch|use|run|fold|predict|model)\b", lowered))
 
 
 def _extract_supported_path(text: str) -> str:
@@ -122,10 +104,9 @@ def _extract_supported_path(text: str) -> str:
         words = shlex.split(text)
     except ValueError:
         return ""
-    supported = (".fasta", ".fa", ".faa", ".pdb", ".cif", ".mmcif")
     for word in reversed(words):
         candidate = word.rstrip(".,!?;:")
-        if _has_suffix(candidate, supported):
+        if _has_suffix(candidate, (".fasta", ".fa", ".faa", ".pdb", ".cif", ".mmcif")):
             return candidate
     return ""
 

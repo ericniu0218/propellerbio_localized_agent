@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from bedrock.config import load_settings
 from bedrock.config.settings import DEFAULT_API_BASE
 
@@ -28,6 +30,24 @@ def test_environment_overrides_file(tmp_path: Path):
     assert settings.api_base == "http://from-env/v1"
     assert settings.model == "env-model"
     assert settings.api_key == "secret"
+
+
+def test_quoted_false_disables_history(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text('save_history = "false"\n')
+    assert load_settings(config_path=config, env={}).save_history is False
+
+
+def test_relative_xdg_data_home_is_ignored(tmp_path: Path):
+    settings = load_settings(config_path=tmp_path / "missing", env={"XDG_DATA_HOME": "relative"})
+    assert settings.history_dir.is_absolute()
+
+
+def test_invalid_history_dir_has_a_clear_error(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text("history_dir = 123\n")
+    with pytest.raises(ValueError, match="history_dir"):
+        load_settings(config_path=config, env={})
 
 
 def test_workspace_identity_and_private_vault_are_configurable(tmp_path: Path):

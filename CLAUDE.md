@@ -48,52 +48,39 @@ The client must never send prompts to external AI APIs, depend on OpenAI/Anthrop
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest              # no model or agent-pack server needed
+pytest              # no server needed
 bedrock             # run the app (expects Ollama at http://localhost:11434 by default)
 ```
 
-Tests drive the real Textual app headlessly with `FakeBackend` (`tests/conftest.py`). Add tests there when changing behaviour.
+Tests drive the real Textual app headlessly with `FakeBackend` (`tests/conftest.py`). Add tests there when changing behaviour. An autouse fixture redirects `XDG_DATA_HOME` to a temporary directory, so tests never write conversations into a developer's real home directory - keep it that way.
 
 ## Current status
 
 MVP complete: chat UI, streaming Markdown responses, `/model`, `/clear`, `/help`, `/exit`, model indicator, connection indicator.
 
-Also built: `/digest` (`src/bedrock/context/`) - compresses any data into a
-small digest plus compressed, keyword-indexed chunks, so a local model can
-read a large file cheaply and still get exact detail on request. Generalised
-over data types by the `SourceAdapter` protocol, the same seam idea as
-`InferenceBackend`. See README's "Compressing data for the model" section.
+Conversation persistence: conversations are saved to `~/.local/share/bedrock/conversations/` as one JSON file each, the most recent reopens on startup, and `/history`, `/resume`, `/new` and `/forget` manage them. See `src/bedrock/storage.py`. Saving is local-only and can be switched off with `BEDROCK_SAVE_HISTORY=0`.
+
+History loading is demand-driven: keep only the open transcript and lightweight sidebar metadata. Never load other transcripts for title backfill. Legacy files require a metadata extraction scan off the UI thread; no message snapshots remain in the store. Large chats render in 50-message pages with a button to reveal earlier messages. Idle polling checks only the directory signature; explicit history refreshes scan file fingerprints. Writers merge title/timestamp-only changes, but preserve divergent transcripts as linked copies. `/forget` deletes the whole family and leaves empty markers to block stale saves. A filesystem without advisory locking uses the atomic-directory fallback; see README for stale-lock recovery. Files from newer schemas open read-only.
+
+Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the *configured* model through `InferenceBackend` - never any other service. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
 
 Also built: native shared workspaces (`src/bedrock/workspaces/` and
 `src/bedrock/ui/workspace_command.py`). Read `docs/SHARED_WORKSPACES.md` before
 changing workspace storage, artifact contracts, roles, invitations,
 integration keys, publish previews, folds, or events. The current vault is
-local SQLite and `BEDROCK_USER` is not authentication; preserve that explicit
-boundary until the workspace store moves behind verified company identity.
+local SQLite and `BEDROCK_USER` is not authentication; preserve that boundary
+until the workspace store moves behind verified company identity.
 
-Not yet built (deliberately): file attachments in chat, embedding-based
-retrieval (`/digest` search is keyword/BM25), authentication, conversation
-persistence, packaging as a standalone executable.
+Also built: local meeting transcription and model-assisted meeting notes in
+`src/bedrock/meetings/`, exposed by the `bedrock-meeting` command.
 
-## Agent-pack mode
+Also built: `/digest` context compression, the optional biotech agent-pack backend,
+and local AlphaFold 2/PyMOL adapters. The web reference client includes the real
+Keycloak login button; the terminal client still uses `BEDROCK_USER` until OIDC is
+wired into it.
 
-This client can now also connect to a separate project, the biotech
-"agent-pack" backend (a multi-agent system: Director/Specialist/Runner,
-sessions, human-approval gates — see that repo's `docs/ARCHITECTURE.md`).
-`app.py::main` dispatches to `agentpack_app.AgentPackApp` instead of the
-plain `BedrockApp` when `settings.backend == "agentpack"`
-(`BEDROCK_BACKEND=agentpack`). This is still the same terminal app, same
-"not a website" rule, same one-input-box-and-a-scrolling-chat screen — it
-just talks to a richer backend over REST + a live event stream instead of
-a single OpenAI-compatible model server, and adds two small pieces of UI
-for that: a quiet "what's happening now" strip and an inline
-approve/reject prompt for high-stakes answers. See `README.md`'s "Two
-modes" section for how to point it at the agent-pack server.
-
-Login is still a stand-in (a `BEDROCK_USER` env var, not real SSO) —
-authentication remains genuinely not built, per the line above; the
-agent-pack backend's `docs/WORKFLOW.md`/`docs/DEPLOYMENT.md` describe the
-intended Keycloak/OIDC login this client would eventually use instead.
+Not yet built (deliberately): file attachments, embedding-based retrieval,
+terminal-client authentication, packaging as a standalone executable.
 
 ## Development Philosophy
 

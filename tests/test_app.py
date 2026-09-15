@@ -87,6 +87,7 @@ async def test_workspace_command_is_native_and_updates_status(fake_backend, tmp_
             display_name="Alice",
             context_dir=str(tmp_path / "context"),
             workspace_dir=str(tmp_path / "workspaces"),
+            history_dir=tmp_path / "history",
         ),
         backend=fake_backend,
     )

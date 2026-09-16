@@ -10,14 +10,14 @@ about future ones.
 | Item | Value |
 |---|---|
 | Version | `0.1.0` (`pyproject.toml`) |
-| Base commit | `60bf8afd6d8567388c3ed301c59d89a3a0ee7617` — *Add Codex repository guidance* |
-| Working tree | the compliance/provenance change, **not yet committed** — see "Before distributing" |
-| Source digest | `1ad51e1d341323f86d2c12e9d9edf152dfe3410a53f97ebfd26ecc6414ee944e` |
-| Built (UTC) | 2026-09-16T01:40:08Z |
+| Commit | `d286f3f40b75f61285cf915b0d62d7e87a2c53db` — *Merge origin/main into the compliance/provenance branch* |
+| Branch | `fix/compliance-provenance-and-biotech`, merged up to `origin/main` at `f012908` |
+| Source digest | `f63a490003c3d1b6ed066ddcc304612f946897b8921a40fc58107cba4bf94b04` |
+| Built (UTC) | 2026-09-16T02:42:30Z |
 | Wheel | `dist/bedrock_private_ai-0.1.0-py3-none-any.whl` |
-| Wheel SHA-256 | `a91858e2529043d5954cfca3c788889f3103e3a2566c8771e8bf10a3326a1864` |
+| Wheel SHA-256 | `c5e6a8ad054a9d02fd2613bc1f295e8266527086c0cfad2a13c0e9bbee96e9d2` |
 | Sdist | `dist/bedrock_private_ai-0.1.0.tar.gz` |
-| Sdist SHA-256 | `c6a4635470095d58bfea2c7e515cf779cbcdf0a5c414e323ea22283f9c900156` |
+| Sdist SHA-256 | `7e3654da2e90ba276eb6dc95c37a5617fb659f3689174754425ca34409c14818` |
 
 The source digest is `sha256` over the sorted per-file `sha256` of every
 `.py`, `.tcss` and `.sql` file under `src/`, plus `pyproject.toml`. A wheel's
@@ -41,13 +41,15 @@ temporary home, so it also proves a first installation works.
 
 ## Results
 
-**Test suite (source tree): 243 passed.** Baseline before this work was 137.
+**Test suite (source tree): 505 passed.** That is this branch merged with
+`origin/main`; 137 was the baseline before either half of the work started.
 
-**Installed wheel: 13/13 checks passed.**
+**Installed wheel: 14/14 checks passed.**
 
 | Check | Result |
 |---|---|
 | Settings read `BEDROCK_ACTION_HISTORY_DIR` | pass |
+| Saved conversations use a different directory from the journal | pass |
 | Fixed PyMOL scripts are inside the wheel | pass |
 | Headless and interactive PyMOL share the pLDDT thresholds | pass |
 | An existing run manifest lists after a fresh install | pass |
@@ -85,10 +87,10 @@ continue to ship through the existing `[tool.setuptools.package-data]` entry.
 
 ## Before distributing
 
-1. Commit this work to a feature branch and open a pull request. `AGENTS.md`
-   forbids pushing to `main` directly, and the table above deliberately says
-   the build came from an uncommitted tree; replace "Working tree" with the
-   merge commit once it exists and rebuild.
+1. Open a pull request from `fix/compliance-provenance-and-biotech`. `AGENTS.md`
+   forbids pushing to `main` directly. This branch is already merged up to
+   `origin/main`, so the PR should be conflict-free; if `main` moves again,
+   merge it in and rebuild before distributing.
 2. Distribute the tested wheel and a configuration file through the company's
    **existing** private channel. This repository does not record what that
    channel is, and a wheel published anywhere else is not this release.

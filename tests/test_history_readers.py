@@ -89,6 +89,7 @@ async def test_stale_fallback_lock_fails_without_sleep_and_preserves_draft(store
         monkeypatch.setattr("bedrock.storage.time.sleep", unexpected_sleep)
         for _ in range(2):
             await app.send_message("keep my draft")
+            await wait_for_app_workers(app)
             assert app.query_one(Input).value == "keep my draft"
             assert not backend.requests
             assert len(app.conversation.messages) == 2

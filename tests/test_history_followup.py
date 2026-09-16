@@ -147,6 +147,7 @@ async def test_external_forget_blocks_requests_and_retains_the_draft(store):
         before = len(app.conversation.messages)
         ConversationStore(store.directory).delete(original.id)
         await app.send_message("please keep this draft")
+        await wait_for_app_workers(app)
         assert not backend.requests
         assert len(app.conversation.messages) == before
         assert app.query_one(Input).value == "please keep this draft"
@@ -172,6 +173,7 @@ async def test_delete_between_preflight_and_save_still_blocks_the_request(store,
 
         monkeypatch.setattr(store, "save", raced_save)
         await app.send_message("my draft")
+        await wait_for_app_workers(app)
         assert not backend.requests
         assert app.query_one(Input).value == "my draft"
 

@@ -22,12 +22,14 @@ the employee.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Input
 
 from bedrock.agentpack.client import AgentPackClient
@@ -38,6 +40,7 @@ from bedrock.config import Settings, load_settings
 from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
 from bedrock.context import ContextStore, find_relevant_context, with_injected_context
 from bedrock.inference.base import InferenceError
+from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt, approval_fingerprint
 from bedrock.ui.argparsing import CommandUsageError
@@ -45,6 +48,7 @@ from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
 from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.fold_command import (
     confidence_summary,
     parse_fold_arguments,
@@ -138,6 +142,7 @@ class AgentPackApp(App[None]):
         self.biotech_workflow = biotech_workflow or ProteinWorkflow.from_settings(self.settings)
         self.session_id: str | None = None
         self._waiting_for: str | None = None  # task_id we're showing an answer bubble for
+        self._seen_events: list[str] = []  # event ids already acted on, newest last
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
         self._context_store: ContextStore | None = None
@@ -161,6 +166,18 @@ class AgentPackApp(App[None]):
         self._draft_role: str | None = None  # which agent's tokens are "the draft"
         self._draft_stream = None  # the open MarkdownStream, while one is active
         self._draft_text = ""  # accumulated so far, for the post-stream "reviewing" swap
+        # The same queue rules as the chat app: one request at a time, later
+        # prompts wait. Scientific jobs count as requests; see prompt_queue.py.
+        self.prompt_queue = PromptQueue()
+        self._running_item: PromptItem | None = None
+        self._preparing_prompts: set[str] = set()
+        self._queue_update_scheduled = False
+        self._quit_confirmation = (0, 0.0)
+        # Keep terminal event identities for this window, not answer bodies.
+        # A replay must not finish whichever prompt happens to be running now.
+        # Two requests can fail in the same words; the stream's own event id
+        # keeps a genuinely new failure from being mistaken for a replay.
+        self._seen_completions: set[tuple[str, str, str | None, str | None, str | None]] = set()
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -168,14 +185,17 @@ class AgentPackApp(App[None]):
         yield StatusBar()
         yield AgentPanel(id="agent-panel")
         yield VerticalScroll(id="chat")
+        yield PromptQueuePanel(id="queue-panel")
         yield Input(placeholder="Type a message, or /help for commands", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:
         self.query_one(StatusBar).model_name = "AI system"
         self.query_one("#agent-panel", AgentPanel).clear()
+        self.query_one(PromptQueuePanel).show_queue(self.queue_snapshot())
         self.query_one("#prompt", Input).focus()
         self.set_interval(CONNECTION_CHECK_SECONDS, self.check_connection)
+        self.set_interval(2, self.recover_queue)
         self.check_connection()
         self.start_session()
 
@@ -213,15 +233,12 @@ class AgentPackApp(App[None]):
         if not text:
             return
         command = parse_command(text)
-        if command is not None:
+        if command is not None and command.name not in {"fold", "pymol"}:
             await self.run_command(command)
         else:
-            scientific_request = parse_scientific_request(text)
-            if scientific_request is not None:
-                await self.mount_message(UserMessage(text))
-                await self.run_command(scientific_request)
-            else:
-                await self.send_message(text)
+            # Chat messages and scientific requests share one queue: a running
+            # fold is a request, so the next prompt waits for it.
+            await self.queue_prompt(text)
 
     async def run_command(self, command: Command) -> None:
         match command.name:
@@ -246,7 +263,12 @@ class AgentPackApp(App[None]):
             case "tools":
                 await self.show_tool_status()
             case "fold":
+                was_running = self._scientific_job_running
                 await self.start_fold(command.args)
+                # A refused fold (bad arguments, or one already running) never
+                # reports completion, so release the queue slot here instead.
+                if was_running or not self._scientific_job_running:
+                    self.finish_running_prompt(ok=False)
             case "pymol":
                 try:
                     structure = parse_structure_argument(command.args)
@@ -312,6 +334,7 @@ class AgentPackApp(App[None]):
         be labelled for a project whether it was pulled or handed over.
         """
         provenance = None
+        completed = False  # the queue may only advance on a finished prediction
         label = f" for project {as_code(project_id)}" if project_id else ""
         try:
             if source is not None:
@@ -367,25 +390,30 @@ class AgentPackApp(App[None]):
                     "Use `/pymol` to open the latest structure interactively.",
                 ]
             )
+            completed = True
             await self.post_notice("\n".join(lines))
         finally:
             self._scientific_job_running = False
+            # A fold counts as finished only here, never when it starts.
+            self.finish_running_prompt(ok=completed)
 
     @work(exclusive=True, group="pymol-open")
     async def open_pymol(self, structure_path: Path | None) -> None:
+        opened_ok = False
         try:
             opened = await self.biotech_workflow.open_in_pymol(structure_path)
         except ToolIntegrationError as exc:
             await self.post_notice(str(exc), kind="error")
         else:
+            opened_ok = True
             await self.post_notice(f"Opened `{opened}` in PyMOL.")
+        finally:
+            self.finish_running_prompt(ok=opened_ok)
 
     async def send_message(self, text: str) -> None:
-        if self._waiting_for is not None:
-            await self.post_notice("Still working on your last question — one at a time for now.", kind="error")
-            return
         if not self.session_id:
             await self.post_notice("Still connecting to the AI system — try again in a moment.", kind="error")
+            self.finish_running_prompt(ok=False)
             return
 
         await self.mount_message(UserMessage(text))
@@ -408,6 +436,13 @@ class AgentPackApp(App[None]):
             task_id = await self.client.send_message(self.session_id, outgoing_text)
         except InferenceError as exc:
             await self.post_notice(str(exc), kind="error")
+            if self._running_item is not None:
+                self.prompt_queue.requeue_front(self._running_item)
+                self._running_item = None
+                self.queue_changed()
+                self.notify("Your unsent prompt was kept. The queue is paused; resume to retry.", timeout=8)
+            else:
+                self.query_one("#prompt", Input).value = text
             return
 
         self._waiting_for = task_id
@@ -419,6 +454,158 @@ class AgentPackApp(App[None]):
         self._draft_role = None
         self._draft_stream = None
         self._draft_text = ""
+
+    # ---- Prompt queue -----------------------------------------------------------
+
+    @property
+    def queue_key(self) -> str:
+        """Agent-pack has one session per window, so the session is the queue."""
+        return self.session_id or "session"
+
+    def queue_snapshot(self) -> QueueSnapshot:
+        return self.prompt_queue.snapshot(self.queue_key)
+
+    def remove_queued_prompt(self, item_id: str) -> bool:
+        removed = self.prompt_queue.remove(item_id)
+        if removed is not None:
+            self.queue_changed()
+        return removed is not None
+
+    def pause_queue(self) -> None:
+        if self.prompt_queue.pause(self.queue_key):
+            self.queue_changed()
+
+    def resume_queue(self) -> None:
+        if self.prompt_queue.resume(self.queue_key):
+            self.queue_changed()
+        if not self.prompt_queue.busy:
+            self.advance_queue_soon(self.queue_key)
+
+    def clear_queue(self) -> None:
+        self.prompt_queue.clear(self.queue_key)
+        self.queue_changed()
+
+    def queue_changed(self) -> None:
+        if not self._queue_update_scheduled:
+            self._queue_update_scheduled = True
+            # Batch nearby lifecycle changes into one display update.
+            self.set_timer(1 / 60, self._emit_queue_changed)
+
+    def _emit_queue_changed(self) -> None:
+        self._queue_update_scheduled = False
+        self.post_message(QueueChanged(self.queue_key, self.queue_snapshot()))
+
+    def recover_queue(self) -> None:
+        item = self.prompt_queue.running
+        if item is None or item.id in self._preparing_prompts or self._waiting_for is not None:
+            return
+        if any(w.group in {"queue", "scientific", "pymol-open"} and not w.is_finished for w in self.workers):
+            return
+        if self.prompt_queue.requeue_front(item):
+            self._running_item = None
+            self.queue_changed()
+            self.notify("The previous request stopped unexpectedly. Its prompt was kept and the queue is paused; resume to retry.", severity="error", timeout=10)
+
+    async def queue_prompt(self, text: str) -> None:
+        """Queue a chat message or scientific request and run it when it can."""
+        if not self.session_id:
+            await self.post_notice("Still connecting to the AI system — try again in a moment.", kind="error")
+            return
+        try:
+            self.prompt_queue.add(text, self.queue_key, "AI system")
+        except QueueFull as exc:
+            self.query_one("#prompt", Input).value = text
+            await self.post_notice(str(exc) + " Your draft is still in the input.", kind="error")
+            return
+        self.queue_changed()
+        await self.advance_queue(self.queue_key)
+
+    async def advance_queue(self, key: str | None = None) -> None:
+        key = key or self.queue_key
+        item = self.prompt_queue.start_next(key)
+        if item is None:
+            return
+        # Busy from here on, before any awaiting preparation below.
+        self._running_item = item
+        self.queue_changed()
+        self._preparing_prompts.add(item.id)
+        try:
+            await self.dispatch_prompt(item)
+        except asyncio.CancelledError:
+            if self.prompt_queue.requeue_front(item):
+                self._running_item = None
+                self.queue_changed()
+            raise
+        except Exception as exc:
+            if self.prompt_queue.requeue_front(item):
+                self._running_item = None
+                self.queue_changed()
+            self._waiting_for = None
+            self._answer_widget = None
+            self._set_input_busy(False)
+            await self.post_notice("Could not start the prompt. Its queue is paused; resume to retry. " + friendly_error(str(exc)), kind="error")
+        finally:
+            self._preparing_prompts.discard(item.id)
+
+    @work(group="queue")
+    async def advance_queue_soon(self, key: str) -> None:
+        await self.advance_queue(key)
+
+    async def dispatch_prompt(self, item: PromptItem) -> None:
+        """Run one queued prompt: a slash command, a scientific request, or chat."""
+        command = parse_command(item.text)
+        if command is not None:
+            await self.run_command(command)
+            return
+        scientific = parse_scientific_request(item.text)
+        if scientific is not None:
+            await self.mount_message(UserMessage(item.text))
+            await self.run_command(scientific)
+            return
+        await self.send_message(item.text)
+
+    def finish_running_prompt(self, *, ok: bool) -> None:
+        """End the running request, then start the next one if it went well.
+
+        Replayed completion events are filtered in _finish. Approval prompts
+        do not come through here, so waiting for a human is not completion.
+        Identifying previously unseen, unrelated terminal events within this
+        session still requires request correlation from the backend: a final
+        step may have a different task_id than send_message returned.
+        """
+        item = self._running_item
+        if item is None or not self.prompt_queue.finish(item.id):
+            return
+        self._running_item = None
+        if not ok and self.prompt_queue.pending_for(item.conversation_id):
+            if self.prompt_queue.pause(item.conversation_id):
+                self.notify("That request did not finish, so the rest of the queue is paused. Resume it when you are ready.", timeout=8)
+        self.queue_changed()
+        if ok:
+            self.advance_queue_soon(item.conversation_id)
+
+    @on(QueueChanged)
+    def show_queue(self, message: QueueChanged) -> None:
+        try:
+            self.query_one(PromptQueuePanel).show_queue(message.snapshot)
+        except NoMatches:
+            pass  # A queued notification may arrive during teardown.
+
+    @on(PromptQueuePanel.RemoveRequested)
+    def on_queue_remove(self, message: PromptQueuePanel.RemoveRequested) -> None:
+        self.remove_queued_prompt(message.item_id)
+
+    @on(PromptQueuePanel.PauseRequested)
+    def on_queue_pause(self) -> None:
+        self.pause_queue()
+
+    @on(PromptQueuePanel.ResumeRequested)
+    def on_queue_resume(self) -> None:
+        self.resume_queue()
+
+    @on(PromptQueuePanel.ClearRequested)
+    def on_queue_clear(self) -> None:
+        self.clear_queue()
 
     # ---- Stored context ---------------------------------------------------------
 
@@ -503,6 +690,16 @@ class AgentPackApp(App[None]):
     # ---- Live events ------------------------------------------------------------
 
     async def handle_event(self, event: AgentEvent) -> None:
+        # A reconnecting stream can redeliver an event. Acting on the copy
+        # would end whichever request is running *now* - see the prompt queue:
+        # completions carry no reference to the request they belong to, so a
+        # repeat is otherwise indistinguishable from the next answer arriving.
+        if event.event_id:
+            if event.event_id in self._seen_events:
+                return
+            self._seen_events.append(event.event_id)
+            if len(self._seen_events) > 500:
+                del self._seen_events[:250]
         if event.type in ("agent.started", "agent.status"):
             self._update_agent(event)
         elif event.type == "task.planned":
@@ -743,8 +940,27 @@ class AgentPackApp(App[None]):
         # app/api/routes_session.py) — we treat whatever completes/fails
         # next as the answer to this turn rather than matching task ids,
         # since that's what a person watching the chat would expect too.
+        payload = event.payload
+        if event.session_id != self.session_id:
+            return
+        task_id, result_ref = payload.get("task_id"), payload.get("result_ref")
+        key = (
+            event.session_id, event.type,
+            task_id if isinstance(task_id, str) else None,
+            result_ref if isinstance(result_ref, str) else None,
+            # Two requests can fail in exactly the same words. The stream's own
+            # id keeps them apart; without it, the second failure would look
+            # like a replay of the first and leave the queue running for ever.
+            event.event_id or None,
+        )
+        if key in self._seen_completions:
+            return
+        # Record before awaiting the result, including events received idle.
+        # Otherwise a replay arriving during the next prompt can release it.
+        self._seen_completions.add(key)
         if self._waiting_for is None or self._answer_widget is None:
             return
+        answer_widget = self._answer_widget
         if self._draft_stream is not None:
             # Defensive only: call_model always emits a done=True token
             # before a task can complete/fail, so this shouldn't normally
@@ -752,15 +968,18 @@ class AgentPackApp(App[None]):
             # widget we're about to overwrite outright.
             await self._answer_widget.end_stream()
             self._draft_stream = None
-        payload = event.payload
         if failed:
-            self._answer_widget.update(friendly_error(payload.get("error", "")))
+            answer_widget.update(friendly_error(payload.get("error", "")))
         else:
             try:
                 content = await self.client.get_result(payload["result_ref"])
             except InferenceError as exc:
                 content = friendly_error(str(exc))
-            self._answer_widget.update(content or "_(no answer produced)_")
+                failed = True
+            # /clear may have replaced this request during the result fetch.
+            if self._answer_widget is not answer_widget:
+                return
+            answer_widget.update(content or "_(no answer produced)_")
         self._waiting_for = None
         self._answer_widget = None
         self._plan_seen = False
@@ -768,6 +987,7 @@ class AgentPackApp(App[None]):
         self._draft_text = ""
         self._set_input_busy(False)
         self.scroll_chat_to_end()
+        self.finish_running_prompt(ok=not failed)
 
     # ---- Helpers ------------------------------------------------------------------
 
@@ -794,8 +1014,14 @@ class AgentPackApp(App[None]):
         Recorded history is untouched: `/clear` is a display action, and a
         journal you can erase by tidying up your screen would not be one.
         """
+        waiting = self.prompt_queue.pending_count
         await self.query_one("#chat", VerticalScroll).remove_children()
         self._pending_approvals.clear()
+        # Nothing will report completion for a request whose answer bubble has
+        # just been removed, so release the queue rather than wedging it.
+        self.prompt_queue.clear(self.queue_key)
+        self.finish_running_prompt(ok=False)
+        self.queue_changed()
         self._waiting_for = None
         self._answer_widget = None
         self._agents.clear()
@@ -805,8 +1031,16 @@ class AgentPackApp(App[None]):
         self._draft_role = None
         self._draft_stream = None
         self._draft_text = ""
+        if waiting:
+            await self.post_notice(f"Cleared the chat and {waiting} waiting prompt(s).")
 
     async def action_quit(self) -> None:
+        waiting = self.prompt_queue.pending_count
+        count, deadline = self._quit_confirmation
+        if waiting and (waiting != count or time.monotonic() > deadline):
+            self._quit_confirmation = (waiting, time.monotonic() + 5)
+            self.notify(f"Quitting will discard {waiting} waiting prompt(s). Press Ctrl+C again within 5 seconds to confirm, or keep working.", severity="warning", timeout=5)
+            return
         if self._workspace_session is not None:
             self._workspace_session.close()
         await self.client.close()

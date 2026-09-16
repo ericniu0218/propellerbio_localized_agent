@@ -154,6 +154,9 @@ class ConversationStore:
                 self.ensure_available(conversation)
                 if path.exists():
                     disk = self._read(path)
+                    version = disk.get("version", 1)
+                    if isinstance(version, int) and version > SCHEMA_VERSION:
+                        raise StorageError("This conversation was written by a newer app version and is read-only. Use /new to chat.")
                     if _revision(disk) != conversation.storage_revision:
                         if _content_revision(disk) != conversation.storage_content_revision:
                             raise StorageConflict("This conversation changed in another window.")

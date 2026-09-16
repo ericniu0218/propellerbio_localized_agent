@@ -192,6 +192,7 @@ def _parse_event(event_type: str, data: str) -> AgentEvent | None:
         type=event_type,
         session_id=envelope.get("session_id", ""),
         payload=envelope.get("payload", {}),
+        event_id=str(envelope.get("event_id", "")),
     )
 
 

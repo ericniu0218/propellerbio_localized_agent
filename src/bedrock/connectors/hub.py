@@ -16,6 +16,7 @@ import json
 import os
 import re
 from pathlib import Path
+from uuid import uuid4
 from typing import Any, Mapping, Sequence
 
 from bedrock.connectors.base import (
@@ -60,7 +61,13 @@ def build_connectors(config: Any) -> tuple[dict[str, SourceConnector], list[str]
             errors.append(f"{section} must be a table.")
             continue
         kind = table.get("type")
-        factory = CONNECTOR_TYPES.get(kind)
+        # ``kind`` is whatever the file held, which may be unhashable (a TOML
+        # list), so even the lookup has to be guarded. A bad ``type =`` line is
+        # a config mistake to report, not an exception to raise at the caller.
+        try:
+            factory = CONNECTOR_TYPES.get(kind)
+        except TypeError:
+            factory = None
         if factory is None:
             errors.append(
                 f"{section}: type must be one of {', '.join(sorted(CONNECTOR_TYPES))} (got {kind!r})."
@@ -77,6 +84,12 @@ def build_connectors(config: Any) -> tuple[dict[str, SourceConnector], list[str]
             errors.append(str(exc))
         except TypeError as exc:
             errors.append(f"{section}: {_explain_type_error(exc)}")
+        except Exception as exc:
+            # Wrongly-typed values land here: timeout = "30s" raises ValueError,
+            # base_url = 123 raises AttributeError, and so on. This module
+            # promises that one broken table never stops the app, and that
+            # promise is only true if nothing at all escapes.
+            errors.append(f"{section}: one of its settings is not usable - {exc}")
     return connectors, errors
 
 
@@ -144,23 +157,35 @@ class SourceHub:
         other. Both files are readable by their owner only (0600): these are
         company sequences, not scratch output.
         """
-        self.staging_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.staging_dir, 0o700)
-        path = self.staging_dir / f"{record.sha256[:12]}-{record.filename}"
-        _write_private(path, record.content)
-        sidecar = path.with_name(path.name + ".provenance.json")
-        _write_private(
-            sidecar,
-            (json.dumps(record.provenance(), indent=2, sort_keys=True) + "\n").encode("utf-8"),
-        )
+        try:
+            self.staging_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(self.staging_dir, 0o700)
+            path = self.staging_dir / f"{record.sha256[:12]}-{record.filename}"
+            _write_private(path, record.content)
+            sidecar = path.with_name(path.name + ".provenance.json")
+            _write_private(
+                sidecar,
+                (json.dumps(record.provenance(), indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            )
+        except OSError as exc:
+            raise ConnectorError(
+                f"Could not save `{record.ref}` into {self.staging_dir}: {exc.strerror or exc}"
+            ) from exc
         return path
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_bytes(data)
-    os.chmod(temporary, 0o600)
-    temporary.replace(path)
+    # A unique temporary name per write. Two stages of the same record can run
+    # at once - /sources fetch and /fold are separate workers - and a shared
+    # <name>.tmp would let one replace() the other's half-written file, leaving
+    # content that its own provenance sidecar no longer vouches for.
+    temporary = path.with_name(f"{path.name}.{uuid4().hex[:12]}.tmp")
+    try:
+        temporary.write_bytes(data)
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _explain_type_error(exc: TypeError) -> str:

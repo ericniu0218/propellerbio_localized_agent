@@ -111,3 +111,27 @@ async def test_sources_with_nothing_configured_shows_how_to_add_one(tmp_path, fa
     async with app.run_test() as pilot:
         await submit(app, pilot, "/sources")
         assert "[connectors.registry]" in notices(app)
+
+
+async def test_a_broken_connector_table_is_reported_not_crashed(tmp_path, fake_backend):
+    """A wrongly-typed setting in one team's config used to take the whole
+    terminal down with an unhandled WorkerFailed. It must read as a config
+    problem, and every other source must keep working."""
+    connectors = {
+        "lims": {"type": "share", "root": str(exports(tmp_path))},
+        "oops": {"type": "rest", "base_url": 123},
+        "alsobad": {"type": ["rest"]},
+    }
+    app = make_app(tmp_path, fake_backend, connectors)
+
+    async with app.run_test() as pilot:
+        await submit(app, pilot, "/sources")
+
+        text = notices(app)
+        assert "[connectors.oops]" in text
+        assert "[connectors.alsobad]" in text
+        assert "`lims`" in text and "| ok |" in text
+
+        # The app is still alive and the working source still works.
+        await submit(app, pilot, "/digest lims://plates/P42.csv")
+        assert "Compressed `P42.csv`" in notices(app)

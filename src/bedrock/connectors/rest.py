@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -53,6 +54,15 @@ from bedrock.connectors.base import (
     check_record_id,
     safe_filename,
 )
+
+
+@dataclass(frozen=True)
+class _Fetched:
+    """One HTTP response, already read under the size limit."""
+
+    content: bytes
+    url: str
+    headers: httpx.Headers
 
 
 class RestConnector:
@@ -117,13 +127,11 @@ class RestConnector:
         # Encoding with safe="" turns "/" into %2F, so an id like "../admin"
         # stays one path segment instead of walking up the API's URL tree.
         path = self.record_path.replace("{id}", quote(record_id, safe=""))
-        response = await self._get(path, user=user, what=f"`{ref}`")
-        if len(response.content) > MAX_RECORD_BYTES:
-            raise ConnectorError(f"`{ref}` is larger than the {MAX_RECORD_BYTES // 1_000_000} MB limit.")
+        fetched = await self._get(path, user=user, what=f"`{ref}`")
 
         body: Any = None
         if self.content_field or self.filename_field or self.version_field:
-            body = _json(response, self.name)
+            body = _json(fetched, self.name)
 
         if self.content_field:
             value = _field(body, self.content_field)
@@ -134,28 +142,28 @@ class RestConnector:
                 )
             content = value.encode("utf-8") if isinstance(value, str) else json.dumps(value).encode("utf-8")
         else:
-            content = response.content
+            content = fetched.content
 
         return FetchedRecord(
             ref=ref,
             filename=self._filename(body, record_id),
             content=content,
             connector_kind=self.kind,
-            location=str(response.url),
+            location=fetched.url,
             fetched_by=user,
-            version=self._version(body, response),
+            version=self._version(body, fetched),
         )
 
     async def search(self, query: str, *, user: str, limit: int = 10) -> list[RecordSummary]:
         if not self.search_path:
             raise ConnectorError(f"`{self.name}` is not set up for search (it has no search_path).")
-        response = await self._get(
+        fetched = await self._get(
             self.search_path,
             user=user,
             what=f"search on `{self.name}`",
             params={self.search_param: query, "limit": str(limit)},
         )
-        body = _json(response, self.name)
+        body = _json(fetched, self.name)
         items = _field(body, self.results_field) if self.results_field else body
         if not isinstance(items, list):
             raise ConnectorError(
@@ -185,7 +193,7 @@ class RestConnector:
         user: str,
         what: str,
         params: dict[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> _Fetched:
         headers = self._headers(user)
         try:
             async with httpx.AsyncClient(
@@ -193,7 +201,20 @@ class RestConnector:
                 timeout=httpx.Timeout(self.timeout, connect=5.0),
                 transport=self._transport,
             ) as client:
-                response = await client.get(path, headers=headers, params=params)
+                async with client.stream("GET", path, headers=headers, params=params) as response:
+                    self._check_status(response.status_code, what, user)
+                    declared = response.headers.get("content-length")
+                    if declared and declared.isdigit() and int(declared) > MAX_RECORD_BYTES:
+                        raise ConnectorError(_too_large(what))
+                    # Accumulate rather than letting httpx buffer the whole
+                    # body: an oversized response has to stop being read, not
+                    # be measured once it is already in memory.
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > MAX_RECORD_BYTES:
+                            raise ConnectorError(_too_large(what))
+                    return _Fetched(bytes(body), str(response.url), response.headers)
         except httpx.ConnectError as exc:
             raise ConnectorError(
                 f"Could not reach `{self.name}` at {self.base_url}. "
@@ -204,16 +225,16 @@ class RestConnector:
         except httpx.HTTPError as exc:
             raise ConnectorError(f"Request to `{self.name}` failed: {exc}") from exc
 
-        if response.status_code in (401, 403):
+    def _check_status(self, status: int, what: str, user: str) -> None:
+        if status in (401, 403):
             raise AccessDenied(
                 f"`{self.name}` refused {what} for `{user}`. Access is decided by "
                 f"{self.name} itself - ask its owner if you should have it."
             )
-        if response.status_code == 404:
+        if status == 404:
             raise RecordNotFound(f"`{self.name}` found nothing for {what}.")
-        if response.status_code >= 400:
-            raise ConnectorError(f"`{self.name}` returned HTTP {response.status_code} for {what}.")
-        return response
+        if status >= 400:
+            raise ConnectorError(f"`{self.name}` returned HTTP {status} for {what}.")
 
     def _headers(self, user: str) -> dict[str, str]:
         headers = {"Accept": "application/json, text/plain;q=0.9, */*;q=0.5"}
@@ -237,17 +258,21 @@ class RestConnector:
             name += self.suffix
         return name
 
-    def _version(self, body: Any, response: httpx.Response) -> str | None:
+    def _version(self, body: Any, fetched: _Fetched) -> str | None:
         if self.version_field:
             value = _field(body, self.version_field)
             if value not in (None, ""):
                 return str(value)
-        return response.headers.get("etag") or response.headers.get("last-modified")
+        return fetched.headers.get("etag") or fetched.headers.get("last-modified")
 
 
-def _json(response: httpx.Response, name: str) -> Any:
+def _too_large(what: str) -> str:
+    return f"{what} is larger than the {MAX_RECORD_BYTES // 1_000_000} MB limit."
+
+
+def _json(fetched: _Fetched, name: str) -> Any:
     try:
-        return response.json()
+        return json.loads(fetched.content)
     except ValueError as exc:
         raise ConnectorError(f"`{name}` did not return JSON where JSON was expected.") from exc
 

@@ -49,13 +49,19 @@ class ShareConnector:
         name: str,
         *,
         root: str,
-        extensions: list[str] | None = None,
+        extensions: list[str] | str | None = None,
         max_search_files: int = 20_000,
     ) -> None:
         if not root:
             raise ConnectorConfigError(f"[connectors.{name}] needs root.")
         self.name = name
         self.root = Path(root).expanduser()
+        # A single extension written as a plain string is the natural thing to
+        # put in a config file. Iterating it directly would turn "fasta" into
+        # ('.f', '.a', '.s', '.t', '.a'), which reads as configured but refuses
+        # every file - so accept it as the one-item list it was meant to be.
+        if isinstance(extensions, str):
+            extensions = [extensions]
         self.extensions = tuple(
             (ext if ext.startswith(".") else f".{ext}").lower() for ext in (extensions or ())
         )

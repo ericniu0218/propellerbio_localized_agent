@@ -4,6 +4,7 @@ The REST connector runs against ``httpx.MockTransport`` and the share connector
 against a temporary folder, so no real company system is involved.
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -287,3 +288,69 @@ async def test_hub_explains_unknown_and_unconfigured_sources(share: ShareConnect
 
     with pytest.raises(ConnectorError, match="No company sources are configured"):
         await SourceHub({}, user="alice", staging_dir=tmp_path).fetch("registry://SEQ-1")
+
+
+# ---- Regressions: a bad config or a full disk must never crash the app -------
+
+
+def test_wrongly_typed_settings_are_reported_not_raised(tmp_path: Path):
+    """The module promises one broken table never stops the app. Every one of
+    these used to escape as an unhandled exception and kill `/sources`."""
+    connectors, errors = build_connectors(
+        {
+            "listtype": {"type": ["rest"]},  # unhashable, broke the lookup itself
+            "badtimeout": {"type": "rest", "base_url": "https://x.internal", "timeout": "30s"},
+            "badurl": {"type": "rest", "base_url": 123},
+            "badcount": {"type": "share", "root": str(tmp_path), "max_search_files": "lots"},
+            "good": {"type": "share", "root": str(tmp_path)},
+        }
+    )
+
+    assert list(connectors) == ["good"]
+    joined = "\n".join(errors)
+    for section in ("listtype", "badtimeout", "badurl", "badcount"):
+        assert f"[connectors.{section}]" in joined
+
+
+async def test_share_accepts_a_single_extension_written_as_a_string(share: ShareConnector):
+    """`extensions = "fasta"` used to become ('.f','.a','.s','.t','.a') - the
+    connector reported itself fine and then refused every single file."""
+    for written_as in (".fasta", "fasta"):
+        connector = ShareConnector("lims", root=str(share.root), extensions=written_as)
+        record = await connector.fetch("candidate.fasta", user="alice")
+        assert record.filename == "candidate.fasta"
+
+
+async def test_staging_failures_are_reported_as_connector_errors(share: ShareConnector, tmp_path: Path):
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("")
+    hub = SourceHub({"lims": share}, user="alice", staging_dir=blocked / "sources")
+
+    with pytest.raises(ConnectorError, match="Could not save"):
+        await hub.fetch_to_file("lims://candidate.fasta")
+
+
+async def test_an_oversized_response_stops_being_read(monkeypatch):
+    monkeypatch.setattr("bedrock.connectors.rest.MAX_RECORD_BYTES", 100)
+    connector = registry(lambda request: httpx.Response(200, content=b"x" * 500))
+
+    with pytest.raises(ConnectorError, match="larger than"):
+        await connector.fetch("SEQ-1", user="alice")
+
+
+async def test_concurrent_stages_of_one_record_do_not_corrupt_each_other(
+    share: ShareConnector, tmp_path: Path
+):
+    """/sources fetch and /fold are separate workers, so two stages of the same
+    record can overlap. A shared temp filename used to let them clobber one
+    another, leaving bytes the sidecar no longer vouched for."""
+    hub = SourceHub({"lims": share}, user="alice", staging_dir=tmp_path / "staging")
+
+    results = await asyncio.gather(
+        *[hub.fetch_to_file("lims://candidate.fasta") for _ in range(6)]
+    )
+
+    for record, path in results:
+        assert path.read_bytes() == record.content
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == record.sha256
+    assert not list((tmp_path / "staging").glob("*.tmp"))

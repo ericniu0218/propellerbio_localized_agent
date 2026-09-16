@@ -374,3 +374,83 @@ def test_our_working_directory_is_not_mistaken_for_audio(tmp_path):
     tracks = discover_participant_tracks(tmp_path)
     assert list(tracks) == ["Alice Chen"]
     assert len(tracks["Alice Chen"]) == 1
+
+
+async def test_a_participant_who_never_speaks_does_not_fail_the_meeting(tmp_path):
+    """Somebody joins and stays quiet. VAD still fires on a cough or a door,
+    whisper reports [BLANK_AUDIO], and every cue is filtered out. That must not
+    take the whole meeting down with it."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+    (rec / "audio2_Silent Sam.wav").write_bytes(b"RIFFfake")
+
+    runner = FakeRunner(regions=[(1000, 3000)], texts=["Real words.", "[BLANK_AUDIO]"])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    assert [c.text for c in result.cues] == ["Real words."]
+    assert result.speakers == ["Alice Chen"]          # Sam contributed nothing
+    assert result.per_speaker_counts["Silent Sam"] == 0  # but is still accounted for
+
+
+async def test_a_genuine_whisper_failure_still_raises(tmp_path):
+    """The silent-participant fix must not swallow a real tool failure."""
+
+    class NoOutputRunner(FakeRunner):
+        async def run(self, args, log_path, env=None):
+            if list(args)[0] == "whisper-cli":
+                # Writes no .vtt at all, as a crashed whisper would.
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text("segmentation fault")
+                return
+            await super().run(args, log_path, env)
+
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+    transcriber = WhisperTranscriber(
+        make_config(tmp_path), runner=NoOutputRunner(regions=[(1000, 3000)], texts=["x"])
+    )
+    with pytest.raises(ToolIntegrationError, match="no transcript"):
+        await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+
+async def test_a_speaker_with_several_files_is_reported(tmp_path):
+    """Two people sharing a display name is indistinguishable from one person's
+    split recording, so the caller has to be told it happened."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alex.wav").write_bytes(b"RIFFfake")
+    (rec / "audio2_Alex.wav").write_bytes(b"RIFFfake")
+
+    runner = FakeRunner(regions=[(1000, 3000)], texts=["one", "two"])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    assert result.multi_file_speakers == ["Alex"]
+
+
+def test_unusual_display_names_survive_discovery(tmp_path):
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    for name in (
+        "audio1_José García.m4a",
+        "audio2_Mary_Jane Smith.m4a",
+        "audio3_12345.m4a",
+        "AUDIO4_Bob Ruiz.m4a",
+    ):
+        (rec / name).write_bytes(b"")
+    assert set(discover_participant_tracks(tmp_path)) == {
+        "José García",
+        "Mary_Jane Smith",
+        "12345",
+        "Bob Ruiz",
+    }
+
+
+def test_a_file_with_no_participant_suffix_is_not_a_participant(tmp_path):
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1234567.m4a").write_bytes(b"")
+    assert discover_participant_tracks(tmp_path) == {}

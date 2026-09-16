@@ -113,6 +113,16 @@ class TranscriptionResult:
     unattributed: bool = False
     """True when the recording had no per-participant tracks, so nothing can be
     attributed to a named person."""
+    multi_file_speakers: list[str] = field(default_factory=list)
+    """Speakers whose audio arrived as several files, which are treated as
+    consecutive parts of a split recording.
+
+    Two participants sharing one Zoom display name look exactly the same on
+    disk, and for them this assumption is wrong: their speech is concurrent,
+    not consecutive, so the second is timestamped after the meeting ended.
+    Nothing on disk distinguishes the two cases, so callers are told which
+    speakers this applies to rather than left to wonder.
+    """
 
 
 class WhisperTranscriber:
@@ -278,12 +288,14 @@ class WhisperTranscriber:
         await self.runner.run(args, log_path=work_dir / f"{wav.stem}.whisper.log")
 
         cues: list[Cue] = []
+        transcribed_any = False
         for path, offset_ms in slices:
             # With several -f inputs whisper writes "<input path>.vtt" rather
             # than using a single -of prefix.
             vtt = path.with_suffix(path.suffix + ".vtt")
             if not vtt.exists():
                 continue
+            transcribed_any = True
             for cue in parse_vtt(vtt.read_text(errors="replace")):
                 if not is_speech(cue.text):
                     continue
@@ -296,7 +308,11 @@ class WhisperTranscriber:
                     )
                 )
 
-        if not cues:
+        # An empty result is only a failure if whisper never ran. Somebody who
+        # joined and said nothing is ordinary: VAD picks up a cough or a door,
+        # whisper reports [BLANK_AUDIO], and every cue is filtered out. Raising
+        # there would fail the entire meeting because one person stayed quiet.
+        if not transcribed_any:
             raise ToolIntegrationError(
                 f"whisper produced no transcript for {audio.name}. "
                 f"See {work_dir / (wav.stem + '.whisper.log')}."
@@ -437,6 +453,7 @@ async def transcribe_recording(
         cues=merged,
         speakers=[s for s in tracks if counts.get(s)],
         per_speaker_counts=counts,
+        multi_file_speakers=[s for s, files in tracks.items() if len(files) > 1],
     )
 
 

@@ -167,6 +167,19 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"\nTranscription failed: {exc}", file=sys.stderr)
         return 1
 
+    if result.multi_file_speakers:
+        print(
+            f"  Note: {', '.join(result.multi_file_speakers)} had several audio files, "
+            "joined as consecutive parts of a split recording."
+        )
+        print(
+            "  If two people shared that Zoom display name, their timings will be wrong — "
+            "rename one in Zoom and record again."
+        )
+    if result.speakers and len(result.speakers) < len(result.per_speaker_counts):
+        quiet = [s for s, n in result.per_speaker_counts.items() if not n]
+        print(f"  {', '.join(quiet)} never spoke — no lines attributed to them.")
+
     transcript_path = folder / "transcript.vtt"
     transcript_path.write_text(to_vtt(result.cues))
     print(f"  {len(result.cues)} cues -> {transcript_path}")

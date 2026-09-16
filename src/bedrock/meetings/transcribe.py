@@ -172,6 +172,29 @@ class WhisperTranscriber:
             raise ToolIntegrationError(f"ffmpeg produced no output for {source.name}.")
         return target
 
+    async def duration_ms(self, audio: Path) -> int:
+        """How long the file actually is.
+
+        Taken from the container rather than from the last cue, because a file
+        that ends in silence would otherwise report short and make the next
+        split part overlap it.
+        """
+        log = audio.parent / f".{audio.stem}.probe.log"
+        try:
+            await self.runner.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0", str(audio),
+                ],
+                log_path=log,
+            )
+            return int(float(log.read_text().strip().splitlines()[0]) * 1000)
+        except (ToolIntegrationError, ValueError, IndexError, OSError):
+            return 0
+        finally:
+            log.unlink(missing_ok=True)
+
     async def detect_speech_regions(self, wav: Path, work_dir: Path) -> list[tuple[int, int]]:
         """Where speech actually is, in milliseconds from the start of the file."""
         log = work_dir / f"{wav.stem}.vad.log"
@@ -282,40 +305,88 @@ class WhisperTranscriber:
         return cues
 
 
-def discover_participant_tracks(folder: Path) -> dict[str, Path]:
-    """Map speaker name to audio file for a Zoom local recording.
+def _audio_files(folder: Path) -> list[Path]:
+    """Every audio file in the recording, ignoring our own working directory.
 
-    Zoom puts per-participant tracks in an "Audio Record" subfolder; the
-    display name is in the filename. Returns empty when the recording has no
-    per-participant tracks, which is the signal to fall back to the mixed file.
+    Conversions and slices are written under a dot-directory inside the
+    recording folder. Without this filter a second run rediscovers the 16 kHz
+    copies it made on the first, transcribes everybody twice, and reports
+    speakers named "Alice Chen.16k" — so the tool silently corrupts itself the
+    moment it is run twice on the same meeting.
     """
-    tracks: dict[str, Path] = {}
-    for candidate in sorted(folder.rglob("*")):
-        if not candidate.is_file() or candidate.suffix.lower() not in AUDIO_SUFFIXES:
-            continue
-        match = _PARTICIPANT_FILE.match(candidate.stem)
-        if match:
-            name = match.group("name").strip()
-            if name:
-                tracks[name] = candidate
-    return tracks
-
-
-def find_mixed_audio(folder: Path) -> Path | None:
-    """The single combined recording, for when per-participant tracks are off."""
-    candidates = [
+    return [
         path
         for path in sorted(folder.rglob("*"))
         if path.is_file()
         and path.suffix.lower() in AUDIO_SUFFIXES
-        and not _PARTICIPANT_FILE.match(path.stem)
+        and not any(part.startswith(".") for part in path.relative_to(folder).parts)
+    ]
+
+
+def discover_participant_tracks(folder: Path) -> dict[str, list[Path]]:
+    """Map speaker name to their audio files for a Zoom local recording.
+
+    Zoom puts per-participant tracks in an "Audio Record" subfolder with the
+    display name in the filename. **A participant can have more than one file**:
+    Zoom splits long meetings, so a two-hour call produces several per person.
+    Keeping only one of them loses most of the meeting without any error, which
+    is why this returns every file per speaker rather than the last one seen.
+
+    Files are ordered by name, which is Zoom's own chronological order.
+    Returns empty when there are no per-participant tracks, which is the signal
+    to fall back to the mixed recording.
+    """
+    tracks: dict[str, list[Path]] = {}
+    for candidate in _audio_files(folder):
+        match = _PARTICIPANT_FILE.match(candidate.stem)
+        if match:
+            name = match.group("name").strip()
+            if name:
+                tracks.setdefault(name, []).append(candidate)
+    return tracks
+
+
+def find_mixed_audio(folder: Path) -> list[Path]:
+    """The combined recording, for when per-participant tracks are off.
+
+    A list, not one file, for the same reason as above: Zoom splits long
+    recordings, and returning the first would drop everything after it.
+    """
+    candidates = [
+        path for path in _audio_files(folder) if not _PARTICIPANT_FILE.match(path.stem)
     ]
     if not candidates:
-        return None
-    # Prefer an audio-only file over the video; both carry the same audio, but
-    # the m4a is far smaller and decodes faster.
+        return []
+    # Prefer audio-only files over the video: both carry the same audio, but
+    # the m4a is far smaller and decodes faster. Only mix the two if there are
+    # no audio-only files at all.
     audio_only = [p for p in candidates if p.suffix.lower() in (".m4a", ".mp3", ".wav", ".aac")]
-    return (audio_only or candidates)[0]
+    return audio_only or candidates
+
+
+async def _transcribe_all(
+    transcriber: "WhisperTranscriber", files: list[Path], work_dir: Path
+) -> list[Cue]:
+    """Transcribe a speaker's files in order, offsetting each by what came before.
+
+    Zoom's split files are consecutive, so part two's timestamps continue where
+    part one's audio ended rather than restarting at zero.
+    """
+    cues: list[Cue] = []
+    elapsed_ms = 0
+    for path in files:
+        part = await transcriber.transcribe_track(path, work_dir)
+        cues += [
+            Cue(
+                start_ms=c.start_ms + elapsed_ms,
+                end_ms=c.end_ms + elapsed_ms,
+                speaker=c.speaker,
+                text=c.text,
+            )
+            for c in part
+        ]
+        elapsed_ms += await transcriber.duration_ms(path)
+    return cues
 
 
 async def transcribe_recording(
@@ -330,14 +401,16 @@ async def transcribe_recording(
     if not folder.is_dir():
         raise ToolIntegrationError(f"{folder} is not a folder.")
 
+    # Dot-prefixed so _audio_files skips it; see the note there about what
+    # happens on a second run if it does not.
     work_dir = work_dir or folder / ".bedrock-work"
     tracks = discover_participant_tracks(folder)
 
     if not tracks:
         mixed = find_mixed_audio(folder)
-        if mixed is None:
+        if not mixed:
             raise ToolIntegrationError(f"No audio files found under {folder}.")
-        cues = await transcriber.transcribe_track(mixed, work_dir)
+        cues = await _transcribe_all(transcriber, mixed, work_dir)
         return TranscriptionResult(
             cues=cues,
             speakers=[],
@@ -349,8 +422,8 @@ async def transcribe_recording(
     # tracks concurrently makes the whole job slower, not faster.
     merged: list[Cue] = []
     counts: dict[str, int] = {}
-    for speaker, audio in tracks.items():
-        cues = await transcriber.transcribe_track(audio, work_dir)
+    for speaker, audio_files in tracks.items():
+        cues = await _transcribe_all(transcriber, audio_files, work_dir)
         merged += [
             Cue(start_ms=c.start_ms, end_ms=c.end_ms, speaker=speaker, text=c.text)
             for c in cues

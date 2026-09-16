@@ -25,6 +25,7 @@ from bedrock.meetings.transcribe import (
     WhisperConfig,
     WhisperTranscriber,
     discover_participant_tracks,
+    find_mixed_audio,
     to_vtt,
     transcribe_recording,
 )
@@ -50,7 +51,8 @@ unnamed speaker.
 
 
 def recordings_in(folder: Path) -> list[Path]:
-    """Zoom writes one folder per meeting, newest last by name."""
+    """Zoom writes one folder per meeting. Ordered oldest first by modification
+    time, so the caller's "most recent" is the last entry."""
     if not folder.is_dir():
         return []
     return sorted(
@@ -105,9 +107,22 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
         for folder in found:
             tracks = discover_participant_tracks(folder)
-            who = f"{len(tracks)} participant tracks" if tracks else "no per-participant audio"
+            files = sum(len(f) for f in tracks.values())
+            who = (
+                f"{len(tracks)} participants, {files} audio files"
+                if tracks
+                else "no per-participant audio"
+            )
             print(f"{folder.name}\n    {who}")
         return 0
+
+    # Validate arguments before doing any work: being told a path is wrong
+    # after a minute of transcription is the same mistake as not checking.
+    if args.notes and not args.notes.exists():
+        # Summarising without them would look like success while ignoring the
+        # thing the user most wanted included.
+        print(f"No notes file at {args.notes}.", file=sys.stderr)
+        return 1
 
     folder = args.folder
     if folder is None:
@@ -133,10 +148,18 @@ async def _run(args: argparse.Namespace) -> int:
 
     tracks = discover_participant_tracks(folder)
     if tracks:
-        print(f"Transcribing {len(tracks)} participant tracks: {', '.join(tracks)}")
-    else:
+        total = sum(len(files) for files in tracks.values())
+        extra = f" ({total} files)" if total > len(tracks) else ""
+        print(f"Transcribing {len(tracks)} participant tracks{extra}: {', '.join(tracks)}")
+    elif find_mixed_audio(folder):
         print("No per-participant audio in this recording — speakers will not be named.")
         print('Turn on "Record a separate audio file for each participant" in Zoom for next time.')
+    else:
+        # Don't advise changing a Zoom setting when the real problem is that
+        # there is no audio here at all — that sends people to fix the wrong thing.
+        print(f"\nNo audio files in {folder}.", file=sys.stderr)
+        print("If Zoom is still converting the recording, wait for it to finish.", file=sys.stderr)
+        return 1
 
     try:
         result = await transcribe_recording(folder, transcriber)
@@ -151,7 +174,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.transcript_only:
         return 0
 
-    notes = args.notes.read_text() if args.notes and args.notes.exists() else None
+    notes = args.notes.read_text() if args.notes else None
     backend = OpenAICompatibleBackend(args.api_base, timeout=600.0)
     try:
         if not await backend.check_connection():

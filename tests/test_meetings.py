@@ -22,7 +22,7 @@ from bedrock.meetings.summarize import (
     compute_facts,
     summarize_meeting,
 )
-from bedrock.meetings.transcript import parse_vtt, speakers, word_count
+from bedrock.meetings.transcript import Cue, parse_vtt, speakers, word_count
 
 VTT = """WEBVTT
 
@@ -212,3 +212,27 @@ def test_the_same_decision_from_two_chunks_is_reported_once():
         Point(text="Bob will call the site four PI", timestamp="00:00:19"),
     ]
     assert len(_dedupe(points)) == 2
+
+
+def test_a_long_meeting_keeps_both_ends_not_just_the_start():
+    """Trimming to the first N cues lost the wrap-up, which is where decisions
+    and owners actually get stated."""
+    from bedrock.meetings.summarize import _for_one_prompt
+
+    cues = [
+        Cue(start_ms=i * 1000, end_ms=i * 1000 + 900, speaker="A", text=f"line {i}")
+        for i in range(500)
+    ]
+    rendered = _for_one_prompt(cues, limit=100)
+
+    assert "line 0" in rendered
+    assert "line 499" in rendered  # the close survives
+    assert "line 250" not in rendered  # the middle is what gets dropped
+    assert "omitted from the middle" in rendered
+
+
+def test_a_short_meeting_is_sent_whole():
+    from bedrock.meetings.summarize import _for_one_prompt
+
+    cues = [Cue(start_ms=0, end_ms=900, speaker="A", text="only line")]
+    assert "omitted" not in _for_one_prompt(cues, limit=100)

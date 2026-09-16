@@ -194,8 +194,32 @@ Transcript:
 """
 
 
+# The overview and notes passes get one prompt, not the chunked treatment the
+# extraction pass gets, so a long meeting has to be trimmed to fit.
+MAX_OVERVIEW_CUES = 400
+
+
 def _render(cues: list[Cue]) -> str:
     return "\n".join(cue.render() for cue in cues)
+
+
+def _for_one_prompt(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES) -> str:
+    """Trim a long meeting for a single-prompt pass, keeping both ends.
+
+    Taking the first N cues loses the entire back half of a long meeting —
+    including the wrap-up, which is where decisions and owners usually land.
+    The opening states the agenda and the close states the outcome, so when a
+    meeting is too long to send whole, those are the parts to keep.
+    """
+    if len(cues) <= limit:
+        return _render(cues)
+    head, tail = limit // 2, limit - limit // 2
+    skipped = len(cues) - limit
+    return (
+        _render(cues[:head])
+        + f"\n\n[... {skipped} lines omitted from the middle of the meeting ...]\n\n"
+        + _render(cues[-tail:])
+    )
 
 
 async def _complete(backend: InferenceBackend, model: str, prompt: str) -> str:
@@ -329,11 +353,11 @@ async def summarize_meeting(
             summary.enhanced_notes = await _complete(
                 backend,
                 model,
-                _NOTES_PROMPT.format(notes=notes.strip(), transcript=_render(cues[:400])),
+                _NOTES_PROMPT.format(notes=notes.strip(), transcript=_for_one_prompt(cues)),
             )
         else:
             summary.overview = await _complete(
-                backend, model, _OVERVIEW_PROMPT.format(transcript=_render(cues[:400]))
+                backend, model, _OVERVIEW_PROMPT.format(transcript=_for_one_prompt(cues))
             )
     except InferenceError as exc:
         summary.degraded_reason = str(exc)

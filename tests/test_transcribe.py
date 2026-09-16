@@ -43,9 +43,11 @@ class FakeRunner:
     slice in order.
     """
 
-    def __init__(self, regions: list[tuple[int, int]], texts: list[str]):
+    def __init__(self, regions: list[tuple[int, int]], texts: list[str],
+                 file_duration_s: float = 60.0):
         self.regions = regions
         self.texts = list(texts)
+        self.file_duration_s = file_duration_s
         self.commands: list[list[str]] = []
 
     async def run(self, args, log_path, env=None):
@@ -61,6 +63,10 @@ class FakeRunner:
             log_path.write_text("\n".join(lines))
             return
 
+        if args[0] == "ffprobe":
+            log_path.write_text(f"{self.file_duration_s:.3f}\n")
+            return
+
         if args[0] == "ffmpeg":
             Path(args[-1]).parent.mkdir(parents=True, exist_ok=True)
             Path(args[-1]).write_bytes(b"RIFFfake")
@@ -69,7 +75,8 @@ class FakeRunner:
 
         if args[0] == "whisper-cli":
             inputs = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
-            for path, text in zip(inputs, self.texts):
+            for path in inputs:
+                text = self.texts.pop(0) if self.texts else ""
                 # Timestamps are relative to the slice, as whisper reports them.
                 Path(path + ".vtt").write_text(
                     f"WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n{text}\n"
@@ -93,12 +100,13 @@ def test_finds_participant_tracks_by_zoom_naming(tmp_path):
     tracks = discover_participant_tracks(tmp_path)
     assert set(tracks) == {"Alice Chen", "Bob Ruiz"}
     assert "zoom_0" not in tracks  # the mixed recording is not a participant
+    assert all(len(files) == 1 for files in tracks.values())
 
 
 def test_mixed_audio_prefers_audio_only_over_video(tmp_path):
     (tmp_path / "zoom_0.mp4").write_bytes(b"")
     (tmp_path / "audio_only.m4a").write_bytes(b"")
-    assert find_mixed_audio(tmp_path).name == "audio_only.m4a"
+    assert [p.name for p in find_mixed_audio(tmp_path)] == ["audio_only.m4a"]
 
 
 # --- turn grouping -------------------------------------------------------
@@ -150,7 +158,10 @@ async def test_speakers_merge_in_chronological_order(tmp_path):
 
     # Alice speaks first and third; Bob second. Same fake regions per track,
     # so ordering has to come from the offsets.
-    runner = FakeRunner(regions=[(0, 2000), (20000, 22000)], texts=["one", "three"])
+    runner = FakeRunner(
+        regions=[(0, 2000), (20000, 22000)],
+        texts=["alice one", "alice two", "bob one", "bob two"],
+    )
     transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
     result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
 
@@ -283,3 +294,83 @@ def test_no_zoom_folder_is_not_an_error(tmp_path):
     from bedrock.meetings.cli import recordings_in
 
     assert recordings_in(tmp_path / "nope") == []
+
+
+# --- regressions ---------------------------------------------------------
+
+
+def test_every_file_of_a_split_recording_is_kept(tmp_path):
+    """Zoom splits long meetings into several files per participant. Keeping
+    one per speaker silently lost the rest of a long call."""
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    for name in (
+        "audio1757900001_Alice Chen.m4a",
+        "audio1757900002_Alice Chen.m4a",
+        "audio1757900003_Alice Chen.m4a",
+        "audio1757900010_Bob Ruiz.m4a",
+    ):
+        (rec / name).write_bytes(b"")
+
+    tracks = discover_participant_tracks(tmp_path)
+    assert len(tracks["Alice Chen"]) == 3
+    assert len(tracks["Bob Ruiz"]) == 1
+    # Zoom's filenames are chronological, so file order must be too.
+    assert [p.name for p in tracks["Alice Chen"]] == sorted(p.name for p in tracks["Alice Chen"])
+
+
+def test_a_split_mixed_recording_keeps_every_part(tmp_path):
+    (tmp_path / "audio_only1.m4a").write_bytes(b"")
+    (tmp_path / "audio_only2.m4a").write_bytes(b"")
+    assert len(find_mixed_audio(tmp_path)) == 2
+
+
+async def test_later_parts_of_a_split_recording_continue_the_timeline(tmp_path):
+    """Part two restarts at zero in its own file; its cues have to land after
+    part one, not on top of it."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+    (rec / "audio2_Alice Chen.wav").write_bytes(b"RIFFfake")
+
+    # Each file: one region at 1s. Each file is 600s long.
+    runner = FakeRunner(regions=[(1000, 3000)], texts=["part one", "part two"], file_duration_s=600.0)
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    assert [c.text for c in result.cues] == ["part one", "part two"]
+    assert result.cues[0].start_ms == 850
+    assert result.cues[1].start_ms == 850 + 600_000  # offset by part one's length
+
+
+async def test_running_twice_does_not_rediscover_its_own_output(tmp_path):
+    """The work directory sits inside the recording folder, so a second run
+    used to find the 16 kHz copies from the first, transcribe everyone twice,
+    and invent speakers called "Alice Chen.16k"."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
+
+    def run_once():
+        runner = FakeRunner(regions=[(1000, 3000)], texts=["hello"])
+        return WhisperTranscriber(make_config(tmp_path), runner=runner)
+
+    first = await transcribe_recording(tmp_path / "rec", run_once())
+    second = await transcribe_recording(tmp_path / "rec", run_once())
+
+    assert first.speakers == ["Alice Chen"]
+    assert second.speakers == ["Alice Chen"], "a second run must see the same speakers"
+    assert len(second.cues) == len(first.cues), "a second run must not double the transcript"
+
+
+def test_our_working_directory_is_not_mistaken_for_audio(tmp_path):
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
+    work = tmp_path / ".bedrock-work"
+    work.mkdir()
+    (work / "audio1_Alice Chen.16k.wav").write_bytes(b"")
+
+    tracks = discover_participant_tracks(tmp_path)
+    assert list(tracks) == ["Alice Chen"]
+    assert len(tracks["Alice Chen"]) == 1

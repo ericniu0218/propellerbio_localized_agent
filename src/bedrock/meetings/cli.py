@@ -26,6 +26,7 @@ from bedrock.meetings.transcribe import (
     WhisperTranscriber,
     discover_participant_tracks,
     find_mixed_audio,
+    find_unconverted,
     to_vtt,
     transcribe_recording,
 )
@@ -108,11 +109,14 @@ async def _run(args: argparse.Namespace) -> int:
         for folder in found:
             tracks = discover_participant_tracks(folder)
             files = sum(len(f) for f in tracks.values())
-            who = (
-                f"{len(tracks)} participants, {files} audio files"
-                if tracks
-                else "no per-participant audio"
-            )
+            if tracks:
+                who = f"{len(tracks)} participants, {files} audio files"
+            elif find_unconverted(folder):
+                who = "NOT CONVERTED — double-click the .zoom file in Finder"
+            elif find_mixed_audio(folder):
+                who = "no per-participant audio (speakers will not be named)"
+            else:
+                who = "no audio"
             print(f"{folder.name}\n    {who}")
         return 0
 
@@ -154,11 +158,20 @@ async def _run(args: argparse.Namespace) -> int:
     elif find_mixed_audio(folder):
         print("No per-participant audio in this recording — speakers will not be named.")
         print('Turn on "Record a separate audio file for each participant" in Zoom for next time.')
+    elif unconverted := find_unconverted(folder):
+        # Telling someone to wait is wrong here: nothing is running. Zoom leaves
+        # these behind when it is quit before conversion finishes, and they sit
+        # there until a human starts it.
+        print(f"\nThis recording has not been converted yet.", file=sys.stderr)
+        print(f"  {folder} holds {len(unconverted)} .zoom file(s).\n", file=sys.stderr)
+        print("Convert it, then run this again:", file=sys.stderr)
+        print(f'  open "{folder}"   then double-click {unconverted[0].name}', file=sys.stderr)
+        print("  or in Zoom: Meetings > Recorded > Convert", file=sys.stderr)
+        return 1
     else:
         # Don't advise changing a Zoom setting when the real problem is that
         # there is no audio here at all — that sends people to fix the wrong thing.
         print(f"\nNo audio files in {folder}.", file=sys.stderr)
-        print("If Zoom is still converting the recording, wait for it to finish.", file=sys.stderr)
         return 1
 
     try:

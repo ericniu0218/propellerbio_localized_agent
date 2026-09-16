@@ -454,3 +454,37 @@ def test_a_file_with_no_participant_suffix_is_not_a_participant(tmp_path):
     rec.mkdir(parents=True)
     (rec / "audio1234567.m4a").write_bytes(b"")
     assert discover_participant_tracks(tmp_path) == {}
+
+
+def test_an_unconverted_recording_is_recognised(tmp_path):
+    """Zoom leaves .zoom files behind when it is quit before conversion
+    finishes. They sit there forever, so 'wait for it to finish' is the wrong
+    advice — somebody has to start it."""
+    from bedrock.meetings.transcribe import find_unconverted
+
+    (tmp_path / "double_click_to_convert_01.zoom").write_bytes(b"")
+    (tmp_path / "double_click_to_convert_02.zoom").write_bytes(b"")
+    (tmp_path / "zoomver.tag").write_bytes(b"")
+
+    assert len(find_unconverted(tmp_path)) == 2
+    assert discover_participant_tracks(tmp_path) == {}
+    assert find_mixed_audio(tmp_path) == []  # .zoom is not playable audio
+
+
+async def test_an_unconverted_recording_says_how_to_convert_it(tmp_path):
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "double_click_to_convert_01.zoom").write_bytes(b"")
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=FakeRunner([], []))
+
+    with pytest.raises(ToolIntegrationError, match="not been converted"):
+        await transcribe_recording(rec, transcriber, work_dir=tmp_path / "w")
+
+
+def test_a_converted_recording_is_not_flagged_as_unconverted(tmp_path):
+    from bedrock.meetings.transcribe import find_unconverted
+
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
+    assert find_unconverted(tmp_path) == []

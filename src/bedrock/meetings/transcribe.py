@@ -40,6 +40,11 @@ _PARTICIPANT_FILE = re.compile(r"^audio\d+_(?P<name>.+)$", re.IGNORECASE)
 TARGET_SAMPLE_RATE = 16_000
 AUDIO_SUFFIXES = (".m4a", ".mp4", ".wav", ".mp3", ".aac", ".aiff")
 
+# Zoom's intermediate format. A local recording lands as these and is only
+# readable once Zoom converts it, which does not always happen on its own -
+# quitting Zoom before conversion finishes leaves them behind indefinitely.
+UNCONVERTED_SUFFIX = ".zoom"
+
 # "Speech segment 3: start = 3322.00, end = 3558.00" — centiseconds.
 _VAD_LINE = re.compile(r"start\s*=\s*(?P<start>[\d.]+),\s*end\s*=\s*(?P<end>[\d.]+)")
 
@@ -339,6 +344,20 @@ def _audio_files(folder: Path) -> list[Path]:
     ]
 
 
+def find_unconverted(folder: Path) -> list[Path]:
+    """Raw Zoom files awaiting conversion.
+
+    Their presence alongside no audio is the difference between "this recording
+    is not ready yet" and "there is nothing here", and the two need different
+    advice: one is waiting, the other is a job nobody started.
+    """
+    return sorted(
+        path
+        for path in folder.rglob("*")
+        if path.is_file() and path.suffix.lower() == UNCONVERTED_SUFFIX
+    )
+
+
 def discover_participant_tracks(folder: Path) -> dict[str, list[Path]]:
     """Map speaker name to their audio files for a Zoom local recording.
 
@@ -425,6 +444,14 @@ async def transcribe_recording(
     if not tracks:
         mixed = find_mixed_audio(folder)
         if not mixed:
+            unconverted = find_unconverted(folder)
+            if unconverted:
+                raise ToolIntegrationError(
+                    f"This recording has not been converted yet: {folder} holds "
+                    f"{len(unconverted)} .zoom file(s). Double-click "
+                    f"{unconverted[0].name} in Finder, or in Zoom open "
+                    "Meetings > Recorded and press Convert. Then run this again."
+                )
             raise ToolIntegrationError(f"No audio files found under {folder}.")
         cues = await _transcribe_all(transcriber, mixed, work_dir)
         return TranscriptionResult(

@@ -100,7 +100,7 @@ network.
 
 ## Testing
 
-`pytest` (93 tests) covers the client's REST/SSE parsing
+`pytest` (128 tests) covers the client's REST/SSE parsing
 against a fake server and the full Textual app against a fake
 `AgentPackClient`. It does **not** cover the real backend's behavior —
 that's the other repo's test suite. When testing changes here against a

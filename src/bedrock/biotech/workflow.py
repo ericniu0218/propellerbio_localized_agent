@@ -89,7 +89,19 @@ class ProteinWorkflow:
             ToolStatus("open-source PyMOL", not pymol_issues, pymol_issues),
         )
 
-    async def predict_and_render(self, source_fasta: Path) -> ProteinWorkflowResult:
+    async def predict_and_render(
+        self,
+        source_fasta: Path,
+        source_provenance: dict[str, Any] | None = None,
+    ) -> ProteinWorkflowResult:
+        """Validate, predict, render and record one monomer.
+
+        ``source_provenance`` is set when the FASTA was pulled from a company
+        system of record instead of being handed over as a file (see
+        ``bedrock.connectors``). It goes into the manifest so the run names the
+        registry record and version it was made from, not just the staging
+        file the sequence happened to pass through.
+        """
         record = read_monomer_fasta(source_fasta, self.max_sequence_length)
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.work_dir, 0o700)
@@ -137,6 +149,8 @@ class ProteinWorkflow:
             "outputs": {},
             "pymol": {"executable": self.pymol.executable, "confidence_metric": "plddt"},
         }
+        if source_provenance:
+            manifest["source"]["system_of_record"] = dict(source_provenance)
         _write_manifest(manifest_path, manifest)
 
         try:

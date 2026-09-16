@@ -36,6 +36,8 @@ def test_unknown_command_is_still_parsed():
         ),
         ("I want to predict the structure in target.faa", Command("fold", "target.faa")),
         ("PyMOL: open model.mmcif", Command("pymol", "model.mmcif")),
+        ("Run AlphaFold 2 on registry://SEQ-00123", Command("fold", "registry://SEQ-00123")),
+        ("Fold registry://SEQ-00123 please", Command("fold", "registry://SEQ-00123")),
     ],
 )
 def test_clear_scientific_actions_are_recognized(phrase: str, expected: Command):
@@ -52,6 +54,8 @@ def test_clear_scientific_actions_are_recognized(phrase: str, expected: Command)
         "PyMOL is commonly used to view structures",
         "Compare AlphaFold 2 with Rosetta",
         "Open PDB entry 1ABC in PyMOL",
+        "What is registry://SEQ-00123?",
+        "Tell me about registry://SEQ-00123",
     ],
 )
 def test_questions_and_discussion_stay_in_chat(message: str):

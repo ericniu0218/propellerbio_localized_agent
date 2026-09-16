@@ -61,6 +61,7 @@ class FakeBiotechWorkflow:
         self.root = root
         self.folded: list[Path] = []
         self.opened: list[Path | None] = []
+        self.provenance: list[dict | None] = []
 
     def status(self):
         return (
@@ -68,8 +69,11 @@ class FakeBiotechWorkflow:
             ToolStatus("open-source PyMOL", True, ()),
         )
 
-    async def predict_and_render(self, fasta_path: Path) -> ProteinWorkflowResult:
+    async def predict_and_render(
+        self, fasta_path: Path, source_provenance: dict | None = None
+    ) -> ProteinWorkflowResult:
         self.folded.append(fasta_path)
+        self.provenance.append(source_provenance)
         return ProteinWorkflowResult(
             run_id="run_test",
             run_dir=self.root,
@@ -271,3 +275,64 @@ async def test_natural_language_pymol_request_opens_latest_structure(
 
         assert workflow.opened == [None]
         assert any(request in str(message.content) for message in app.query(UserMessage))
+
+
+def source_app(fake_client, tmp_path: Path, workflow: FakeBiotechWorkflow) -> AgentPackApp:
+    exports = tmp_path / "registry-exports"
+    exports.mkdir()
+    (exports / "SEQ-00123.fasta").write_text(">SEQ-00123 kinase\nACDEFGHIK\n")
+    return AgentPackApp(
+        settings=Settings(
+            user_id="alice",
+            biotech_work_dir=tmp_path / "work",
+            connectors={"registry": {"type": "share", "root": str(exports)}},
+        ),
+        client=fake_client,
+        biotech_workflow=workflow,
+    )
+
+
+async def wait_for_notice(app: AgentPackApp, pilot, text: str) -> str:
+    """Poll for a notice. This app's event listener never finishes, so
+    ``workers.wait_for_complete()`` is not an option here."""
+    for _ in range(200):
+        await pilot.pause()
+        joined = "\n".join(str(widget.source) for widget in app.query(SystemNotice))
+        if text in joined:
+            return joined
+    raise AssertionError(f"no notice containing {text!r}")
+
+
+async def test_fold_pulls_the_sequence_from_a_company_source_with_provenance(fake_client, tmp_path):
+    from textual.widgets import Input
+
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = source_app(fake_client, tmp_path, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "Run AlphaFold 2 on registry://SEQ-00123.fasta"
+        await pilot.press("enter")
+        notices = await wait_for_notice(app, pilot, "Protein prediction completed")
+
+        staged = workflow.folded[0]
+        assert staged.parent == tmp_path / "work" / "sources"
+        assert staged.read_text().startswith(">SEQ-00123 kinase")
+        provenance = workflow.provenance[0]
+        assert provenance["ref"] == "registry://SEQ-00123.fasta"
+        assert provenance["fetched_by"] == "alice"
+        assert "Source: `registry://SEQ-00123.fasta`" in notices
+
+
+async def test_a_refused_source_fetch_reports_and_frees_the_job_slot(fake_client, tmp_path):
+    from textual.widgets import Input
+
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = source_app(fake_client, tmp_path, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "/fold registry://../outside.fasta"
+        await pilot.press("enter")
+        await wait_for_notice(app, pilot, "points outside the `registry` share")
+
+        assert workflow.folded == []
+        assert app._scientific_job_running is False

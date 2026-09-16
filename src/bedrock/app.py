@@ -22,11 +22,13 @@ from textual.containers import VerticalScroll
 from textual.widgets import Footer, Input
 
 from bedrock.config import Settings, load_settings
+from bedrock.connectors import SourceHub
 from bedrock.context import ContextStore
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 
 CONNECTION_CHECK_SECONDS = 10
@@ -41,7 +43,12 @@ class BedrockApp(App[None]):
         Binding("escape", "cancel_stream", "Stop", show=False),
     ]
 
-    def __init__(self, settings: Settings | None = None, backend: InferenceBackend | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        backend: InferenceBackend | None = None,
+        sources: SourceHub | None = None,
+    ) -> None:
         super().__init__()
         self.theme = "textual-dark"  # always a dark, black-background terminal look
         self.settings = settings or load_settings()
@@ -53,6 +60,8 @@ class BedrockApp(App[None]):
         # Built lazily in command_digest: creating it touches the disk, and
         # a user who never runs /digest should never pay for that.
         self._context_store: ContextStore | None = None
+        # Tests pass a hub with fake connectors; real runs build one from settings.
+        self._sources = sources
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -118,6 +127,8 @@ class BedrockApp(App[None]):
                 await self.command_model(command.args)
             case "digest":
                 self.command_digest(command.args)
+            case "sources":
+                self.command_sources(command.args)
             case _:
                 await self.post_notice(f"Unknown command `/{command.name}`. Type `/help` for a list.", kind="error")
 
@@ -158,6 +169,7 @@ class BedrockApp(App[None]):
             notify=self.post_notice,
             backend=self.backend,
             model=self.model_name,
+            sources=self.sources,
         )
 
     @property
@@ -165,6 +177,17 @@ class BedrockApp(App[None]):
         if self._context_store is None:
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
+
+    @work(group="sources")
+    async def command_sources(self, args: str) -> None:
+        """``/sources``: list, search and fetch from company systems of record."""
+        await run_sources_command(args, hub=self.sources, notify=self.post_notice)
+
+    @property
+    def sources(self) -> SourceHub:
+        if self._sources is None:
+            self._sources = SourceHub.from_settings(self.settings)
+        return self._sources
 
     # ---- Chat -------------------------------------------------------------
 

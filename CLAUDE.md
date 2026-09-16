@@ -48,7 +48,7 @@ The client must never send prompts to external AI APIs, depend on OpenAI/Anthrop
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest              # 93 tests, no server needed
+pytest              # 128 tests, no server needed
 bedrock             # run the app (expects Ollama at http://localhost:11434 by default)
 ```
 
@@ -64,9 +64,18 @@ read a large file cheaply and still get exact detail on request. Generalised
 over data types by the `SourceAdapter` protocol, the same seam idea as
 `InferenceBackend`. See README's "Compressing data for the model" section.
 
+Also built: company data-source connectors (`src/bedrock/connectors/`) -
+`/digest`, `/fold` and `bedrock-biotech fold` accept `<source>://<id>` and pull
+the record from a system of record instead of a manually exported file.
+`/sources` lists, searches and fetches. Two generic types, `rest` (HTTP/JSON)
+and `share` (export folder), configured as `[connectors.<name>]` tables.
+Authorisation is left to the source system; every fetch records provenance
+into a sidecar and the AlphaFold manifest.
+
 Not yet built (deliberately): file attachments in chat, embedding-based
 retrieval (`/digest` search is keyword/BM25), authentication, conversation
-persistence, packaging as a standalone executable.
+persistence, packaging as a standalone executable, product-specific connectors
+(only the generic `rest` and `share` types exist).
 
 ## Agent-pack mode
 

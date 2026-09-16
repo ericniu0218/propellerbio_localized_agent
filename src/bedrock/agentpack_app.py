@@ -35,12 +35,14 @@ from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
 from bedrock.biotech import ProteinWorkflow, ToolIntegrationError
 from bedrock.config import Settings, load_settings
+from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
 from bedrock.context import ContextStore
 from bedrock.inference.base import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 
 CONNECTION_CHECK_SECONDS = 10
@@ -50,17 +52,19 @@ AGENTPACK_HELP_TEXT = """\
 
 | Command | What it does |
 |---|---|
-| `/fold <fasta-path>` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
+| `/fold <fasta-path or source://id>` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
 | `/pymol [structure-path]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/sources` | List the company data sources you can pull from |
 | `/clear` | Clear the conversation |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
 
-You can also ask naturally, for example: “Run AlphaFold 2 on `candidate.fasta`”
-or “Open the latest structure interactively in PyMOL.”
+You can also ask naturally, for example: “Run AlphaFold 2 on `candidate.fasta`”,
+“Run AlphaFold 2 on `registry://SEQ-00123`”, or “Open the latest structure
+interactively in PyMOL.”
 """
 
 
@@ -77,6 +81,7 @@ class AgentPackApp(App[None]):
         settings: Settings | None = None,
         client: AgentPackClient | None = None,
         biotech_workflow: ProteinWorkflow | None = None,
+        sources: SourceHub | None = None,
     ) -> None:
         super().__init__()
         # Explicit, not just relying on Textual's default: this must always
@@ -92,6 +97,8 @@ class AgentPackApp(App[None]):
         self._agents: dict[str, AgentCardState] = {}
         self._context_store: ContextStore | None = None
         self._scientific_job_running = False
+        # Tests pass a hub with fake connectors; real runs build one from settings.
+        self._sources = sources
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -164,6 +171,8 @@ class AgentPackApp(App[None]):
                 self.exit()
             case "digest":
                 self.command_digest(command.args)
+            case "sources":
+                self.command_sources(command.args)
             case "tools":
                 await self.show_tool_status()
             case "fold":
@@ -176,7 +185,11 @@ class AgentPackApp(App[None]):
                     await self.post_notice("A scientific job is already running.", kind="error")
                 else:
                     self._scientific_job_running = True
-                    self.fold_protein(_path_argument(command.args))
+                    source = parse_source_ref(_unquote(command.args))
+                    if source is not None:
+                        self.fold_protein(source=source)
+                    else:
+                        self.fold_protein(_path_argument(command.args))
             case "pymol":
                 self.open_pymol(_path_argument(command.args) if command.args else None)
             case _:
@@ -193,13 +206,30 @@ class AgentPackApp(App[None]):
         await self.post_notice("\n".join(lines))
 
     @work(exclusive=True, group="scientific")
-    async def fold_protein(self, fasta_path: Path) -> None:
-        await self.post_notice(
-            f"Started AlphaFold 2 for `{fasta_path}`. This may take a long time; the run is preserved if PyMOL rendering fails."
-        )
+    async def fold_protein(
+        self, fasta_path: Path | None = None, source: SourceRef | None = None
+    ) -> None:
+        """Run AlphaFold 2 on a local FASTA, or on a record pulled from a company source.
+
+        A source record is fetched and staged with its provenance first, and
+        that provenance goes into the run manifest, so the prediction names the
+        registry record and version it came from. The fetch sits inside the
+        same ``try`` as the prediction so a refused or failed fetch still frees
+        the one-job-at-a-time slot.
+        """
+        provenance = None
         try:
-            result = await self.biotech_workflow.predict_and_render(fasta_path)
-        except ToolIntegrationError as exc:
+            if source is not None:
+                await self.post_notice(f"Fetching `{source}`…")
+                record, fasta_path = await self.sources.fetch_to_file(source)
+                provenance = record.provenance()
+            await self.post_notice(
+                f"Started AlphaFold 2 for `{source or fasta_path}`. This may take a long time; the run is preserved if PyMOL rendering fails."
+            )
+            result = await self.biotech_workflow.predict_and_render(
+                fasta_path, source_provenance=provenance
+            )
+        except (ToolIntegrationError, ConnectorError) as exc:
             await self.post_notice(str(exc), kind="error")
         except asyncio.CancelledError:
             await self.post_notice("The scientific job was cancelled.", kind="error")
@@ -211,6 +241,12 @@ class AgentPackApp(App[None]):
                 f"- Structure: `{result.structure_path}`",
                 f"- Provenance: `{result.manifest_path}`",
             ]
+            if provenance:
+                version = f", version {provenance['version']}" if provenance.get("version") else ""
+                lines.insert(
+                    2,
+                    f"- Source: `{provenance['ref']}`{version} (sha256 `{provenance['sha256'][:12]}`)",
+                )
             if result.preview_path:
                 lines.append(f"- PyMOL preview: `{result.preview_path}`")
             if result.session_path:
@@ -267,13 +303,26 @@ class AgentPackApp(App[None]):
         summarising a model would do belongs on that backend, next to the
         agents, not in the client. The computed digest is the same either way.
         """
-        await run_digest_command(args, store=self.context_store, notify=self.post_notice)
+        await run_digest_command(
+            args, store=self.context_store, notify=self.post_notice, sources=self.sources
+        )
 
     @property
     def context_store(self) -> ContextStore:
         if self._context_store is None:
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
+
+    @work(group="sources")
+    async def command_sources(self, args: str) -> None:
+        """``/sources``: list, search and fetch from company systems of record."""
+        await run_sources_command(args, hub=self.sources, notify=self.post_notice)
+
+    @property
+    def sources(self) -> SourceHub:
+        if self._sources is None:
+            self._sources = SourceHub.from_settings(self.settings)
+        return self._sources
 
     # ---- Live events ------------------------------------------------------------
 
@@ -375,12 +424,16 @@ class AgentPackApp(App[None]):
         self.exit()
 
 
-def _path_argument(value: str) -> Path:
+def _unquote(value: str) -> str:
     """Accept shell-style surrounding quotes without ever invoking a shell."""
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
         value = value[1:-1]
-    return Path(value).expanduser()
+    return value
+
+
+def _path_argument(value: str) -> Path:
+    return Path(_unquote(value)).expanduser()
 
 
 def main() -> None:

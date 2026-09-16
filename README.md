@@ -48,6 +48,8 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/model <name>`  | Switch model                     |
 | `/digest <path>` | Compress a file into the store   |
 | `/digest`        | List / search what you stored    |
+| `/sources`       | List company data sources        |
+| `/digest <src>://<id>` | Pull a record from a source and compress it |
 | `/clear`         | Start a new conversation         |
 | `/help`          | Show help                        |
 | `/exit`          | Quit (also `Ctrl+C`)             |
@@ -64,6 +66,8 @@ open-source PyMOL, and record hashes and provenance in a per-run manifest.
 After operator provisioning, check it with `bedrock-biotech status` and run it
 with `bedrock-biotech fold candidate.fasta`. In agent-pack mode the equivalent
 commands are `/tools`, `/fold <fasta-path>`, and `/pymol [structure-path]`.
+Both `/fold` and `bedrock-biotech fold` also accept a company source reference
+such as `registry://SEQ-00123` - see "Company data sources" below.
 Direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
 open the latest structure interactively in PyMOL.” Questions about the tools
 remain normal agent conversations.
@@ -120,6 +124,11 @@ src/bedrock/
     client.py             REST + live-event-stream client for the agent-pack backend
     friendly.py            Plain-language labels/errors (pure functions, no networking)
     models.py              AgentEvent / AgentCardState data classes
+  connectors/
+    base.py               SourceConnector protocol, source references, provenance
+    rest.py               Config-shaped connector for internal HTTP/JSON APIs
+    share.py              Connector for a controlled export folder
+    hub.py                Builds connectors from config; fetch, search, stage
   context/
     ingest.py             `/digest`: compress any data into a small digest + chunks
     adapters/             One file per data type; SourceAdapter is the seam
@@ -182,6 +191,97 @@ inference server running at all - and if the model is unreachable when it
 
 Adding a data type is one file in `src/bedrock/context/adapters/` plus a line
 in `registry.py`. Nothing in `ui/`, `app.py` or the store changes.
+
+## Company data sources (`/sources`)
+
+Without connectors, data reaches Bedrock only after someone exports a file and
+types its path. With them, an employee names the record in the company's own
+system instead:
+
+```
+/sources                              what is configured, and whether it is set up
+/sources search registry kinase       find a record without knowing its id
+/digest lims://plates/P42.csv         pull a record and compress it for the model
+/fold registry://SEQ-00123            pull a sequence and run AlphaFold 2 (agent-pack mode)
+bedrock-biotech fold registry://SEQ-00123
+```
+
+Natural requests work too: "Run AlphaFold 2 on registry://SEQ-00123".
+
+Each system is one table in `~/.config/bedrock/config.toml`. Two general types
+cover most internal systems without product-specific code:
+
+```toml
+# Anything with an HTTP/JSON API: registry, LIMS, ELN
+[connectors.registry]
+type = "rest"
+base_url = "https://registry.internal.example.com/api/v1"
+record_path = "/sequences/{id}"      # {id} is URL-encoded into one path segment
+content_field = "data.fasta"         # omit to use the whole response body
+filename_field = "data.name"
+version_field = "data.revision"
+suffix = ".fasta"                    # tells /digest what kind of data it is
+search_path = "/sequences"           # optional; enables /sources search
+results_field = "results"
+token_env = "REGISTRY_TOKEN"         # names the env var; the token stays out of the file
+
+# Systems that export into a controlled folder
+[connectors.lims]
+type = "share"
+root = "/mnt/lims-exports"
+extensions = [".csv", ".fasta"]      # optional allow-list
+```
+
+How it behaves:
+
+- **Access is decided by the source system.** A 401/403 from the API, or a
+  file-permission error on the share, reaches the employee as a plain "access
+  refused" message. Bedrock keeps no copy of anyone's permission rules.
+- **Everything fetched carries provenance** - system, record, version, who
+  fetched it, when, and the SHA-256 of the exact bytes. It is saved as a
+  `.provenance.json` next to the staged file in `<biotech_work_dir>/sources/`
+  (owner-only permissions) and written into the AlphaFold run manifest under
+  `source.system_of_record`.
+- **References cannot escape.** REST ids are URL-encoded into a single path
+  segment; share ids are resolved, symlinks included, and must stay under
+  `root`.
+- **One broken table does not break the rest.** `/sources` reports the problem
+  and every other connector keeps working.
+
+Identity caveat: the employee name sent to a REST source (`X-Bedrock-User`)
+comes from `BEDROCK_USER` until company sign-in reaches this client, so it
+identifies but does not authenticate. Point `rest` connectors at APIs that
+check the `token_env` token, not ones that trust the header alone.
+
+A system that needs more than configuration (paging, request signing, its own
+query language) gets a class in `src/bedrock/connectors/` and one entry in
+`hub.CONNECTOR_TYPES`. Nothing in `ui/`, the digest pipeline or the AlphaFold
+workflow changes.
+
+### Not built yet
+
+- **Not tested against a real company system.** Coverage is unit tests, a
+  temporary folder, and a local stand-in HTTP server. The first real
+  connection is the acceptance test.
+- **No product-specific connectors** (Benchling, LabWare, and so on). Whether the
+  generic `rest` settings fit a given product is unknown until it is tried.
+- **No direct database connection.** Sources are read through the system's own
+  API or its exports. Reading its database directly would bypass the
+  application's permission checks, so it is not offered.
+- **Read-only.** Nothing is written back to the source system - for example, a
+  predicted structure is not attached to the registry record.
+- **Identity is not verified** until company sign-in reaches this client (see
+  the caveat above and `NEXT_STEPS.md`).
+- **Configuration and provenance live on each employee's machine.** IT has to
+  distribute `config.toml`; there is no central list of connectors and no
+  central audit log of fetches.
+- **Staged copies are never cleaned up**, and there is no retention policy for
+  `<biotech_work_dir>/sources/`.
+- **Limited search.** REST search reads one page of results; share search
+  matches file paths, not contents, and stops after 20,000 files.
+- **`/pymol` does not accept references.** Use `/sources fetch` and open the
+  saved file. `/fold` exists only in agent-pack mode; `/digest <ref>` and
+  `/sources` work in both modes.
 
 ## Two modes
 

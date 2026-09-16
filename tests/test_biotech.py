@@ -127,6 +127,19 @@ async def test_full_local_workflow_hands_af2_output_to_pymol_and_records_provena
     assert workflow.latest_structure() == result.structure_path
 
 
+
+async def test_manifest_names_the_system_of_record_when_the_sequence_was_pulled(tmp_path: Path):
+    workflow = configured_workflow(tmp_path, FakeToolRunner())
+    staged = tmp_path / "3f1c02d9b4e5-SEQ-00123.fasta"
+    staged.write_text(">SEQ-00123\nACDEFGHIK\n")
+    provenance = {"ref": "registry://SEQ-00123", "version": "r7", "sha256": "abc123"}
+
+    result = await workflow.predict_and_render(staged, source_provenance=provenance)
+
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["source"]["system_of_record"] == provenance
+    assert manifest["source"]["residue_count"] == 9
+
 def test_status_lists_missing_operator_configuration(tmp_path: Path):
     workflow = ProteinWorkflow(
         tmp_path,

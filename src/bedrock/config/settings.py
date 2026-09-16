@@ -103,6 +103,12 @@ class Settings:
     pymol_executable: str = "pymol"
     """Open-source PyMOL executable used for both headless rendering and desktop viewing."""
 
+    connectors: dict = field(default_factory=dict)
+    """``[connectors.<name>]`` tables from the config file, one per company
+    system of record (see ``bedrock.connectors``). Validated there rather than
+    here, so a broken table is reported by ``/sources`` instead of stopping
+    the app from starting."""
+
     extra: dict = field(default_factory=dict)
     """Any unrecognised keys from the config file, kept for forward compatibility."""
 
@@ -132,7 +138,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "alphafold_database_version", "alphafold_model_preset",
         "alphafold_db_preset", "alphafold_gpu_devices",
         "alphafold_models_to_relax", "biotech_max_sequence_length",
-        "pymol_executable",
+        "pymol_executable", "connectors",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -209,6 +215,10 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     pymol_executable = (
         env.get("PYMOL_EXECUTABLE") or file_values.get("pymol_executable") or "pymol"
     )
+    # Nested tables only come from the config file: a whole connector does not
+    # fit in one environment variable. Secrets still stay out of the file -
+    # a connector names the environment variable that holds its token.
+    connectors = file_values.get("connectors") or {}
 
     return Settings(
         backend=backend,
@@ -233,5 +243,6 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         alphafold_models_to_relax=alphafold_models_to_relax,
         biotech_max_sequence_length=biotech_max_sequence_length,
         pymol_executable=pymol_executable,
+        connectors=connectors,
         extra=extra,
     )

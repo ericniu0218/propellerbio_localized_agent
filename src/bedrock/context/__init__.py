@@ -36,6 +36,7 @@ Typical use::
 """
 
 from bedrock.context.adapters import Source, SourceAdapter
+from bedrock.context.auto_inject import InjectedContext, find_relevant_context, with_injected_context
 from bedrock.context.chunker import chunk_segments
 from bedrock.context.digest import build_digest, summarize
 from bedrock.context.ingest import ingest, ingest_and_summarize
@@ -58,6 +59,7 @@ __all__ = [
     "DEFAULT_CONTEXT_DIR",
     "Digest",
     "Extraction",
+    "InjectedContext",
     "SearchHit",
     "Segment",
     "Source",
@@ -65,7 +67,9 @@ __all__ = [
     "build_digest",
     "chunk_segments",
     "estimate_tokens",
+    "find_relevant_context",
     "ingest",
     "ingest_and_summarize",
     "summarize",
+    "with_injected_context",
 ]

@@ -35,7 +35,7 @@ from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
 from bedrock.biotech import ProteinWorkflow, ToolIntegrationError
 from bedrock.config import Settings, load_settings
-from bedrock.context import ContextStore
+from bedrock.context import ContextStore, find_relevant_context, with_injected_context
 from bedrock.inference.base import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
@@ -273,8 +273,20 @@ class AgentPackApp(App[None]):
         self._agents.clear()
         self.query_one("#agent-panel", AgentPanel).clear()
 
+        # Pull in anything relevant that was compressed earlier with
+        # /digest, so using the store doesn't require remembering it
+        # exists and pasting a search result in by hand — see
+        # bedrock.context.auto_inject for what this can and can't do.
+        # The bubble above shows exactly what the user typed; only the
+        # text actually sent to the model gets the extra context, and the
+        # notice below says so out loud rather than doing it silently.
+        injected = find_relevant_context(text, self.context_store)
+        outgoing_text = with_injected_context(text, injected)
+        if injected is not None:
+            await self.post_notice(injected.summary)
+
         try:
-            task_id = await self.client.send_message(self.session_id, text)
+            task_id = await self.client.send_message(self.session_id, outgoing_text)
         except InferenceError as exc:
             await self.post_notice(str(exc), kind="error")
             return

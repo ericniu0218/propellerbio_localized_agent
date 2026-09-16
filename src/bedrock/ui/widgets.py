@@ -31,6 +31,12 @@ class StatusBar(Horizontal):
     model_name: reactive[str] = reactive("no model")
     workspace_name: reactive[str | None] = reactive(None)
     connected: reactive[bool | None] = reactive(None)  # None = not checked yet
+    # Set true while AgentPackClient is between a dropped live-event
+    # connection and a successful reconnect — distinct from `connected`
+    # (the periodic /health poll) because the two can disagree: health
+    # checks can keep passing while the *event stream* specifically has
+    # dropped and is being retried with backoff.
+    reconnecting: reactive[bool] = reactive(False)
 
     def compose(self) -> ComposeResult:
         yield Label("Bedrock Private AI", id="status-title")
@@ -46,13 +52,22 @@ class StatusBar(Horizontal):
             f"space: {value}" if value else ""
         )
 
-    def watch_connected(self, value: bool | None) -> None:
+    def watch_connected(self, _value: bool | None) -> None:
+        self._render_connection_label()
+
+    def watch_reconnecting(self, _value: bool) -> None:
+        self._render_connection_label()
+
+    def _render_connection_label(self) -> None:
         label = self.query_one("#status-connection", Label)
         label.remove_class("ok", "bad", "unknown")
-        if value is None:
+        if self.reconnecting:
+            label.update("● reconnecting…")
+            label.add_class("unknown")
+        elif self.connected is None:
             label.update("● connecting…")
             label.add_class("unknown")
-        elif value:
+        elif self.connected:
             label.update("● connected")
             label.add_class("ok")
         else:

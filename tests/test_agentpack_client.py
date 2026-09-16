@@ -9,8 +9,15 @@ from bedrock.agentpack.client import AgentPackClient
 from bedrock.inference import InferenceError
 
 
-def make_client(handler) -> AgentPackClient:
-    return AgentPackClient("http://fake", transport=httpx.MockTransport(handler))
+async def _no_sleep(_delay: float) -> None:
+    return None
+
+
+def make_client(handler, sleep=None) -> AgentPackClient:
+    # No real sleep by default: nothing in this test suite should wait on
+    # a real reconnect backoff delay. Tests that specifically care about
+    # backoff *timing* pass their own `sleep` to observe it.
+    return AgentPackClient("http://fake", transport=httpx.MockTransport(handler), sleep=sleep or _no_sleep)
 
 
 async def test_create_session_and_send_message():
@@ -76,7 +83,13 @@ async def test_events_parses_sse_stream():
         return httpx.Response(200, text=text, headers={"content-type": "text/event-stream"})
 
     client = make_client(handler)
-    events = [e async for e in client.events("sess_1")]
+    stream = client.events("sess_1")
+    # A stream ending cleanly (as this fake, finite response does) is
+    # treated as a drop worth reconnecting from — real backends never
+    # close this stream on their own — so only take exactly what this
+    # test cares about rather than consuming the whole (now-infinite)
+    # generator. See test_reconnect.py for the reconnect behavior itself.
+    events = [await anext(stream) for _ in range(2)]
     assert [e.type for e in events] == ["agent.status", "task.completed"]
     assert events[0].payload == {"agent_id": "a1", "role": "runner", "status": "thinking"}
     assert events[1].payload["result_ref"] == "res_1"

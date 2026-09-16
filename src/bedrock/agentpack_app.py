@@ -97,6 +97,9 @@ class AgentPackApp(App[None]):
         self._context_store: ContextStore | None = None
         self._workspace_session: WorkspaceCommandSession | None = None
         self._scientific_job_running = False
+        # Only announce a dropped live-event connection once per outage,
+        # not on every retry attempt — see _handle_reconnecting.
+        self._reconnect_notice_shown = False
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -317,6 +320,12 @@ class AgentPackApp(App[None]):
             await self._finish(event, failed=False)
         elif event.type == "task.failed":
             await self._finish(event, failed=True)
+        elif event.type == "client.reconnecting":
+            await self._handle_reconnecting()
+        elif event.type == "client.reconnected":
+            await self._handle_reconnected()
+        elif event.type == "session.resync":
+            await self._handle_resync(event)
 
     def _update_agent(self, event: AgentEvent) -> None:
         payload = event.payload
@@ -351,6 +360,56 @@ class AgentPackApp(App[None]):
             await self.post_notice(str(exc), kind="error")
             return
         await self.post_notice("Approved." if message.approved else "Sent back for changes.")
+
+    async def _handle_reconnecting(self) -> None:
+        # A dropped live-event connection never means the job stopped —
+        # AgentPackClient retries with backoff on its own (see that
+        # module); this only reflects that state in the UI. Whatever
+        # answer we're waiting on keeps showing "Working on it…" until a
+        # real completion arrives, either live or via a resync catch-up.
+        self.query_one(StatusBar).reconnecting = True
+        if not self._reconnect_notice_shown:
+            self._reconnect_notice_shown = True
+            await self.post_notice(
+                "Lost the live connection to the AI system — reconnecting…", kind="error"
+            )
+
+    async def _handle_reconnected(self) -> None:
+        self.query_one(StatusBar).reconnecting = False
+        if self._reconnect_notice_shown:
+            self._reconnect_notice_shown = False
+            await self.post_notice("Reconnected.")
+
+    async def _handle_resync(self, event: AgentEvent) -> None:
+        """The backend's buffer didn't hold everything we missed while
+        disconnected (see app/events/bus.py on the backend) — reset the
+        agent panel rather than assume continuity, replay whatever window
+        the backend still has, and check its authoritative `terminal`
+        snapshot so a pending answer resolves even if the specific
+        completing event itself was evicted before we reconnected.
+        Re-dispatches through handle_event, so this is naturally
+        idempotent if the terminal event is also present in `events`.
+        """
+        payload = event.payload
+        self._agents.clear()
+        self.query_one("#agent-panel", AgentPanel).clear()
+        for inner in payload.get("events") or []:
+            await self.handle_event(
+                AgentEvent(
+                    type=inner["type"],
+                    session_id=inner.get("session_id", event.session_id),
+                    payload=inner.get("payload", {}),
+                )
+            )
+        terminal = payload.get("terminal")
+        if terminal is not None:
+            await self.handle_event(
+                AgentEvent(
+                    type=terminal["type"],
+                    session_id=terminal.get("session_id", event.session_id),
+                    payload=terminal.get("payload", {}),
+                )
+            )
 
     async def _finish(self, event: AgentEvent, failed: bool) -> None:
         # A multi-step request's *final* step carries a different task_id

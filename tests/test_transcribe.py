@@ -43,9 +43,11 @@ class FakeRunner:
     slice in order.
     """
 
-    def __init__(self, regions: list[tuple[int, int]], texts: list[str]):
+    def __init__(self, regions: list[tuple[int, int]], texts: list[str],
+                 file_duration_s: float = 60.0):
         self.regions = regions
         self.texts = list(texts)
+        self.file_duration_s = file_duration_s
         self.commands: list[list[str]] = []
 
     async def run(self, args, log_path, env=None):
@@ -61,6 +63,10 @@ class FakeRunner:
             log_path.write_text("\n".join(lines))
             return
 
+        if args[0] == "ffprobe":
+            log_path.write_text(f"{self.file_duration_s:.3f}\n")
+            return
+
         if args[0] == "ffmpeg":
             Path(args[-1]).parent.mkdir(parents=True, exist_ok=True)
             Path(args[-1]).write_bytes(b"RIFFfake")
@@ -69,7 +75,8 @@ class FakeRunner:
 
         if args[0] == "whisper-cli":
             inputs = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
-            for path, text in zip(inputs, self.texts):
+            for path in inputs:
+                text = self.texts.pop(0) if self.texts else ""
                 # Timestamps are relative to the slice, as whisper reports them.
                 Path(path + ".vtt").write_text(
                     f"WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n{text}\n"
@@ -93,12 +100,13 @@ def test_finds_participant_tracks_by_zoom_naming(tmp_path):
     tracks = discover_participant_tracks(tmp_path)
     assert set(tracks) == {"Alice Chen", "Bob Ruiz"}
     assert "zoom_0" not in tracks  # the mixed recording is not a participant
+    assert all(len(files) == 1 for files in tracks.values())
 
 
 def test_mixed_audio_prefers_audio_only_over_video(tmp_path):
     (tmp_path / "zoom_0.mp4").write_bytes(b"")
     (tmp_path / "audio_only.m4a").write_bytes(b"")
-    assert find_mixed_audio(tmp_path).name == "audio_only.m4a"
+    assert [p.name for p in find_mixed_audio(tmp_path)] == ["audio_only.m4a"]
 
 
 # --- turn grouping -------------------------------------------------------
@@ -150,7 +158,10 @@ async def test_speakers_merge_in_chronological_order(tmp_path):
 
     # Alice speaks first and third; Bob second. Same fake regions per track,
     # so ordering has to come from the offsets.
-    runner = FakeRunner(regions=[(0, 2000), (20000, 22000)], texts=["one", "three"])
+    runner = FakeRunner(
+        regions=[(0, 2000), (20000, 22000)],
+        texts=["alice one", "alice two", "bob one", "bob two"],
+    )
     transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
     result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
 
@@ -283,3 +294,262 @@ def test_no_zoom_folder_is_not_an_error(tmp_path):
     from bedrock.meetings.cli import recordings_in
 
     assert recordings_in(tmp_path / "nope") == []
+
+
+# --- regressions ---------------------------------------------------------
+
+
+def test_every_file_of_a_split_recording_is_kept(tmp_path):
+    """Zoom splits long meetings into several files per participant. Keeping
+    one per speaker silently lost the rest of a long call."""
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    for name in (
+        "audio1757900001_Alice Chen.m4a",
+        "audio1757900002_Alice Chen.m4a",
+        "audio1757900003_Alice Chen.m4a",
+        "audio1757900010_Bob Ruiz.m4a",
+    ):
+        (rec / name).write_bytes(b"")
+
+    tracks = discover_participant_tracks(tmp_path)
+    assert len(tracks["Alice Chen"]) == 3
+    assert len(tracks["Bob Ruiz"]) == 1
+    # Zoom's filenames are chronological, so file order must be too.
+    assert [p.name for p in tracks["Alice Chen"]] == sorted(p.name for p in tracks["Alice Chen"])
+
+
+def test_a_split_mixed_recording_keeps_every_part(tmp_path):
+    (tmp_path / "audio_only1.m4a").write_bytes(b"")
+    (tmp_path / "audio_only2.m4a").write_bytes(b"")
+    assert len(find_mixed_audio(tmp_path)) == 2
+
+
+async def test_later_parts_of_a_split_recording_continue_the_timeline(tmp_path):
+    """Part two restarts at zero in its own file; its cues have to land after
+    part one, not on top of it."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+    (rec / "audio2_Alice Chen.wav").write_bytes(b"RIFFfake")
+
+    # Each file: one region at 1s. Each file is 600s long.
+    runner = FakeRunner(regions=[(1000, 3000)], texts=["part one", "part two"], file_duration_s=600.0)
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    assert [c.text for c in result.cues] == ["part one", "part two"]
+    assert result.cues[0].start_ms == 850
+    assert result.cues[1].start_ms == 850 + 600_000  # offset by part one's length
+
+
+async def test_running_twice_does_not_rediscover_its_own_output(tmp_path):
+    """The work directory sits inside the recording folder, so a second run
+    used to find the 16 kHz copies from the first, transcribe everyone twice,
+    and invent speakers called "Alice Chen.16k"."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
+
+    def run_once():
+        runner = FakeRunner(regions=[(1000, 3000)], texts=["hello"])
+        return WhisperTranscriber(make_config(tmp_path), runner=runner)
+
+    first = await transcribe_recording(tmp_path / "rec", run_once())
+    second = await transcribe_recording(tmp_path / "rec", run_once())
+
+    assert first.speakers == ["Alice Chen"]
+    assert second.speakers == ["Alice Chen"], "a second run must see the same speakers"
+    assert len(second.cues) == len(first.cues), "a second run must not double the transcript"
+
+
+def test_our_working_directory_is_not_mistaken_for_audio(tmp_path):
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
+    work = tmp_path / ".bedrock-work"
+    work.mkdir()
+    (work / "audio1_Alice Chen.16k.wav").write_bytes(b"")
+
+    tracks = discover_participant_tracks(tmp_path)
+    assert list(tracks) == ["Alice Chen"]
+    assert len(tracks["Alice Chen"]) == 1
+
+
+async def test_a_participant_who_never_speaks_does_not_fail_the_meeting(tmp_path):
+    """Somebody joins and stays quiet. VAD still fires on a cough or a door,
+    whisper reports [BLANK_AUDIO], and every cue is filtered out. That must not
+    take the whole meeting down with it."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+    (rec / "audio2_Silent Sam.wav").write_bytes(b"RIFFfake")
+
+    runner = FakeRunner(regions=[(1000, 3000)], texts=["Real words.", "[BLANK_AUDIO]"])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    assert [c.text for c in result.cues] == ["Real words."]
+    assert result.speakers == ["Alice Chen"]          # Sam contributed nothing
+    assert result.per_speaker_counts["Silent Sam"] == 0  # but is still accounted for
+
+
+async def test_a_genuine_whisper_failure_still_raises(tmp_path):
+    """The silent-participant fix must not swallow a real tool failure."""
+
+    class NoOutputRunner(FakeRunner):
+        async def run(self, args, log_path, env=None):
+            if list(args)[0] == "whisper-cli":
+                # Writes no .vtt at all, as a crashed whisper would.
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text("segmentation fault")
+                return
+            await super().run(args, log_path, env)
+
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+    transcriber = WhisperTranscriber(
+        make_config(tmp_path), runner=NoOutputRunner(regions=[(1000, 3000)], texts=["x"])
+    )
+    with pytest.raises(ToolIntegrationError, match="no transcript"):
+        await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+
+async def test_a_speaker_with_several_files_is_reported(tmp_path):
+    """Two people sharing a display name is indistinguishable from one person's
+    split recording, so the caller has to be told it happened."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alex.wav").write_bytes(b"RIFFfake")
+    (rec / "audio2_Alex.wav").write_bytes(b"RIFFfake")
+
+    runner = FakeRunner(regions=[(1000, 3000)], texts=["one", "two"])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    assert result.multi_file_speakers == ["Alex"]
+
+
+def test_unusual_display_names_survive_discovery(tmp_path):
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    for name in (
+        "audio1_José García.m4a",
+        "audio2_Mary_Jane Smith.m4a",
+        "audio3_12345.m4a",
+        "AUDIO4_Bob Ruiz.m4a",
+    ):
+        (rec / name).write_bytes(b"")
+    assert set(discover_participant_tracks(tmp_path)) == {
+        "José García",
+        "Mary_Jane Smith",
+        "12345",
+        "Bob Ruiz",
+    }
+
+
+def test_a_file_with_no_participant_suffix_is_not_a_participant(tmp_path):
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1234567.m4a").write_bytes(b"")
+    assert discover_participant_tracks(tmp_path) == {}
+
+
+def test_an_unconverted_recording_is_recognised(tmp_path):
+    """Zoom leaves .zoom files behind when it is quit before conversion
+    finishes. They sit there forever, so 'wait for it to finish' is the wrong
+    advice — somebody has to start it."""
+    from bedrock.meetings.transcribe import find_unconverted
+
+    (tmp_path / "double_click_to_convert_01.zoom").write_bytes(b"")
+    (tmp_path / "double_click_to_convert_02.zoom").write_bytes(b"")
+    (tmp_path / "zoomver.tag").write_bytes(b"")
+
+    assert len(find_unconverted(tmp_path)) == 2
+    assert discover_participant_tracks(tmp_path) == {}
+    assert find_mixed_audio(tmp_path) == []  # .zoom is not playable audio
+
+
+async def test_an_unconverted_recording_says_how_to_convert_it(tmp_path):
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    (rec / "double_click_to_convert_01.zoom").write_bytes(b"")
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=FakeRunner([], []))
+
+    with pytest.raises(ToolIntegrationError, match="not been converted"):
+        await transcribe_recording(rec, transcriber, work_dir=tmp_path / "w")
+
+
+def test_a_converted_recording_is_not_flagged_as_unconverted(tmp_path):
+    from bedrock.meetings.transcribe import find_unconverted
+
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
+    assert find_unconverted(tmp_path) == []
+
+
+def test_a_long_uninterrupted_turn_is_split_below_whispers_window():
+    """Whisper caps a segment at 30s, so a longer slice returns one cue holding
+    everything said in it and every citation collapses onto its start."""
+    from bedrock.meetings.transcribe import MAX_TURN_MS
+
+    # One continuous 50-second region, as a monologue produces.
+    pieces = _group_regions([(0, 50_000)], max_gap_ms=600)
+    assert len(pieces) > 1
+    assert all(end - start <= MAX_TURN_MS for start, end in pieces)
+    assert pieces[0][0] == 0 and pieces[-1][1] == 50_000  # nothing lost
+
+
+def test_joining_stops_at_the_cap():
+    regions = [(i * 3000, i * 3000 + 2500) for i in range(12)]  # 36s of near-continuous speech
+    grouped = _group_regions(regions, max_gap_ms=600)
+    assert len(grouped) > 1
+    assert all(end - start <= 20_000 for start, end in grouped)
+
+
+def test_short_turns_are_untouched():
+    assert _group_regions([(990, 2080), (2310, 8450)], max_gap_ms=600) == [(990, 8450)]
+
+
+async def test_a_cue_cannot_outlast_the_slice_it_came_from(tmp_path):
+    """Whisper reports a cue ending at its 30s window edge even for a short
+    slice, which made brief remarks look half a minute long."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+
+    class WindowRunner(FakeRunner):
+        async def run(self, args, log_path, env=None):
+            if list(args)[0] == "whisper-cli":
+                inputs = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
+                for path in inputs:
+                    # A 2-second remark reported as filling a 30-second window.
+                    Path(path + ".vtt").write_text(
+                        "WEBVTT\n\n00:00:00.000 --> 00:00:30.000\nA short remark.\n"
+                    )
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text("")
+                return
+            await super().run(args, log_path, env)
+
+    runner = WindowRunner(regions=[(1000, 3000)], texts=["A short remark."])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    cue = result.cues[0]
+    # Region 1000-3000 padded by 150ms each side ends at 3150, not 30150.
+    assert cue.end_ms == 3150
+    assert cue.end_ms - cue.start_ms < 5000
+
+
+def test_the_speech_model_can_be_chosen():
+    """Comparing speech models on real audio needs to be a flag, not an edit."""
+    from bedrock.meetings.cli import SPEECH_MODEL, build_parser
+
+    assert build_parser().parse_args([]).speech_model == SPEECH_MODEL
+    assert (
+        build_parser().parse_args(["--speech-model", "ggml-large-v3-turbo.bin"]).speech_model
+        == "ggml-large-v3-turbo.bin"
+    )

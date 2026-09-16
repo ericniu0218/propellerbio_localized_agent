@@ -19,6 +19,12 @@ inference server you configure.
 └ ^c Quit  ^l Clear ─────────────────────────────────────────────────────────┘
 ```
 
+## Installing (not developing)
+
+Just want to run this, not work on its code? See **[INSTALL.md](./INSTALL.md)**
+for a no-Python-experience-assumed walkthrough — one command, no virtual
+environment. The rest of this README is for contributors.
+
 ## Quick start (local development)
 
 1. Install [Ollama](https://ollama.com) and pull a small model:

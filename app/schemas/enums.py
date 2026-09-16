@@ -30,6 +30,7 @@ class TaskDomain(StrEnum):
     REGULATORY = "regulatory"
     CLINICAL = "clinical"
     LAB_DATA = "lab_data"
+    MEETINGS = "meetings"
     GENERAL = "general"
 
 

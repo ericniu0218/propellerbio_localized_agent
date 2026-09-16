@@ -38,7 +38,7 @@ class Runner(BaseAgent):
             f"Classify this user request.\n\nRequest: {request}\n\n"
             'Respond with JSON: {"complexity": "simple|normal|hard", '
             '"domain": "literature|internal_docs|bioinformatics|chemistry|'
-            'data_analysis|regulatory|clinical|lab_data|general", "reason": "..."}'
+            'data_analysis|regulatory|clinical|lab_data|meetings|general", "reason": "..."}'
         )
         raw = await self.call_model(self.build_prompt(prompt), task_id=task_id)
         try:

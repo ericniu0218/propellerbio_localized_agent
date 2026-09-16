@@ -488,3 +488,57 @@ def test_a_converted_recording_is_not_flagged_as_unconverted(tmp_path):
     rec.mkdir(parents=True)
     (rec / "audio1_Alice Chen.m4a").write_bytes(b"")
     assert find_unconverted(tmp_path) == []
+
+
+def test_a_long_uninterrupted_turn_is_split_below_whispers_window():
+    """Whisper caps a segment at 30s, so a longer slice returns one cue holding
+    everything said in it and every citation collapses onto its start."""
+    from bedrock.meetings.transcribe import MAX_TURN_MS
+
+    # One continuous 50-second region, as a monologue produces.
+    pieces = _group_regions([(0, 50_000)], max_gap_ms=600)
+    assert len(pieces) > 1
+    assert all(end - start <= MAX_TURN_MS for start, end in pieces)
+    assert pieces[0][0] == 0 and pieces[-1][1] == 50_000  # nothing lost
+
+
+def test_joining_stops_at_the_cap():
+    regions = [(i * 3000, i * 3000 + 2500) for i in range(12)]  # 36s of near-continuous speech
+    grouped = _group_regions(regions, max_gap_ms=600)
+    assert len(grouped) > 1
+    assert all(end - start <= 20_000 for start, end in grouped)
+
+
+def test_short_turns_are_untouched():
+    assert _group_regions([(990, 2080), (2310, 8450)], max_gap_ms=600) == [(990, 8450)]
+
+
+async def test_a_cue_cannot_outlast_the_slice_it_came_from(tmp_path):
+    """Whisper reports a cue ending at its 30s window edge even for a short
+    slice, which made brief remarks look half a minute long."""
+    rec = tmp_path / "rec" / "Audio Record"
+    rec.mkdir(parents=True)
+    (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
+
+    class WindowRunner(FakeRunner):
+        async def run(self, args, log_path, env=None):
+            if list(args)[0] == "whisper-cli":
+                inputs = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
+                for path in inputs:
+                    # A 2-second remark reported as filling a 30-second window.
+                    Path(path + ".vtt").write_text(
+                        "WEBVTT\n\n00:00:00.000 --> 00:00:30.000\nA short remark.\n"
+                    )
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text("")
+                return
+            await super().run(args, log_path, env)
+
+    runner = WindowRunner(regions=[(1000, 3000)], texts=["A short remark."])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
+
+    cue = result.cues[0]
+    # Region 1000-3000 padded by 150ms each side ends at 3150, not 30150.
+    assert cue.end_ms == 3150
+    assert cue.end_ms - cue.start_ms < 5000

@@ -60,23 +60,52 @@ def is_speech(text: str) -> bool:
     return bool(text.strip()) and not _NON_SPEECH.match(text.strip())
 
 
-def _group_regions(regions: list[tuple[int, int]], max_gap_ms: int) -> list[tuple[int, int]]:
+# Whisper processes audio in 30-second windows, so a slice longer than that
+# comes back as one cue covering the whole window. Somebody talking without a
+# real pause for half a minute then gets a single cue holding six sentences,
+# and every citation into it collapses onto that cue's start - observed on a
+# real recording, where "enrollment is 148 of 200" and "interim analysis moves
+# to March", said sixteen seconds apart, both cited 00:00:30. Capping turns
+# below the window keeps citations near the sentence they quote.
+MAX_TURN_MS = 20_000
+
+
+def _group_regions(
+    regions: list[tuple[int, int]],
+    max_gap_ms: int,
+    max_turn_ms: int = MAX_TURN_MS,
+) -> list[tuple[int, int]]:
     """Join speech regions separated by less than a breath into one turn.
 
     VAD splits on every pause, including mid-sentence ones, which would
     otherwise send a single sentence through whisper in three pieces and lose
-    the context that makes it transcribe well.
+    the context that makes it transcribe well. Turns are capped at
+    ``max_turn_ms`` for the reason above.
     """
     if not regions:
         return []
     grouped = [regions[0]]
     for start, end in regions[1:]:
         last_start, last_end = grouped[-1]
-        if start - last_end <= max_gap_ms:
+        joinable = start - last_end <= max_gap_ms
+        within_cap = end - last_start <= max_turn_ms
+        if joinable and within_cap:
             grouped[-1] = (last_start, end)
         else:
             grouped.append((start, end))
-    return grouped
+
+    # A single uninterrupted region can still exceed the cap on its own; split
+    # it on even boundaries so no slice reaches whisper's window limit.
+    capped: list[tuple[int, int]] = []
+    for start, end in grouped:
+        span = end - start
+        if span <= max_turn_ms:
+            capped.append((start, end))
+            continue
+        pieces = -(-span // max_turn_ms)  # ceiling division
+        step = -(-span // pieces)
+        capped += [(start + i * step, min(start + (i + 1) * step, end)) for i in range(pieces)]
+    return capped
 
 
 @dataclass(frozen=True)
@@ -254,7 +283,7 @@ class WhisperTranscriber:
         slice_dir = work_dir / f"{wav.stem}.slices"
         slice_dir.mkdir(parents=True, exist_ok=True)
 
-        slices: list[tuple[Path, int]] = []
+        slices: list[tuple[Path, int, int]] = []
         for index, (start_ms, end_ms) in enumerate(turns):
             # A little padding either side: VAD trims tight and can clip the
             # first consonant or a trailing syllable.
@@ -273,7 +302,7 @@ class WhisperTranscriber:
                 log_path=slice_dir / f"turn{index:04d}.ffmpeg.log",
             )
             if target.exists():
-                slices.append((target, padded_start))
+                slices.append((target, padded_start, padded_end))
 
         if not slices:
             return []
@@ -287,14 +316,14 @@ class WhisperTranscriber:
         ]
         if self.config.initial_prompt:
             args += ["--prompt", self.config.initial_prompt]
-        for path, _ in slices:
+        for path, _, _ in slices:
             args += ["-f", str(path)]
 
         await self.runner.run(args, log_path=work_dir / f"{wav.stem}.whisper.log")
 
         cues: list[Cue] = []
         transcribed_any = False
-        for path, offset_ms in slices:
+        for path, offset_ms, slice_end_ms in slices:
             # With several -f inputs whisper writes "<input path>.vtt" rather
             # than using a single -of prefix.
             vtt = path.with_suffix(path.suffix + ".vtt")
@@ -304,10 +333,15 @@ class WhisperTranscriber:
             for cue in parse_vtt(vtt.read_text(errors="replace")):
                 if not is_speech(cue.text):
                     continue
+                # Whisper reports a cue's end at its 30-second window edge even
+                # when the slice is shorter, which makes a 5-second remark look
+                # half a minute long and inflates the meeting's duration. The
+                # slice's own end is the real bound.
+                start_ms = cue.start_ms + offset_ms
                 cues.append(
                     Cue(
-                        start_ms=cue.start_ms + offset_ms,
-                        end_ms=cue.end_ms + offset_ms,
+                        start_ms=start_ms,
+                        end_ms=min(cue.end_ms + offset_ms, slice_end_ms),
                         speaker=None,
                         text=cue.text,
                     )

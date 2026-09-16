@@ -117,3 +117,56 @@ def test_chunker_keeps_segments_whole_and_splits_only_oversized_ones():
     chunks = chunk_segments([big], max_tokens=100)
     assert len(chunks) > 1
     assert all(chunk.tokens <= 160 for chunk in chunks)
+
+
+# ---- Plural folding, and the stores written before it existed ---------------
+
+
+def test_singular_and_plural_find_each_other(store: ContextStore):
+    ingest(
+        Source.from_text(
+            "Samples showing turbidity are discarded.\n\nEach plate holds ninety six wells.",
+            name="protocol.md",
+            suffix=".md",
+        ),
+        store=store,
+    )
+
+    assert store.search("sample", limit=3), "plural text should answer a singular query"
+    assert store.search("plates", limit=3), "singular text should answer a plural query"
+
+
+def test_words_that_only_look_plural_are_left_alone():
+    from bedrock.context.search import stem
+
+    assert stem("samples") == stem("sample") == "sample"
+    assert stem("studies") == stem("study") == "study"
+    # Folding these would merge unrelated words and mangle real ones.
+    for word in ("glass", "apparatus", "analysis", "ph", "plus"):
+        assert stem(word) == word
+
+
+def test_artifacts_stored_before_stemming_are_still_searchable(tmp_path):
+    """Ids are content hashes, so an existing artifact is never rewritten. Its
+    old, unstemmed word counts have to keep working."""
+    import json
+
+    store = ContextStore(tmp_path / "context")
+    artifact = ingest(
+        Source.from_text("Samples showing turbidity are discarded.", name="protocol.md", suffix=".md"),
+        store=store,
+    )
+
+    # Rewrite the manifest the way the previous version would have written it:
+    # schema_version 1, with unstemmed terms.
+    manifest_path = store.root / artifact.id / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = 1
+    for entry in manifest["chunks"]:
+        entry["terms"] = {"samples": 1, "showing": 1, "turbidity": 1, "discarded": 1}
+        entry["term_count"] = 4
+    manifest_path.write_text(json.dumps(manifest))
+
+    fresh = ContextStore(tmp_path / "context")  # a new store: no cached manifest
+    assert fresh.search("sample", limit=3), "an old artifact must not go quiet"
+    assert fresh.search("turbidity", limit=3)

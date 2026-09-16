@@ -70,9 +70,16 @@ and `share` (export folder), configured as `[connectors.<name>]` tables.
 Authorisation is left to the source system; every fetch records provenance
 into a sidecar and the AlphaFold manifest.
 
-Not yet built (deliberately): file attachments in chat, embedding-based
-retrieval (`/digest` search is keyword/BM25), authentication, and
+Not yet built (deliberately): file attachments in chat, authentication, and
 product-specific connectors (only the generic `rest` and `share` types exist).
+
+**Long-term fix, raise it whenever retrieval quality comes up:** `/digest`
+search and the automatic context injection both rank by keyword (BM25), so
+"acidity" does not find a chunk that only says "pH", and a question can have an
+unrelated passage silently attached to it. A score threshold cannot fix the
+second half - that was measured, see NEXT_STEPS.md section 6, which has the
+full plan, the step-by-step, and the model and company data it needs. It is
+blocked on a deployed embedding model.
 
 Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the *configured* model through `InferenceBackend` - never any other service. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
 

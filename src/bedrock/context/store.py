@@ -35,7 +35,7 @@ from pathlib import Path
 
 from bedrock.context import codec
 from bedrock.context.adapters.base import Source
-from bedrock.context.search import ScoredDoc, bm25, term_frequencies
+from bedrock.context.search import INDEX_VERSION, ScoredDoc, bm25, fold_terms, term_frequencies
 from bedrock.context.types import (
     ArtifactStats,
     Chunk,
@@ -45,7 +45,7 @@ from bedrock.context.types import (
     estimate_tokens,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 _ID_LENGTH = 16
 
@@ -241,7 +241,15 @@ class ContextStore:
         for manifest in manifests:
             for entry in manifest["chunks"]:
                 key = (manifest["id"], entry["index"])
-                docs.append(ScoredDoc(key=key, terms=entry["terms"], length=entry["term_count"]))
+                # An artifact stored before the tokeniser changed still holds
+                # its old word counts, and it is never rewritten (ids are
+                # content hashes, so re-ingesting returns the existing one).
+                # Folding on read keeps those artifacts searchable instead of
+                # silently matching nothing.
+                terms = entry["terms"]
+                if manifest.get("schema_version", 1) < INDEX_VERSION:
+                    terms = fold_terms(terms)
+                docs.append(ScoredDoc(key=key, terms=terms, length=entry["term_count"]))
                 lookup[key] = (manifest, entry)
 
         hits = []

@@ -11,7 +11,16 @@ The trade-off is honest and worth knowing: it matches *words*, not *meaning*.
 A search for "acidity" will not find a chunk that only ever says "pH". If that
 becomes the limiting factor, this module is the one to replace, and nothing
 else has to change - the store keeps the word counts it needs in each
-manifest and calls into these functions.
+manifest and calls into these functions. See NEXT_STEPS.md section 6 for the
+planned replacement.
+
+A measured note on the other half of that trade-off, because it is tempting to
+try to fix it here: a query whose distinctive word is absent ("how acidic are
+the samples") scores *identically* to a genuine one whose distinctive word is
+also absent ("what temperature were samples held at") - same score, same
+matched term, same idf, because lexically they are the same event. No
+threshold on score, matched-term count or rarity separates them. Precision
+here needs meaning, not tuning.
 """
 
 from __future__ import annotations
@@ -22,6 +31,11 @@ from dataclasses import dataclass
 
 K1 = 1.5
 B = 0.75
+
+# Bumped whenever tokenisation changes, because term counts are written into
+# each artifact's manifest at ingest time. ``bedrock.context.store`` folds
+# older manifests forward on read - see ``fold_terms``.
+INDEX_VERSION = 2
 
 _WORD = re.compile(r"[a-z0-9_]+")
 
@@ -36,13 +50,53 @@ _STOPWORDS = frozenset(
 )
 
 
+def stem(word: str) -> str:
+    """Fold plurals, so "samples" and "sample" rank as one term.
+
+    Deliberately plural-only. A fuller stemmer is tempting but has to fold
+    *both* sides of a comparison to the same string, and the usual suffix
+    lists do not: strip "es" before "s" and "samples" becomes "sampl" while
+    "sample" stays "sample", so the two never meet. (``bedrock.recall`` can
+    use exactly that list because it matches stems as prefixes, where the
+    mismatch is harmless - here the comparison is equality.) Verb forms like
+    "stored"/"storage" are left alone rather than folded half-correctly.
+
+    Words ending in "ss", "us" or "is" keep their "s": glass, apparatus,
+    analysis.
+    """
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
 def tokenize(text: str) -> list[str]:
-    """Lowercase words, minus stopwords and single characters."""
+    """Lowercase words, minus stopwords and single characters, plurals folded.
+
+    Stopwords are removed before stemming: the list holds real words ("was",
+    "is"), not stems.
+    """
     return [
-        word
+        stem(word)
         for word in _WORD.findall(text.lower())
         if len(word) > 1 and word not in _STOPWORDS
     ]
+
+
+def fold_terms(terms: dict[str, int]) -> dict[str, int]:
+    """Bring a manifest written before ``INDEX_VERSION`` 2 up to date.
+
+    Stemming is a pure function of the word, so folding the stored counts
+    gives exactly what re-reading the chunk would give - {"samples": 3,
+    "sample": 2} becomes {"sample": 5} - without decompressing anything. The
+    total count is unchanged, so the stored ``term_count`` stays correct.
+    """
+    folded: dict[str, int] = {}
+    for word, count in terms.items():
+        key = stem(word)
+        folded[key] = folded.get(key, 0) + count
+    return folded
 
 
 def term_frequencies(text: str) -> dict[str, int]:

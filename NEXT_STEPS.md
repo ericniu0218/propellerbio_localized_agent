@@ -184,6 +184,115 @@ hanging, which is the best available behavior without durable job storage
 on the backend (out of scope for this task; see that repo's Workstream 1
 notes on Postgres/durability).
 
+### 6. Semantic retrieval — LONG-TERM, blocked on a deployed embedding model
+
+**Tag: long-term.** Raise this whenever retrieval or `/digest` quality comes
+up. It cannot be done today: it needs a model that is not deployed yet.
+
+#### The problem, measured
+
+`/digest search` and the automatic context injection in
+`src/bedrock/context/auto_inject.py` both rank with BM25
+(`src/bedrock/context/search.py`), which matches *words*, not meaning. Against
+a store holding an assay CSV and a protocol document:
+
+```
+'ph'                         -> found
+'acidity'                    -> NO MATCH      (same subject, different word)
+'turbidity'                  -> found
+'cloudiness'                 -> NO MATCH
+'how acidic are the samples' -> returned the passage about freezer storage
+```
+
+Two distinct failures. The **miss** is the widely-understood one. The
+**false positive** is worse, because `auto_inject` runs on every message and
+silently prepends what it finds: the model answers a question about acidity
+while looking at a passage about freezer temperatures.
+
+Do not try to fix the false positive with a score threshold. This was measured
+in September 2026 and the numbers rule it out: a genuine query whose
+distinctive word is absent ("what temperature were samples held at") scores
+**identically** to a bogus one ("how acidic are the samples") — same score
+(2.99), same single matched term (`samples`), same idf — because lexically
+they are the same event. Meanwhile the small store used by the auto-inject
+tests scores 0.41, well *below* both, so any absolute cutoff rejects genuine
+matches before it rejects bogus ones. Precision here needs meaning.
+
+Plural folding (`search.stem`) was added, which is real but small: it unifies
+sample/samples, not acidity/pH.
+
+#### What the change is
+
+Replace, or rank on top of, BM25 with **local embeddings**: a small model
+turns each chunk and each query into a vector, and similarity is measured
+between vectors instead of shared words. Two shapes, in order of preference:
+
+- **E, hybrid (recommended).** BM25 retrieves ~50 candidates cheaply, the
+  embedding model reranks them to the best 5. Keeps exact-term matching for
+  identifiers like `SEQ-00123`, where embeddings are weak, and adds meaning on
+  top. Degrades to plain BM25 when no embedding model is reachable.
+- **D, embeddings only.** Simpler to write, worse on exact identifiers.
+
+#### How it betters the system
+
+- "acidity" finds the pH column; "cloudiness" finds turbidity; a scientist
+  asks in their own words instead of guessing the file's vocabulary.
+- Auto-injection becomes trustworthy: similarity has a meaningful scale, so a
+  real cutoff becomes possible and the freezer-passage failure stops.
+- The same ranking improves `/sources search` and, if wired through,
+  `src/bedrock/recall.py` (past-chat search, same keyword limitation today).
+- It stays entirely private: the embedding model is self-hosted like every
+  other model here.
+
+#### Step-by-step
+
+1. **Deploy an embedding model** on the same private server as the chat model
+   (see item 1 above). `nomic-embed-text` (~270 MB) or `bge-small-en`
+   (~130 MB). Both Ollama and vLLM expose them at `/v1/embeddings` on the base
+   URL Bedrock is already configured with — **verify this against the actual
+   deployment rather than assuming it.**
+2. **Extend the seam, not the callers.** Add `embed(texts) -> list[vector]` to
+   the `InferenceBackend` protocol (`src/bedrock/inference/base.py`) and
+   implement it in `openai_compatible.py`. Nothing in `ui/` changes, exactly as
+   with every other backend capability.
+3. **Add a settings key** (`embedding_model`, plus `BEDROCK_EMBEDDING_MODEL`).
+   Empty means "no semantic search" and everything falls back to BM25 — the
+   store must keep working with no inference server at all, which is a
+   property `/digest` has today and must not lose.
+4. **Embed at ingest.** In `store.put`, embed each chunk and write the vectors
+   to a `vectors.bin` beside `chunks.bin` (not into `manifest.json`, which is
+   read on every listing). Roughly 1.5 KB per chunk at 384 dimensions, so
+   ~5.5 MB per 3,600 chunks.
+5. **Bump `SCHEMA_VERSION`** and treat artifacts without vectors as BM25-only,
+   the same forward-folding pattern `fold_terms` already uses. Offer a
+   `/digest reindex` for existing stores, since content-addressed artifacts are
+   never rewritten on re-ingest.
+6. **Rerank in `store.search`**, behind the existing signature so callers do
+   not change. Embed the query once per search.
+7. **Set a real similarity cutoff in `auto_inject`**, which only becomes
+   possible at this step, and keep the visible "Added stored context from …"
+   line regardless.
+8. **Measure before and after** on a real set of company questions. Keep the
+   queries above as regression cases: "acidity" must find pH; "how acidic are
+   the samples" must *not* return freezer storage.
+
+#### Inputs needed
+
+**Model data** — an embedding model file staged on the private server; its
+dimension count and context limit; confirmation the serving stack exposes an
+embeddings endpoint; and a decision on which model, since changing it later
+invalidates every stored vector.
+
+**Company data** — a set of real questions scientists actually ask, paired
+with the documents that should answer them. This is the only way to tell
+whether the change worked, and it is the one input engineering cannot produce
+on its own. Twenty or thirty pairs are enough to start. Also needed: the
+vocabulary where synonyms matter most (assay terms, instrument names, internal
+abbreviations), because those are the cases to check first.
+
+**Capacity** — embedding a large store is a one-off batch job; budget GPU time
+for the initial reindex, and disk per the estimate in step 4.
+
 ## Testing
 
 `pytest` covers the client's REST/SSE parsing

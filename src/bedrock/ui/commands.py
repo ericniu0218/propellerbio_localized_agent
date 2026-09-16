@@ -19,11 +19,24 @@ HELP_TEXT = """\
 | `/model <name>` | Switch to a different model |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/runs` | Prediction runs recorded on this machine |
+| `/runs show <run-id>` | Settings, lineage and integrity of one run |
+| `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
+| `/audit` | What this client has done on this machine |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
 | `/clear` | Start a new conversation |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
+
+**Examples**
+
+- Runs for project X this quarter:
+  `/runs --project X --since 2026-07-01 --before 2026-10-01`
+- Export the action history: `/audit export "/approved/review/actions.jsonl"`
+
+`/runs`, `/confidence` and `/audit` read local files only. They work with the
+model server switched off, and nothing they show is sent to a model.
 
 **Keys**
 
@@ -39,7 +52,10 @@ class Command:
     args: str
 
 
-KNOWN_COMMANDS = {"model", "digest", "workspace", "team", "clear", "help", "exit", "quit"}
+KNOWN_COMMANDS = {
+    "model", "digest", "runs", "confidence", "audit",
+    "workspace", "team", "clear", "help", "exit", "quit",
+}
 
 
 def parse_command(text: str) -> Command | None:

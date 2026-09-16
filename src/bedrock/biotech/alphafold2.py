@@ -33,6 +33,7 @@ class AlphaFold2Result:
     log_path: Path
     confidence_paths: tuple[Path, ...]
     command: tuple[str, ...]
+    ranking_path: Path | None = None
 
 
 class AlphaFold2Adapter:
@@ -110,7 +111,16 @@ class AlphaFold2Adapter:
                 and _is_within(path, output_dir)
             )
         )
-        return AlphaFold2Result(structure, output_dir.resolve(), log_path.resolve(), confidence, command)
+        ranking = structure.parent / "ranking_debug.json"
+        ranking_path = ranking.resolve() if ranking.is_file() and _is_within(ranking, output_dir) else None
+        return AlphaFold2Result(
+            structure_path=structure,
+            output_dir=output_dir.resolve(),
+            log_path=log_path.resolve(),
+            confidence_paths=confidence,
+            command=command,
+            ranking_path=ranking_path,
+        )
 
 
 def _command_exists(command: str) -> bool:

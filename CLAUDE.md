@@ -64,6 +64,18 @@ read a large file cheaply and still get exact detail on request. Generalised
 over data types by the `SourceAdapter` protocol, the same seam idea as
 `InferenceBackend`. See README's "Compressing data for the model" section.
 
+Also built: local compliance and provenance. `bedrock.provenance` keeps an
+append-only SQLite action journal (`BEDROCK_HISTORY_DIR`) and a read-only
+catalogue over the per-run manifests; `bedrock/biotech/confidence.py`
+normalises AlphaFold 2 confidence. The employee-facing half is `/runs`,
+`/confidence` and `/audit` in both app modes and as `bedrock-biotech`
+subcommands, plus confidence-coloured interactive PyMOL. These read local
+files only, never consult a model, and work with every server switched off.
+Local history is *not* an authenticated ledger or tamper-proof storage, and a
+project label grants no access; read `docs/COMPLIANCE_MVP.md` and
+`docs/compliance_mvp/CONTRACT.md` before changing the journal, the run
+catalogue, the confidence contract or the approval flow.
+
 Also built: native shared workspaces (`src/bedrock/workspaces/` and
 `src/bedrock/ui/workspace_command.py`). Read `docs/SHARED_WORKSPACES.md` before
 changing workspace storage, artifact contracts, roles, invitations,

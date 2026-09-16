@@ -48,6 +48,9 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/model <name>`  | Switch model                     |
 | `/digest <path>` | Compress a file into the store   |
 | `/digest`        | List / search what you stored    |
+| `/runs`          | Prediction runs on this machine  |
+| `/confidence <run-id>` | pLDDT bands, low regions, PAE |
+| `/audit`         | What this client did here        |
 | `/workspace`     | List private team workspaces     |
 | `/workspace help`| Show collaboration actions       |
 | `/clear`         | Start a new conversation         |
@@ -96,13 +99,69 @@ preserve its structure and confidence artifacts, render a PNG and session with
 open-source PyMOL, and record hashes and provenance in a per-run manifest.
 
 After operator provisioning, check it with `bedrock-biotech status` and run it
-with `bedrock-biotech fold candidate.fasta`. In agent-pack mode the equivalent
-commands are `/tools`, `/fold <fasta-path>`, and `/pymol [structure-path]`.
+with `bedrock-biotech fold candidate.fasta --project X`. In agent-pack mode the
+equivalent commands are `/tools`, `/fold <fasta-path> [--project X]`, and
+`/pymol [structure-path]`.
 Direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
 open the latest structure interactively in PyMOL.” Questions about the tools
 remain normal agent conversations.
+`/pymol` opens the structure in a desktop PyMOL window with the same four
+pLDDT bands the saved preview uses — one fixed script and one palette serve
+both, so the window and the PNG cannot disagree. A structure you point at
+yourself is styled neutrally: an experimental file's B-factor column is
+crystallographic displacement, not model confidence.
+
 See [the integration guide](docs/BIOTECH_INTEGRATIONS.md) for the required
 database, container, GPU, privacy, and configuration steps.
+
+## What this machine did (`/runs`, `/confidence`, `/audit`)
+
+Every prediction already wrote a manifest; until now nothing could read one
+back. These three commands answer the questions people actually ask about
+past work, from local files only — no model is consulted and no network is
+needed, so they keep working when the inference server is down.
+
+```text
+/runs --project X --since 2026-07-01 --before 2026-10-01   # this quarter
+/runs show 20260715T090000Z-3f2a91cc                       # settings, lineage, integrity
+/runs verify 20260715T090000Z-3f2a91cc                     # re-hash every recorded artifact
+/runs tag 20260715T090000Z-3f2a91cc --project X            # label an older run
+/confidence 20260715T090000Z-3f2a91cc                      # pLDDT bands, low regions, PAE
+/audit                                                     # every recorded action
+/audit export "/approved/review/actions.jsonl"             # metadata-only JSONL
+```
+
+The same subcommands exist on the command line: `bedrock-biotech runs`,
+`bedrock-biotech confidence RUN_ID`, `bedrock-biotech audit`.
+
+Dates are UTC; `--since` includes its day and `--before` excludes it. Pages
+hold 25 runs by default and 100 at most. Tagging never edits a manifest —
+the new assignment is a recorded event, and a project label organises results
+without granting anybody access to anything.
+
+**`/confidence` is deliberately cautious.** It shows the four published pLDDT
+bands with counts and shares, the contiguous stretches below 70 and below 50
+as *input sequence positions*, and which model was actually scored — `ranked_0`
+is a rank, not `model_1`. Predicted aligned error is drawn as a bounded text
+heatmap of the **maximum** error per block, rows aligned and columns scored,
+with a numeric ångström legend so colour is never the only signal; the full
+matrix stays in its original JSON, whose path is printed. pLDDT estimates
+local model confidence: it is not experimental validation or a stability
+measurement, and low scores can also reflect disorder.
+
+**`/audit` records attempts, not just successes.** Each tracked action writes
+an intent before it starts and an outcome after it finishes. An intent with no
+outcome means the result was never confirmed — the work may still be running —
+and this client will never invent a failure to fill that gap. Approvals are
+sent exactly once: an ambiguous error after dispatch is recorded as *unknown*
+and the prompt stays visibly unresolved rather than claiming a decision that
+may not have been recorded.
+
+This is local history for one OS account, kept in SQLite under
+`BEDROCK_HISTORY_DIR`. It is not an authenticated approval ledger and not
+tamper-proof storage; the account owner can alter the file. It stores
+identifiers, hashes, decisions and bounded error codes — never file contents,
+prompts, approval previews or credentials.
 
 ## Meeting notes
 
@@ -130,6 +189,8 @@ Settings are read from, highest priority first:
 | `BEDROCK_TIMEOUT`    | `request_timeout` | `120` seconds                |
 | `BEDROCK_CONTEXT_DIR`| `context_dir`     | `~/.local/share/bedrock/context` |
 | `BEDROCK_WORKSPACE_DIR`| `workspace_dir` | `~/.local/share/bedrock/workspaces` |
+| `BEDROCK_HISTORY_DIR`| `history_dir`     | `~/.local/share/bedrock/history` |
+| `BEDROCK_BIOTECH_WORK_DIR`| `biotech_work_dir` | `~/.local/share/bedrock/biotech` |
 | `BEDROCK_USER`       | `user_id`         | current local username       |
 | `BEDROCK_DISPLAY_NAME`| `display_name`   | `user_id`                    |
 |                      | `system_prompt`   | none                         |
@@ -158,6 +219,13 @@ src/bedrock/
     agent_panel.py        The "what's happening now" strip (agent-pack mode)
     approval.py            Inline "waiting for you" approve/reject prompt
     commands.py           Slash-command parsing (pure functions)
+    runs_command.py        `/runs`: list, detail, verification, project tagging
+    confidence_view.py     `/confidence`: pLDDT bands and the PAE heatmap
+    audit_command.py       `/audit`: the local action journal, and its export
+    journal.py             Intent-before / outcome-after history writing
+    services.py            Lazy, injectable HistoryStore + RunCatalog
+    argparsing.py          argparse that reports errors instead of exiting
+    rendering.py           Escaped, control-character-free terminal text
     workspace_command.py  Native picker, preview, publish, roles and export flow
     styles.tcss            Layout and colours (Textual CSS)
   inference/
@@ -174,6 +242,9 @@ src/bedrock/
     store.py              Compressed, content-addressed store on local disk
     digest.py             Rules-based summary, optionally improved by a model
     search.py             BM25 keyword ranking over stored chunks
+  provenance/
+    history.py            Append-only local action journal (SQLite)
+    runs.py               Read-only catalogue over per-run manifests
   workspaces/
     store.py              SQLite authorization, persistence, idempotency and events
     processors.py         `/digest` corpus adapter and deterministic source fold
@@ -268,5 +339,15 @@ This client can talk to two very different things, picked by one setting:
 pytest
 ```
 
-No model server or agent-pack backend is needed; tests use in-memory fakes
-for both modes.
+No model server, agent-pack backend, AlphaFold installation or PyMOL is
+needed; tests use in-memory fakes and temporary directories for all of them,
+and drive both real Textual apps headlessly.
+
+## Releasing
+
+[The release note](docs/RELEASE.md) records the built artifacts, their
+hashes, the checks run against the *installed* wheel, and how to roll back
+without deleting history or rewriting manifests.
+[The smoke checklist](docs/SMOKE_CHECKLIST.md) is the part that needs a real
+AlphaFold and PyMOL workstation and a person to run it — nothing automated
+here demonstrates a real prediction.

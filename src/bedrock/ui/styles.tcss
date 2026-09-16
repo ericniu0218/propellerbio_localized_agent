@@ -64,6 +64,20 @@ ApprovalPrompt {
     min-width: 16;
 }
 
+/* A decision that was sent but never confirmed. It stays on the screen,
+   visibly unfinished, rather than being cleared away as if it had worked. */
+ApprovalPrompt.unresolved {
+    border-left: thick $error;
+}
+
+#approval-status {
+    height: auto;
+    color: $text-muted;
+}
+ApprovalPrompt.unresolved #approval-status {
+    color: $error;
+}
+
 /* ---- Conversation area -------------------------------------------------- */
 
 #chat {

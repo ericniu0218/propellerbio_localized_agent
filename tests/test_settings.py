@@ -45,6 +45,20 @@ def test_workspace_identity_and_private_vault_are_configurable(tmp_path: Path):
     assert settings.workspace_dir == str(tmp_path / "team-vault")
 
 
+def test_history_directory_uses_environment_file_default_precedence(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text(f'history_dir = "{tmp_path / "file-history"}"\n')
+
+    from_file = load_settings(config_path=config, env={})
+    from_environment = load_settings(
+        config_path=config,
+        env={"BEDROCK_HISTORY_DIR": str(tmp_path / "environment-history")},
+    )
+
+    assert from_file.history_dir == str(tmp_path / "file-history")
+    assert from_environment.history_dir == str(tmp_path / "environment-history")
+
+
 def test_biotech_tool_settings_can_be_provisioned_without_hard_coded_paths(tmp_path: Path):
     settings = load_settings(
         config_path=tmp_path / "missing.toml",

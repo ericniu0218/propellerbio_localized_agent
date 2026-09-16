@@ -15,6 +15,13 @@ from bedrock.config import Settings
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
 from bedrock.ui.widgets import AssistantMessage, SystemNotice, UserMessage
+from textual.widgets import Input
+
+from tests.conftest import (
+    FakeRunCatalog,
+    make_confidence_report,
+    make_services,
+)
 
 
 class FakeAgentPackClient:
@@ -59,7 +66,7 @@ class FakeAgentPackClient:
 class FakeBiotechWorkflow:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.folded: list[Path] = []
+        self.folded: list[tuple[Path, str | None]] = []
         self.opened: list[Path | None] = []
 
     def status(self):
@@ -68,8 +75,10 @@ class FakeBiotechWorkflow:
             ToolStatus("open-source PyMOL", True, ()),
         )
 
-    async def predict_and_render(self, fasta_path: Path) -> ProteinWorkflowResult:
-        self.folded.append(fasta_path)
+    async def predict_and_render(
+        self, fasta_path: Path, *, project_id: str | None = None
+    ) -> ProteinWorkflowResult:
+        self.folded.append((fasta_path, project_id))
         return ProteinWorkflowResult(
             run_id="run_test",
             run_dir=self.root,
@@ -92,11 +101,13 @@ def fake_client() -> FakeAgentPackClient:
 def make_app(
     client: FakeAgentPackClient,
     biotech_workflow: FakeBiotechWorkflow | None = None,
+    services=None,
 ) -> AgentPackApp:
     return AgentPackApp(
         settings=Settings(user_id="alice"),
         client=client,
         biotech_workflow=biotech_workflow,
+        services=services or make_services(),
     )
 
 
@@ -236,7 +247,7 @@ async def test_fold_command_runs_alphafold_then_reports_pymol_artifacts(
         await pilot.press(*"/fold /tmp/protein.fasta", "enter")
         await pilot.pause()
 
-        assert workflow.folded == [Path("/tmp/protein.fasta")]
+        assert workflow.folded == [(Path("/tmp/protein.fasta"), None)]
         notices = [notice.source for notice in app.query(SystemNotice)]
         assert any("Protein prediction completed" in notice for notice in notices)
         assert any("preview.png" in notice for notice in notices)
@@ -271,3 +282,74 @@ async def test_natural_language_pymol_request_opens_latest_structure(
 
         assert workflow.opened == [None]
         assert any(request in str(message.content) for message in app.query(UserMessage))
+
+
+# ---- Folding with a project label, and what a finished fold says -----------
+
+
+async def test_fold_accepts_a_quoted_path_and_a_project_label(
+    fake_client: FakeAgentPackClient, tmp_path: Path
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = '/fold "/approved/my candidate.fasta" --project X'
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert workflow.folded == [(Path("/approved/my candidate.fasta"), "X")]
+
+
+async def test_fold_completion_summarises_confidence_and_points_at_the_full_page(
+    fake_client: FakeAgentPackClient, tmp_path: Path
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    services = make_services(
+        runs=FakeRunCatalog(
+            reports={"run_test": make_confidence_report("run_test", model_id="model_3")}
+        )
+    )
+    app = make_app(fake_client, workflow, services)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await pilot.pause()
+
+        text = "\n".join(notice.source for notice in app.query(SystemNotice))
+        assert "pLDDT 90 or above" in text
+        assert "model_3" in text
+        assert "/confidence run_test" in text
+        assert "ranked_0.pdb" in text  # the structure is still the headline
+
+
+async def test_a_structure_stays_usable_when_its_confidence_cannot_be_read(
+    fake_client: FakeAgentPackClient, tmp_path: Path
+):
+    """An expensive prediction is not invalidated by a missing JSON file."""
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow, make_services(runs=FakeRunCatalog(reports={})))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await pilot.pause()
+
+        text = "\n".join(notice.source for notice in app.query(SystemNotice))
+        assert "Protein prediction completed" in text
+        assert "ranked_0.pdb" in text
+        assert "Confidence is unavailable" in text
+
+
+async def test_a_fold_typo_never_starts_a_job(fake_client: FakeAgentPackClient, tmp_path: Path):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "/fold candidate.fasta --project"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert workflow.folded == []
+        assert app.is_running
+        text = "\n".join(notice.source for notice in app.query(SystemNotice))
+        assert "expected one argument" in text

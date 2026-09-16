@@ -25,8 +25,12 @@ from bedrock.config import Settings, load_settings
 from bedrock.context import ContextStore
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation
+from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
+from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.runs_command import run_runs_command
+from bedrock.ui.services import ComplianceServices
 from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 from bedrock.workspaces import WorkspaceStore
@@ -43,7 +47,12 @@ class BedrockApp(App[None]):
         Binding("escape", "cancel_stream", "Stop", show=False),
     ]
 
-    def __init__(self, settings: Settings | None = None, backend: InferenceBackend | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        backend: InferenceBackend | None = None,
+        services: ComplianceServices | None = None,
+    ) -> None:
         super().__init__()
         self.theme = "textual-dark"  # always a dark, black-background terminal look
         self.settings = settings or load_settings()
@@ -56,6 +65,8 @@ class BedrockApp(App[None]):
         # a user who never runs /digest should never pay for that.
         self._context_store: ContextStore | None = None
         self._workspace_session: WorkspaceCommandSession | None = None
+        # History and run browsing. Built on first use, injected by tests.
+        self.services = services or ComplianceServices(self.settings)
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -121,6 +132,12 @@ class BedrockApp(App[None]):
                 await self.command_model(command.args)
             case "digest":
                 self.command_digest(command.args)
+            case "runs":
+                self.command_runs(command.args)
+            case "confidence":
+                self.command_confidence(command.args)
+            case "audit":
+                self.command_audit(command.args)
             case "workspace" | "team":
                 self.command_workspace(command.args)
             case _:
@@ -163,6 +180,8 @@ class BedrockApp(App[None]):
             notify=self.post_notice,
             backend=self.backend,
             model=self.model_name,
+            history=await self.services.optional_history(),
+            actor_id=self.settings.user_id,
         )
 
     @property
@@ -170,6 +189,26 @@ class BedrockApp(App[None]):
         if self._context_store is None:
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
+
+    # ---- Local history and run browsing -----------------------------------
+    #
+    # These three read files this machine already has. They never contact the
+    # model server, so they keep working when it is down, and they never send
+    # what they find to a model: "which runs did project X do last quarter" is
+    # a question with a correct answer, and a plausible one would be worse
+    # than none. Each runs in a worker because all of the work is disk work.
+
+    @work(group="history")
+    async def command_runs(self, args: str) -> None:
+        await run_runs_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_confidence(self, args: str) -> None:
+        await run_confidence_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_audit(self, args: str) -> None:
+        await run_audit_command(args, services=self.services, notify=self.post_notice)
 
     # ---- Shared workspaces -----------------------------------------------
 

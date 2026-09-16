@@ -38,6 +38,7 @@ DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bedrock" / "config.toml"
 DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 DEFAULT_WORKSPACE_DIR = Path.home() / ".local" / "share" / "bedrock" / "workspaces"
+DEFAULT_HISTORY_DIR = Path.home() / ".local" / "share" / "bedrock" / "history"
 DEFAULT_BIOTECH_WORK_DIR = Path.home() / ".local" / "share" / "bedrock" / "biotech"
 
 
@@ -79,6 +80,9 @@ class Settings:
 
     workspace_dir: str = str(DEFAULT_WORKSPACE_DIR)
     """Directory containing the private SQLite shared-workspace vault."""
+
+    history_dir: str = str(DEFAULT_HISTORY_DIR)
+    """Directory containing the private, metadata-only local action history."""
 
     biotech_work_dir: Path = DEFAULT_BIOTECH_WORK_DIR
     """Private working directory for scientific inputs, outputs, logs, and manifests."""
@@ -133,7 +137,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     known = {
         "backend", "api_base", "model", "api_key", "request_timeout",
         "system_prompt", "agent_pack_api_base", "user_id", "display_name",
-        "context_dir", "workspace_dir",
+        "context_dir", "workspace_dir", "history_dir",
         "biotech_work_dir",
         "alphafold_launcher", "alphafold_data_dir", "alphafold_python",
         "alphafold_max_template_date", "alphafold_docker_image",
@@ -168,6 +172,11 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         env.get("BEDROCK_WORKSPACE_DIR")
         or file_values.get("workspace_dir")
         or str(DEFAULT_WORKSPACE_DIR)
+    )
+    history_dir = (
+        env.get("BEDROCK_HISTORY_DIR")
+        or file_values.get("history_dir")
+        or str(DEFAULT_HISTORY_DIR)
     )
     biotech_work_dir = Path(
         env.get("BEDROCK_BIOTECH_WORK_DIR")
@@ -238,6 +247,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         display_name=display_name,
         context_dir=context_dir,
         workspace_dir=workspace_dir,
+        history_dir=history_dir,
         biotech_work_dir=biotech_work_dir,
         alphafold_launcher=alphafold_launcher,
         alphafold_data_dir=alphafold_data_dir,

@@ -19,6 +19,9 @@ class AgentEvent:
     type: str
     session_id: str
     payload: dict
+    event_id: str = ""
+    """The backend's own id for this event. Used to ignore a redelivered copy;
+    empty when the backend did not send one."""
 
 
 @dataclass

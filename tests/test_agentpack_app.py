@@ -12,6 +12,7 @@ from bedrock.agentpack.models import AgentEvent
 from bedrock.agentpack_app import AgentPackApp
 from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.config import Settings
+from bedrock.inference import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
@@ -56,8 +57,13 @@ class FakeAgentPackClient:
                 return
             yield event
 
-    def push(self, type: str, payload: dict) -> None:
-        self._queue.put_nowait(AgentEvent(type=type, session_id="sess_fake", payload=payload))
+    def push(self, type: str, payload: dict, event_id: str = "") -> None:
+        """``event_id`` imitates the id the real stream puts on every event.
+
+        Pass the same id twice to imitate a reconnecting stream redelivering
+        an event the app has already acted on.
+        """
+        self._queue.put_nowait(AgentEvent(type=type, session_id="sess_fake", payload=payload, event_id=event_id))
 
     async def close(self) -> None:
         self.closed = True
@@ -234,7 +240,8 @@ async def test_approval_prompt_approve_calls_backend_and_clears(fake_client: Fak
         assert any("Approved" in n.source for n in app.query(SystemNotice))
 
 
-async def test_one_task_at_a_time(fake_client: FakeAgentPackClient):
+async def test_one_task_at_a_time_and_the_next_one_waits(fake_client: FakeAgentPackClient):
+    """A second question queues instead of being refused, and runs after the first."""
     app = make_app(fake_client)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -244,7 +251,16 @@ async def test_one_task_at_a_time(fake_client: FakeAgentPackClient):
         await pilot.pause()
 
         assert fake_client.sent_messages == [("sess_fake", "first question")]
-        assert any("one at a time" in n.source for n in app.query(SystemNotice))
+        snapshot = app.queue_snapshot()
+        assert snapshot.running.text == "first question"
+        assert [item.text for item in snapshot.pending] == ["second question"]
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+
+        assert fake_client.sent_messages == [("sess_fake", "first question"), ("sess_fake", "second question")]
+        assert app.queue_snapshot().pending == ()
 
 
 async def test_digest_works_in_agentpack_mode_without_a_model(fake_client, tmp_path):
@@ -757,3 +773,252 @@ async def test_a_new_turn_after_streaming_starts_clean(fake_client: FakeAgentPac
         await pilot.press(*"second", "enter")
         await pilot.pause()
         assert "Working on it" in app.query(AssistantMessage)[-1].source
+
+# ---- Prompt queue in agent-pack mode ----------------------------------------
+
+
+async def test_waiting_for_approval_is_not_completion(fake_client: FakeAgentPackClient):
+    """A human check pauses the work; the queue must not treat it as finished."""
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"first question", "enter")
+        await pilot.pause()
+        await pilot.press(*"second question", "enter")
+        await pilot.pause()
+
+        fake_client.push("approval.required", {"task_id": "task_fake", "reason": "check this", "preview": ""})
+        await pilot.pause()
+        assert app.query_one(ApprovalPrompt)
+        assert fake_client.sent_messages == [("sess_fake", "first question")]
+        assert [item.text for item in app.queue_snapshot().pending] == ["second question"]
+
+        await pilot.click("#approve")
+        await pilot.pause()
+        # Approving is still not completion: only task.completed releases it.
+        assert fake_client.sent_messages == [("sess_fake", "first question")]
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+        assert fake_client.sent_messages[-1] == ("sess_fake", "second question")
+
+
+async def test_a_completion_with_nothing_running_advances_nothing(fake_client: FakeAgentPackClient):
+    """Duplicate, delayed and unrelated events are ignored once a run has ended."""
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"first question", "enter")
+        await pilot.pause()
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+        assert app.queue_snapshot().is_idle
+
+        for payload in (
+            {"task_id": "task_fake", "result_ref": "res_1", "citations": []},  # duplicate
+            {"task_id": "task_late", "result_ref": "res_2", "citations": []},  # unrelated
+        ):
+            fake_client.push("task.completed", payload)
+            await pilot.pause()
+
+        await pilot.press(*"second question", "enter")
+        await pilot.pause()
+        assert fake_client.sent_messages == [("sess_fake", "first question"), ("sess_fake", "second question")]
+
+
+async def test_a_duplicate_completion_cannot_finish_the_next_request(fake_client):
+    """An old terminal event must not advance a new request."""
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for text in ("first question", "second question", "third question"):
+            await pilot.press(*text, "enter")
+            await pilot.pause()
+
+        for _ in range(2):  # the same completion event, delivered twice
+            fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+            await pilot.pause()
+        await pilot.pause()
+
+        sent = [text for _, text in fake_client.sent_messages]
+        assert sent == ["first question", "second question"]
+        assert [item.text for item in app.queue_snapshot().pending] == ["third question"]
+        fake_client.push("task.completed", {"task_id": "next-final-step", "result_ref": "res_2"})
+        await pilot.pause()
+        await pilot.pause()
+        assert [text for _, text in fake_client.sent_messages] == ["first question", "second question", "third question"]
+
+
+async def test_a_redelivered_event_is_ignored(fake_client):
+    """A reconnecting stream can send the same event again; the copy does nothing."""
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for text in ("first question", "second question", "third question"):
+            await pilot.press(*text, "enter")
+            await pilot.pause()
+
+        payload = {"task_id": "task_fake", "result_ref": "res_1", "citations": []}
+        for _ in range(2):  # the very same event, delivered twice
+            fake_client.push("task.completed", payload, event_id="evt_7")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert [text for _, text in fake_client.sent_messages] == ["first question", "second question"]
+        assert app.queue_snapshot().running.text == "second question"
+        assert [item.text for item in app.queue_snapshot().pending] == ["third question"]
+
+
+async def test_two_requests_failing_identically_both_finish(fake_client):
+    """Same words, different events: the second failure must still end its request.
+
+    Completions are told apart by the stream's event id. Judging them by their
+    contents alone would treat the second failure as a replay of the first and
+    leave the queue busy for ever.
+    """
+    app = make_app(fake_client)
+    same = {"task_id": "task_fake", "error": "BudgetExceededError: boom"}
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.queue_prompt("first")
+        await pilot.pause()
+        fake_client.push("task.failed", dict(same), event_id="evt_1")
+        await pilot.pause()
+        await pilot.pause()
+        assert not app.prompt_queue.busy
+
+        await app.queue_prompt("second")
+        await pilot.pause()
+        fake_client.push("task.failed", dict(same), event_id="evt_2")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert not app.prompt_queue.busy, "the queue is stuck on a request that already failed"
+        await app.queue_prompt("third")
+        await pilot.pause()
+        assert [text for _, text in fake_client.sent_messages] == ["first", "second", "third"]
+
+
+async def test_result_download_failure_pauses_pending_prompts(fake_client):
+    async def fail_result(reference):
+        raise InferenceError("Could not fetch the answer")
+
+    fake_client.get_result = fail_result
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.queue_prompt("first")
+        await app.queue_prompt("second")
+        fake_client.push("task.completed", {"task_id": "final-step", "result_ref": "res_1"})
+        await pilot.pause()
+        assert app.queue_snapshot().paused
+        assert app.queue_snapshot().running is None
+        assert [item.text for item in app.queue_snapshot().pending] == ["second"]
+        assert [text for _, text in fake_client.sent_messages] == ["first"]
+        app.resume_queue()
+        await pilot.pause()
+        assert [text for _, text in fake_client.sent_messages] == ["first", "second"]
+
+
+async def test_foreign_session_completion_does_not_advance_queue(fake_client):
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.queue_prompt("first")
+        await app.queue_prompt("second")
+        await app._finish(AgentEvent("task.completed", "another-session", {"task_id": "foreign", "result_ref": "res_1"}), failed=False)
+        assert app.queue_snapshot().running.text == "first"
+        assert [text for _, text in fake_client.sent_messages] == ["first"]
+
+
+async def test_clear_during_result_download_does_not_finish_new_prompt(fake_client):
+    fetching, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_result(reference):
+        fetching.set()
+        await release.wait()
+        return "Old answer"
+
+    fake_client.get_result = slow_result
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.queue_prompt("first")
+        fake_client.push("task.completed", {"task_id": "old-final", "result_ref": "res_1"})
+        await asyncio.wait_for(fetching.wait(), 2)
+        await app.action_clear_chat()
+        await app.queue_prompt("second")
+        await app.queue_prompt("third")
+        release.set()
+        await pilot.pause()
+        assert app.queue_snapshot().running.text == "second"
+        assert [item.text for item in app.queue_snapshot().pending] == ["third"]
+
+
+async def test_a_failed_task_pauses_the_queue(fake_client: FakeAgentPackClient):
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"first question", "enter")
+        await pilot.pause()
+        await pilot.press(*"second question", "enter")
+        await pilot.pause()
+
+        fake_client.push("task.failed", {"task_id": "task_fake", "error": "BudgetExceededError: boom"})
+        await pilot.pause()
+        await pilot.pause()
+
+        snapshot = app.queue_snapshot()
+        assert snapshot.paused is True
+        assert [item.text for item in snapshot.pending] == ["second question"]
+        assert fake_client.sent_messages == [("sess_fake", "first question")]
+
+        app.resume_queue()
+        await pilot.pause()
+        await pilot.pause()
+        assert fake_client.sent_messages[-1] == ("sess_fake", "second question")
+        fake_client.push("task.failed", {"task_id": "task_fake", "error": "BudgetExceededError: boom"})
+        await pilot.pause()
+        assert app.queue_snapshot().running.text == "second question"
+
+
+async def test_a_scientific_job_holds_the_queue_until_it_finishes(fake_client, tmp_path):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_fold(fasta_path: Path, *, project_id: str | None = None, source_provenance: dict | None = None):
+        workflow.folded.append((fasta_path, project_id))
+        started.set()
+        await release.wait()
+        return ProteinWorkflowResult(
+            run_id="run_test",
+            run_dir=tmp_path,
+            structure_path=tmp_path / "ranked_0.pdb",
+            preview_path=None,
+            session_path=None,
+            manifest_path=tmp_path / "manifest.json",
+        )
+
+    workflow.predict_and_render = slow_fold
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await started.wait()
+        await pilot.pause()
+        await pilot.press(*"what does that structure show?", "enter")
+        await pilot.pause()
+
+        # The fold is the running request; the question waits for it.
+        assert app.queue_snapshot().running.text == "/fold /tmp/protein.fasta"
+        assert [item.text for item in app.queue_snapshot().pending] == ["what does that structure show?"]
+        assert fake_client.sent_messages == []
+
+        release.set()
+        for _ in range(4):
+            await pilot.pause()
+        assert fake_client.sent_messages == [("sess_fake", "what does that structure show?")]

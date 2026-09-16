@@ -21,13 +21,18 @@ from bedrock.ui.confidence_view import short_confidence_summary
 from bedrock.ui.rendering import safe_line
 
 
-def parse_fold_arguments(args: str) -> tuple[Path, str | None]:
-    """``<fasta> [--project X]``, with shell-style quoting and no shell."""
+def parse_fold_arguments(args: str) -> tuple[str, str | None]:
+    """``<fasta or source://id> [--project X]``, with shell-style quoting.
+
+    The target is returned as written. A company source reference has no file
+    suffix and is not a path, so classifying it is the caller's job - this
+    function only separates the target from the options, without a shell.
+    """
     parser = CommandParser("/fold")
     parser.add_argument("fasta")
     parser.add_argument("--project")
     options = parser.parse_args(split_arguments(args))
-    return Path(options.fasta).expanduser(), options.project
+    return options.fasta, options.project
 
 
 def parse_structure_argument(args: str) -> Path | None:
@@ -38,14 +43,25 @@ def parse_structure_argument(args: str) -> Path | None:
     return Path(options.structure).expanduser() if options.structure else None
 
 
-async def predict_and_render(workflow: Any, fasta_path: Path, project_id: str | None):
+async def predict_and_render(
+    workflow: Any,
+    fasta_path: Path,
+    project_id: str | None,
+    *,
+    source_provenance: dict | None = None,
+):
     """Start a fold, with the project label the employee asked for.
 
     Thin on purpose. The workflow validates the label, records the run and
     writes the single journal entry a fold produces; this exists so that the
     app and the CLI cannot start a fold in two subtly different ways.
+
+    ``source_provenance`` is passed straight through when the sequence came
+    from a company system of record rather than a file on disk.
     """
-    return await workflow.predict_and_render(fasta_path, project_id=project_id)
+    return await workflow.predict_and_render(
+        fasta_path, project_id=project_id, source_provenance=source_provenance
+    )
 
 
 async def confidence_summary(services: Any, run_id: str) -> str:

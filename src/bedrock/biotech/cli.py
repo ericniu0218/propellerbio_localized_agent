@@ -26,6 +26,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from bedrock.biotech import ProteinWorkflow, ToolIntegrationError
+from bedrock.connectors import ConnectorError, SourceHub, parse_source_ref
 from bedrock.config import load_settings
 from bedrock.provenance import HistoryError, HistoryStore, RunCatalog, RunError
 from bedrock.ui.audit_command import format_events
@@ -39,7 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="check AlphaFold 2 and PyMOL configuration")
 
     fold = subparsers.add_parser("fold", help="predict one monomer FASTA and render it")
-    fold.add_argument("fasta", type=Path)
+    fold.add_argument(
+        "fasta",
+        help="a FASTA file, or a company source reference such as registry://SEQ-00123",
+    )
     fold.add_argument("--project", help="project label recorded with the run")
 
     pymol = subparsers.add_parser("pymol", help="open a structure, or the latest result")
@@ -94,7 +98,18 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.command == "fold":
         workflow = ProteinWorkflow.from_settings(settings)
-        result = await workflow.predict_and_render(args.fasta, project_id=args.project)
+        provenance = None
+        source = parse_source_ref(args.fasta)
+        if source is not None:
+            record, fasta_path = await SourceHub.from_settings(settings).fetch_to_file(source)
+            provenance = record.provenance()
+            print(f"fetched: {source} as {record.fetched_by} ({record.version or 'no version reported'})")
+            print(f"sha256: {record.sha256}")
+        else:
+            fasta_path = Path(args.fasta)
+        result = await workflow.predict_and_render(
+            fasta_path, project_id=args.project, source_provenance=provenance
+        )
         print(f"run: {result.run_id}")
         print(f"structure: {result.structure_path}")
         if result.preview_path:
@@ -169,7 +184,7 @@ async def _run(args: argparse.Namespace) -> int:
 def main() -> None:
     try:
         raise SystemExit(asyncio.run(_run(build_parser().parse_args())))
-    except ToolIntegrationError as exc:
+    except (ToolIntegrationError, ConnectorError) as exc:
         raise SystemExit(f"error: {exc}") from exc
     except (HistoryError, RunError) as exc:
         raise SystemExit(f"error: {exc}") from exc

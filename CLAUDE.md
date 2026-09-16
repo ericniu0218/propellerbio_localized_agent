@@ -62,6 +62,18 @@ Conversation persistence: conversations are saved to `~/.local/share/bedrock/con
 
 History loading is demand-driven: keep only the open transcript and lightweight sidebar metadata. Never load other transcripts for title backfill. Legacy files require a metadata extraction scan off the UI thread; no message snapshots remain in the store. Large chats render in 50-message pages with a button to reveal earlier messages. Idle polling checks the directory signature, with a file-fingerprint scan once per minute or on explicit history refresh. Unchanged transcripts are not saved when leaving a chat. Writers merge title/timestamp-only changes, but preserve divergent transcripts as linked copies. `/forget` deletes the whole family and retains empty markers to block stale saves; new IDs contain no start timestamp. A filesystem without advisory locking uses the atomic-directory fallback, and UI saves fail promptly on contention; see README for stale-lock recovery. Files from newer schemas open read-only.
 
+Also built: company data-source connectors (`src/bedrock/connectors/`) -
+`/digest`, `/fold` and `bedrock-biotech fold` accept `<source>://<id>` and pull
+the record from a system of record instead of a manually exported file.
+`/sources` lists, searches and fetches. Two generic types, `rest` (HTTP/JSON)
+and `share` (export folder), configured as `[connectors.<name>]` tables.
+Authorisation is left to the source system; every fetch records provenance
+into a sidecar and the AlphaFold manifest.
+
+Not yet built (deliberately): file attachments in chat, embedding-based
+retrieval (`/digest` search is keyword/BM25), authentication, and
+product-specific connectors (only the generic `rest` and `share` types exist).
+
 Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the *configured* model through `InferenceBackend` - never any other service. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
 
 Also built: local compliance and provenance. `bedrock.provenance` keeps an

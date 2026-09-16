@@ -113,7 +113,16 @@ class ProteinWorkflow:
         source_fasta: Path,
         *,
         project_id: str | None = None,
+        source_provenance: dict[str, Any] | None = None,
     ) -> ProteinWorkflowResult:
+        """Validate, predict, render and record one monomer.
+
+        ``source_provenance`` is set when the FASTA was pulled from a company
+        system of record instead of being handed over as a file (see
+        ``bedrock.connectors``). It goes into the manifest so the run names the
+        registry record and version it was made from, not just the staging
+        file the sequence happened to pass through.
+        """
         if project_id is not None:
             try:
                 validate_project_id(project_id)
@@ -142,7 +151,9 @@ class ProteinWorkflow:
         try:
             run_dir = self._new_run_directory(run_id)
             manifest_path = run_dir / "manifest.json"
-            manifest = self._initial_manifest(run_id, source_fasta, project_id)
+            manifest = self._initial_manifest(
+                run_id, source_fasta, project_id, source_provenance
+            )
             _write_manifest(manifest_path, manifest)
 
             # Copy first. Parsing and the expensive tool both consume files under
@@ -158,6 +169,10 @@ class ProteinWorkflow:
             )
             os.chmod(canonical_fasta, 0o600)
 
+            # This replaces the source block wholesale, so carry forward the
+            # system-of-record entry written before the file was even parsed.
+            # Where the sequence came from does not change by reading it.
+            system_of_record = manifest["source"].get("system_of_record")
             manifest["source"] = {
                 "original_filename": source_fasta.name,
                 "snapshot": source_snapshot.name,
@@ -166,6 +181,8 @@ class ProteinWorkflow:
                 "sequence_sha256": hashlib.sha256(record.sequence.encode()).hexdigest(),
                 "residue_count": len(record.sequence),
             }
+            if system_of_record:
+                manifest["source"]["system_of_record"] = system_of_record
             manifest["outputs"]["input"] = _artifact_entry(canonical_fasta, run_dir)
             manifest["status"] = "running_alphafold2"
             _write_manifest(manifest_path, manifest)
@@ -326,8 +343,17 @@ class ProteinWorkflow:
         return run_dir
 
     def _initial_manifest(
-        self, run_id: str, source_fasta: Path, project_id: str | None
+        self,
+        run_id: str,
+        source_fasta: Path,
+        project_id: str | None,
+        source_provenance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        source: dict[str, Any] = {"original_filename": source_fasta.name}
+        if source_provenance:
+            # Which registry record and version the sequence came from, not
+            # just the staging file it passed through on the way here.
+            source["system_of_record"] = dict(source_provenance)
         return {
             "schema_version": 2,
             "run_id": run_id,
@@ -335,7 +361,7 @@ class ProteinWorkflow:
             "status": "preparing_input",
             "created_at": _now(),
             "limits": {"max_sequence_length": self.max_sequence_length},
-            "source": {"original_filename": source_fasta.name},
+            "source": source,
             "alphafold2": {
                 "model_preset": self.alphafold.config.model_preset,
                 "db_preset": self.alphafold.config.db_preset,

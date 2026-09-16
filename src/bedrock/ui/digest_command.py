@@ -9,6 +9,7 @@ own and keeps this module free of widget imports - the same reason
 Sub-commands::
 
     /digest <path>          compress a file into the store
+    /digest <source>://<id> pull a record from a company source and compress it
     /digest                 list what is stored
     /digest search <words>  find exact content across everything stored
     /digest show <id>       print one digest
@@ -32,7 +33,9 @@ import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
 from bedrock.context import ContextStore, ingest
+from bedrock.context.adapters import Source
 from bedrock.context.digest import summarize, would_benefit_from_model
 from bedrock.context.report import (
     format_digest,
@@ -50,6 +53,7 @@ USAGE = """\
 | Command | What it does |
 |---|---|
 | `/digest <path>` | Compress a file into the store |
+| `/digest <source>://<id>` | Pull a record from a company source (see `/sources`) and compress it |
 | `/digest` | List what is stored |
 | `/digest search <words>` | Find exact content across everything stored |
 | `/digest show <id>` | Print one digest |
@@ -72,6 +76,7 @@ async def run_digest_command(
     notify: Notify,
     backend=None,
     model: str | None = None,
+    sources: SourceHub | None = None,
     history: Any | None = None,
     actor_id: str | None = None,
 ) -> None:
@@ -114,6 +119,20 @@ async def run_digest_command(
             return
         await _forget_artifact(
             artifact, store=store, notify=notify, history=history, actor_id=actor_id
+        )
+        return
+
+    source = parse_source_ref(args.strip("'\""))
+    if source is not None:
+        await _ingest_source(
+            source,
+            store=store,
+            notify=notify,
+            sources=sources,
+            backend=backend,
+            model=model,
+            history=history,
+            actor_id=actor_id,
         )
         return
 
@@ -186,7 +205,82 @@ async def _ingest_path(
         source_bytes=artifact.stats.source_bytes,
     )
     await notify(format_ingested(artifact), "info")
+    await _maybe_summarize(artifact, store=store, notify=notify, backend=backend, model=model)
 
+
+async def _ingest_source(
+    source: SourceRef,
+    *,
+    store: ContextStore,
+    notify: Notify,
+    sources: SourceHub | None,
+    backend,
+    model: str | None,
+    history: Any | None = None,
+    actor_id: str | None = None,
+) -> None:
+    """Pull a record from a company system and compress it - no manual export.
+
+    Journalled exactly like a local-file ingest: this is the same act, and
+    "where did this digest come from" is a question the audit trail has to be
+    able to answer for a pulled record as much as a copied one. The intent
+    commits before the fetch, so a source that cannot be reached is a recorded
+    attempt rather than a silent nothing.
+    """
+    if sources is None:
+        await notify("Company data sources are not available here.", "error")
+        return
+
+    action = JournalledAction(history, actor_id or "", "digest.ingest")
+    if not await action.begin(notify):
+        return
+
+    try:
+        record = await sources.fetch(source)
+    except ConnectorError as exc:
+        await action.record(notify, "failed", error_code="source_fetch_failed")
+        await notify(str(exc), "error")
+        return
+
+    # The record's filename carries its suffix, which is how the adapter
+    # registry tells a CSV export from a FASTA or a JSON payload.
+    data = Source(
+        name=record.filename,
+        text=record.text(),
+        suffix=record.suffix,
+        byte_size=len(record.content),
+    )
+    try:
+        artifact = await asyncio.to_thread(ingest, data, store=store)
+    except ValueError as exc:
+        await action.record(notify, "failed", error_code="ingest_unsupported_source")
+        await notify(f"Could not compress `{source}`: {exc}", "error")
+        return
+
+    # Committed to the store here, so recorded here - before the optional
+    # model pass, exactly as in the local-file path.
+    await action.record(
+        notify,
+        "succeeded",
+        already_done=True,
+        artifact_id=artifact.id,
+        source_kind=artifact.source_kind,
+        source_bytes=len(record.content),
+        source_sha256=record.sha256,
+    )
+
+    version = f", version {record.version}" if record.version else ""
+    await notify(
+        f"Fetched `{source}` as `{record.fetched_by}`{version} "
+        f"(sha256 `{record.sha256[:12]}`).\n\n{format_ingested(artifact)}",
+        "info",
+    )
+    await _maybe_summarize(artifact, store=store, notify=notify, backend=backend, model=model)
+
+
+async def _maybe_summarize(
+    artifact, *, store: ContextStore, notify: Notify, backend, model: str | None
+) -> None:
     # The model pass is optional, additive, and skipped for data whose
     # computed summary is already better than prose - see RULES_SUFFICE. The
     # artifact is stored and fully usable before this runs at all.

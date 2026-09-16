@@ -35,6 +35,7 @@ from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
 from bedrock.biotech import ProteinWorkflow, ToolIntegrationError
 from bedrock.config import Settings, load_settings
+from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
 from bedrock.context import ContextStore, find_relevant_context, with_injected_context
 from bedrock.inference.base import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
@@ -54,6 +55,7 @@ from bedrock.ui.journal import JournalledAction
 from bedrock.ui.rendering import as_code, safe_line
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
+from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 from bedrock.workspaces import WorkspaceStore
@@ -78,7 +80,7 @@ AGENTPACK_HELP_TEXT = """\
 
 | Command | What it does |
 |---|---|
-| `/fold <fasta-path> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
+| `/fold <fasta-path or source://id> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
 | `/pymol [structure-path]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
 | `/runs` | Prediction runs recorded on this machine |
@@ -88,14 +90,16 @@ AGENTPACK_HELP_TEXT = """\
 | `/audit` | What this client has done on this machine |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/sources` | List the company data sources you can pull from |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
 | `/clear` | Clear the conversation |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
 
-You can also ask naturally, for example: “Run AlphaFold 2 on `candidate.fasta`”
-or “Open the latest structure interactively in PyMOL.”
+You can also ask naturally, for example: “Run AlphaFold 2 on `candidate.fasta`”,
+“Run AlphaFold 2 on `registry://SEQ-00123`”, or “Open the latest structure
+interactively in PyMOL.”
 
 **Examples**
 
@@ -121,6 +125,7 @@ class AgentPackApp(App[None]):
         settings: Settings | None = None,
         client: AgentPackClient | None = None,
         biotech_workflow: ProteinWorkflow | None = None,
+        sources: SourceHub | None = None,
         services: ComplianceServices | None = None,
     ) -> None:
         super().__init__()
@@ -144,6 +149,8 @@ class AgentPackApp(App[None]):
         # reuses its prompt instead of asking the same question twice. In
         # memory only - nothing here belongs in durable history.
         self._pending_approvals: dict[str, ApprovalPrompt] = {}
+        # Tests pass a hub with fake connectors; real runs build one from settings.
+        self._sources = sources
         # Only announce a dropped live-event connection once per outage,
         # not on every retry attempt — see _handle_reconnecting.
         self._reconnect_notice_shown = False
@@ -226,6 +233,8 @@ class AgentPackApp(App[None]):
                 await self.action_quit()
             case "digest":
                 self.command_digest(command.args)
+            case "sources":
+                self.command_sources(command.args)
             case "runs":
                 self.command_runs(command.args)
             case "confidence":
@@ -263,12 +272,12 @@ class AgentPackApp(App[None]):
         if not args.strip():
             await self.post_notice(
                 "Tell me which one-protein FASTA file to fold, or use "
-                "`/fold <path> [--project X]`.",
+                "`/fold <path or source://id> [--project X]`.",
                 kind="error",
             )
             return
         try:
-            fasta_path, project_id = parse_fold_arguments(args)
+            target, project_id = parse_fold_arguments(args)
         except CommandUsageError as exc:
             await self.post_notice(str(exc), kind="error")
             return
@@ -276,18 +285,50 @@ class AgentPackApp(App[None]):
             await self.post_notice("A scientific job is already running.", kind="error")
             return
         self._scientific_job_running = True
-        self.fold_protein(fasta_path, project_id)
+        # `registry://SEQ-00123` is fetched from a company system; anything
+        # else is a path on this machine.
+        source = parse_source_ref(target)
+        if source is not None:
+            self.fold_protein(project_id=project_id, source=source)
+        else:
+            self.fold_protein(Path(target).expanduser(), project_id)
 
     @work(exclusive=True, group="scientific")
-    async def fold_protein(self, fasta_path: Path, project_id: str | None = None) -> None:
+    async def fold_protein(
+        self,
+        fasta_path: Path | None = None,
+        project_id: str | None = None,
+        source: SourceRef | None = None,
+    ) -> None:
+        """Run AlphaFold 2 on a local FASTA, or on a record pulled from a company source.
+
+        A source record is fetched and staged with its provenance first, and
+        that provenance goes into the run manifest, so the prediction names the
+        registry record and version it came from rather than only the staging
+        file. The fetch sits inside the same ``try`` as the prediction so a
+        refused or failed fetch still frees the one-job-at-a-time slot.
+
+        ``project_id`` is orthogonal to where the sequence came from: a run can
+        be labelled for a project whether it was pulled or handed over.
+        """
+        provenance = None
         label = f" for project {as_code(project_id)}" if project_id else ""
-        await self.post_notice(
-            f"Started AlphaFold 2 for {as_code(fasta_path)}{label}. This may take a long "
-            "time; the run is preserved if PyMOL rendering fails."
-        )
         try:
-            result = await predict_and_render(self.biotech_workflow, fasta_path, project_id)
-        except ToolIntegrationError as exc:
+            if source is not None:
+                await self.post_notice(f"Fetching {as_code(source)}…")
+                record, fasta_path = await self.sources.fetch_to_file(source)
+                provenance = record.provenance()
+            await self.post_notice(
+                f"Started AlphaFold 2 for {as_code(source or fasta_path)}{label}. This may "
+                "take a long time; the run is preserved if PyMOL rendering fails."
+            )
+            result = await predict_and_render(
+                self.biotech_workflow,
+                fasta_path,
+                project_id,
+                source_provenance=provenance,
+            )
+        except (ToolIntegrationError, ConnectorError) as exc:
             await self.post_notice(safe_line(exc, limit=400), kind="error")
         except asyncio.CancelledError:
             # The prediction itself may still be running in its own process
@@ -301,6 +342,12 @@ class AgentPackApp(App[None]):
                 f"- Structure: {as_code(result.structure_path)}",
                 f"- Provenance: {as_code(result.manifest_path)}",
             ]
+            if provenance:
+                version = f", version {provenance['version']}" if provenance.get("version") else ""
+                lines.insert(
+                    2,
+                    f"- Source: `{provenance['ref']}`{version} (sha256 `{provenance['sha256'][:12]}`)",
+                )
             if result.preview_path:
                 lines.append(f"- PyMOL preview: {as_code(result.preview_path)}")
             if result.session_path:
@@ -389,6 +436,7 @@ class AgentPackApp(App[None]):
             args,
             store=self.context_store,
             notify=self.post_notice,
+            sources=self.sources,
             history=await self.services.optional_history(),
             actor_id=self.settings.user_id,
         )
@@ -398,6 +446,17 @@ class AgentPackApp(App[None]):
         if self._context_store is None:
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
+
+    @work(group="sources")
+    async def command_sources(self, args: str) -> None:
+        """``/sources``: list, search and fetch from company systems of record."""
+        await run_sources_command(args, hub=self.sources, notify=self.post_notice)
+
+    @property
+    def sources(self) -> SourceHub:
+        if self._sources is None:
+            self._sources = SourceHub.from_settings(self.settings)
+        return self._sources
 
     # ---- Local history and run browsing -----------------------------------------
     #

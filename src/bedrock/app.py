@@ -31,6 +31,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Input, OptionList
 
 from bedrock.config import Settings, load_settings
+from bedrock.connectors import SourceHub
 from bedrock.context import ContextStore
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
@@ -44,6 +45,7 @@ from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
+from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import (
     NEW_CONVERSATION,
@@ -95,6 +97,7 @@ class BedrockApp(App[None]):
         settings: Settings | None = None,
         backend: InferenceBackend | None = None,
         store: ConversationStore | None = None,
+        sources: SourceHub | None = None,
         services: ComplianceServices | None = None,
     ) -> None:
         super().__init__()
@@ -108,6 +111,8 @@ class BedrockApp(App[None]):
         self.model_name: str | None = self.settings.model
         self._streaming = False
         self._context_store: ContextStore | None = None
+        # Tests pass a hub with fake connectors; real runs build one from settings.
+        self._sources = sources
         self._workspace_session: WorkspaceCommandSession | None = None
         self._title_worker_running = False
         self._titles_pending = False
@@ -198,6 +203,8 @@ class BedrockApp(App[None]):
                 await self.command_model(command.args)
             case "digest":
                 self.command_digest(command.args)
+            case "sources":
+                self.command_sources(command.args)
             case "runs":
                 self.command_runs(command.args)
             case "confidence":
@@ -247,6 +254,7 @@ class BedrockApp(App[None]):
             notify=self.post_notice,
             backend=self.backend,
             model=self.model_name,
+            sources=self.sources,
             history=await self.services.optional_history(),
             actor_id=self.settings.user_id,
         )
@@ -256,6 +264,17 @@ class BedrockApp(App[None]):
         if self._context_store is None:
             self._context_store = ContextStore(self.settings.context_dir)
         return self._context_store
+
+    @work(group="sources")
+    async def command_sources(self, args: str) -> None:
+        """``/sources``: list, search and fetch from company systems of record."""
+        await run_sources_command(args, hub=self.sources, notify=self.post_notice)
+
+    @property
+    def sources(self) -> SourceHub:
+        if self._sources is None:
+            self._sources = SourceHub.from_settings(self.settings)
+        return self._sources
 
     # ---- Local history and run browsing -----------------------------------
     #

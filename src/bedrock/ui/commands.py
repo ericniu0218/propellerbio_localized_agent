@@ -10,6 +10,8 @@ import re
 import shlex
 from dataclasses import dataclass
 
+from bedrock.connectors.base import parse_source_ref
+
 HELP_TEXT = """\
 **Commands**
 
@@ -19,6 +21,8 @@ HELP_TEXT = """\
 | `/model <name>` | Switch to a different model |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/sources` | List the company data sources you can pull from |
+| `/digest <source>://<id>` | Pull a record from a company source and compress it |
 | `/runs` | Prediction runs recorded on this machine |
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
@@ -66,6 +70,7 @@ class Command:
 KNOWN_COMMANDS = {
     "model",
     "digest",
+    "sources",
     "runs",
     "confidence",
     "audit",
@@ -105,9 +110,29 @@ def parse_scientific_request(text: str) -> Command | None:
         return None
     lowered = stripped.casefold()
     path = _extract_supported_path(stripped)
-    if (re.search(r"\balpha\s*fold\s*2?\b", lowered) and re.search(r"\b(fold|predict|prediction|model|run|use)\b", lowered)) or (path and _has_suffix(path, (".fasta", ".fa", ".faa")) and re.search(r"\b(fold|predict(?:ion)?|structure prediction)\b", lowered)):
-        return Command("fold", path)
-    if "pymol" in lowered and re.search(r"\b(open|view|show|display|visuali[sz]e|launch|use)\b", lowered) and (path or re.search(r"\b(latest|last|recent|structure|prediction|result|it|this|that)\b", lowered)):
+    source = _extract_source_ref(stripped)
+    mentions_alphafold = bool(re.search(r"\balpha\s*fold\s*2?\b", lowered))
+    requests_prediction = bool(
+        re.search(r"\b(fold|predict|prediction|model|run|use)\b", lowered)
+    )
+    requests_folding = bool(re.search(r"\b(fold|predict(?:ion)?|structure prediction)\b", lowered))
+    if (
+        (mentions_alphafold and requests_prediction)
+        or (path and _has_suffix(path, (".fasta", ".fa", ".faa")) and requests_folding)
+        # A company record such as registry://SEQ-00123 has no file suffix to
+        # go on, so an explicit fold/predict verb is what marks it as a job.
+        or (source and requests_folding)
+    ):
+        return Command("fold", path or source)
+
+    mentions_pymol = "pymol" in lowered
+    requests_view = bool(
+        re.search(r"\b(open|view|show|display|visuali[sz]e|launch|use)\b", lowered)
+    )
+    references_known_structure = bool(
+        re.search(r"\b(latest|last|recent|structure|prediction|result|it|this|that)\b", lowered)
+    )
+    if mentions_pymol and requests_view and (path or references_known_structure):
         return Command("pymol", path)
     return None
 
@@ -129,6 +154,19 @@ def _extract_supported_path(text: str) -> str:
     for word in reversed(words):
         candidate = word.rstrip(".,!?;:")
         if _has_suffix(candidate, (".fasta", ".fa", ".faa", ".pdb", ".cif", ".mmcif")):
+            return candidate
+    return ""
+
+
+def _extract_source_ref(text: str) -> str:
+    """The first ``<source>://<id>`` reference in ``text``, or ``""``."""
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return ""
+    for word in words:
+        candidate = word.rstrip(".,!?;:")
+        if parse_source_ref(candidate) is not None:
             return candidate
     return ""
 

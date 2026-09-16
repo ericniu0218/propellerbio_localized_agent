@@ -107,11 +107,17 @@ def test_confidence_reports_an_unavailable_run_clearly(operator, capsys):
 
 
 def test_the_parser_accepts_a_project_on_fold():
+    """The fold target stays a string: it may be a path *or* a company source
+    reference like ``registry://SEQ-00123``, which is not a path at all."""
     args = cli.build_parser().parse_args(["fold", "/approved/candidate.fasta", "--project", "X"])
 
     assert args.command == "fold"
-    assert args.fasta == Path("/approved/candidate.fasta")
+    assert args.fasta == "/approved/candidate.fasta"
     assert args.project == "X"
+
+    pulled = cli.build_parser().parse_args(["fold", "registry://SEQ-00123", "--project", "X"])
+    assert pulled.fasta == "registry://SEQ-00123"
+    assert pulled.project == "X"
 
 
 def test_browsing_needs_no_scientific_tools(operator, capsys, monkeypatch):

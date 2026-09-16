@@ -170,7 +170,13 @@ def _render_overview(
     for record, length, alphabet in list(zip(records, lengths, alphabets))[:_MAX_LISTED_RECORDS]:
         label = record.header or "(no id)"
         desc = f" — {record.description}" if record.description else ""
-        flag = "" if alphabet == overall or overall == "mixed" else f" [{alphabet}]"
+        # A record's own alphabet is never literally "mixed" (that value
+        # only ever describes the whole file), so when the file *is*
+        # mixed, every record's alphabet correctly differs from `overall`
+        # and every record gets tagged - which is the point: "mixed" on
+        # its own doesn't say which records are which, the per-record
+        # tags do.
+        flag = "" if alphabet == overall else f" [{alphabet}]"
         lines.append(f"- {label}{desc}: {length:,} residues{flag}")
     if len(records) > _MAX_LISTED_RECORDS:
         lines.append(f"  ... and {len(records) - _MAX_LISTED_RECORDS} more records")

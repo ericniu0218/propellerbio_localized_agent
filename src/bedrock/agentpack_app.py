@@ -47,6 +47,19 @@ from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
 
+# Streamed into the answer bubble the moment the drafting agent's first
+# token arrives, so it's visually unmistakable that this text has not yet
+# passed the Director's citation/hallucination review — never remove this
+# without also removing the streaming itself; showing unreviewed text with
+# no such marker would be presenting it as final when it isn't.
+PENDING_REVIEW_PREFIX = "_⏳ Drafting — not yet compliance-reviewed_\n\n---\n\n"
+# Shown once the draft finishes streaming but before task.completed/failed
+# resolves the turn — review itself is synchronous/near-instant in this
+# codebase (see app/agents/director.py::review), but formatting the
+# approved answer (or, for a high-stakes request, a human approval gate)
+# still takes real time after that.
+REVIEWING_PREFIX = "_🔍 Reviewing before this is shown as final…_\n\n---\n\n"
+
 AGENTPACK_HELP_TEXT = """\
 **Commands**
 
@@ -100,6 +113,13 @@ class AgentPackApp(App[None]):
         # Only announce a dropped live-event connection once per outage,
         # not on every retry attempt — see _handle_reconnecting.
         self._reconnect_notice_shown = False
+        # Token-streaming state for the current turn's answer bubble — see
+        # _handle_agent_token. Reset alongside _waiting_for/_answer_widget
+        # in send_message, action_clear_chat, and _finish.
+        self._plan_seen = False  # a task.planned event means hard/high-stakes tier
+        self._draft_role: str | None = None  # which agent's tokens are "the draft"
+        self._draft_stream = None  # the open MarkdownStream, while one is active
+        self._draft_text = ""  # accumulated so far, for the post-stream "reviewing" swap
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -264,6 +284,10 @@ class AgentPackApp(App[None]):
         await self.mount_message(self._answer_widget)
         self._answer_widget.update("_Working on it…_")
         self._set_input_busy(True)
+        self._plan_seen = False
+        self._draft_role = None
+        self._draft_stream = None
+        self._draft_text = ""
 
     # ---- Stored context ---------------------------------------------------------
 
@@ -314,6 +338,10 @@ class AgentPackApp(App[None]):
     async def handle_event(self, event: AgentEvent) -> None:
         if event.type in ("agent.started", "agent.status"):
             self._update_agent(event)
+        elif event.type == "task.planned":
+            self._plan_seen = True
+        elif event.type == "agent.token":
+            await self._handle_agent_token(event)
         elif event.type == "approval.required":
             await self._show_approval(event)
         elif event.type == "task.completed":
@@ -411,6 +439,52 @@ class AgentPackApp(App[None]):
                 )
             )
 
+    async def _handle_agent_token(self, event: AgentEvent) -> None:
+        """Streams the drafting agent's tokens into the answer bubble as
+        they arrive, clearly marked as not-yet-reviewed, then swaps in the
+        confirmed final text once _finish resolves the turn — see
+        NEXT_STEPS.md §4 for why this is the design (review here is
+        synchronous/deterministic, so there's no meaningful review *delay*
+        to hide; the latency worth showing progress on is the model calls
+        themselves).
+
+        Never streams: the Specialist's research-step tokens in the
+        hard/high-stakes tier (that content is upstream material for the
+        Director's synthesis, not the answer itself — distinguished by
+        whether a task.planned event has been seen this turn, since only
+        that tier gets a Director plan), or the Runner's tokens at any
+        point (classification, or the post-approval reformatting pass —
+        neither is ever the visible draft).
+        """
+        if self._waiting_for is None or self._answer_widget is None:
+            return
+        payload = event.payload
+        role = payload.get("role")
+        text = payload.get("text") or ""
+        done = bool(payload.get("done"))
+
+        if self._draft_role is None:
+            if role == "director" or (role == "specialist" and not self._plan_seen):
+                self._draft_role = role
+                self._draft_text = ""
+                self._draft_stream = self._answer_widget.begin_stream()
+                await self._draft_stream.write(PENDING_REVIEW_PREFIX)
+            else:
+                return  # research-step or runner tokens -- never the visible draft
+
+        if role != self._draft_role or self._draft_stream is None:
+            return  # a different call's tokens, e.g. the runner's later reformatting pass
+
+        if text:
+            self._draft_text += text
+            await self._draft_stream.write(text)
+            self.scroll_chat_to_end()
+
+        if done:
+            await self._answer_widget.end_stream()
+            self._draft_stream = None
+            self._answer_widget.update(REVIEWING_PREFIX + self._draft_text)
+
     async def _finish(self, event: AgentEvent, failed: bool) -> None:
         # A multi-step request's *final* step carries a different task_id
         # than the one `send_message` returned (see
@@ -419,6 +493,13 @@ class AgentPackApp(App[None]):
         # since that's what a person watching the chat would expect too.
         if self._waiting_for is None or self._answer_widget is None:
             return
+        if self._draft_stream is not None:
+            # Defensive only: call_model always emits a done=True token
+            # before a task can complete/fail, so this shouldn't normally
+            # still be open — but never leave a stream dangling under a
+            # widget we're about to overwrite outright.
+            await self._answer_widget.end_stream()
+            self._draft_stream = None
         payload = event.payload
         if failed:
             self._answer_widget.update(friendly_error(payload.get("error", "")))
@@ -430,6 +511,9 @@ class AgentPackApp(App[None]):
             self._answer_widget.update(content or "_(no answer produced)_")
         self._waiting_for = None
         self._answer_widget = None
+        self._plan_seen = False
+        self._draft_role = None
+        self._draft_text = ""
         self._set_input_busy(False)
         self.scroll_chat_to_end()
 
@@ -459,6 +543,10 @@ class AgentPackApp(App[None]):
         self._agents.clear()
         self.query_one("#agent-panel", AgentPanel).clear()
         self._set_input_busy(False)
+        self._plan_seen = False
+        self._draft_role = None
+        self._draft_stream = None
+        self._draft_text = ""
 
     async def action_quit(self) -> None:
         if self._workspace_session is not None:

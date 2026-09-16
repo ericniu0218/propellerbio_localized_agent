@@ -14,7 +14,7 @@ from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.config import Settings
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
-from bedrock.ui.widgets import AssistantMessage, SystemNotice, UserMessage
+from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
 
 
 class FakeAgentPackClient:
@@ -311,3 +311,112 @@ async def test_natural_language_pymol_request_opens_latest_structure(
 
         assert workflow.opened == [None]
         assert any(request in str(message.content) for message in app.query(UserMessage))
+
+
+# ---- SSE reconnection (NEXT_STEPS.md §5) -----------------------------------
+
+
+async def test_reconnecting_shows_status_and_a_single_notice_not_one_per_attempt(
+    fake_client: FakeAgentPackClient,
+):
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        fake_client.push("client.reconnecting", {"attempt": 1, "delay_s": 1.0})
+        await pilot.pause()
+        fake_client.push("client.reconnecting", {"attempt": 2, "delay_s": 2.0})
+        await pilot.pause()
+
+        assert app.query_one(StatusBar).reconnecting is True
+        reconnect_notices = [n for n in app.query(SystemNotice) if "reconnecting" in n.source.lower()]
+        assert len(reconnect_notices) == 1  # not one per retry attempt
+
+
+async def test_reconnected_clears_status_and_announces_recovery(fake_client: FakeAgentPackClient):
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        fake_client.push("client.reconnecting", {"attempt": 1, "delay_s": 1.0})
+        await pilot.pause()
+        fake_client.push("client.reconnected", {})
+        await pilot.pause()
+
+        assert app.query_one(StatusBar).reconnecting is False
+        assert any("reconnected" in n.source.lower() for n in app.query(SystemNotice))
+
+
+async def test_reconnecting_does_not_disturb_an_in_progress_answer(fake_client: FakeAgentPackClient):
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"boiling point?", "enter")
+        await pilot.pause()
+
+        fake_client.push("client.reconnecting", {"attempt": 1, "delay_s": 1.0})
+        await pilot.pause()
+
+        # The job keeps running on the backend regardless of our connection
+        # state — the pending bubble must not be touched by a reconnect.
+        assert "Working on it" in app.query_one(AssistantMessage).source
+
+
+async def test_resync_replays_buffered_agent_status_and_resolves_via_terminal(
+    fake_client: FakeAgentPackClient,
+):
+    fake_client.results["res_1"] = "100C at sea level."
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"boiling point?", "enter")
+        await pilot.pause()
+
+        fake_client.push(
+            "session.resync",
+            {
+                "reason": "gap",
+                "events": [
+                    {
+                        "type": "agent.status",
+                        "session_id": "sess_fake",
+                        "payload": {
+                            "agent_id": "a1",
+                            "role": "specialist",
+                            "status": "running_tool",
+                            "task_title": "Research",
+                        },
+                    }
+                ],
+                "terminal": {
+                    "type": "task.completed",
+                    "session_id": "sess_fake",
+                    "payload": {"task_id": "task_fake", "result_ref": "res_1", "citations": []},
+                },
+            },
+        )
+        await pilot.pause()
+
+        # The buffered agent.status was replayed (rebuilds the panel from
+        # it, exercising that path), then immediately superseded by the
+        # terminal event resolving the turn — the actually-important
+        # outcome: a pending answer must resolve from resync's terminal
+        # snapshot even when the completing event itself was evicted from
+        # the backend's buffer before we reconnected.
+        assert "100C" in app.query_one(AssistantMessage).source
+
+
+async def test_resync_without_a_terminal_leaves_the_pending_answer_waiting(
+    fake_client: FakeAgentPackClient,
+):
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"boiling point?", "enter")
+        await pilot.pause()
+
+        fake_client.push("session.resync", {"reason": "gap", "events": [], "terminal": None})
+        await pilot.pause()
+
+        # Nothing resolved the turn — still legitimately in progress.
+        assert "Working on it" in app.query_one(AssistantMessage).source

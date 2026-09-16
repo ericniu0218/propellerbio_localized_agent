@@ -93,12 +93,54 @@ is: stream only the *last* agent's tokens once a `task.completed` for this
 turn's task tree is imminent, which needs a bit more state than exists
 today.
 
-### 5. Reconnection
-`AgentPackClient.events()` opens one SSE connection for the life of the
-app. If the backend restarts or a network blip drops it, this client does
-not currently retry — it just reports the error and goes quiet. Worth a
-retry-with-backoff loop before this goes in front of real users on a real
-network.
+### 5. Reconnection — done 2026-09-16
+`AgentPackClient.events()` now reconnects automatically on a dropped
+connection (including the server just closing the stream cleanly, e.g. a
+restart — that's still a drop from this client's perspective, never
+successful completion) with exponential backoff and jitter (1s → 30s
+ceiling, equal jitter), sending back the last `id:` it saw as
+`Last-Event-ID` so the backend resumes rather than replays everything.
+A 4xx response (e.g. the session no longer exists) is *not* retried —
+that's a permanent failure, not a transient drop, and raises
+`InferenceError` same as before.
+
+Two synthetic event types the backend never sends, only this client:
+`client.reconnecting` (payload: `attempt`, `delay_s`) each time a drop is
+detected, `client.reconnected` once a new connection is established. The
+UI (`agentpack_app.py`) shows this as a `StatusBar.reconnecting` indicator
+plus one system notice per outage (not one per retry attempt) — see
+`_handle_reconnecting`/`_handle_reconnected`.
+
+**Server side** (see the backend's own PR/commit for detail): every event
+now carries a monotonically increasing per-session `seq`, sent as the SSE
+`id:`; the backend keeps a bounded per-session buffer (default 500) rather
+than unbounded history. If a reconnect's `Last-Event-ID` is older than
+what survives in that buffer, the backend sends an explicit
+`session.resync` event instead of silently replaying a partial window —
+handled here by `_handle_resync`: reset the agent panel, replay whatever
+window the backend still has, then check its `terminal` field (the
+session's most recent completion/failure, kept outside the bounded buffer
+specifically for this) so a pending answer resolves even if the exact
+event that completed it was evicted before reconnecting.
+
+A disconnect never cancels the underlying job — that was already true
+(the backend runs `handle_message` as an independent task, decoupled from
+any SSE connection) and remains true; this is purely about the *client*
+catching back up, never about the job's lifecycle.
+
+Tests: `tests/test_agentpack_reconnect.py` (backoff/jitter, Last-Event-ID
+propagation, 4xx-vs-5xx/connection-error retry distinction, attempt
+counter reset after a successful reconnect) and the `session.resync`/
+`client.reconnecting`/`client.reconnected` cases in
+`tests/test_agentpack_app.py`.
+
+**Known limitation, not fixed here, and not fixable from this repo**: the
+backend's buffer and terminal-event tracking are in-memory. A backend
+*process restart* still loses all of it — a reconnecting client gets
+`session.resync` with `reason: "no_history"` and starts fresh rather than
+hanging, which is the best available behavior without durable job storage
+on the backend (out of scope for this task; see that repo's Workstream 1
+notes on Postgres/durability).
 
 ## Testing
 

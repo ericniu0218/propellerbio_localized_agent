@@ -892,6 +892,11 @@ def main() -> None:
     except (ValueError, TypeError, OSError) as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+
+    from bedrock.doctor import print_first_run_banner, run_first_run_check
+
+    print_first_run_banner(run_first_run_check(settings))
+
     if settings.backend == "agentpack":
         from bedrock.agentpack_app import AgentPackApp
 

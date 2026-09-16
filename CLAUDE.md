@@ -81,8 +81,17 @@ wired into it.
 
 Recall of past chats (`src/bedrock/recall.py`): transcripts are never loaded unless the employee asks, via `/recall <words>` (alias `/context`) or plain English matched by `wants_recall` ("do you remember when..."). Keyword search reads files one at a time off the UI thread and skips files without the words before parsing. Results are bounded excerpts kept in `Conversation.recalled_context`, sent as system text by `to_api`, and never written to disk - keep it that way so `/forget` stays complete.
 
+Also built: a one-command install with no Python/venv required —
+`uv tool install "git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git"`,
+or `scripts/install.sh`/`scripts/install.ps1` if `uv` itself isn't
+installed yet either. See `INSTALL.md` for the non-engineer-facing
+walkthrough. A first-run check (`src/bedrock/doctor.py`) prints
+plain-language guidance — unreachable default backend, missing
+AlphaFold/PyMOL config — the first time `bedrock` runs with no config
+file yet; never blocks the app from starting.
+
 Not yet built (deliberately): file attachments, embedding-based retrieval,
-terminal-client authentication, packaging as a standalone executable.
+terminal-client authentication.
 
 ## Development Philosophy
 

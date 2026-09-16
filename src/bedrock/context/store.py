@@ -45,7 +45,12 @@ from bedrock.context.types import (
     estimate_tokens,
 )
 
-SCHEMA_VERSION = 2
+# The on-disk *format* - which files exist and what the manifest holds. The
+# tokeniser has its own version (search.INDEX_VERSION) written alongside it,
+# because the two change for unrelated reasons: NEXT_STEPS.md section 6 will
+# bump this one for vectors, which must not be read as "the words were
+# tokenised differently".
+SCHEMA_VERSION = 1
 DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 _ID_LENGTH = 16
 
@@ -142,6 +147,7 @@ class ContextStore:
         )
         manifest = {
             "schema_version": SCHEMA_VERSION,
+            "index_version": INDEX_VERSION,
             "id": artifact_id,
             "name": source.name,
             "source_kind": extraction.source_kind,
@@ -247,7 +253,7 @@ class ContextStore:
                 # Folding on read keeps those artifacts searchable instead of
                 # silently matching nothing.
                 terms = entry["terms"]
-                if manifest.get("schema_version", 1) < INDEX_VERSION:
+                if manifest.get("index_version", 1) < INDEX_VERSION:
                     terms = fold_terms(terms)
                 docs.append(ScoredDoc(key=key, terms=terms, length=entry["term_count"]))
                 lookup[key] = (manifest, entry)

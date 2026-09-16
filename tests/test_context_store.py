@@ -158,10 +158,10 @@ def test_artifacts_stored_before_stemming_are_still_searchable(tmp_path):
     )
 
     # Rewrite the manifest the way the previous version would have written it:
-    # schema_version 1, with unstemmed terms.
+    # no index_version at all, and unstemmed terms.
     manifest_path = store.root / artifact.id / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["schema_version"] = 1
+    manifest.pop("index_version", None)
     for entry in manifest["chunks"]:
         entry["terms"] = {"samples": 1, "showing": 1, "turbidity": 1, "discarded": 1}
         entry["term_count"] = 4
@@ -170,3 +170,41 @@ def test_artifacts_stored_before_stemming_are_still_searchable(tmp_path):
     fresh = ContextStore(tmp_path / "context")  # a new store: no cached manifest
     assert fresh.search("sample", limit=3), "an old artifact must not go quiet"
     assert fresh.search("turbidity", limit=3)
+
+
+def test_plurals_formed_with_es_fold_too(store: ContextStore):
+    """The -s rule alone missed a whole class of ordinary lab words: batches,
+    boxes, dishes and glasses all failed to meet their singular."""
+    ingest(
+        Source.from_text(
+            "Batches are logged per run.\n\nBoxes of dishes are autoclaved.\n\n"
+            "Glasses are rinsed twice.",
+            name="protocol.md",
+            suffix=".md",
+        ),
+        store=store,
+    )
+
+    for singular in ("batch", "box", "dish", "glass"):
+        assert store.search(singular, limit=3), f"{singular!r} should find its plural"
+
+
+def test_singular_words_ending_in_s_are_never_shortened():
+    """auto_inject searches on every message, so a query for "news" matching
+    text that only says "new" would silently mislead the model."""
+    from bedrock.context.search import stem
+
+    for word in ("news", "lens", "bias", "series", "species", "atlas", "canvas"):
+        assert stem(word) == word
+
+
+def test_the_stemmers_known_limits_are_pinned_not_accidental():
+    """Irregular plurals are out of scope. They stay self-consistent - a word
+    still finds itself - they just never reach their singular form."""
+    from bedrock.context.search import stem
+
+    assert stem("analyses") != stem("analysis")
+    assert stem("calories") != stem("calorie")
+    # Self-consistency is the property that must hold.
+    assert stem("analyses") == stem("analyses")
+    assert stem("calories") == "calory"

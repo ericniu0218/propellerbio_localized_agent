@@ -50,20 +50,42 @@ _STOPWORDS = frozenset(
 )
 
 
+# Singular words that end in "s" and must never be shortened. Words ending in
+# "ss", "us" or "is" are already safe via the suffix guard below (glass,
+# apparatus, analysis); these are the ones that would otherwise be stripped.
+# It matters more than it looks: auto_inject searches on every outgoing
+# message, so "news" matching text that only says "new" would quietly put the
+# wrong passage in front of the model.
+_NEVER_FOLD = frozenset("news lens bias series species atlas alias canvas gas".split())
+
+
 def stem(word: str) -> str:
-    """Fold plurals, so "samples" and "sample" rank as one term.
+    """Fold regular plurals, so "samples" and "sample" rank as one term.
 
-    Deliberately plural-only. A fuller stemmer is tempting but has to fold
-    *both* sides of a comparison to the same string, and the usual suffix
-    lists do not: strip "es" before "s" and "samples" becomes "sampl" while
-    "sample" stays "sample", so the two never meet. (``bedrock.recall`` can
-    use exactly that list because it matches stems as prefixes, where the
-    mismatch is harmless - here the comparison is equality.) Verb forms like
-    "stored"/"storage" are left alone rather than folded half-correctly.
+    Regular plurals only. The limits are worth stating plainly, because the
+    alternative is a full stemmer that nobody here wants to maintain:
 
-    Words ending in "ss", "us" or "is" keep their "s": glass, apparatus,
-    analysis.
+    * "-s" folds: samples -> sample. Not after "ss", "us" or "is" (glass,
+      apparatus, analysis), nor for the words in ``_NEVER_FOLD``.
+    * "-es" after a sibilant folds: batches -> batch, boxes -> box,
+      dishes -> dish, glasses -> glass.
+    * "-ies" becomes "-y": studies -> study.
+    * Irregular plurals are *not* handled. "analyses" never reaches
+      "analysis", and "calories" folds to "calory" rather than "calorie".
+      Both are self-consistent - text and query fold the same way, so a word
+      still finds itself - they simply never meet their singular form.
+    * Verb forms ("stored"/"storage") are left alone rather than folded
+      half-correctly.
+
+    Deliberately not ``bedrock.recall``'s stemmer: that one strips "es"
+    before "s", so "samples" becomes "sampl" while "sample" stays "sample"
+    and the two never meet. recall matches stems as *prefixes*, where that
+    mismatch never shows; here the comparison is equality.
     """
+    if word in _NEVER_FOLD:
+        return word
+    if len(word) > 4 and word.endswith(("sses", "shes", "ches", "xes", "zes")):
+        return word[:-2]
     if len(word) > 4 and word.endswith("ies"):
         return word[:-3] + "y"
     if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):

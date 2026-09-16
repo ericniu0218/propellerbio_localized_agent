@@ -542,3 +542,14 @@ async def test_a_cue_cannot_outlast_the_slice_it_came_from(tmp_path):
     # Region 1000-3000 padded by 150ms each side ends at 3150, not 30150.
     assert cue.end_ms == 3150
     assert cue.end_ms - cue.start_ms < 5000
+
+
+def test_the_speech_model_can_be_chosen():
+    """Comparing speech models on real audio needs to be a flag, not an edit."""
+    from bedrock.meetings.cli import SPEECH_MODEL, build_parser
+
+    assert build_parser().parse_args([]).speech_model == SPEECH_MODEL
+    assert (
+        build_parser().parse_args(["--speech-model", "ggml-large-v3-turbo.bin"]).speech_model
+        == "ggml-large-v3-turbo.bin"
+    )

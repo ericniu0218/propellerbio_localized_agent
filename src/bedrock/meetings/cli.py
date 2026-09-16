@@ -87,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--terms", help="comma-separated names and jargon to expect")
     parser.add_argument("--model", default=os.environ.get("BEDROCK_MODEL", "qwen2.5:7b"))
     parser.add_argument(
+        "--speech-model",
+        default=os.environ.get("BEDROCK_SPEECH_MODEL", SPEECH_MODEL),
+        help=f"ggml filename in {DEFAULT_MODEL_DIR} (default: {SPEECH_MODEL})",
+    )
+    parser.add_argument(
         "--api-base",
         default=os.environ.get("BEDROCK_API_BASE", "http://localhost:11434/v1"),
     )
@@ -138,7 +143,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"Using the most recent recording: {folder.name}\n")
 
     config = WhisperConfig(
-        model=DEFAULT_MODEL_DIR / SPEECH_MODEL,
+        model=DEFAULT_MODEL_DIR / args.speech_model,
         vad_model=DEFAULT_MODEL_DIR / VAD_MODEL,
         initial_prompt=args.terms,
     )

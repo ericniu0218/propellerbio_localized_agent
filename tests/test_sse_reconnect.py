@@ -135,7 +135,10 @@ async def test_reconnect_with_expired_last_event_id_gets_an_explicit_resync():
 
     resync_item = await _next(gen)
     assert resync_item["event"] == "session.resync"
-    resync_payload = json.loads(resync_item["data"])
+    assert "id" not in resync_item  # never part of the ordered sequence
+    envelope = json.loads(resync_item["data"])
+    assert envelope["session_id"] == SESSION
+    resync_payload = envelope["payload"]
     assert resync_payload["reason"] == "gap"
     assert len(resync_payload["events"]) == 3
     assert [e["seq"] for e in resync_payload["events"]] == [8, 9, 10]
@@ -161,7 +164,7 @@ async def test_resync_includes_terminal_state_even_if_evicted_from_the_buffer():
 
     gen = sse_event_stream(bus, SESSION, last_event_id=0)
     resync_item = await _next(gen)
-    resync_payload = json.loads(resync_item["data"])
+    resync_payload = json.loads(resync_item["data"])["payload"]
     assert resync_payload["reason"] == "gap"
     assert resync_payload["terminal"] is not None
     assert resync_payload["terminal"]["type"] == "task.completed"

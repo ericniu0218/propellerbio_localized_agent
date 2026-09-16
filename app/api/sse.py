@@ -13,7 +13,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.events import get_event_bus
 from app.events.bus import EventBus
-from app.schemas.events import SessionResyncPayload
+from app.schemas.enums import EventType
+from app.schemas.events import Event, SessionResyncPayload
 
 router = APIRouter(tags=["events"])
 
@@ -68,7 +69,17 @@ async def sse_event_stream(bus: EventBus, session_id: str, last_event_id: int | 
                 events=replay.events,
                 terminal=replay.terminal,
             )
-            resync_event = {"event": "session.resync", "data": resync_payload.model_dump_json()}
+            # Wrapped in the same Event envelope every other event uses
+            # (session_id/payload included) even though this one is
+            # synthesized here rather than coming from EventBus.publish —
+            # a client's generic envelope parsing shouldn't need a special
+            # case for exactly one event type. No `id:` on the wire for
+            # this frame: it's explicitly not part of the ordered
+            # sequence, so it must never become a client's Last-Event-ID.
+            envelope = Event(
+                type=EventType.SESSION_RESYNC, session_id=session_id, payload=resync_payload.model_dump()
+            )
+            resync_event = {"event": envelope.type.value, "data": envelope.model_dump_json()}
             if first:
                 resync_event["retry"] = CLIENT_RETRY_MS
                 first = False

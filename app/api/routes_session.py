@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from app.db import get_database
+from app.events import get_event_bus
 from app.orchestrator.loop import handle_message
 from app.orchestrator.session import start_session
 from app.schemas.api import (
@@ -15,6 +16,8 @@ from app.schemas.api import (
     SessionResponse,
     StartSessionRequest,
 )
+from app.schemas.enums import EventType
+from app.schemas.events import TaskFailedPayload
 from app.task_store.store import get_task_store
 
 router = APIRouter(tags=["session"])
@@ -58,4 +61,14 @@ async def cancel_task(req: CancelTaskRequest) -> dict:
 
     task.status = TaskStatus.CANCELLED
     store.update_task(session_id, task)
+    # Previously silent on the event stream: a client waiting on this task
+    # (or reconnecting later, per app/events/bus.py's terminal tracking)
+    # would otherwise never learn it was cancelled rather than still running.
+    await get_event_bus().publish_typed(
+        session_id,
+        EventType.TASK_FAILED,
+        TaskFailedPayload(
+            task_id=req.task_id, title=task.title, error="Cancelled by user.", blocked_on_human=False
+        ),
+    )
     return {"task_id": req.task_id, "status": "cancelled"}

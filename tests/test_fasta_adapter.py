@@ -54,6 +54,22 @@ def test_dna_overview_reports_count_length_and_alphabet():
     assert "GC content" in overview
 
 
+def test_mixed_file_tags_each_record_with_its_own_alphabet():
+    """A file with both DNA and protein records must say which is which -
+    "mixed" alone at the top doesn't tell you where to look."""
+    mixed_fasta = (
+        ">dna_one plain nucleotide record\n"
+        "ACGTACGTACGTACGTACGTACGTACGTACGT\n"
+        ">protein_one plain amino acid record\n"
+        "MVLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHGKK\n"
+    )
+    extraction = FastaAdapter().extract(Source.from_text(mixed_fasta, name="mixed.fasta", suffix=".fasta"))
+
+    assert extraction.metadata["alphabet"] == "mixed"
+    assert "[dna]" in extraction.overview
+    assert "[protein]" in extraction.overview
+
+
 def test_protein_sequence_is_classified_as_protein_not_ambiguous():
     extraction = FastaAdapter().extract(Source.from_text(PROTEIN_FASTA, name="hba.fasta", suffix=".fasta"))
     assert extraction.metadata["alphabet"] == "protein"

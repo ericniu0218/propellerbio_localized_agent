@@ -77,6 +77,7 @@ class BudgetsConfig(BaseModel):
     summarization: dict
     context_compaction: dict
     rag: dict
+    meeting_transcripts: dict
     caching: dict
     retries: dict
 

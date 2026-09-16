@@ -6,6 +6,8 @@ docs/ARCHITECTURE.md sections 2 and 6.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.schemas.enums import AgentRole, EventType, TaskDomain
@@ -36,6 +38,7 @@ _DOMAIN_TOOL: dict[TaskDomain, str | None] = {
     TaskDomain.REGULATORY: "rag_search",
     TaskDomain.CLINICAL: "rag_search",
     TaskDomain.LAB_DATA: None,
+    TaskDomain.MEETINGS: "meeting_transcripts",
     TaskDomain.GENERAL: None,
 }
 
@@ -63,9 +66,7 @@ class Specialist(BaseAgent):
             return None
 
         call_id = uuid4().hex[:8]
-        args = {"query": task.description}
-        if tool_name == "rag_search":
-            args["user_id"] = self._user_id
+        args = await self._build_tool_args(tool_name, task)
 
         await self.emit(
             EventType.TOOL_CALLED,
@@ -95,6 +96,37 @@ class Specialist(BaseAgent):
         )
         return result
 
+    async def _build_tool_args(self, tool_name: str, task: TaskNode) -> dict:
+        if tool_name == "rag_search":
+            return {"query": task.description, "user_id": self._user_id}
+        if tool_name == "meeting_transcripts":
+            from_time, to_time = await self._extract_date_range(task)
+            return {"from_time": from_time, "to_time": to_time, "user_id": self._user_id}
+        return {"query": task.description}
+
+    async def _extract_date_range(self, task: TaskNode) -> tuple[str, str]:
+        """Resolves a relative time phrase in the task ("last Tuesday
+        afternoon") into a concrete ISO 8601 [from, to] range, via the same
+        model this agent already drafts with — see
+        app/models/mock_fixtures.py::_fake_date_range for the mock-mode
+        stand-in. Falls back to the last 7 days if the model's output
+        doesn't parse, mirroring Runner.classify's fail-safe-toward-a-
+        bounded-default philosophy rather than silently searching nothing.
+        """
+        reference = datetime.now(timezone.utc)
+        prompt = (
+            f"The current date and time is {reference.isoformat()}. Extract "
+            "the date/time range this request refers to. Respond with "
+            'JSON: {"from": "<ISO 8601>", "to": "<ISO 8601>"}.\n\n'
+            f"Request: {task.description}"
+        )
+        raw = await self.call_model(self.build_prompt(prompt), task_id=task.task_id)
+        try:
+            data = json.loads(_extract_json(raw))
+            return data["from"], data["to"]
+        except (KeyError, ValueError, json.JSONDecodeError):
+            return (reference - timedelta(days=7)).isoformat(), reference.isoformat()
+
     async def _draft(self, task: TaskNode, tool_result: ToolResult | None) -> str:
         context = f"Task: {task.title}\n{task.description}"
         if task.fix_instruction:
@@ -105,3 +137,13 @@ class Specialist(BaseAgent):
         return await self.call_model(
             self.build_prompt(context), task_id=task.task_id, thinking=thinking
         )
+
+
+def _extract_json(raw: str) -> str:
+    """Same tolerant extraction as app/agents/runner.py::_extract_json —
+    duplicated rather than imported to keep the two agents' modules
+    independent; it's 4 lines, not worth coupling over."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end == -1:
+        raise json.JSONDecodeError("no JSON object found", raw, 0)
+    return raw[start : end + 1]

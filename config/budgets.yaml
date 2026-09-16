@@ -32,6 +32,12 @@ rag:
   top_k_chunks: 5
   max_chunk_tokens: 400
 
+meeting_transcripts:
+  # A date range can span many meetings; cap how many transcripts one
+  # search pulls back so a broad question doesn't blow the calling agent's
+  # token budget in one tool call.
+  max_meetings: 10
+
 caching:
   # (query_hash, doc_set_hash) -> result cache for RAG/tool calls.
   enabled: true

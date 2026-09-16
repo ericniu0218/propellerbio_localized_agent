@@ -31,6 +31,7 @@ export type TaskDomain =
   | "regulatory"
   | "clinical"
   | "lab_data"
+  | "meetings"
   | "general";
 
 export type TaskStatus =

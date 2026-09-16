@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # pyproject.toml declares requires-python = ">=3.11". Pinned to one
+      # version rather than a matrix because nothing here is version-sensitive
+      # yet; add 3.11 to a matrix if that stops being true.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # The Textual UI tests drive the app through its headless test harness,
+      # so no display or TTY is needed.
+      - name: Run tests
+        run: pytest -q

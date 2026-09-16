@@ -56,7 +56,7 @@ class OpenAICompatibleBackend:
             response = await self._client.get("/models")
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise InferenceError(f"Could not list models: {_describe(exc)}") from exc
+            raise InferenceError(f"Could not list models: {_describe(exc)}", unavailable=True) from exc
 
         try:
             data = response.json()["data"]
@@ -80,7 +80,7 @@ class OpenAICompatibleBackend:
                     if fragment:
                         yield fragment
         except httpx.HTTPError as exc:
-            raise InferenceError(f"Request failed: {_describe(exc)}") from exc
+            raise InferenceError(f"Request failed: {_describe(exc)}", unavailable=True) from exc
 
     async def close(self) -> None:
         await self._client.aclose()

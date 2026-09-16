@@ -19,7 +19,7 @@ StatusBar {
     color: $accent;
 }
 
-#status-model {
+#status-workspace, #status-model {
     width: auto;
     color: $text-muted;
     margin-right: 3;
@@ -32,11 +32,6 @@ StatusBar {
 #status-connection.bad     { color: $error; }
 #status-connection.unknown { color: $warning; }
 
-/* ---- Agent-pack mode: "what's happening now" strip ---------------------- */
-/* Quiet by design: docked under the status bar, muted colour, and hidden
-   entirely (see AgentPanel.watch_lines) whenever nothing is running, so the
-   idle screen looks exactly like the plain chat-only mode. */
-
 AgentPanel {
     dock: top;
     height: auto;
@@ -44,8 +39,6 @@ AgentPanel {
     color: $text-muted;
     padding: 0 1;
 }
-
-/* ---- Approval prompt ----------------------------------------------------- */
 
 ApprovalPrompt {
     margin-bottom: 1;
@@ -55,13 +48,33 @@ ApprovalPrompt {
     background: transparent;
 }
 
-#approval-buttons {
-    height: auto;
-    margin-top: 1;
+#approval-buttons { height: auto; margin-top: 1; }
+#approval-buttons Button { margin-right: 2; min-width: 16; }
+
+/* ---- Conversation sidebar ---------------------------------------------- */
+
+#body {
+    height: 1fr;
 }
-#approval-buttons Button {
-    margin-right: 2;
-    min-width: 16;
+
+ConversationList {
+    width: 30;
+    height: 1fr;
+    padding: 1 0;
+    border: none;
+    border-right: vkey $panel-lighten-2;
+    background: $surface;
+    /* One line per conversation, cut off with "…", like a chat app's sidebar. */
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+ConversationList:focus {
+    border: none;
+    border-right: vkey $accent;
+}
+
+#main {
+    width: 1fr;
 }
 
 /* ---- Conversation area -------------------------------------------------- */

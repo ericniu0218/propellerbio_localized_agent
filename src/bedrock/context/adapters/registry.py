@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from bedrock.context.adapters.base import Source, SourceAdapter
 from bedrock.context.adapters.code import CodeAdapter
+from bedrock.context.adapters.fasta import FastaAdapter
 from bedrock.context.adapters.logs import LogAdapter
 from bedrock.context.adapters.structured import StructuredAdapter
 from bedrock.context.adapters.tabular import TabularAdapter
@@ -20,6 +21,10 @@ from bedrock.context.types import Extraction
 
 DEFAULT_ADAPTERS: tuple[SourceAdapter, ...] = (
     StructuredAdapter(),
+    # A leading ">" record marker is as strong and cheap a signal as JSON's
+    # leading brace, so FASTA goes right after structured data and before
+    # the adapters that sniff by counting delimiters or timestamp words.
+    FastaAdapter(),
     CodeAdapter(),
     LogAdapter(),
     TabularAdapter(),

@@ -10,13 +10,20 @@ how the UI uses this.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
+from collections.abc import Awaitable, Callable
 from typing import AsyncIterator
 
 import httpx
 
 from bedrock.agentpack.models import AgentEvent
 from bedrock.inference.base import InferenceError
+
+INITIAL_BACKOFF_S = 1.0
+MAX_BACKOFF_S = 30.0
+BACKOFF_MULTIPLIER = 2.0
 
 
 class AgentPackClient:
@@ -25,12 +32,16 @@ class AgentPackClient:
         base_url: str,
         timeout: float = 120.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         # ``transport`` lets tests substitute a fake server, same pattern as
-        # ``OpenAICompatibleBackend``.
+        # ``OpenAICompatibleBackend``. ``sleep`` lets tests replace the
+        # reconnect backoff delay without actually waiting — real callers
+        # never pass it.
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=timeout, transport=transport
         )
+        self._sleep = sleep or asyncio.sleep
 
     async def check_connection(self) -> bool:
         try:
@@ -86,29 +97,82 @@ class AgentPackClient:
         Runs until cancelled — callers drive this from a background worker
         for the lifetime of the session, same pattern as
         ``openai_compatible.OpenAICompatibleBackend.stream_chat``.
-        """
-        try:
-            async with self._client.stream("GET", f"/sessions/{session_id}/events") as response:
-                if response.status_code >= 400:
-                    body = (await response.aread()).decode(errors="replace")
-                    raise InferenceError(f"Could not connect to the live updates: {body[:200]}")
 
-                event_type: str | None = None
-                data_lines: list[str] = []
-                async for line in response.aiter_lines():
-                    if line == "":
-                        if event_type is not None and data_lines:
-                            event = _parse_event(event_type, "".join(data_lines))
-                            if event is not None:
-                                yield event
-                        event_type, data_lines = None, []
-                        continue
-                    if line.startswith("event:"):
-                        event_type = line[len("event:"):].strip()
-                    elif line.startswith("data:"):
-                        data_lines.append(line[len("data:"):].strip())
-        except httpx.HTTPError as exc:
-            raise InferenceError(f"Lost the live connection: {_describe(exc)}") from exc
+        Reconnects on a dropped connection with exponential backoff and
+        jitter, sending back whatever `id:` the server last gave us as
+        `Last-Event-ID` so the backend can resume rather than replay
+        everything (see app/events/bus.py on the backend for the other
+        half of this contract). A disconnect never means the underlying
+        job stopped — the backend keeps running it regardless of whether
+        anyone is listening — so reconnecting and catching up is always
+        the right response, never restarting anything.
+
+        Emits two synthetic event types of its own, never sent by the
+        backend, so the UI can show a "reconnecting…" state:
+        `client.reconnecting` (payload: `attempt`, `delay_s`) each time a
+        drop is detected, and `client.reconnected` once a new connection
+        is actually established afterward. A permanent-looking failure
+        (a 4xx response — e.g. the session no longer exists) is not
+        retried; it raises `InferenceError` same as before, since no
+        amount of reconnecting fixes that.
+        """
+        last_event_id: str | None = None
+        attempt = 0
+        reconnecting = False
+
+        while True:
+            try:
+                headers = {"Last-Event-ID": last_event_id} if last_event_id is not None else {}
+                async with self._client.stream(
+                    "GET", f"/sessions/{session_id}/events", headers=headers
+                ) as response:
+                    if response.status_code >= 500:
+                        raise httpx.HTTPStatusError(
+                            "server error", request=response.request, response=response
+                        )
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode(errors="replace")
+                        raise InferenceError(f"Could not connect to the live updates: {body[:200]}")
+
+                    if reconnecting:
+                        reconnecting = False
+                        attempt = 0
+                        yield AgentEvent(type="client.reconnected", session_id=session_id, payload={})
+
+                    event_type: str | None = None
+                    data_lines: list[str] = []
+                    async for line in response.aiter_lines():
+                        if line == "":
+                            if event_type is not None and data_lines:
+                                event = _parse_event(event_type, "".join(data_lines))
+                                if event is not None:
+                                    yield event
+                            event_type, data_lines = None, []
+                            continue
+                        if line.startswith("event:"):
+                            event_type = line[len("event:"):].strip()
+                        elif line.startswith("data:"):
+                            data_lines.append(line[len("data:"):].strip())
+                        elif line.startswith("id:"):
+                            last_event_id = line[len("id:"):].strip()
+                    # The server closing a normally-infinite stream (e.g. a
+                    # restart) is a drop too, not successful completion —
+                    # fall through to the reconnect path below.
+            except InferenceError:
+                raise  # permanent (4xx) — not retried
+            except httpx.HTTPError:
+                pass  # connection-level failure or 5xx — retry below
+
+            attempt += 1
+            reconnecting = True
+            delay = min(MAX_BACKOFF_S, INITIAL_BACKOFF_S * (BACKOFF_MULTIPLIER ** (attempt - 1)))
+            delay = delay / 2 + random.uniform(0, delay / 2)  # equal jitter
+            yield AgentEvent(
+                type="client.reconnecting",
+                session_id=session_id,
+                payload={"attempt": attempt, "delay_s": delay},
+            )
+            await self._sleep(delay)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -116,8 +180,10 @@ class AgentPackClient:
 
 def _parse_event(event_type: str, data: str) -> AgentEvent | None:
     """`data` is the backend's full `Event` envelope as JSON — see
-    `contracts/types.ts` `Event`: {event_id, type, session_id, timestamp,
-    payload}. We only need `session_id` and the inner `payload` here."""
+    `contracts/types.ts` `Event`: {event_id, seq, type, session_id,
+    timestamp, payload}. We only need `session_id` and the inner `payload`
+    here; `seq` is read separately, off the SSE `id:` line, since that's
+    the field the transport-level id is meant to carry."""
     try:
         envelope = json.loads(data)
     except json.JSONDecodeError:

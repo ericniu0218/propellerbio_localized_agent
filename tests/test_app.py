@@ -1,5 +1,7 @@
 """Drive the real Textual app headlessly with a fake backend."""
 
+from tests.workers import wait_for_app_workers
+
 from bedrock.app import BedrockApp
 from bedrock.config import Settings
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
@@ -19,7 +21,7 @@ async def test_send_message_streams_reply(fake_backend: FakeBackend):
         assert app.query_one(StatusBar).connected is True
 
         await pilot.press(*"hi there", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.pause()
 
         assert str(app.query_one(UserMessage).content) == "hi there"
@@ -51,7 +53,7 @@ async def test_clear_and_help(fake_backend: FakeBackend):
     app = make_app(fake_backend, model="test-model")
     async with app.run_test() as pilot:
         await pilot.press(*"hello", "enter")
-        await app.workers.wait_for_complete()
+        await wait_for_app_workers(app)
         await pilot.press(*"/clear", "enter")
         await pilot.pause()
         assert not app.query(UserMessage)
@@ -76,3 +78,29 @@ async def test_exit_command_closes_backend(fake_backend: FakeBackend):
         await pilot.press(*"/exit", "enter")
         await pilot.pause()
     assert app.return_value is None
+    assert fake_backend.closed is True
+
+
+async def test_workspace_command_is_native_and_updates_status(fake_backend, tmp_path):
+    app = BedrockApp(
+        settings=Settings(
+            model="test-model",
+            user_id="alice",
+            display_name="Alice",
+            context_dir=str(tmp_path / "context"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            history_dir=tmp_path / "history",
+        ),
+        backend=fake_backend,
+    )
+    async with app.run_test() as pilot:
+        await pilot.press(*"/workspace create Research", "enter")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        assert app.workspace_session.store.list_workspaces()[0].name == "Research"
+        assert "space: Research" in str(app.query_one("#status-workspace").content)
+        assert any("Created and selected" in notice.source for notice in app.query(SystemNotice))
+
+        await pilot.press(*"/exit", "enter")
+        await pilot.pause()

@@ -29,7 +29,7 @@ export ALPHAFOLD_LAUNCHER=/opt/alphafold/docker/run_docker.py
 export ALPHAFOLD_DATA_DIR=/data/alphafold
 export ALPHAFOLD_MAX_TEMPLATE_DATE=2026-01-01
 export ALPHAFOLD_DOCKER_IMAGE=alphafold@sha256:…      # pinned, not a floating tag
-export BEDROCK_HISTORY_DIR=~/.local/share/bedrock/history
+export BEDROCK_ACTION_HISTORY_DIR=~/.local/share/bedrock/history
 ```
 
 `bedrock-biotech status` must report both tools ready before anything else.

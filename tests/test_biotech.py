@@ -200,18 +200,18 @@ def test_status_lists_missing_operator_configuration(tmp_path: Path):
 
 
 def test_from_settings_defers_private_history_io_until_an_operation(tmp_path: Path):
-    history_dir = tmp_path / "history"
+    action_history_dir = tmp_path / "history"
 
     workflow = ProteinWorkflow.from_settings(
         Settings(
             biotech_work_dir=tmp_path / "runs",
-            history_dir=str(history_dir),
+            action_history_dir=str(action_history_dir),
             user_id="alice",
         )
     )
 
     assert workflow.history is None
-    assert not history_dir.exists()
+    assert not action_history_dir.exists()
 
 
 async def test_render_failure_preserves_successful_prediction(tmp_path: Path):

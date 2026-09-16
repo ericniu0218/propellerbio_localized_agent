@@ -117,7 +117,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     # Everything below reads local files only: no model server, no network,
     # no scientific tool needs to be installed.
-    history = HistoryStore(Path(settings.history_dir))
+    history = HistoryStore(Path(settings.action_history_dir))
 
     if args.command == "audit":
         if args.audit_action == "export":

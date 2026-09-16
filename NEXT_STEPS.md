@@ -80,25 +80,109 @@ notifications, a blob store for results over 256 KiB, and mutually untrusted
 multi-host access. The terminal UX should continue to use paths and explicit
 previews rather than browser drag-and-drop.
 
-### 4. Streaming into the chat bubble
-Right now the chat bubble shows "Working on it…" and then the finished
-answer — it does not stream token-by-token like the original `BedrockApp`
-does for a plain model server. The backend's `agent.token` events carry
-the live text; `agentpack_app.py::handle_event` currently ignores that
-event type on purpose (see the module docstring) because a request can
-involve *multiple* agents drafting in sequence (Specialist drafts, then
-Runner reformats) and naively streaming both would look like the answer
-being rewritten mid-stream. If this is worth fixing, the likely approach
-is: stream only the *last* agent's tokens once a `task.completed` for this
-turn's task tree is imminent, which needs a bit more state than exists
-today.
+### 4. Streaming into the chat bubble — done 2026-09-16
+The chat bubble now streams the drafting agent's tokens live instead of
+showing a static "Working on it…" the whole time. Design considered and
+rejected: incremental sentence/chunk-wise review (option b in the original
+proposal) — `Director.review()` is fully synchronous and deterministic
+(a citation-presence + non-empty check, no model call), so there is no
+real review *latency* to amortize by chunking; the actual latency is the
+model calls themselves (Specialist's draft, Director's synthesis, Runner's
+formatting), which chunked review wouldn't touch. Went with option (a)
+instead: stream the draft live, clearly marked unreviewed, then swap in
+the confirmed result.
 
-### 5. Reconnection
-`AgentPackClient.events()` opens one SSE connection for the life of the
-app. If the backend restarts or a network blip drops it, this client does
-not currently retry — it just reports the error and goes quiet. Worth a
-retry-with-backoff loop before this goes in front of real users on a real
-network.
+- `PENDING_REVIEW_PREFIX` marks the bubble the moment the drafting agent's
+  first token arrives — never remove the marker without also removing the
+  streaming, since unreviewed text shown with no marker is being presented
+  as final when it isn't.
+- Only the tokens whose output actually becomes the shown answer stream:
+  the Specialist's draft in the simple/normal tier, or the Director's
+  synthesis in the hard/high-stakes tier — distinguished by whether a
+  `task.planned` event has been seen this turn (only that tier gets a
+  Director plan). The Specialist's upstream research-step tokens in the
+  hard tier, and the Runner's tokens at any point (classification, or the
+  post-approval reformatting pass), are never shown as the draft — showing
+  either would either leak internal research material as if it were the
+  answer, or look like the answer being silently rewritten.
+- Once the draft's `done: true` token arrives, the bubble switches to
+  `REVIEWING_PREFIX` and freezes — review/formatting/(for high-stakes
+  requests) the human approval gate all still need to run before
+  `_finish` does the final swap to the confirmed, `get_result()`-fetched
+  text. A rejection (`task.failed`) fully overwrites the bubble too — the
+  streamed draft is never left visible next to or instead of the failure
+  message ("retracting streamed text" from the original spec).
+- Reuses `AssistantMessage.begin_stream()`/`end_stream()`, the same
+  `MarkdownStream` mechanism `BedrockApp` already uses for plain-mode
+  streaming — no new streaming primitive.
+- Built entirely client-side. The backend already streamed every agent's
+  tokens over `agent.token` for every call (see
+  `app/agents/base.py::BaseAgent.call_model`) before this — the gap was
+  purely that `agentpack_app.py` ignored that event type. Verified this
+  against a real running server: a hard-tier (regulatory) request
+  produced exactly the expected `role: "director"` token stream under the
+  synthesis step's own `task_id` (distinct from the root task_id), after
+  a `task.planned` event, before an `approval.required` gate — matching
+  this design's assumptions precisely.
+- Resuming a reconnected mid-stream draft works for free: `session.resync`
+  replays missed `agent.token` events through the same `handle_event`
+  path (Phase 1), so a drop mid-draft continues the same stream rather
+  than losing or restarting it.
+
+Tests: the "Token streaming into the answer bubble" section of
+`tests/test_agentpack_app.py` (normal-tier streaming, hard-tier
+research-step exclusion, runner-reformatting exclusion, the
+reviewing-state transition, retraction on rejection, the final swap, and
+turn-to-turn state isolation).
+
+### 5. Reconnection — done 2026-09-16
+`AgentPackClient.events()` now reconnects automatically on a dropped
+connection (including the server just closing the stream cleanly, e.g. a
+restart — that's still a drop from this client's perspective, never
+successful completion) with exponential backoff and jitter (1s → 30s
+ceiling, equal jitter), sending back the last `id:` it saw as
+`Last-Event-ID` so the backend resumes rather than replays everything.
+A 4xx response (e.g. the session no longer exists) is *not* retried —
+that's a permanent failure, not a transient drop, and raises
+`InferenceError` same as before.
+
+Two synthetic event types the backend never sends, only this client:
+`client.reconnecting` (payload: `attempt`, `delay_s`) each time a drop is
+detected, `client.reconnected` once a new connection is established. The
+UI (`agentpack_app.py`) shows this as a `StatusBar.reconnecting` indicator
+plus one system notice per outage (not one per retry attempt) — see
+`_handle_reconnecting`/`_handle_reconnected`.
+
+**Server side** (see the backend's own PR/commit for detail): every event
+now carries a monotonically increasing per-session `seq`, sent as the SSE
+`id:`; the backend keeps a bounded per-session buffer (default 500) rather
+than unbounded history. If a reconnect's `Last-Event-ID` is older than
+what survives in that buffer, the backend sends an explicit
+`session.resync` event instead of silently replaying a partial window —
+handled here by `_handle_resync`: reset the agent panel, replay whatever
+window the backend still has, then check its `terminal` field (the
+session's most recent completion/failure, kept outside the bounded buffer
+specifically for this) so a pending answer resolves even if the exact
+event that completed it was evicted before reconnecting.
+
+A disconnect never cancels the underlying job — that was already true
+(the backend runs `handle_message` as an independent task, decoupled from
+any SSE connection) and remains true; this is purely about the *client*
+catching back up, never about the job's lifecycle.
+
+Tests: `tests/test_agentpack_reconnect.py` (backoff/jitter, Last-Event-ID
+propagation, 4xx-vs-5xx/connection-error retry distinction, attempt
+counter reset after a successful reconnect) and the `session.resync`/
+`client.reconnecting`/`client.reconnected` cases in
+`tests/test_agentpack_app.py`.
+
+**Known limitation, not fixed here, and not fixable from this repo**: the
+backend's buffer and terminal-event tracking are in-memory. A backend
+*process restart* still loses all of it — a reconnecting client gets
+`session.resync` with `reason: "no_history"` and starts fresh rather than
+hanging, which is the best available behavior without durable job storage
+on the backend (out of scope for this task; see that repo's Workstream 1
+notes on Postgres/durability).
 
 ## Testing
 

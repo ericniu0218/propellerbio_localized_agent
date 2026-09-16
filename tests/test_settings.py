@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from bedrock.config import load_settings
 from bedrock.config.settings import DEFAULT_API_BASE
 
@@ -30,6 +32,24 @@ def test_environment_overrides_file(tmp_path: Path):
     assert settings.api_key == "secret"
 
 
+def test_quoted_false_disables_history(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text('save_history = "false"\n')
+    assert load_settings(config_path=config, env={}).save_history is False
+
+
+def test_relative_xdg_data_home_is_ignored(tmp_path: Path):
+    settings = load_settings(config_path=tmp_path / "missing", env={"XDG_DATA_HOME": "relative"})
+    assert settings.history_dir.is_absolute()
+
+
+def test_invalid_history_dir_has_a_clear_error(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text("history_dir = 123\n")
+    with pytest.raises(ValueError, match="history_dir"):
+        load_settings(config_path=config, env={})
+
+
 def test_workspace_identity_and_private_vault_are_configurable(tmp_path: Path):
     settings = load_settings(
         config_path=tmp_path / "missing.toml",
@@ -45,18 +65,26 @@ def test_workspace_identity_and_private_vault_are_configurable(tmp_path: Path):
     assert settings.workspace_dir == str(tmp_path / "team-vault")
 
 
-def test_history_directory_uses_environment_file_default_precedence(tmp_path: Path):
+def test_action_history_directory_uses_environment_file_default_precedence(tmp_path: Path):
+    """The action journal's own setting, which is not ``history_dir``.
+
+    ``history_dir`` holds saved conversations; this one holds the metadata-only
+    compliance journal. The test asserts they move independently, because one
+    knob for both would relocate an audit trail by accident.
+    """
     config = tmp_path / "config.toml"
-    config.write_text(f'history_dir = "{tmp_path / "file-history"}"\n')
+    config.write_text(f'action_history_dir = "{tmp_path / "file-history"}"\n')
 
     from_file = load_settings(config_path=config, env={})
     from_environment = load_settings(
         config_path=config,
-        env={"BEDROCK_HISTORY_DIR": str(tmp_path / "environment-history")},
+        env={"BEDROCK_ACTION_HISTORY_DIR": str(tmp_path / "environment-history")},
     )
 
-    assert from_file.history_dir == str(tmp_path / "file-history")
-    assert from_environment.history_dir == str(tmp_path / "environment-history")
+    assert from_file.action_history_dir == str(tmp_path / "file-history")
+    assert from_environment.action_history_dir == str(tmp_path / "environment-history")
+    # Moving the journal must not move saved conversations.
+    assert "file-history" not in str(from_file.history_dir)
 
 
 def test_biotech_tool_settings_can_be_provisioned_without_hard_coded_paths(tmp_path: Path):

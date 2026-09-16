@@ -97,7 +97,7 @@ class ProteinWorkflow:
             PyMOLAdapter(settings.pymol_executable),
             history=history,
             actor_id=settings.user_id,
-            history_root=None if history is not None else settings.history_dir,
+            history_root=None if history is not None else settings.action_history_dir,
         )
 
     def status(self) -> tuple[ToolStatus, ToolStatus]:

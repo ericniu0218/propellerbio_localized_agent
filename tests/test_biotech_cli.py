@@ -28,7 +28,7 @@ def operator(tmp_path, monkeypatch) -> Settings:
     monkeypatch.setenv("COLUMNS", "160")
     settings = Settings(
         user_id="alice",
-        history_dir=str(tmp_path / "history"),
+        action_history_dir=str(tmp_path / "history"),
         biotech_work_dir=tmp_path / "biotech",
     )
     monkeypatch.setattr(cli, "load_settings", lambda: settings)

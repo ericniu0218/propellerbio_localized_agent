@@ -21,6 +21,10 @@ class InferenceError(Exception):
     should wrap transport errors and bad responses in it with a readable message.
     """
 
+    def __init__(self, message: str, *, unavailable: bool = False) -> None:
+        super().__init__(message)
+        self.unavailable = unavailable
+
 
 @dataclass(frozen=True)
 class ModelInfo:

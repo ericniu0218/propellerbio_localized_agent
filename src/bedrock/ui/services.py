@@ -25,11 +25,10 @@ filesystem belongs on the Textual event loop.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_HISTORY_DIR = Path.home() / ".local" / "share" / "bedrock" / "history"
+DEFAULT_ACTION_HISTORY_DIR = Path.home() / ".local" / "share" / "bedrock" / "history"
 
 UNAVAILABLE_MESSAGE = (
     "Local history is not available in this installation: the `bedrock.provenance` "
@@ -104,18 +103,16 @@ class ComplianceServices:
 
     @property
     def history_dir(self) -> Path:
-        """Where the journal lives.
+        """Where the action journal lives.
 
-        ``Settings.history_dir`` is the supported answer and follows the usual
-        environment-over-config-over-default precedence. The environment
-        fallback below only matters in a build whose settings module predates
-        that field; it keeps this module working either way rather than
-        reaching into configuration loading itself.
+        ``Settings.action_history_dir`` is the supported answer and follows the
+        usual environment-over-config-over-default precedence. Note the name:
+        ``Settings.history_dir`` is a different directory holding saved
+        *conversations*, and reading the wrong one here would put the
+        compliance journal in with the employee's prompts.
         """
-        configured = getattr(self.settings, "history_dir", None) or os.environ.get(
-            "BEDROCK_HISTORY_DIR"
-        )
-        return Path(configured).expanduser() if configured else DEFAULT_HISTORY_DIR
+        configured = getattr(self.settings, "action_history_dir", None)
+        return Path(configured).expanduser() if configured else DEFAULT_ACTION_HISTORY_DIR
 
     # ---- Error handling ---------------------------------------------------
 

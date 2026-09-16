@@ -3,8 +3,13 @@
 ## Local history
 
 `bedrock.provenance.HistoryStore` owns `history.sqlite3` in
-`Settings.history_dir`. The configuration order is `BEDROCK_HISTORY_DIR`, then
-TOML `history_dir`, then `~/.local/share/bedrock/history`.
+`Settings.action_history_dir`. The configuration order is
+`BEDROCK_ACTION_HISTORY_DIR`, then TOML `action_history_dir`, then
+`~/.local/share/bedrock/history`.
+
+The name is deliberate. `Settings.history_dir` is a different directory holding
+saved conversations — the employee's prompts and answers. The action journal is
+metadata-only, and the two must not share one configuration knob.
 
 The store is metadata-only. It accepts the action/state/detail vocabulary in
 `CONTRACT.md`, adds `actor_source=config`, bounds each serialized event to 8 KiB,

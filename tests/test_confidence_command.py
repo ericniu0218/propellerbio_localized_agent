@@ -232,6 +232,8 @@ async def test_the_heatmap_survives_onto_the_actual_screen(tmp_path):
         await submit(app, pilot, "/confidence run_1")
         screen = re.sub(r"<[^>]+>", "", app.export_screenshot()).replace("&#160;", " ")
 
-    rows = [line.strip("█ ") for line in screen.splitlines() if "|" in line and "-" in line]
-    assert "1-8 | . #" in rows          # aligned on 1-8, residues 9-16 are far off
-    assert "9-16 | . ." in rows         # and not the other way round
+    # Substrings, not whole lines: the screen has a sidebar and borders down
+    # the left, and this test is about the grid keeping its shape, not about
+    # what else is drawn beside it.
+    assert "1-8 | . #" in screen        # aligned on 1-8, residues 9-16 are far off
+    assert "9-16 | . ." in screen       # and not the other way round

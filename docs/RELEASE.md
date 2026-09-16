@@ -47,7 +47,7 @@ temporary home, so it also proves a first installation works.
 
 | Check | Result |
 |---|---|
-| Settings read `BEDROCK_HISTORY_DIR` | pass |
+| Settings read `BEDROCK_ACTION_HISTORY_DIR` | pass |
 | Fixed PyMOL scripts are inside the wheel | pass |
 | Headless and interactive PyMOL share the pLDDT thresholds | pass |
 | An existing run manifest lists after a fresh install | pass |
@@ -103,7 +103,7 @@ pip install --force-reinstall bedrock_private_ai-<previous>-py3-none-any.whl
 ```
 
 * **Keep the previous wheel.** It is the rollback.
-* **Do not remove `BEDROCK_HISTORY_DIR`.** An older client simply does not read
+* **Do not remove `BEDROCK_ACTION_HISTORY_DIR`.** An older client simply does not read
   it; the journal stays valid for when the newer one returns.
 * **Do not touch run directories.** Manifests written by this version keep
   every v1 field, so an older client still reads them. The extra v2 fields

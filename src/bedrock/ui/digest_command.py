@@ -55,9 +55,13 @@ USAGE = """\
 | `/digest show <id>` | Print one digest |
 | `/digest forget <id>` | Delete one artifact |
 
-Handles text, Markdown, CSV/TSV, JSON, source code and log files. Each one is \
-stored twice over: a small digest a model can read on every turn, and the full \
-content compressed and indexed for exact lookup.
+Handles text, Markdown, CSV/TSV, JSON, source code, log files, and FASTA \
+(sequence count, length, and DNA/RNA/protein alphabet instead of treating it \
+as prose). Each one is stored twice over: a small digest a model can read on \
+every turn, and the full content compressed and indexed for exact lookup.
+
+Relevant stored context is now pulled into your questions automatically — \
+see the note after each answer that used any.
 """
 
 

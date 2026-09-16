@@ -29,7 +29,7 @@ from bedrock.context.types import Chunk, Digest, Extraction
 # to produce something vaguer than what we already have. Prose is the opposite
 # case - there is no structure to read, so a written summary is the only option
 # - which is why it is the one kind not listed here.
-RULES_SUFFICE = frozenset({"tabular", "structured", "logs", "code"})
+RULES_SUFFICE = frozenset({"tabular", "structured", "logs", "code", "fasta"})
 
 MAX_PROMPT_CHARS = 6000
 MAX_SAMPLE_CHUNKS = 6

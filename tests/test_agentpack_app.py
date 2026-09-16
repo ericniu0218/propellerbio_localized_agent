@@ -112,10 +112,50 @@ async def test_send_message_shows_final_answer_from_result_ref(fake_client: Fake
         assert str(app.query_one(UserMessage).content) == "boiling point?"
         assert "Working on it" in app.query_one(AssistantMessage).source
 
-        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+
+async def test_relevant_stored_context_is_added_to_the_outgoing_message_not_the_bubble(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    """Closes the gap /digest had: compressing a file used to do nothing for
+    the next question you asked unless you remembered to search it yourself."""
+    app = AgentPackApp(settings=Settings(user_id="alice", context_dir=str(tmp_path / "ctx")), client=fake_client)
+
+    assay_file = tmp_path / "assay.csv"
+    assay_file.write_text("\n".join(["sample,ph,passed"] + [f"s{i},{6.0 + i * 0.1:.1f},true" for i in range(10)]))
+    from bedrock.context import ingest
+
+    ingest(assay_file, store=app.context_store)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"what was the ph in the assay results?", "enter")
         await pilot.pause()
 
-        assert "boiling point of water" in app.query_one(AssistantMessage).source
+        assert len(fake_client.sent_messages) == 1
+        _, outgoing = fake_client.sent_messages[0]
+        assert "Relevant stored context" in outgoing
+        assert "assay.csv" in outgoing
+        assert outgoing.endswith("what was the ph in the assay results?")
+
+        # The user's own bubble stays exactly what they typed - the
+        # injected context is only in what got sent, never shown as if
+        # the user had typed it.
+        assert str(app.query_one(UserMessage).content) == "what was the ph in the assay results?"
+        notices = [n.source for n in app.query(SystemNotice)]
+        assert any("Added stored context from" in n and "assay.csv" in n for n in notices)
+
+
+async def test_unrelated_message_is_sent_unchanged_when_nothing_matches(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    app = AgentPackApp(settings=Settings(user_id="alice", context_dir=str(tmp_path / "ctx")), client=fake_client)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"good morning", "enter")
+        await pilot.pause()
+
+        assert fake_client.sent_messages == [("sess_fake", "good morning")]
 
 
 async def test_agent_panel_shows_friendly_status_and_clears_on_done(fake_client: FakeAgentPackClient):

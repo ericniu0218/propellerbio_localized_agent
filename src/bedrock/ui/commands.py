@@ -23,6 +23,10 @@ HELP_TEXT = """\
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
 | `/digest <source>://<id>` | Pull a record from a company source and compress it |
+| `/runs` | Prediction runs recorded on this machine |
+| `/runs show <run-id>` | Settings, lineage and integrity of one run |
+| `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
+| `/audit` | What this client has done on this machine |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
 | `/history` | List saved conversations |
@@ -33,6 +37,15 @@ HELP_TEXT = """\
 | `/recall` | Show what has been pulled in; `/recall clear` removes it |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
+
+**Examples**
+
+- Runs for project X this quarter:
+  `/runs --project X --since 2026-07-01 --before 2026-10-01`
+- Export the action history: `/audit export "/approved/review/actions.jsonl"`
+
+`/runs`, `/confidence` and `/audit` read local files only. They work with the
+model server switched off, and nothing they show is sent to a model.
 
 **Keys**
 
@@ -58,6 +71,9 @@ KNOWN_COMMANDS = {
     "model",
     "digest",
     "sources",
+    "runs",
+    "confidence",
+    "audit",
     "workspace",
     "team",
     "clear",

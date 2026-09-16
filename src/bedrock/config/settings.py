@@ -27,6 +27,7 @@ DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bedrock" / "config.toml"
 DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 DEFAULT_WORKSPACE_DIR = Path.home() / ".local" / "share" / "bedrock" / "workspaces"
+DEFAULT_ACTION_HISTORY_DIR = Path.home() / ".local" / "share" / "bedrock" / "history"
 DEFAULT_BIOTECH_WORK_DIR = Path.home() / ".local" / "share" / "bedrock" / "biotech"
 
 FALSE_VALUES = {"0", "false", "no", "off"}
@@ -84,6 +85,19 @@ class Settings:
     display_name: str | None = None
     context_dir: str = str(DEFAULT_CONTEXT_DIR)
     workspace_dir: str = str(DEFAULT_WORKSPACE_DIR)
+    """Directory containing the private SQLite shared-workspace vault."""
+
+    action_history_dir: str = str(DEFAULT_ACTION_HISTORY_DIR)
+    """Directory containing the private, metadata-only local action journal.
+
+    Deliberately *not* ``history_dir``: that one holds saved conversations,
+    which are the employee's prompts and answers. This one holds the
+    compliance journal - identifiers, hashes, decisions and error codes, and
+    never any content. Two different kinds of record with two different
+    privacy stories, so they get two settings and two directories rather than
+    one knob that silently moves both.
+    """
+
     biotech_work_dir: Path = DEFAULT_BIOTECH_WORK_DIR
     alphafold_launcher: Path | None = None
     alphafold_data_dir: Path | None = None
@@ -145,6 +159,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "system_prompt",
         "history_dir",
         "save_history",
+        "action_history_dir",
         "agent_pack_api_base", "user_id", "display_name", "context_dir",
         "workspace_dir", "biotech_work_dir",
         "alphafold_launcher", "alphafold_data_dir", "alphafold_python",
@@ -167,6 +182,12 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     if history_dir_value is not None and not isinstance(history_dir_value, (str, os.PathLike)):
         raise ValueError(f"history_dir must be a path, not {history_dir_value!r}")
     history_dir = Path(history_dir_value).expanduser() if history_dir_value else default_history_dir(env)
+
+    action_history_dir = (
+        env.get("BEDROCK_ACTION_HISTORY_DIR")
+        or file_values.get("action_history_dir")
+        or str(DEFAULT_ACTION_HISTORY_DIR)
+    )
 
     save_history_env = env.get("BEDROCK_SAVE_HISTORY")
     if save_history_env is not None and save_history_env.strip():
@@ -199,6 +220,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         system_prompt=system_prompt,
         history_dir=history_dir,
         save_history=save_history,
+        action_history_dir=action_history_dir,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,
         display_name=display_name,

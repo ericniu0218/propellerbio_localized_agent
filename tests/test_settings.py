@@ -65,6 +65,28 @@ def test_workspace_identity_and_private_vault_are_configurable(tmp_path: Path):
     assert settings.workspace_dir == str(tmp_path / "team-vault")
 
 
+def test_action_history_directory_uses_environment_file_default_precedence(tmp_path: Path):
+    """The action journal's own setting, which is not ``history_dir``.
+
+    ``history_dir`` holds saved conversations; this one holds the metadata-only
+    compliance journal. The test asserts they move independently, because one
+    knob for both would relocate an audit trail by accident.
+    """
+    config = tmp_path / "config.toml"
+    config.write_text(f'action_history_dir = "{tmp_path / "file-history"}"\n')
+
+    from_file = load_settings(config_path=config, env={})
+    from_environment = load_settings(
+        config_path=config,
+        env={"BEDROCK_ACTION_HISTORY_DIR": str(tmp_path / "environment-history")},
+    )
+
+    assert from_file.action_history_dir == str(tmp_path / "file-history")
+    assert from_environment.action_history_dir == str(tmp_path / "environment-history")
+    # Moving the journal must not move saved conversations.
+    assert "file-history" not in str(from_file.history_dir)
+
+
 def test_biotech_tool_settings_can_be_provisioned_without_hard_coded_paths(tmp_path: Path):
     settings = load_settings(
         config_path=tmp_path / "missing.toml",

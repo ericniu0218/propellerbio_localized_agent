@@ -54,6 +54,12 @@ bedrock             # run the app (expects Ollama at http://localhost:11434 by d
 
 Tests drive the real Textual app headlessly with `FakeBackend` (`tests/conftest.py`). Add tests there when changing behaviour.
 
+## Git Workflow
+
+- **Never push directly to `main`**: Automated agents and tools must never push commits directly to `main`.
+- **Feature branches**: Always create and work on a dedicated branch (e.g., `feature/<name>` or `fix/<name>`) before committing changes.
+- **Pull requests**: Pushes must target feature branches only. Changes enter `main` exclusively through reviewed pull requests.
+
 ## Current status
 
 MVP complete: chat UI, streaming Markdown responses, `/model`, `/clear`, `/help`, `/exit`, model indicator, connection indicator.
@@ -63,6 +69,18 @@ small digest plus compressed, keyword-indexed chunks, so a local model can
 read a large file cheaply and still get exact detail on request. Generalised
 over data types by the `SourceAdapter` protocol, the same seam idea as
 `InferenceBackend`. See README's "Compressing data for the model" section.
+
+Also built: local compliance and provenance. `bedrock.provenance` keeps an
+append-only SQLite action journal (`BEDROCK_HISTORY_DIR`) and a read-only
+catalogue over the per-run manifests; `bedrock/biotech/confidence.py`
+normalises AlphaFold 2 confidence. The employee-facing half is `/runs`,
+`/confidence` and `/audit` in both app modes and as `bedrock-biotech`
+subcommands, plus confidence-coloured interactive PyMOL. These read local
+files only, never consult a model, and work with every server switched off.
+Local history is *not* an authenticated ledger or tamper-proof storage, and a
+project label grants no access; read `docs/COMPLIANCE_MVP.md` and
+`docs/compliance_mvp/CONTRACT.md` before changing the journal, the run
+catalogue, the confidence contract or the approval flow.
 
 Also built: native shared workspaces (`src/bedrock/workspaces/` and
 `src/bedrock/ui/workspace_command.py`). Read `docs/SHARED_WORKSPACES.md` before

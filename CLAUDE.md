@@ -83,6 +83,18 @@ blocked on a deployed embedding model.
 
 Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the *configured* model through `InferenceBackend` - never any other service. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
 
+Also built: local compliance and provenance. `bedrock.provenance` keeps an
+append-only SQLite action journal (`BEDROCK_HISTORY_DIR`) and a read-only
+catalogue over the per-run manifests; `bedrock/biotech/confidence.py`
+normalises AlphaFold 2 confidence. The employee-facing half is `/runs`,
+`/confidence` and `/audit` in both app modes and as `bedrock-biotech`
+subcommands, plus confidence-coloured interactive PyMOL. These read local
+files only, never consult a model, and work with every server switched off.
+Local history is *not* an authenticated ledger or tamper-proof storage, and a
+project label grants no access; read `docs/COMPLIANCE_MVP.md` and
+`docs/compliance_mvp/CONTRACT.md` before changing the journal, the run
+catalogue, the confidence contract or the approval flow.
+
 Also built: native shared workspaces (`src/bedrock/workspaces/` and
 `src/bedrock/ui/workspace_command.py`). Read `docs/SHARED_WORKSPACES.md` before
 changing workspace storage, artifact contracts, roles, invitations,

@@ -39,8 +39,12 @@ from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
 from bedrock.storage import ConversationDeleted, ConversationStore, ConversationSummary, StorageConflict, StorageError, create_store
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
 from bedrock.titles import generate_title, wants_title
+from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
+from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.runs_command import run_runs_command
+from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import (
@@ -94,6 +98,7 @@ class BedrockApp(App[None]):
         backend: InferenceBackend | None = None,
         store: ConversationStore | None = None,
         sources: SourceHub | None = None,
+        services: ComplianceServices | None = None,
     ) -> None:
         super().__init__()
         self.theme = "textual-dark"
@@ -116,6 +121,8 @@ class BedrockApp(App[None]):
         # Recalled excerpts per conversation id, for this session only, so
         # clicking away from a chat and back does not silently drop them.
         self._recalled: dict[str, tuple[str, list[str]]] = {}
+        # Run and action-journal browsing. Built on first use, injected by tests.
+        self.services = services or ComplianceServices(self.settings)
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -198,6 +205,12 @@ class BedrockApp(App[None]):
                 self.command_digest(command.args)
             case "sources":
                 self.command_sources(command.args)
+            case "runs":
+                self.command_runs(command.args)
+            case "confidence":
+                self.command_confidence(command.args)
+            case "audit":
+                self.command_audit(command.args)
             case "workspace" | "team":
                 self.command_workspace(command.args)
             case "history":
@@ -242,6 +255,8 @@ class BedrockApp(App[None]):
             backend=self.backend,
             model=self.model_name,
             sources=self.sources,
+            history=await self.services.optional_history(),
+            actor_id=self.settings.user_id,
         )
 
     @property
@@ -260,6 +275,27 @@ class BedrockApp(App[None]):
         if self._sources is None:
             self._sources = SourceHub.from_settings(self.settings)
         return self._sources
+
+    # ---- Local history and run browsing -----------------------------------
+    #
+    # These three read files this machine already has. They never contact the
+    # model server, so they keep working when it is down, and they never send
+    # what they find to a model: "which runs did project X do last quarter" is
+    # a question with a correct answer, and a plausible one would be worse
+    # than none. Each runs in a worker because all of the work is disk work.
+
+    @work(group="history")
+    async def command_runs(self, args: str) -> None:
+        await run_runs_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_confidence(self, args: str) -> None:
+        await run_confidence_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_audit(self, args: str) -> None:
+        await run_audit_command(args, services=self.services, notify=self.post_notice)
+
     # ---- Shared workspaces -----------------------------------------------
 
     @work(group="workspace")

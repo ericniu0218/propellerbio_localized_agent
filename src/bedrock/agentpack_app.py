@@ -39,9 +39,22 @@ from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_sourc
 from bedrock.context import ContextStore, find_relevant_context, with_injected_context
 from bedrock.inference.base import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
-from bedrock.ui.approval import ApprovalPrompt
+from bedrock.ui.approval import ApprovalPrompt, approval_fingerprint
+from bedrock.ui.argparsing import CommandUsageError
+from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
+from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.fold_command import (
+    confidence_summary,
+    parse_fold_arguments,
+    parse_structure_argument,
+    predict_and_render,
+)
+from bedrock.ui.journal import JournalledAction
+from bedrock.ui.rendering import as_code, safe_line
+from bedrock.ui.runs_command import run_runs_command
+from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
@@ -67,9 +80,14 @@ AGENTPACK_HELP_TEXT = """\
 
 | Command | What it does |
 |---|---|
-| `/fold <fasta-path or source://id>` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
+| `/fold <fasta-path or source://id> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
 | `/pymol [structure-path]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
+| `/runs` | Prediction runs recorded on this machine |
+| `/runs show <run-id>` | Settings, lineage and integrity of one run |
+| `/runs tag <run-id> --project X` | Assign an existing run to a project |
+| `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
+| `/audit` | What this client has done on this machine |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
@@ -82,6 +100,15 @@ AGENTPACK_HELP_TEXT = """\
 You can also ask naturally, for example: “Run AlphaFold 2 on `candidate.fasta`”,
 “Run AlphaFold 2 on `registry://SEQ-00123`”, or “Open the latest structure
 interactively in PyMOL.”
+
+**Examples**
+
+- Runs for project X this quarter:
+  `/runs --project X --since 2026-07-01 --before 2026-10-01`
+- Export the action history: `/audit export "/approved/review/actions.jsonl"`
+
+`/runs`, `/confidence` and `/audit` read local files only. They keep working
+when the AI system is unreachable, and nothing they show is sent to a model.
 """
 
 
@@ -99,6 +126,7 @@ class AgentPackApp(App[None]):
         client: AgentPackClient | None = None,
         biotech_workflow: ProteinWorkflow | None = None,
         sources: SourceHub | None = None,
+        services: ComplianceServices | None = None,
     ) -> None:
         super().__init__()
         # Explicit, not just relying on Textual's default: this must always
@@ -115,6 +143,12 @@ class AgentPackApp(App[None]):
         self._context_store: ContextStore | None = None
         self._workspace_session: WorkspaceCommandSession | None = None
         self._scientific_job_running = False
+        # Run and action-journal browsing. Built on first use, injected by tests.
+        self.services = services or ComplianceServices(self.settings)
+        # Pending approvals by request fingerprint, so a re-delivered event
+        # reuses its prompt instead of asking the same question twice. In
+        # memory only - nothing here belongs in durable history.
+        self._pending_approvals: dict[str, ApprovalPrompt] = {}
         # Tests pass a hub with fake connectors; real runs build one from settings.
         self._sources = sources
         # Only announce a dropped live-event connection once per outage,
@@ -201,27 +235,25 @@ class AgentPackApp(App[None]):
                 self.command_digest(command.args)
             case "sources":
                 self.command_sources(command.args)
+            case "runs":
+                self.command_runs(command.args)
+            case "confidence":
+                self.command_confidence(command.args)
+            case "audit":
+                self.command_audit(command.args)
             case "workspace" | "team":
                 self.command_workspace(command.args)
             case "tools":
                 await self.show_tool_status()
             case "fold":
-                if not command.args:
-                    await self.post_notice(
-                        "Tell me which one-protein FASTA file to fold, or use `/fold <path>`.",
-                        kind="error",
-                    )
-                elif self._scientific_job_running:
-                    await self.post_notice("A scientific job is already running.", kind="error")
-                else:
-                    self._scientific_job_running = True
-                    source = parse_source_ref(_unquote(command.args))
-                    if source is not None:
-                        self.fold_protein(source=source)
-                    else:
-                        self.fold_protein(_path_argument(command.args))
+                await self.start_fold(command.args)
             case "pymol":
-                self.open_pymol(_path_argument(command.args) if command.args else None)
+                try:
+                    structure = parse_structure_argument(command.args)
+                except CommandUsageError as exc:
+                    await self.post_notice(str(exc), kind="error")
+                else:
+                    self.open_pymol(structure)
             case _:
                 await self.post_notice(
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",
@@ -235,41 +267,80 @@ class AgentPackApp(App[None]):
             lines.extend(f"  - {issue}" for issue in status.issues)
         await self.post_notice("\n".join(lines))
 
+    async def start_fold(self, args: str) -> None:
+        """Validate the arguments here, so a typo never starts a GPU job."""
+        if not args.strip():
+            await self.post_notice(
+                "Tell me which one-protein FASTA file to fold, or use "
+                "`/fold <path or source://id> [--project X]`.",
+                kind="error",
+            )
+            return
+        try:
+            target, project_id = parse_fold_arguments(args)
+        except CommandUsageError as exc:
+            await self.post_notice(str(exc), kind="error")
+            return
+        if self._scientific_job_running:
+            await self.post_notice("A scientific job is already running.", kind="error")
+            return
+        self._scientific_job_running = True
+        # `registry://SEQ-00123` is fetched from a company system; anything
+        # else is a path on this machine.
+        source = parse_source_ref(target)
+        if source is not None:
+            self.fold_protein(project_id=project_id, source=source)
+        else:
+            self.fold_protein(Path(target).expanduser(), project_id)
+
     @work(exclusive=True, group="scientific")
     async def fold_protein(
-        self, fasta_path: Path | None = None, source: SourceRef | None = None
+        self,
+        fasta_path: Path | None = None,
+        project_id: str | None = None,
+        source: SourceRef | None = None,
     ) -> None:
         """Run AlphaFold 2 on a local FASTA, or on a record pulled from a company source.
 
         A source record is fetched and staged with its provenance first, and
         that provenance goes into the run manifest, so the prediction names the
-        registry record and version it came from. The fetch sits inside the
-        same ``try`` as the prediction so a refused or failed fetch still frees
-        the one-job-at-a-time slot.
+        registry record and version it came from rather than only the staging
+        file. The fetch sits inside the same ``try`` as the prediction so a
+        refused or failed fetch still frees the one-job-at-a-time slot.
+
+        ``project_id`` is orthogonal to where the sequence came from: a run can
+        be labelled for a project whether it was pulled or handed over.
         """
         provenance = None
+        label = f" for project {as_code(project_id)}" if project_id else ""
         try:
             if source is not None:
-                await self.post_notice(f"Fetching `{source}`…")
+                await self.post_notice(f"Fetching {as_code(source)}…")
                 record, fasta_path = await self.sources.fetch_to_file(source)
                 provenance = record.provenance()
             await self.post_notice(
-                f"Started AlphaFold 2 for `{source or fasta_path}`. This may take a long time; the run is preserved if PyMOL rendering fails."
+                f"Started AlphaFold 2 for {as_code(source or fasta_path)}{label}. This may "
+                "take a long time; the run is preserved if PyMOL rendering fails."
             )
-            result = await self.biotech_workflow.predict_and_render(
-                fasta_path, source_provenance=provenance
+            result = await predict_and_render(
+                self.biotech_workflow,
+                fasta_path,
+                project_id,
+                source_provenance=provenance,
             )
         except (ToolIntegrationError, ConnectorError) as exc:
-            await self.post_notice(str(exc), kind="error")
+            await self.post_notice(safe_line(exc, limit=400), kind="error")
         except asyncio.CancelledError:
+            # The prediction itself may still be running in its own process
+            # group; the workflow owns that outcome, not this notice.
             await self.post_notice("The scientific job was cancelled.", kind="error")
             raise
         else:
             lines = [
-                f"**Protein prediction completed** — run `{result.run_id}`",
+                f"**Protein prediction completed** — run {as_code(result.run_id)}",
                 "",
-                f"- Structure: `{result.structure_path}`",
-                f"- Provenance: `{result.manifest_path}`",
+                f"- Structure: {as_code(result.structure_path)}",
+                f"- Provenance: {as_code(result.manifest_path)}",
             ]
             if provenance:
                 version = f", version {provenance['version']}" if provenance.get("version") else ""
@@ -278,12 +349,24 @@ class AgentPackApp(App[None]):
                     f"- Source: `{provenance['ref']}`{version} (sha256 `{provenance['sha256'][:12]}`)",
                 )
             if result.preview_path:
-                lines.append(f"- PyMOL preview: `{result.preview_path}`")
+                lines.append(f"- PyMOL preview: {as_code(result.preview_path)}")
             if result.session_path:
-                lines.append(f"- PyMOL session: `{result.session_path}`")
-            lines.extend(f"- Warning: {warning}" for warning in result.warnings)
-            lines.append("")
-            lines.append("Use `/pymol` to open the latest structure interactively.")
+                lines.append(f"- PyMOL session: {as_code(result.session_path)}")
+            if getattr(result, "confidence_path", None):
+                lines.append(f"- Confidence summary: {as_code(result.confidence_path)}")
+            lines.extend(f"- Warning: {safe_line(warning, limit=300)}" for warning in result.warnings)
+            # A short line only: the full bands, intervals and PAE overview are
+            # a page of their own, and a failed confidence read must never
+            # take a successful, expensive structure down with it.
+            lines.extend(
+                [
+                    "",
+                    f"Confidence: {await confidence_summary(self.services, result.run_id)}",
+                    f"Full detail: `/confidence {safe_line(result.run_id, limit=64)}`",
+                    "",
+                    "Use `/pymol` to open the latest structure interactively.",
+                ]
+            )
             await self.post_notice("\n".join(lines))
         finally:
             self._scientific_job_running = False
@@ -350,7 +433,12 @@ class AgentPackApp(App[None]):
         agents, not in the client. The computed digest is the same either way.
         """
         await run_digest_command(
-            args, store=self.context_store, notify=self.post_notice, sources=self.sources
+            args,
+            store=self.context_store,
+            notify=self.post_notice,
+            sources=self.sources,
+            history=await self.services.optional_history(),
+            actor_id=self.settings.user_id,
         )
 
     @property
@@ -369,6 +457,25 @@ class AgentPackApp(App[None]):
         if self._sources is None:
             self._sources = SourceHub.from_settings(self.settings)
         return self._sources
+
+    # ---- Local history and run browsing -----------------------------------------
+    #
+    # Identical to the plain app's, deliberately: an employee who switches
+    # modes should not have to learn a second way to ask what this machine
+    # did. All three read local files, so they work with the AI system down.
+
+    @work(group="history")
+    async def command_runs(self, args: str) -> None:
+        await run_runs_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_confidence(self, args: str) -> None:
+        await run_confidence_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_audit(self, args: str) -> None:
+        await run_audit_command(args, services=self.services, notify=self.post_notice)
+
     # ---- Shared workspaces ------------------------------------------------------
 
     @work(group="workspace")
@@ -429,24 +536,109 @@ class AgentPackApp(App[None]):
         self.query_one("#agent-panel", AgentPanel).update_agents(self._agents)
 
     async def _show_approval(self, event: AgentEvent) -> None:
+        """Mount a prompt for a pending decision, once per distinct request.
+
+        The backend may re-deliver ``approval.required`` - a reconnect, a
+        replayed stream - and the employee must not be asked the same
+        question twice. The same task coming back with a *changed* preview is
+        a different matter: that is a revised answer and a genuinely new
+        decision, which the fingerprint distinguishes.
+        """
         payload = event.payload
-        await self.mount_message(
-            ApprovalPrompt(
-                task_id=payload["task_id"],
-                reason=payload.get("reason", "This needs a human check before it's finished."),
-                preview=payload.get("preview", ""),
-            )
+        task_id = str(payload.get("task_id", ""))
+        reason = str(payload.get("reason", "This needs a human check before it's finished."))
+        preview = str(payload.get("preview", ""))
+        fingerprint = approval_fingerprint(event.session_id, task_id, reason, preview)
+        if fingerprint in self._pending_approvals:
+            return
+        prompt = ApprovalPrompt(
+            task_id=task_id,
+            reason=reason,
+            preview=preview,
+            session_id=event.session_id,
+            fingerprint=fingerprint,
         )
+        self._pending_approvals[fingerprint] = prompt
+        await self.mount_message(prompt)
 
     @on(ApprovalPrompt.Decided)
     async def on_approval_decided(self, message: ApprovalPrompt.Decided) -> None:
+        """Send one decision, exactly once, and be honest about the result.
+
+        The ordering is the whole design: intent is committed before the
+        request leaves, the request is sent once, and the prompt disappears
+        only after the backend has confirmed it. The prompt disabled its own
+        buttons synchronously before this coroutine started, so a second
+        click cannot reach here.
+
+        This backend has no way to ask what it already recorded and no
+        idempotency key, so an ambiguous failure after dispatch cannot be
+        retried safely and is not retried. It is left visibly unresolved
+        instead, which is the honest state and the one a person can act on.
+        """
+        prompt = message.prompt
         decision = "approve" if message.approved else "reject"
-        await message.prompt.remove()
-        try:
-            await self.client.approve(message.task_id, decision, approved_by=self.settings.user_id)
-        except InferenceError as exc:
-            await self.post_notice(str(exc), kind="error")
+        details = {
+            "decision": decision,
+            "task_id": prompt.task_id,
+            "session_id": prompt.session_id or None,
+        }
+
+        if not prompt.task_id:
+            prompt.release("Not sent: this request arrived without a task ID.")
+            await self.post_notice(
+                "That request arrived without a task ID, so nothing was sent.", kind="error"
+            )
             return
+
+        history = await self.services.optional_history()
+        action = JournalledAction(
+            history, self.settings.user_id, "approval", subject_id=prompt.task_id
+        )
+        # Before dispatch, a failure is known not-sent: the decision is still
+        # the employee's to make, so the buttons come back.
+        if not await action.begin(self.post_notice, **details):
+            prompt.release("Not sent — nothing reached the AI system. You can decide again.")
+            return
+
+        try:
+            await self.client.approve(
+                prompt.task_id, decision, approved_by=self.settings.user_id
+            )
+        except InferenceError as exc:
+            # `approve()` raises this for an HTTP status error and for a
+            # network failure alike. After dispatch, both mean the same thing:
+            # we do not know. Reading the message to guess "rejected" would be
+            # inventing a decision out of an error string.
+            await action.record(
+                self.post_notice, "unknown", error_code="approval_result_unknown", **details
+            )
+            prompt.mark_unresolved(
+                "Unknown — this decision was sent but never confirmed. Not re-sent."
+            )
+            await self.post_notice(
+                f"Your decision was sent but the AI system never confirmed it "
+                f"({safe_line(exc, limit=200)}). It may or may not have been recorded, so "
+                "this request stays open and was not sent again. Check with the AI "
+                "system before deciding again.",
+                kind="error",
+            )
+            return
+        except asyncio.CancelledError:
+            await action.record(
+                self.post_notice,
+                "unknown",
+                error_code="approval_cancelled_after_dispatch",
+                **details,
+            )
+            prompt.mark_unresolved("Unknown — interrupted after the decision was sent.")
+            raise
+
+        # Confirmed. If the outcome write fails the decision still stands and
+        # is never repeated; ``record`` reports the gap.
+        await action.record(self.post_notice, "succeeded", already_done=True, **details)
+        self._pending_approvals.pop(prompt.fingerprint, None)
+        await prompt.remove()
         await self.post_notice("Approved." if message.approved else "Sent back for changes.")
 
     async def _handle_reconnecting(self) -> None:
@@ -597,7 +789,13 @@ class AgentPackApp(App[None]):
     # ---- Actions --------------------------------------------------------------------
 
     async def action_clear_chat(self) -> None:
+        """Clear the screen only.
+
+        Recorded history is untouched: `/clear` is a display action, and a
+        journal you can erase by tidying up your screen would not be one.
+        """
         await self.query_one("#chat", VerticalScroll).remove_children()
+        self._pending_approvals.clear()
         self._waiting_for = None
         self._answer_widget = None
         self._agents.clear()
@@ -613,18 +811,6 @@ class AgentPackApp(App[None]):
             self._workspace_session.close()
         await self.client.close()
         self.exit()
-
-
-def _unquote(value: str) -> str:
-    """Accept shell-style surrounding quotes without ever invoking a shell."""
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-        value = value[1:-1]
-    return value
-
-
-def _path_argument(value: str) -> Path:
-    return Path(_unquote(value)).expanduser()
 
 
 def main() -> None:

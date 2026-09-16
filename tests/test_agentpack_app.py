@@ -15,6 +15,13 @@ from bedrock.config import Settings
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt
 from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
+from textual.widgets import Input
+
+from tests.conftest import (
+    FakeRunCatalog,
+    make_confidence_report,
+    make_services,
+)
 
 
 class FakeAgentPackClient:
@@ -59,7 +66,7 @@ class FakeAgentPackClient:
 class FakeBiotechWorkflow:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.folded: list[Path] = []
+        self.folded: list[tuple[Path, str | None]] = []
         self.opened: list[Path | None] = []
         self.provenance: list[dict | None] = []
 
@@ -70,9 +77,13 @@ class FakeBiotechWorkflow:
         )
 
     async def predict_and_render(
-        self, fasta_path: Path, source_provenance: dict | None = None
+        self,
+        fasta_path: Path,
+        *,
+        project_id: str | None = None,
+        source_provenance: dict | None = None,
     ) -> ProteinWorkflowResult:
-        self.folded.append(fasta_path)
+        self.folded.append((fasta_path, project_id))
         self.provenance.append(source_provenance)
         return ProteinWorkflowResult(
             run_id="run_test",
@@ -96,11 +107,13 @@ def fake_client() -> FakeAgentPackClient:
 def make_app(
     client: FakeAgentPackClient,
     biotech_workflow: FakeBiotechWorkflow | None = None,
+    services=None,
 ) -> AgentPackApp:
     return AgentPackApp(
         settings=Settings(user_id="alice"),
         client=client,
         biotech_workflow=biotech_workflow,
+        services=services or make_services(),
     )
 
 
@@ -280,7 +293,7 @@ async def test_fold_command_runs_alphafold_then_reports_pymol_artifacts(
         await pilot.press(*"/fold /tmp/protein.fasta", "enter")
         await pilot.pause()
 
-        assert workflow.folded == [Path("/tmp/protein.fasta")]
+        assert workflow.folded == [(Path("/tmp/protein.fasta"), None)]
         notices = [notice.source for notice in app.query(SystemNotice)]
         assert any("Protein prediction completed" in notice for notice in notices)
         assert any("preview.png" in notice for notice in notices)
@@ -315,6 +328,80 @@ async def test_natural_language_pymol_request_opens_latest_structure(
 
         assert workflow.opened == [None]
         assert any(request in str(message.content) for message in app.query(UserMessage))
+
+
+# ---- Folding with a project label, and what a finished fold says -----------
+
+
+async def test_fold_accepts_a_quoted_path_and_a_project_label(
+    fake_client: FakeAgentPackClient, tmp_path: Path
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = '/fold "/approved/my candidate.fasta" --project X'
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert workflow.folded == [(Path("/approved/my candidate.fasta"), "X")]
+
+
+async def test_fold_completion_summarises_confidence_and_points_at_the_full_page(
+    fake_client: FakeAgentPackClient, tmp_path: Path
+):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    services = make_services(
+        runs=FakeRunCatalog(
+            reports={"run_test": make_confidence_report("run_test", model_id="model_3")}
+        )
+    )
+    app = make_app(fake_client, workflow, services)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await pilot.pause()
+
+        text = "\n".join(notice.source for notice in app.query(SystemNotice))
+        assert "pLDDT 90 or above" in text
+        assert "model_3" in text
+        assert "/confidence run_test" in text
+        assert "ranked_0.pdb" in text  # the structure is still the headline
+
+
+async def test_a_structure_stays_usable_when_its_confidence_cannot_be_read(
+    fake_client: FakeAgentPackClient, tmp_path: Path
+):
+    """An expensive prediction is not invalidated by a missing JSON file."""
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow, make_services(runs=FakeRunCatalog(reports={})))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await pilot.pause()
+
+        text = "\n".join(notice.source for notice in app.query(SystemNotice))
+        assert "Protein prediction completed" in text
+        assert "ranked_0.pdb" in text
+        assert "Confidence is unavailable" in text
+
+
+async def test_a_fold_typo_never_starts_a_job(fake_client: FakeAgentPackClient, tmp_path: Path):
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = make_app(fake_client, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "/fold candidate.fasta --project"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert workflow.folded == []
+        assert app.is_running
+        text = "\n".join(notice.source for notice in app.query(SystemNotice))
+        assert "expected one argument" in text
+
+
+# ---- Folding from a company source (data-source connectors) ----------------
 
 
 def source_app(fake_client, tmp_path: Path, workflow: FakeBiotechWorkflow) -> AgentPackApp:
@@ -354,7 +441,8 @@ async def test_fold_pulls_the_sequence_from_a_company_source_with_provenance(fak
         await pilot.press("enter")
         notices = await wait_for_notice(app, pilot, "Protein prediction completed")
 
-        staged = workflow.folded[0]
+        staged, project = workflow.folded[0]
+        assert project is None  # no --project was given
         assert staged.parent == tmp_path / "work" / "sources"
         assert staged.read_text().startswith(">SEQ-00123 kinase")
         provenance = workflow.provenance[0]
@@ -376,6 +464,25 @@ async def test_a_refused_source_fetch_reports_and_frees_the_job_slot(fake_client
 
         assert workflow.folded == []
         assert app._scientific_job_running is False
+
+
+async def test_a_company_source_can_also_carry_a_project_label(fake_client, tmp_path):
+    """The two features are orthogonal: where a sequence came from and which
+    project it belongs to are different questions, and a run answers both."""
+    from textual.widgets import Input
+
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = source_app(fake_client, tmp_path, workflow)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "/fold registry://SEQ-00123.fasta --project X"
+        await pilot.press("enter")
+        await wait_for_notice(app, pilot, "Protein prediction completed")
+
+        staged, project = workflow.folded[0]
+        assert project == "X"
+        assert staged.read_text().startswith(">SEQ-00123 kinase")
+        assert workflow.provenance[0]["ref"] == "registry://SEQ-00123.fasta"
 # ---- SSE reconnection (NEXT_STEPS.md §5) -----------------------------------
 
 

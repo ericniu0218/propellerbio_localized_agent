@@ -129,6 +129,28 @@ def test_a_real_timestamp_is_kept():
     assert _repair_timestamp("00:00:12", "anything", cues) == "00:00:12"
 
 
+def test_a_real_timestamp_on_the_wrong_cue_is_moved_to_the_right_one():
+    """The regression this guard exists for.
+
+    The coordinator leaving is said at 00:00:06. 00:00:01 is a real timestamp
+    in this meeting, so an existence check accepted it and the citation landed
+    five seconds early, on an unrelated line about enrollment numbers.
+    """
+    cues = parse_vtt(VTT)
+    assert _repair_timestamp("00:00:01", "the coordinator left in August", cues) == "00:00:06"
+
+
+def test_a_weakly_worded_citation_is_left_alone_when_nothing_matches_better():
+    """Paraphrase is not evidence of a wrong citation.
+
+    "redlined" is the only word this point shares with the cue it names, but no
+    other moment in the meeting matches it at all, so there is nothing to
+    overrule it with and the citation stands.
+    """
+    cues = parse_vtt(VTT)
+    assert _repair_timestamp("00:00:19", "Priya will finish the redlined SAP", cues) == "00:00:19"
+
+
 # --- summarising ---------------------------------------------------------
 
 

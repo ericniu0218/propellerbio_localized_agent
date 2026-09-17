@@ -264,26 +264,58 @@ def _valid_timestamps(cues: list[Cue]) -> set[str]:
     return {cue.timestamp for cue in cues}
 
 
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _overlap(needle: set[str], cue: Cue) -> int:
+    return len(needle & _words(cue.text))
+
+
 def _repair_timestamp(value: object, text: str, cues: list[Cue]) -> str | None:
-    """Keep a timestamp only if the meeting really contains it.
+    """Keep a timestamp only if the quoted words were really said *there*.
 
     A model that invents `00:47:00` for a 6-minute meeting is producing a
     citation that cannot be checked. Rather than pass that on, the quoted text
     is located in the transcript and that cue's real timestamp used; if the text
     cannot be found either, the point keeps its words and loses its citation.
-    """
-    if isinstance(value, str) and value in _valid_timestamps(cues):
-        return value
 
-    needle = {word for word in re.findall(r"[a-z0-9]+", text.lower()) if len(word) > 3}
-    if needle:
-        best, best_overlap = None, 0
-        for cue in cues:
-            overlap = len(needle & set(re.findall(r"[a-z0-9]+", cue.text.lower())))
-            if overlap > best_overlap:
-                best, best_overlap = cue, overlap
-        if best is not None and best_overlap >= 2:
-            return best.timestamp
+    Checking only that the meeting *contains* the cited timestamp is not
+    enough, and was the earlier bug here: every timestamp a model picks off the
+    rendered transcript exists somewhere, so an off-by-one-cue citation — the
+    words from 00:00:06 attributed to 00:00:01 — passed straight through. A
+    citation that lands on the wrong moment is worse than none at all, because
+    it reads as verified: someone checking it hears something unrelated.
+
+    So a cited timestamp is overruled when, and only when, there is evidence
+    against it: another cue whose words match the quoted text strictly better.
+    A tie is left alone, since a summary legitimately paraphrases, and sharing
+    few words with its own cue is not proof of anything. The residual gap is a
+    point abstracted so far from the transcript that it matches nothing
+    anywhere — there the citation is kept, because nothing here can tell a
+    correct abstraction from a wrong one, and silently dropping citations off
+    a good summary is its own failure.
+    """
+    needle = {word for word in _words(text) if len(word) > 3}
+
+    best, best_overlap = None, 0
+    for cue in cues:
+        overlap = _overlap(needle, cue)
+        if overlap > best_overlap:
+            best, best_overlap = cue, overlap
+
+    if isinstance(value, str) and value in _valid_timestamps(cues):
+        # Several cues can share a second; the citation stands if any of them
+        # supports it.
+        cited_overlap = max(
+            (_overlap(needle, cue) for cue in cues if cue.timestamp == value),
+            default=0,
+        )
+        if cited_overlap >= best_overlap:
+            return value
+
+    if best is not None and best_overlap >= 2:
+        return best.timestamp
     return None
 
 

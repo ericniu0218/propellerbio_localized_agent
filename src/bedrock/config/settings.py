@@ -3,7 +3,7 @@
 Where settings come from, in order of priority (highest wins):
 
 1. Environment variables (``BEDROCK_API_BASE``, ``BEDROCK_MODEL``, ``BEDROCK_API_KEY``,
-   ``BEDROCK_HISTORY_DIR``, ``BEDROCK_SAVE_HISTORY``)
+   ``BEDROCK_HISTORY_DIR``, ``BEDROCK_SAVE_HISTORY``, ``BEDROCK_AUTO_CONTEXT``)
 2. A config file at ``~/.config/bedrock/config.toml``
 3. Built-in defaults, which point at a local Ollama server.
 
@@ -32,7 +32,8 @@ DEFAULT_BIOTECH_WORK_DIR = Path.home() / ".local" / "share" / "bedrock" / "biote
 
 FALSE_VALUES = {"0", "false", "no", "off"}
 TRUE_VALUES = {"1", "true", "yes", "on"}
-"""Spellings of "off" accepted for ``BEDROCK_SAVE_HISTORY``."""
+"""Spellings of on and off accepted for true/false settings such as
+``BEDROCK_SAVE_HISTORY`` and ``BEDROCK_AUTO_CONTEXT``."""
 
 
 def default_history_dir(env: dict[str, str] | None = None) -> Path:
@@ -79,6 +80,15 @@ class Settings:
 
     Set ``BEDROCK_SAVE_HISTORY=0`` (or ``save_history = false`` in the config
     file) for a shared or kiosk machine where nothing should be left behind."""
+
+    auto_context: bool = True
+    """Whether matching ``/digest`` passages are added to outgoing chat messages.
+
+    Applies in both modes. The matching is by keyword, so it can attach a
+    passage that merely shares a word with the question (see
+    ``bedrock.context.auto_inject``). ``BEDROCK_AUTO_CONTEXT=0``, or
+    ``auto_context = false`` in the config file, starts every window with it
+    off. ``/digest auto on|off`` changes it for one window."""
 
     agent_pack_api_base: str = DEFAULT_AGENT_PACK_API_BASE
     user_id: str = field(default_factory=getpass.getuser)
@@ -159,6 +169,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "system_prompt",
         "history_dir",
         "save_history",
+        "auto_context",
         "action_history_dir",
         "agent_pack_api_base", "user_id", "display_name", "context_dir",
         "workspace_dir", "biotech_work_dir",
@@ -195,6 +206,12 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     else:
         save_history = _boolean(file_values.get("save_history", True), "save_history")
 
+    auto_context_env = env.get("BEDROCK_AUTO_CONTEXT")
+    if auto_context_env is not None and auto_context_env.strip():
+        auto_context = _boolean(auto_context_env, "BEDROCK_AUTO_CONTEXT")
+    else:
+        auto_context = _boolean(file_values.get("auto_context", True), "auto_context")
+
     agent_pack_api_base = env.get("AGENT_PACK_API_BASE") or file_values.get("agent_pack_api_base") or DEFAULT_AGENT_PACK_API_BASE
     user_id = env.get("BEDROCK_USER") or file_values.get("user_id") or getpass.getuser()
     display_name = env.get("BEDROCK_DISPLAY_NAME") or file_values.get("display_name") or user_id
@@ -220,6 +237,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         system_prompt=system_prompt,
         history_dir=history_dir,
         save_history=save_history,
+        auto_context=auto_context,
         action_history_dir=action_history_dir,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,

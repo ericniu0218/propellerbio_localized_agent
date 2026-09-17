@@ -22,6 +22,7 @@ HELP_TEXT = """\
 | `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/digest auto off` | Stop adding matching stored content to your messages in this window |
 | `/sources` | List the company data sources you can pull from |
 | `/digest <source>://<id>` | Pull a record from a company source and compress it |
 | `/runs` | Prediction runs recorded on this machine |

@@ -207,7 +207,9 @@ a store holding an assay CSV and a protocol document:
 Two distinct failures. The **miss** is the widely-understood one. The
 **false positive** is worse, because `auto_inject` runs on every message and
 silently prepends what it finds: the model answers a question about acidity
-while looking at a passage about freezer temperatures.
+while looking at a passage about freezer temperatures. (Until this is fixed,
+`/digest auto off` or `BEDROCK_AUTO_CONTEXT=0` stops it in either mode; that is
+an off switch, not a fix.)
 
 Do not try to fix the false positive with a score threshold. This was measured
 in September 2026 and the numbers rule it out: a genuine query whose

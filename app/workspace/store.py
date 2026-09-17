@@ -95,13 +95,34 @@ class WorkspaceStore:
     def seed(self, owner):
         if not demo_mode() or self.list(owner, "preferences"):
             return
-        project = self.put(owner, "projects", {"name": "KRAS G12D Program", "description":
+        project = self.put(owner, "projects", {"name": "KRAS G12D Program", "summary":
+            "Selectivity screen for a G12D-selective binder ahead of the next assay series.", "description":
             "Evaluate binding selectivity and plan the next assay series. Fictional demonstration project.",
-            "members": [{"name": "Maya Chen (you)", "role": "Owner"}, {"name": "Alex Rivera", "role": "Scientist"}],
+            "members": [{"name": "Maya Chen (you)", "role": "Owner"}, {"name": "Alex Rivera", "role": "Scientist"},
+                {"name": "Jordan Lee", "role": "Viewer", "status": "Invited — pending"}],
             "scope": "Project", "demo": True})
+        project2 = self.put(owner, "projects", {"name": "EGFR Resistance Screen", "summary":
+            "Characterizing resistant clones from the second-round EGFR inhibitor screen.", "description":
+            "Track resistant clone genotypes against the EGFR inhibitor panel and coordinate the follow-up sequencing run. Fictional demonstration project.",
+            "members": [{"name": "Maya Chen (you)", "role": "Admin"}, {"name": "Priya Nair", "role": "Scientist"}],
+            "scope": "Project", "demo": True})
+        self.put(owner, "memory", {"title": "Preferred assay units and thresholds", "content":
+            "Report concentrations in μM, viability as a percentage, and IC50 to two significant figures unless a protocol says otherwise.",
+            "scope": "Personal", "projectId": None, "demo": True})
         self.put(owner, "memory", {"title": "Assay reporting conventions", "content":
             "Report concentrations in μM and viability as a percentage. Distinguish technical replicates from biological replicates. Flag missing controls.",
             "scope": "Project", "projectId": project["id"], "demo": True})
+        self.put(owner, "memory", {"title": "Data-sharing norms for the wet-lab team", "content":
+            "Raw instrument exports stay in the shared drive; only processed, de-identified summaries go into chats or Company Knowledge.",
+            "scope": "Team", "projectId": None, "demo": True})
+        self.put(owner, "memory", {"title": "Instrument calibration policy", "content":
+            "Plate readers are recalibrated monthly; note the calibration date on any exported dataset used in a report.",
+            "scope": "Company", "projectId": None, "demo": True})
+        self.put(owner, "artifacts", {"name": "candidate_binding_affinities.csv", "size": 4820, "type": ".csv",
+            "text": "compound,target,ic50_uM\nBRD-1192,KRAS G12D,0.42\nBRD-1204,KRAS G12D,1.8\nBRD-1220,KRAS WT,>50\n",
+            "truncated": False, "profile": "3 rows · 3 columns\nic50_uM: min 0.42; max 1.8; mean 1.11",
+            "parseStatus": "parsed", "scanStatus": "no obvious matches", "projectId": project["id"],
+            "chatId": None, "scope": "Project", "demo": True})
         meeting = self.put(owner, "meetings", {"title": "KRAS research weekly", "projectId": project["id"],
             "transcript": "[00:00:12] Maya: The control plate needs another run.\n[00:01:04] Alex: Decision: repeat the assay with a wider concentration range.\n[00:02:20] Maya: Action: I will prepare the samples by Friday.\n[00:03:10] Alex: We still need to check whether the binding change is reproducible.",
             "summary": "The team reviewed controls and planned a repeat assay. This is fictional demo content.",
@@ -109,10 +130,21 @@ class WorkspaceStore:
             "actions": ["Maya: prepare samples by Friday."], "questions": ["Is the binding change reproducible?"],
             "people": ["Maya", "Alex"], "findings": ["Control plate requires a repeat; no safety conclusion established."],
             "deadlines": ["Friday — confirm calendar date"], "demo": True})
+        self.put(owner, "meetings", {"title": "EGFR screen kickoff", "projectId": project2["id"],
+            "transcript": "[00:00:08] Priya: Three clones show reduced sensitivity in round two.\n[00:00:41] Maya: Decision: sequence the resistant clones before the next round.\n[00:01:15] Priya: Action: I will prepare the sequencing submission Monday.\n[00:01:50] Maya: We still need to check whether the resistance is a shared mutation.",
+            "summary": "Reviewed round-two resistance data and agreed to sequence the resistant clones. This is fictional demo content.",
+            "decisions": ["Sequence the resistant clones before the next round."],
+            "actions": ["Priya: prepare the sequencing submission Monday."],
+            "questions": ["Is the resistance mechanism shared across the three clones?"],
+            "people": ["Maya", "Priya"], "findings": ["Three of twelve clones show reduced sensitivity; no mechanism established yet."],
+            "deadlines": ["Monday — confirm calendar date"], "demo": True})
         self.put(owner, "tasks", {"title": "Prepare repeat-assay samples", "projectId": project["id"],
             "sourceId": meeting["id"], "due": "Friday — date to confirm", "status": "open", "demo": True})
         self.put(owner, "chats", {"title": "Planning the next assay", "projectId": project["id"],
             "messages": [{"role": "assistant", "text": "Your project conventions are available here. Attach the assay export to begin; I’ll keep the file with this conversation.", "demo": True}],
             "artifactIds": [], "pinned": True, "archived": False})
-        self.put(owner, "preferences", {"theme": "light", "buddy": True, "vocabulary":
+        self.put(owner, "chats", {"title": "General lab questions", "projectId": None,
+            "messages": [{"role": "assistant", "text": "Ask me anything — protocols, unit conversions, or a quick literature lookup.", "demo": True}],
+            "artifactIds": [], "pinned": False, "archived": False})
+        self.put(owner, "preferences", {"theme": "dark", "buddy": True, "vocabulary":
             "KRAS\nG12D\nEGFR\nMAPK\nAlphaFold", "retention": "90 days (requested)", "seeded": True})

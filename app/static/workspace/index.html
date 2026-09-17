@@ -9,7 +9,7 @@
 <body>
 
 <div id="login" class="login-screen" hidden>
-  <div class="login-card hud-none">
+  <div class="login-card">
     <div class="brand">Bedrock<span>Workspace</span></div>
     <p id="login-copy" class="muted">Sign in to continue.</p>
     <button id="demo-login-btn" class="btn primary" hidden>Continue as demo user</button>
@@ -22,52 +22,56 @@
   <aside id="sidebar">
     <div class="brand-row">
       <div class="brand">Bedrock<span>Workspace</span></div>
-      <span id="demo-badge" class="badge demo" hidden>Demo Environment</span>
     </div>
 
     <nav id="nav">
-      <button class="nav-item active" data-view="chats">Chats</button>
-      <button class="nav-item" data-view="projects">Projects</button>
-      <button class="nav-item" data-view="memory">Memory</button>
-      <button class="nav-item" data-view="meetings">Meetings</button>
-      <button class="nav-item disabled" data-view="knowledge" title="Not yet connected">Company Knowledge</button>
-      <button class="nav-item disabled" data-view="tools" title="Not yet available">Tools</button>
-      <button class="nav-item" data-view="settings">Settings</button>
+      <button class="nav-item active" data-view="chats" data-icon="chat">Chats</button>
+      <button class="nav-item" data-view="projects" data-icon="folder">Projects</button>
+      <button class="nav-item" data-view="memory" data-icon="brain">Memory</button>
+      <button class="nav-item" data-view="meetings" data-icon="calendar">Meetings</button>
+      <button class="nav-item disabled" data-view="knowledge" data-icon="database" title="Not yet connected">Company Knowledge</button>
+      <button class="nav-item disabled" data-view="tools" data-icon="tool" title="Not yet available">Tools</button>
+      <button class="nav-item" data-view="settings" data-icon="settings">Settings</button>
     </nav>
 
     <div id="sidebar-list" class="sidebar-list"></div>
 
     <div id="sidebar-footer">
-      <span id="user-name" class="muted small"></span>
+      <div class="who">
+        <span id="user-avatar" class="avatar"></span>
+        <span id="user-name" class="muted"></span>
+      </div>
       <button id="logout-btn" class="link-btn small">Sign out</button>
     </div>
   </aside>
 
   <main id="center">
     <header id="center-header">
-      <button id="sidebar-menu-btn" class="icon-btn" title="Menu">&#9776;</button>
+      <button id="sidebar-menu-btn" class="icon-btn" title="Menu" data-icon="menu"></button>
       <h1 id="center-title">Chats</h1>
       <div id="center-actions"></div>
-      <button id="activity-toggle" class="btn ghost small">Agent Activity</button>
+      <button id="activity-toggle" class="btn ghost small" data-icon="agent">Agent Activity</button>
     </header>
     <div id="center-body"></div>
   </main>
 
+  <div id="activity-scrim"></div>
   <aside id="activity-panel">
     <div id="activity-resizer"></div>
     <header class="activity-header">
-      <h2>Agent Activity</h2>
+      <h2><span data-icon="agent"></span>Agent Activity</h2>
       <div class="activity-header-actions">
-        <button id="activity-popout" class="btn ghost small" title="Open in a separate window">Pop out</button>
-        <button id="activity-collapse" class="btn ghost small" title="Collapse panel">&raquo;</button>
+        <button id="activity-popout" class="icon-btn" title="Open in a separate window" data-icon="popout"></button>
+        <button id="activity-collapse" class="icon-btn" title="Close panel" data-icon="close"></button>
       </div>
     </header>
     <div id="activity-body"></div>
   </aside>
 
   <div id="sidebar-scrim"></div>
-  <div id="activity-scrim"></div>
 </div>
+
+<div id="modal-root" hidden></div>
 
 <script src="/static/workspace/app.js"></script>
 </body>

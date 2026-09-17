@@ -3,12 +3,11 @@
    works fully air-gapped. */
 (() => {
   const API = "/workspace/api";
-  let state = null;          // last /state response
-  let view = "chats";        // chats | projects | memory | meetings | settings
+  let state = null;
+  let view = "chats";
   let currentChatId = null;
   let currentProjectId = null;
   let currentMeetingId = null;
-  let composerAttachments = [];
   let pollHandle = null;
   let lastRenderSig = { center: "", activity: "", sidebarList: "" };
 
@@ -17,10 +16,11 @@
   const el = (tag, props = {}, children = []) => {
     const node = document.createElement(tag);
     Object.entries(props).forEach(([k, v]) => {
+      if (v == null || v === false) return;
       if (k === "class") node.className = v;
       else if (k === "html") node.innerHTML = v;
       else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
-      else node.setAttribute(k, v);
+      else node.setAttribute(k, v === true ? "" : v);
     });
     (Array.isArray(children) ? children : [children]).forEach((c) => {
       if (c == null) return;
@@ -29,8 +29,47 @@
     return node;
   };
   const escapeHtml = (s) => (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const fmtTime = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || ""; } };
   const byId = (list, id) => (list || []).find((x) => x.id === id);
+  const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  const fmtSize = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B");
+
+  // ---------------- icons ----------------
+  const ICON_PATHS = {
+    menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
+    chat: '<path d="M21 11.5a8.4 8.4 0 0 1-8.4 8.4 8.3 8.3 0 0 1-3.8-.9L3 21l1.9-5.8a8.3 8.3 0 0 1-.9-3.7A8.4 8.4 0 0 1 12.5 3a8.4 8.4 0 0 1 8.4 8.4z"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>',
+    brain: '<path d="M6 3h12v18l-6-4-6 4V3z"/>',
+    calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+    database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+    tool: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.6 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.6 1z"/>',
+    agent: '<rect x="4" y="8" width="16" height="11" rx="3"/><circle cx="9" cy="13.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="15" cy="13.5" r="1.1" fill="currentColor" stroke="none"/><path d="M12 8V4M9 4h6"/>',
+    popout: '<path d="M14 4h6v6M20 4 10 14M8 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>',
+    paperclip: '<path d="M21 11.5 12.5 20a4.5 4.5 0 0 1-6.4-6.4L14.6 5a3 3 0 0 1 4.2 4.2l-8.5 8.5a1.5 1.5 0 0 1-2.1-2.1l7.1-7.1"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    chevrondown: '<path d="M6 9l6 6 6-6"/>',
+    chevronright: '<path d="M9 6l6 6-6 6"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/>',
+    send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
+    upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
+    download: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
+  };
+  const icon = (name, cls = "") => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "icon " + cls);
+    svg.innerHTML = ICON_PATHS[name] || "";
+    return svg;
+  };
+  function paintIcons(root = document) {
+    $$("[data-icon]", root).forEach((node) => {
+      if (node.dataset.iconDone) return;
+      const name = node.dataset.icon;
+      node.insertBefore(icon(name), node.firstChild);
+      node.dataset.iconDone = "1";
+    });
+  }
 
   async function api(path, opts = {}) {
     const res = await fetch(API + path, {
@@ -50,12 +89,12 @@
 
   // ---------------- login ----------------
   async function boot() {
+    paintIcons();
     let cfg;
     try { cfg = await (await fetch(API + "/config")).json(); } catch { cfg = { demo: true }; }
     try {
       state = await api("/state");
       showApp();
-      applyTheme();
       render();
       startPolling();
     } catch {
@@ -75,27 +114,17 @@
       ? "This is a demo environment with fictional data."
       : "Sign in with your company account to continue.";
   }
-
-  function showApp() {
-    $("#login").hidden = true;
-    $("#app").hidden = false;
-  }
+  function showApp() { $("#login").hidden = true; $("#app").hidden = false; }
 
   $("#demo-login-btn").addEventListener("click", async () => {
     await fetch(API + "/demo-login", { method: "POST", credentials: "same-origin" });
     boot();
   });
-
   $("#logout-btn").addEventListener("click", async () => {
     await fetch(API + "/logout", { method: "POST", credentials: "same-origin" });
     state = null;
     showLogin({ demo: true });
   });
-
-  function applyTheme() {
-    const theme = state?.preferences?.[0]?.theme;
-    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
-  }
 
   // ---------------- polling ----------------
   function startPolling() {
@@ -106,7 +135,6 @@
     }, 1800);
   }
   function stopPolling() { if (pollHandle) clearInterval(pollHandle); pollHandle = null; }
-
   async function refresh() { state = await api("/state"); render(); }
 
   // ---------------- nav ----------------
@@ -117,26 +145,22 @@
       currentProjectId = null;
       currentMeetingId = null;
       $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b === btn));
-      document.getElementById("app").classList.remove("sidebar-open");
+      appEl.classList.remove("sidebar-open");
       render(true);
     });
   });
 
   // ---------------- mobile sidebar drawer ----------------
+  const appEl = $("#app");
   $("#sidebar-menu-btn").addEventListener("click", () => appEl.classList.add("sidebar-open"));
   $("#sidebar-scrim").addEventListener("click", () => appEl.classList.remove("sidebar-open"));
-  $("#activity-scrim").addEventListener("click", () => { appEl.classList.remove("activity-open"); appEl.classList.add("activity-collapsed"); });
 
-  // ---------------- activity panel ----------------
-  const appEl = $("#app");
-  $("#activity-toggle").addEventListener("click", () => {
-    appEl.classList.toggle("activity-open");
-    appEl.classList.toggle("activity-collapsed");
-  });
-  $("#activity-collapse").addEventListener("click", () => {
-    appEl.classList.add("activity-collapsed");
-    appEl.classList.remove("activity-open");
-  });
+  // ---------------- activity drawer ----------------
+  function openActivity() { appEl.classList.add("activity-open"); }
+  function closeActivity() { appEl.classList.remove("activity-open"); }
+  $("#activity-toggle").addEventListener("click", () => appEl.classList.toggle("activity-open"));
+  $("#activity-collapse").addEventListener("click", closeActivity);
+  $("#activity-scrim").addEventListener("click", closeActivity);
   $("#activity-popout").addEventListener("click", () => {
     const w = window.open("", "bedrock-agent-activity", "width=420,height=720");
     if (!w) return;
@@ -144,24 +168,58 @@
     const link = w.document.createElement("link");
     link.rel = "stylesheet"; link.href = location.origin + "/static/workspace/styles.css";
     w.document.head.appendChild(link);
-    w.document.body.style.margin = "0";
-    w.document.body.appendChild(el("div", { id: "activity-body", style: "padding:12px" }));
+    w.document.body.style.cssText = "margin:0;background:#171614";
+    w.document.body.appendChild(el("div", { id: "activity-body", style: "padding:14px" }));
     w.renderPopout = () => { w.document.getElementById("activity-body").innerHTML = $("#activity-body").innerHTML; };
     w.renderPopout();
     const iv = setInterval(() => { if (w.closed) return clearInterval(iv); w.renderPopout(); }, 1800);
   });
 
+  // resizable drawer
+  (() => {
+    const handle = $("#activity-resizer");
+    let dragging = false;
+    handle.addEventListener("mousedown", (e) => {
+      dragging = true; handle.classList.add("dragging");
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const w = Math.min(720, Math.max(300, window.innerWidth - e.clientX));
+      document.documentElement.style.setProperty("--activity-w", w + "px");
+    });
+    window.addEventListener("mouseup", () => { dragging = false; handle.classList.remove("dragging"); });
+  })();
+
+  // ---------------- modal ----------------
+  function openModal({ title, sub, body, wide, footer }) {
+    const root = $("#modal-root");
+    root.innerHTML = "";
+    root.hidden = false;
+    const backdrop = el("div", { class: "modal-backdrop", onclick: close });
+    const modal = el("div", { class: "modal" + (wide ? " wide" : "") });
+    modal.appendChild(el("button", { class: "icon-btn modal-close", onclick: close }, icon("close")));
+    modal.appendChild(el("h2", {}, title));
+    if (sub) modal.appendChild(el("p", { class: "modal-sub" }, sub));
+    modal.appendChild(body);
+    if (footer) modal.appendChild(el("div", { class: "modal-footer" }, footer));
+    root.appendChild(backdrop);
+    root.appendChild(modal);
+    function close() { root.hidden = true; root.innerHTML = ""; }
+    return { close, modal };
+  }
+
   // ---------------- render dispatch ----------------
   function render(force) {
     if (!state) return;
-    $("#demo-badge").hidden = !state.config?.demo;
-    $("#user-name").textContent = state.user?.name || "";
+    const user = state.user || {};
+    $("#user-name").textContent = user.name || "";
+    $("#user-avatar").textContent = initials(user.name);
     renderSidebarList(force);
     renderCenter(force);
     renderActivity();
   }
 
-  // ---------------- sidebar list per view ----------------
   function renderSidebarList(force) {
     const host = $("#sidebar-list");
     if (view === "chats") {
@@ -170,13 +228,14 @@
       if (sig === lastRenderSig.sidebarList && !force) return;
       lastRenderSig.sidebarList = sig;
       host.innerHTML = "";
-      host.appendChild(el("button", { class: "btn primary small", style: "margin-bottom:8px;width:100%", onclick: () => createChat() }, "+ New chat"));
+      const newBtn = el("button", { class: "btn primary small", style: "margin-bottom:10px;width:100%;justify-content:center", onclick: () => createChat() }, [icon("plus"), "New chat"]);
+      host.appendChild(newBtn);
       chats.forEach((c) => {
         const item = el("div", { class: "sidebar-list-item" + (c.id === currentChatId ? " active" : "") }, [
           el("div", { class: "title" }, (c.pinned ? "★ " : "") + (c.title || "New chat")),
           el("div", { class: "meta" }, c.projectId ? (byId(state.projects, c.projectId)?.name || "Project") : "Personal"),
         ]);
-        item.addEventListener("click", () => { currentChatId = c.id; document.getElementById("app").classList.remove("sidebar-open"); render(true); });
+        item.addEventListener("click", () => { currentChatId = c.id; appEl.classList.remove("sidebar-open"); render(true); });
         host.appendChild(item);
       });
     } else {
@@ -185,7 +244,6 @@
     }
   }
 
-  // ---------------- center ----------------
   function renderCenter(force) {
     const title = { chats: "Chats", projects: "Projects", memory: "Memory", meetings: "Meetings", settings: "Settings" }[view] || "";
     $("#center-title").textContent = title;
@@ -198,88 +256,86 @@
     if (view === "settings") return renderSettingsView(body);
   }
 
-  // ---- Chats ----
+  // ==================== CHATS ====================
   function renderChatView(body, force) {
     const chat = currentChatId ? byId(state.chats, currentChatId) : null;
-    const sig = "chat:" + (chat ? chat.id + (chat.messages || []).length + JSON.stringify(chat.artifactIds || []) : "none") + composerAttachments.join(",");
+    const activeRun = chat && state.runs.find((r) => r.chatId === chat.id && ["queued", "running", "waiting"].includes(r.status));
+    const sig = "chat:" + (chat ? chat.id + (chat.messages || []).length + JSON.stringify(chat.artifactIds || []) + (activeRun ? activeRun.id + activeRun.status : "") : "none");
     if (sig === lastRenderSig.center && !force) return;
     lastRenderSig.center = sig;
     body.innerHTML = "";
     if (!chat) {
       body.appendChild(el("div", { class: "empty-state" }, [
+        icon("chat"),
         el("p", {}, "No chat selected."),
         el("button", { class: "btn primary", onclick: () => createChat() }, "Start a new chat"),
       ]));
+      const dock = document.getElementById("composer-wrap"); if (dock) dock.remove();
       return;
     }
-    const wrap = el("div", {});
     const thread = el("div", { class: "chat-thread" });
     (chat.messages || []).forEach((m) => {
-      const bubble = el("div", { class: "msg " + (m.role === "user" ? "user" : "assistant") }, escapeHtml(m.text));
-      if (m.role === "assistant") {
+      if (m.role === "user") {
+        thread.appendChild(el("div", { class: "msg user" }, escapeHtml(m.text)));
+      } else {
         const meta = [];
-        if (m.demo) meta.push("Demo answer");
         if (m.citations && m.citations.length) meta.push(m.citations.length + " source(s) cited");
-        if (meta.length) bubble.appendChild(el("div", { class: "msg-meta" }, meta.join(" · ")));
+        thread.appendChild(el("div", { class: "msg assistant" }, [
+          el("span", { class: "avatar" }, "AI"),
+          el("div", { class: "bubble" }, [
+            el("div", {}, escapeHtml(m.text)),
+            meta.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
+          ]),
+        ]));
       }
-      thread.appendChild(bubble);
     });
-    if (!(chat.messages || []).length) {
+    const askRun = state.runs.find((r) => r.chatId === chat.id && (r.mode === "ask" || r.mode === "auto") && ["queued", "running"].includes(r.status));
+    if (askRun) {
+      thread.appendChild(el("div", { class: "thinking-row" }, [
+        el("span", { class: "avatar" }, "AI"),
+        el("div", { class: "thinking-dots" }, [el("span"), el("span"), el("span")]),
+      ]));
+    }
+    if (!(chat.messages || []).length && !askRun) {
       thread.appendChild(el("div", { class: "empty-state" }, "Attach a file or ask a question to begin."));
     }
-    wrap.appendChild(thread);
-    body.appendChild(wrap);
+    body.appendChild(thread);
     body.scrollTop = body.scrollHeight;
-    renderComposer(chat);
+    renderComposer(chat, activeRun);
   }
 
-  function renderComposer(chat) {
+  function renderComposer(chat, activeRun) {
     let dock = document.getElementById("composer-wrap");
     if (dock) dock.remove();
     dock = el("div", { id: "composer-wrap" });
     const artifacts = (chat.artifactIds || []).map((id) => byId(state.artifacts, id)).filter(Boolean);
     if (artifacts.length) {
       const chips = el("div", { class: "attachment-chips" });
-      artifacts.forEach((a) => {
-        chips.appendChild(el("div", { class: "chip" }, [
-          el("span", {}, a.name + (a.scanStatus === "review" ? " ⚠" : "")),
-        ]));
-      });
+      artifacts.forEach((a) => chips.appendChild(el("div", { class: "chip" }, a.name + (a.scanStatus === "review" ? " ⚠" : ""))));
       dock.appendChild(chips);
     }
-    const activeRun = state.runs.find((r) => r.chatId === chat.id && ["queued", "running", "waiting"].includes(r.status));
     const form = el("form", { id: "composer" });
-    const modeSelect = el("select", { id: "mode-select" }, [
-      el("option", { value: "auto" }, "Auto"),
-      el("option", { value: "ask" }, "Ask"),
-      el("option", { value: "research" }, "Research"),
-      el("option", { value: "analyze" }, "Analyze"),
-      el("option", { value: "agent" }, "Agent"),
-    ]);
     const fileInput = el("input", { type: "file", hidden: "hidden" });
     fileInput.addEventListener("change", () => { if (fileInput.files[0]) attachFile(chat, fileInput.files[0]); });
-    const attachBtn = el("button", { type: "button", class: "icon-btn", title: "Attach a file", onclick: () => fileInput.click() }, "📎");
+    const attachBtn = el("button", { type: "button", class: "icon-btn", title: "Attach a file", onclick: () => fileInput.click() }, icon("paperclip"));
     const textarea = el("textarea", { placeholder: activeRun ? "A task is already running for this chat…" : "Ask a question…", rows: "1" });
-    if (activeRun) textarea.disabled = true;
-    const sendBtn = el("button", { class: "btn primary", type: "submit" }, activeRun ? "Running…" : "Send");
-    if (activeRun) sendBtn.disabled = true;
+    textarea.disabled = !!activeRun;
+    const sendBtn = el("button", { class: "btn primary small", type: "submit", disabled: activeRun ? "disabled" : null }, [icon("send"), "Send"]);
+    const agentBtn = el("button", { type: "button", class: "btn small", disabled: activeRun ? "disabled" : null, onclick: () => openAgentPicker(chat, textarea.value) }, [icon("agent"), "Create Agent"]);
     form.appendChild(fileInput);
     form.appendChild(attachBtn);
     form.appendChild(textarea);
-    form.appendChild(modeSelect);
+    form.appendChild(agentBtn);
     form.appendChild(sendBtn);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = textarea.value.trim();
       if (!text) return;
-      textarea.value = ""; textarea.disabled = true; sendBtn.disabled = true; sendBtn.textContent = "Sending…";
+      textarea.value = ""; textarea.disabled = true; sendBtn.disabled = true; agentBtn.disabled = true;
       try {
-        await api("/runs", { method: "POST", body: { chatId: chat.id, prompt: text, mode: modeSelect.value } });
+        await api("/runs", { method: "POST", body: { chatId: chat.id, prompt: text, mode: "ask" } });
         await refresh();
-      } catch (err) {
-        alert(err.message);
-        await refresh();
-      }
+      } catch (err) { alert(err.message); await refresh(); }
     });
     dock.appendChild(form);
     $("#center").appendChild(dock);
@@ -290,57 +346,110 @@
     currentChatId = chat.id;
     view = "chats";
     $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "chats"));
-    document.getElementById("app").classList.remove("sidebar-open");
+    appEl.classList.remove("sidebar-open");
     await refresh();
   }
 
-  async function attachFile(chat, file) {
+  async function attachFile(chat, file, projectId) {
     const reader = new FileReader();
-    reader.onload = async () => {
-      const base64 = reader.result.split(",")[1];
-      try {
-        await api("/uploads", { method: "POST", body: { name: file.name, base64, chatId: chat.id, projectId: chat.projectId || null } });
-        await refresh();
-      } catch (err) { alert(err.message); }
-    };
-    reader.readAsDataURL(file);
+    return new Promise((resolve, reject) => {
+      reader.onload = async () => {
+        const base64 = reader.result.split(",")[1];
+        try {
+          const artifact = await api("/uploads", { method: "POST", body: { name: file.name, base64, chatId: chat ? chat.id : null, projectId: projectId || (chat && chat.projectId) || null } });
+          await refresh();
+          resolve(artifact);
+        } catch (err) { alert(err.message); reject(err); }
+      };
+      reader.readAsDataURL(file);
+    });
   }
 
-  // ---- Projects ----
+  // ---- Agent picker modal ----
+  const AGENTS = [
+    { mode: "research", name: "Research", tagline: "Plans a broader look across your sources before answering.",
+      detail: "A Director agent breaks the question into steps and coordinates sub-agents across your project's sources. Best for open-ended or multi-part questions that need more than one pass to answer well." },
+    { mode: "analyze", name: "Analyze", tagline: "Deep technical read of the files attached to this chat.",
+      detail: "A Specialist agent works through attached datasets in detail — statistics, trends, and flags. Best once you have a file attached and want a rigorous, structured read of it." },
+    { mode: "agent", name: "Agent", tagline: "Autonomous multi-step agent that can use tools.",
+      detail: "Runs a full agent loop that can take several actions on your behalf. It will pause and ask for your approval before anything high-stakes. Best for multi-step tasks, not simple questions." },
+  ];
+  function openAgentPicker(chat, prefill) {
+    let selected = AGENTS[0].mode;
+    let expanded = null;
+    const cardsHost = el("div", { class: "agent-cards" });
+    const task = el("textarea", { placeholder: "What should the agent do?", rows: "3" });
+    task.value = prefill || "";
+    function paintCards() {
+      cardsHost.innerHTML = "";
+      AGENTS.forEach((a) => {
+        const isSel = a.mode === selected;
+        const card = el("div", { class: "agent-card" + (isSel ? " selected" : "") });
+        const head = el("div", { class: "agent-card-head" }, [
+          el("div", { class: "agent-icon" }, icon("agent")),
+          el("div", {}, [el("div", { class: "agent-card-title" }, a.name), el("div", { class: "agent-card-tagline" }, a.tagline)]),
+          el("button", { type: "button", class: "icon-btn agent-card-expand", onclick: (e) => { e.stopPropagation(); expanded = expanded === a.mode ? null : a.mode; paintCards(); } }, icon(expanded === a.mode ? "chevrondown" : "chevronright")),
+        ]);
+        card.appendChild(head);
+        if (expanded === a.mode) card.appendChild(el("div", { class: "agent-card-detail" }, a.detail));
+        card.addEventListener("click", () => { selected = a.mode; paintCards(); });
+        cardsHost.appendChild(card);
+      });
+    }
+    paintCards();
+    const body = el("div", {}, [
+      cardsHost,
+      el("label", {}, "Task"),
+      task,
+    ]);
+    const startBtn = el("button", { class: "btn primary" }, "Start agent");
+    const { close } = openModal({
+      title: "Start an agent", sub: "Choose the agent best suited to the task, then describe what it should do.",
+      body, wide: true,
+      footer: [el("button", { class: "btn ghost" }, "Cancel"), startBtn],
+    });
+    $$("#modal-root .modal-footer .btn.ghost").forEach((b) => b.addEventListener("click", close));
+    startBtn.addEventListener("click", async () => {
+      const prompt = task.value.trim();
+      if (!prompt) return;
+      startBtn.disabled = true; startBtn.textContent = "Starting…";
+      try {
+        await api("/runs", { method: "POST", body: { chatId: chat.id, prompt, mode: selected } });
+        close();
+        openActivity();
+        await refresh();
+      } catch (err) { alert(err.message); startBtn.disabled = false; startBtn.textContent = "Start agent"; }
+    });
+  }
+
+  // ==================== PROJECTS ====================
   function renderProjectsView(body) {
     body.innerHTML = "";
     const pane = el("div", { class: "pane" });
-    if (currentProjectId) {
-      const project = byId(state.projects, currentProjectId);
-      if (!project) { currentProjectId = null; return renderProjectsView(body); }
-      const back = el("a", { class: "back-link", onclick: () => { currentProjectId = null; renderCenter(true); } }, "← All projects");
-      pane.appendChild(back);
-      const card = el("div", { class: "detail-card" });
-      card.appendChild(el("h2", {}, project.name));
-      card.appendChild(el("p", { class: "muted" }, project.description || ""));
-      card.appendChild(el("div", { class: "section-title" }, "Members"));
-      card.appendChild(el("ul", { class: "kv-list" }, (project.members || []).map((m) => el("li", {}, `${m.name} — ${m.role}`))));
-      card.appendChild(el("button", { class: "btn primary small", style: "margin-top:12px", onclick: () => createChat(project.id) }, "Start a chat in this project"));
-      pane.appendChild(card);
-      const memory = state.memory.filter((m) => m.projectId === project.id);
-      pane.appendChild(el("div", { class: "section-title" }, "Project memory"));
-      pane.appendChild(el("ul", { class: "kv-list" }, memory.length ? memory.map((m) => el("li", {}, m.title)) : [el("li", { class: "muted" }, "No project memory yet.")]));
-      const meetings = state.meetings.filter((m) => m.projectId === project.id);
-      pane.appendChild(el("div", { class: "section-title" }, "Meetings"));
-      pane.appendChild(el("ul", { class: "kv-list" }, meetings.length ? meetings.map((m) => el("li", {}, m.title)) : [el("li", { class: "muted" }, "No meetings yet.")]));
+    if (currentProjectId) return renderProjectDetail(pane, body);
+    pane.appendChild(el("p", { class: "pane-intro" }, "Shared spaces for a program's chats, memory, meetings and files."));
+    if (!state.projects.length) {
+      pane.appendChild(el("div", { class: "empty-state" }, [
+        icon("folder"),
+        el("p", {}, "No projects yet."),
+        el("button", { class: "btn primary", onclick: () => openProjectForm() }, [icon("plus"), "Start a project"]),
+      ]));
       body.appendChild(pane);
       return;
     }
     pane.appendChild(el("div", { class: "pane-header" }, [
-      el("span", { class: "muted" }, state.projects.length + " project(s)"),
-      el("button", { class: "btn primary small", onclick: () => openCreateForm("project") }, "+ New project"),
+      el("span", { class: "muted small" }, state.projects.length + " project(s)"),
+      el("button", { class: "btn primary small", onclick: () => openProjectForm() }, [icon("plus"), "Start a project"]),
     ]));
     const grid = el("div", { class: "card-grid" });
     state.projects.forEach((p) => {
       const c = el("div", { class: "card" }, [
         el("h3", {}, p.name),
-        el("p", {}, p.description || ""),
-        el("span", { class: "badge pill" }, (p.members || []).length + " member(s)"),
+        el("p", {}, p.summary || p.description || ""),
+        el("div", { class: "card-footer" }, [
+          el("div", { class: "avatar-stack" }, (p.members || []).slice(0, 3).map((m) => el("span", { class: "avatar" }, initials(m.name)))),
+          el("span", { class: "muted small" }, (p.members || []).length + " member(s)"),
+        ]),
       ]);
       c.addEventListener("click", () => { currentProjectId = p.id; renderCenter(true); });
       grid.appendChild(c);
@@ -349,45 +458,181 @@
     body.appendChild(pane);
   }
 
-  // ---- Memory ----
-  function renderMemoryView(body) {
-    body.innerHTML = "";
-    const pane = el("div", { class: "pane" });
-    pane.appendChild(el("div", { class: "pane-header" }, [
-      el("span", { class: "muted" }, "Personal, project and team context the assistant is allowed to use."),
-      el("button", { class: "btn primary small", onclick: () => openCreateForm("memory") }, "+ New memory"),
+  function renderProjectDetail(pane, body) {
+    const project = byId(state.projects, currentProjectId);
+    if (!project) { currentProjectId = null; return renderProjectsView(body); }
+    pane.appendChild(el("a", { class: "back-link", onclick: () => { currentProjectId = null; renderCenter(true); } }, [icon("chevronright", "rotate180"), "All projects"]));
+    const header = el("div", { class: "detail-card" });
+    header.appendChild(el("h2", {}, project.name));
+    if (project.summary) header.appendChild(el("p", { class: "detail-tagline" }, project.summary));
+    header.appendChild(el("p", { class: "detail-desc" }, project.description || ""));
+    header.appendChild(el("div", { class: "action-row" }, [
+      el("button", { class: "btn primary small", onclick: () => createChat(project.id) }, [icon("chat"), "Start a chat"]),
+      el("button", { class: "btn small", onclick: () => openInviteForm(project) }, [icon("plus"), "Invite collaborator"]),
     ]));
-    ["Personal", "Project", "Team", "Company"].forEach((scope) => {
-      const items = state.memory.filter((m) => (m.scope || "Personal") === scope);
-      if (!items.length) return;
-      pane.appendChild(el("div", { class: "section-title" }, scope));
-      const grid = el("div", { class: "card-grid" });
-      items.forEach((m) => {
-        grid.appendChild(el("div", { class: "card", style: "cursor:default" }, [
-          el("h3", {}, m.title),
-          el("p", {}, (m.content || "").slice(0, 140)),
-        ]));
-      });
-      pane.appendChild(grid);
-    });
-    if (!state.memory.length) pane.appendChild(el("p", { class: "muted" }, "No memory saved yet."));
+    pane.appendChild(header);
+
+    pane.appendChild(el("div", { class: "section-title" }, "Members"));
+    pane.appendChild(el("div", { class: "list-rows" }, (project.members || []).map((m) => el("div", { class: "list-row" }, [
+      el("div", { class: "row-main row-title" }, [el("span", { class: "avatar" }, initials(m.name)), m.name]),
+      el("span", { class: "badge pill" }, m.status || m.role),
+    ]))));
+
+    const memory = state.memory.filter((m) => m.projectId === project.id);
+    pane.appendChild(el("div", { class: "section-title" }, "Project memory"));
+    pane.appendChild(memory.length
+      ? el("div", { class: "list-rows" }, memory.map((m) => el("div", { class: "list-row" }, [el("div", { class: "row-main" }, [el("div", { class: "row-title" }, m.title), el("div", { class: "row-sub" }, m.content)])])))
+      : el("p", { class: "muted small" }, "No project memory yet."));
+
+    const meetings = state.meetings.filter((m) => m.projectId === project.id);
+    pane.appendChild(el("div", { class: "section-title" }, "Meetings"));
+    pane.appendChild(meetings.length
+      ? el("div", { class: "list-rows" }, meetings.map((m) => { const row = el("div", { class: "list-row", style: "cursor:pointer" }, [el("div", { class: "row-main" }, [el("div", { class: "row-title" }, m.title), el("div", { class: "row-sub" }, m.summary)])]); row.addEventListener("click", () => { view = "meetings"; currentMeetingId = m.id; $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "meetings")); renderCenter(true); }); return row; }))
+      : el("p", { class: "muted small" }, "No meetings yet."));
+
+    const files = state.artifacts.filter((a) => a.projectId === project.id);
+    pane.appendChild(el("div", { class: "section-title" }, "Files"));
+    pane.appendChild(files.length
+      ? el("div", { class: "list-rows" }, files.map((a) => el("div", { class: "list-row" }, [
+          el("div", { class: "row-main" }, [el("div", { class: "row-title" }, a.name), el("div", { class: "row-sub" }, fmtSize(a.size))]),
+          el("a", { class: "icon-btn", href: `${API}/artifacts/${a.id}/download` }, icon("download")),
+        ])))
+      : el("p", { class: "muted small" }, "No files yet."));
     body.appendChild(pane);
   }
 
-  // ---- Meetings ----
+  function openProjectForm() {
+    const nameInput = el("input", { required: "required" });
+    const descInput = el("textarea", {});
+    const body = el("div", { class: "simple-form" }, [
+      el("div", {}, [el("label", {}, "Name"), nameInput]),
+      el("div", {}, [el("label", {}, "Description"), descInput]),
+    ]);
+    const createBtn = el("button", { class: "btn primary" }, "Create project");
+    const { close } = openModal({ title: "Start a project", body, footer: [el("button", { class: "btn ghost" }, "Cancel"), createBtn] });
+    $$("#modal-root .modal-footer .btn.ghost").forEach((b) => b.addEventListener("click", close));
+    createBtn.addEventListener("click", async () => {
+      if (!nameInput.value.trim()) return;
+      try {
+        await api("/records/projects", { method: "POST", body: { data: { name: nameInput.value.trim(), description: descInput.value.trim(), members: [{ name: state.user.name, role: "Owner" }], scope: "Project" } } });
+        close(); await refresh();
+      } catch (err) { alert(err.message); }
+    });
+  }
+
+  function openInviteForm(project) {
+    const nameInput = el("input", { placeholder: "Full name", required: "required" });
+    const roleSelect = el("select", {}, ["Scientist", "Admin", "Viewer"].map((r) => el("option", {}, r)));
+    const body = el("div", { class: "simple-form" }, [
+      el("div", {}, [el("label", {}, "Name"), nameInput]),
+      el("div", {}, [el("label", {}, "Role"), roleSelect]),
+      el("p", { class: "muted small" }, "This demo has no company directory yet — invites are recorded on the project but no email is sent."),
+    ]);
+    const sendBtn = el("button", { class: "btn primary" }, "Send invite");
+    const { close } = openModal({ title: "Invite a collaborator", body, footer: [el("button", { class: "btn ghost" }, "Cancel"), sendBtn] });
+    $$("#modal-root .modal-footer .btn.ghost").forEach((b) => b.addEventListener("click", close));
+    sendBtn.addEventListener("click", async () => {
+      if (!nameInput.value.trim()) return;
+      const members = [...(project.members || []), { name: nameInput.value.trim(), role: roleSelect.value, status: "Invited — pending" }];
+      try {
+        await api(`/records/projects/${project.id}`, { method: "PATCH", body: { data: { members } } });
+        close(); await refresh();
+      } catch (err) { alert(err.message); }
+    });
+  }
+
+  // ==================== MEMORY ====================
+  function renderMemoryView(body) {
+    body.innerHTML = "";
+    const pane = el("div", { class: "pane" });
+    pane.appendChild(el("p", { class: "pane-intro" }, "Personal, project, team and company context the assistant is allowed to use."));
+
+    pane.appendChild(el("div", { class: "pane-header" }, [
+      el("span", {}),
+      el("button", { class: "btn primary small", onclick: () => openMemoryForm() }, [icon("plus"), "New memory"]),
+    ]));
+
+    const fileInput = el("input", { type: "file", multiple: "multiple", hidden: "hidden" });
+    fileInput.addEventListener("change", () => Array.from(fileInput.files).forEach((f) => attachFile(null, f, null)));
+    const dropzone = el("div", { class: "dropzone", onclick: () => fileInput.click() }, [
+      icon("upload"), el("div", {}, [el("b", {}, "Drop files here"), " or click to browse"]),
+      el("div", { class: "small" }, "Text, CSV, FASTA, PDF, and Office documents"),
+      fileInput,
+    ]);
+    ["dragover", "dragenter"].forEach((evt) => dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("drag"); }));
+    ["dragleave", "drop"].forEach((evt) => dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("drag"); }));
+    dropzone.addEventListener("drop", (e) => Array.from(e.dataTransfer.files).forEach((f) => attachFile(null, f, null)));
+    pane.appendChild(dropzone);
+
+    const files = state.artifacts.filter((a) => !a.chatId);
+    pane.appendChild(el("div", { class: "section-title" }, "Files"));
+    pane.appendChild(files.length
+      ? el("div", { class: "list-rows" }, files.map((a) => el("div", { class: "list-row" }, [
+          el("div", { class: "row-main" }, [el("div", { class: "row-title" }, a.name + (a.scanStatus === "review" ? " ⚠" : "")), el("div", { class: "row-sub" }, fmtSize(a.size) + (a.projectId ? " · " + (byId(state.projects, a.projectId)?.name || "Project") : " · Personal"))]),
+          el("a", { class: "icon-btn", href: `${API}/artifacts/${a.id}/download` }, icon("download")),
+        ])))
+      : el("p", { class: "muted small" }, "No files yet."));
+
+    pane.appendChild(el("div", { class: "section-title" }, "Current memory"));
+    const scopes = ["Personal", "Project", "Team", "Company"];
+    const anyMemory = state.memory.length > 0;
+    if (!anyMemory) pane.appendChild(el("p", { class: "muted small" }, "No memory saved yet."));
+    scopes.forEach((scope) => {
+      const items = state.memory.filter((m) => (m.scope || "Personal") === scope);
+      if (!items.length) return;
+      pane.appendChild(el("div", { class: "row-sub", style: "margin:14px 0 6px;font-weight:600;color:var(--text-secondary)" }, scope));
+      pane.appendChild(el("div", { class: "list-rows" }, items.map((m) => {
+        const row = el("div", { class: "list-row" }, [
+          el("div", { class: "row-main" }, [el("div", { class: "row-title" }, m.title), el("div", { class: "row-sub" }, m.content)]),
+          el("div", { class: "row-actions" }, [el("button", { class: "icon-btn", title: "Delete", onclick: async () => { await api(`/records/memory/${m.id}`, { method: "DELETE" }); await refresh(); } }, icon("trash"))]),
+        ]);
+        return row;
+      })));
+    });
+    body.appendChild(pane);
+  }
+
+  function openMemoryForm() {
+    const titleInput = el("input", { required: "required" });
+    const contentInput = el("textarea", { required: "required" });
+    const scopeSelect = el("select", {}, ["Personal", "Project", "Team", "Company"].map((s) => el("option", {}, s)));
+    const projSelect = el("select", {}, state.projects.map((p) => el("option", { value: p.id }, p.name)));
+    const projRow = el("div", {}, [el("label", {}, "Project"), projSelect]);
+    scopeSelect.addEventListener("change", () => { projRow.hidden = scopeSelect.value !== "Project"; });
+    projRow.hidden = true;
+    const body = el("div", { class: "simple-form" }, [
+      el("div", {}, [el("label", {}, "Title"), titleInput]),
+      el("div", {}, [el("label", {}, "Content"), contentInput]),
+      el("div", {}, [el("label", {}, "Scope"), scopeSelect]),
+      projRow,
+    ]);
+    const createBtn = el("button", { class: "btn primary" }, "Save");
+    const { close } = openModal({ title: "New memory", body, footer: [el("button", { class: "btn ghost" }, "Cancel"), createBtn] });
+    $$("#modal-root .modal-footer .btn.ghost").forEach((b) => b.addEventListener("click", close));
+    createBtn.addEventListener("click", async () => {
+      if (!titleInput.value.trim() || !contentInput.value.trim()) return;
+      const scope = scopeSelect.value;
+      try {
+        await api("/records/memory", { method: "POST", body: { data: { title: titleInput.value.trim(), content: contentInput.value.trim(), scope, projectId: scope === "Project" ? projSelect.value : null } } });
+        close(); await refresh();
+      } catch (err) { alert(err.message); }
+    });
+  }
+
+  // ==================== MEETINGS ====================
   function renderMeetingsView(body) {
     body.innerHTML = "";
     const pane = el("div", { class: "pane" });
     if (currentMeetingId) {
       const meeting = byId(state.meetings, currentMeetingId);
       if (!meeting) { currentMeetingId = null; return renderMeetingsView(body); }
-      pane.appendChild(el("a", { class: "back-link", onclick: () => { currentMeetingId = null; renderCenter(true); } }, "← All meetings"));
+      pane.appendChild(el("a", { class: "back-link", onclick: () => { currentMeetingId = null; renderCenter(true); } }, [icon("chevronright", "rotate180"), "All meetings"]));
       const card = el("div", { class: "detail-card" });
       card.appendChild(el("h2", {}, meeting.title));
-      card.appendChild(el("p", { class: "muted" }, meeting.summary || ""));
-      const block = (label, items) => el("div", { class: "list-block" }, [
-        el("div", { class: "section-title" }, label),
-        el("ul", {}, (items || []).length ? items.map((i) => el("li", {}, i)) : [el("li", { class: "muted" }, "None extracted.")]),
+      card.appendChild(el("p", { class: "detail-desc" }, meeting.summary || ""));
+      const block = (label, items) => el("div", { style: "margin-top:14px" }, [
+        el("div", { class: "section-title", style: "margin:0 0 6px" }, label),
+        el("ul", { style: "margin:0;padding-left:18px" }, (items || []).length ? items.map((i) => el("li", {}, i)) : [el("li", { class: "muted" }, "None extracted.")]),
       ]);
       card.appendChild(block("Decisions", meeting.decisions));
       card.appendChild(block("Action items", meeting.actions));
@@ -399,111 +644,86 @@
         card.appendChild(el("div", { class: "section-title" }, "Transcript"));
         card.appendChild(el("div", { class: "transcript-box" }, meeting.transcript));
       }
-      card.appendChild(el("p", { class: "muted small", style: "margin-top:10px" }, "Rule-based extraction — review before treating as verified minutes."));
+      card.appendChild(el("p", { class: "muted small", style: "margin-top:12px" }, "Rule-based extraction — review before treating as verified minutes."));
       pane.appendChild(card);
       body.appendChild(pane);
       return;
     }
-    pane.appendChild(el("div", { class: "pane-header" }, [
-      el("span", { class: "muted" }, state.meetings.length + " meeting(s)"),
-    ]));
+    pane.appendChild(el("p", { class: "pane-intro" }, "Meetings imported from a transcript, with decisions and action items pulled out automatically."));
+    if (!state.meetings.length) {
+      pane.appendChild(el("div", { class: "empty-state" }, [icon("calendar"), el("p", {}, "No meetings yet. Attach a transcript file from a chat to import one.")]));
+      body.appendChild(pane);
+      return;
+    }
     const grid = el("div", { class: "card-grid" });
     state.meetings.forEach((m) => {
-      const c = el("div", { class: "card" }, [
-        el("h3", {}, m.title),
-        el("p", {}, m.summary || ""),
-      ]);
+      const c = el("div", { class: "card" }, [el("h3", {}, m.title), el("p", {}, m.summary || "")]);
       c.addEventListener("click", () => { currentMeetingId = m.id; renderCenter(true); });
       grid.appendChild(c);
     });
     pane.appendChild(grid);
-    if (!state.meetings.length) pane.appendChild(el("p", { class: "muted" }, "No meetings yet. Attach a transcript file from a chat, or import one below."));
     body.appendChild(pane);
   }
 
-  // ---- Settings ----
+  // ==================== SETTINGS ====================
   function renderSettingsView(body) {
     body.innerHTML = "";
     const pane = el("div", { class: "pane" });
     const cfg = state.config || {};
-    pane.appendChild(el("div", { class: "section-title" }, "Environment"));
-    pane.appendChild(el("div", { class: "settings-grid" }, [
-      el("div", { class: "card" }, [el("h3", {}, "Mode"), el("p", {}, cfg.demo ? "Demo (fictional data)" : "Real")]),
-      el("div", { class: "card" }, [el("h3", {}, "AI provider"), el("p", {}, cfg.ai || "Unknown")]),
-      el("div", { class: "card" }, [el("h3", {}, "Authentication"), el("p", {}, cfg.auth || "Unknown")]),
-    ]));
-    pane.appendChild(el("div", { class: "section-title" }, "Company knowledge connectors"));
-    pane.appendChild(el("div", { class: "settings-grid" }, (cfg.connectors || []).map((c) => el("div", { class: "card" }, [el("h3", {}, c.name), el("p", {}, c.status)]))));
     const prefs = (state.preferences || [])[0] || {};
-    pane.appendChild(el("div", { class: "section-title" }, "Preferences"));
-    const card = el("div", { class: "detail-card" });
-    card.appendChild(el("p", {}, [el("b", {}, "Theme: "), prefs.theme || "light"]));
-    card.appendChild(el("p", {}, [el("b", {}, "Buddy assistant: "), prefs.buddy ? "On" : "Off"]));
-    card.appendChild(el("p", {}, [el("b", {}, "Data retention: "), prefs.retention || "Not set"]));
-    card.appendChild(el("p", {}, [el("b", {}, "Scientific vocabulary: "), el("br"), el("span", { class: "muted" }, (prefs.vocabulary || "").split("\n").join(", "))]));
-    pane.appendChild(card);
+
+    const row = (title, sub, valueNode) => el("div", { class: "settings-row" }, [
+      el("div", {}, [el("div", { class: "row-title" }, title), sub ? el("div", { class: "row-sub" }, sub) : null]),
+      valueNode,
+    ]);
+
+    pane.appendChild(el("div", { class: "settings-group" }, [
+      el("h2", {}, "Account"),
+      row("Name", null, el("span", { class: "row-value" }, state.user.name)),
+      row("Sign out", "End this session on this device", el("button", { class: "btn small", onclick: () => $("#logout-btn").click() }, "Sign out")),
+    ]));
+
+    pane.appendChild(el("div", { class: "settings-group" }, [
+      el("h2", {}, "Environment"),
+      row("Mode", null, el("span", { class: "badge pill" }, cfg.demo ? "Demo (fictional data)" : "Real")),
+      row("AI provider", null, el("span", { class: "row-value" }, cfg.ai || "Unknown")),
+      row("Authentication", null, el("span", { class: "row-value" }, cfg.auth || "Unknown")),
+      row("Appearance", null, el("span", { class: "row-value" }, "Dark")),
+    ]));
+
+    const buddySwitch = el("label", { class: "switch" }, [el("input", { type: "checkbox", checked: prefs.buddy ? "checked" : null }), el("span", { class: "track" })]);
+    buddySwitch.querySelector("input").addEventListener("change", async (e) => {
+      await api("/records/preferences", { method: "POST", body: { data: { ...prefs, buddy: e.target.checked } } });
+      await refresh();
+    });
+    pane.appendChild(el("div", { class: "settings-group" }, [
+      el("h2", {}, "Preferences"),
+      row("Buddy assistant", "A lightweight helper for navigating the workspace", buddySwitch),
+      row("Data retention", null, el("span", { class: "row-value" }, prefs.retention || "Not set")),
+      row("Scientific vocabulary", "Terms the assistant treats as known jargon", el("span", { class: "row-value" }, (prefs.vocabulary || "").split("\n").filter(Boolean).join(", "))),
+    ]));
+
+    pane.appendChild(el("div", { class: "settings-group" }, [
+      el("h2", {}, "Company Knowledge connectors"),
+      ...(cfg.connectors || []).map((c) => row(c.name, null, el("span", { class: "badge pill" }, c.status))),
+    ]));
     body.appendChild(pane);
   }
 
-  // ---- inline create forms (memory / project) ----
-  function openCreateForm(kind) {
-    const overlay = el("div", { class: "login-screen", style: "position:fixed;inset:0;z-index:30;background:rgba(0,0,0,0.35)" });
-    const card = el("div", { class: "login-card", style: "text-align:left;width:380px" });
-    const form = el("form", { class: "simple-form" });
-    if (kind === "project") {
-      form.appendChild(el("div", {}, [el("label", {}, "Name"), el("input", { name: "name", required: "required" })]));
-      form.appendChild(el("div", {}, [el("label", {}, "Description"), el("textarea", { name: "description" })]));
-    } else {
-      form.appendChild(el("div", {}, [el("label", {}, "Title"), el("input", { name: "title", required: "required" })]));
-      form.appendChild(el("div", {}, [el("label", {}, "Content"), el("textarea", { name: "content", required: "required" })]));
-      const scopeSelect = el("select", { name: "scope" }, [el("option", {}, "Personal"), el("option", {}, "Project")]);
-      form.appendChild(el("div", {}, [el("label", {}, "Scope"), scopeSelect]));
-      const projSelect = el("select", { name: "projectId" }, state.projects.map((p) => el("option", { value: p.id }, p.name)));
-      form.appendChild(el("div", {}, [el("label", {}, "Project (if scope is Project)"), projSelect]));
-    }
-    const actions = el("div", { style: "display:flex;gap:8px;justify-content:flex-end;margin-top:6px" });
-    const cancelBtn = el("button", { type: "button", class: "btn ghost small" }, "Cancel");
-    const submitBtn = el("button", { type: "submit", class: "btn primary small" }, "Create");
-    actions.appendChild(cancelBtn); actions.appendChild(submitBtn);
-    form.appendChild(actions);
-    cancelBtn.addEventListener("click", () => overlay.remove());
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const fd = new FormData(form);
-      try {
-        if (kind === "project") {
-          await api("/records/projects", { method: "POST", body: { data: { name: fd.get("name"), description: fd.get("description"), members: [{ name: state.user.name, role: "Owner" }], scope: "Project" } } });
-        } else {
-          const scope = fd.get("scope");
-          await api("/records/memory", { method: "POST", body: { data: { title: fd.get("title"), content: fd.get("content"), scope, projectId: scope === "Project" ? fd.get("projectId") : null } } });
-        }
-        overlay.remove();
-        await refresh();
-      } catch (err) { alert(err.message); }
-    });
-    card.appendChild(el("h2", { style: "margin-top:0" }, kind === "project" ? "New project" : "New memory"));
-    card.appendChild(form);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-  }
-
-  // ---------------- activity panel ----------------
+  // ==================== ACTIVITY (agents only) ====================
   function renderActivity() {
-    const runs = [...state.runs].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    const runs = [...state.runs].filter((r) => r.mode && !["ask", "auto"].includes(r.mode)).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
     const sig = JSON.stringify(runs.map((r) => [r.id, r.status, r.currentStep, (r.steps || []).map((s) => s.status)]));
     if (sig === lastRenderSig.activity) return;
     lastRenderSig.activity = sig;
     const host = $("#activity-body");
     host.innerHTML = "";
-    if (!runs.length) { host.appendChild(el("div", { class: "empty-state" }, "No agent activity yet. Send a message to start one.")); return; }
+    if (!runs.length) { host.appendChild(el("div", { class: "empty-state" }, [icon("agent"), el("p", {}, "No agent activity yet. Use Create Agent from a chat to start one.")])); return; }
     runs.forEach((r) => {
       const chat = byId(state.chats, r.chatId);
       const card = el("div", { class: "run-card" });
       card.appendChild(el("div", { class: "run-title" }, r.title || r.prompt));
-      card.appendChild(el("div", { class: "run-meta" }, [
-        el("span", { class: "badge status-" + r.status }, r.status),
-        el("span", {}, r.role || ""),
-      ]));
+      card.appendChild(el("div", { class: "run-meta" }, [el("span", { class: "badge status-" + r.status }, r.status), el("span", {}, r.role || "")]));
       if (r.steps && r.steps.length) {
         const list = el("div", { class: "run-step-list" });
         r.steps.forEach((s) => list.appendChild(el("div", { class: "run-step " + s.status }, [el("span", { class: "dot" }), el("span", {}, s.title)])));
@@ -512,10 +732,10 @@
         card.appendChild(el("div", { class: "run-current-step" }, [el("span", { class: "dot" }), el("span", {}, r.currentStep || "Working…")]));
       }
       if (r.status === "waiting") {
-        const actions = el("div", { class: "run-actions" });
-        actions.appendChild(el("button", { class: "btn primary small", onclick: () => decide(r.id, "approve") }, "Approve"));
-        actions.appendChild(el("button", { class: "btn danger small", onclick: () => decide(r.id, "reject") }, "Reject"));
-        card.appendChild(actions);
+        card.appendChild(el("div", { class: "run-actions" }, [
+          el("button", { class: "btn primary small", onclick: () => decide(r.id, "approve") }, "Approve"),
+          el("button", { class: "btn danger small", onclick: () => decide(r.id, "reject") }, "Reject"),
+        ]));
         if (r.preview) card.appendChild(el("p", { class: "small muted" }, r.preview));
       } else if (["queued", "running"].includes(r.status)) {
         card.appendChild(el("div", { class: "run-actions" }, [el("button", { class: "btn ghost small", onclick: () => cancelRun(r.id) }, "Cancel")]));
@@ -525,9 +745,8 @@
       if (chat) card.appendChild(el("a", { class: "run-answer-link", onclick: () => {
         view = "chats"; currentChatId = chat.id;
         $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "chats"));
-        appEl.classList.remove("activity-open"); appEl.classList.add("activity-collapsed");
-        render(true);
-      } }, "View in chat →"));
+        closeActivity(); render(true);
+      } }, ["View in chat", icon("chevronright")]));
       host.appendChild(card);
     });
   }
@@ -540,6 +759,10 @@
     try { await api(`/runs/${runId}/cancel`, { method: "POST" }); await refresh(); }
     catch (err) { alert(err.message); }
   }
+
+  const style = document.createElement("style");
+  style.textContent = ".rotate180{transform:rotate(180deg)}";
+  document.head.appendChild(style);
 
   boot();
 })();

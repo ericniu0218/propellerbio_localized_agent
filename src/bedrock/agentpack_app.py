@@ -48,7 +48,13 @@ from bedrock.ui.argparsing import CommandUsageError
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
 from bedrock.ui.confidence_view import run_confidence_command
-from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.digest_command import (
+    AUTO_CONTEXT_OFF_HINT,
+    AutoContext,
+    auto_context_argument,
+    run_auto_context_command,
+    run_digest_command,
+)
 from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.fold_command import (
     confidence_summary,
@@ -96,6 +102,7 @@ AGENTPACK_HELP_TEXT = """\
 | `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
+| `/digest auto off` | Stop adding matching stored content to your messages in this window |
 | `/sources` | List the company data sources you can pull from |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
@@ -148,6 +155,9 @@ class AgentPackApp(App[None]):
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
         self._context_store: ContextStore | None = None
+        # Whether matching /digest content goes out with each message. Starts
+        # from settings; `/digest auto on|off` changes it for this window only.
+        self.auto_context = AutoContext(enabled=self.settings.auto_context)
         self._workspace_session: WorkspaceCommandSession | None = None
         self._scientific_job_running = False
         # Run and action-journal browsing. Built on first use, injected by tests.
@@ -251,7 +261,15 @@ class AgentPackApp(App[None]):
             case "exit" | "quit":
                 await self.action_quit()
             case "digest":
-                self.command_digest(command.args)
+                choice = auto_context_argument(command.args)
+                if choice is not None:
+                    # Not in a worker: a message sent straight after this must
+                    # already follow the new setting.
+                    await run_auto_context_command(
+                        choice, auto_context=self.auto_context, notify=self.post_notice
+                    )
+                else:
+                    self.command_digest(command.args)
             case "sources":
                 self.command_sources(command.args)
             case "runs":
@@ -441,10 +459,15 @@ class AgentPackApp(App[None]):
         # The bubble above shows exactly what the user typed; only the
         # text actually sent to the model gets the extra context, and the
         # notice below says so out loud rather than doing it silently.
-        injected = find_relevant_context(text, self.context_store)
+        # Read here, at send time, so a prompt that waited in the queue
+        # follows `/digest auto off` typed while it waited. When off, the
+        # store is not even searched.
+        injected = (
+            find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
+        )
         outgoing_text = with_injected_context(text, injected)
         if injected is not None:
-            await self.post_notice(injected.summary)
+            await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
         # Attached files follow the typed question, after any stored context.
         outgoing_text = attachments.with_attachments(outgoing_text, attached)
@@ -662,6 +685,7 @@ class AgentPackApp(App[None]):
             sources=self.sources,
             history=await self.services.optional_history(),
             actor_id=self.settings.user_id,
+            auto_context=self.auto_context,
         )
 
     @property

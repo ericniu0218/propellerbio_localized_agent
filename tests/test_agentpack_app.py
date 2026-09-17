@@ -181,6 +181,164 @@ async def test_unrelated_message_is_sent_unchanged_when_nothing_matches(
         assert fake_client.sent_messages == [("sess_fake", "good morning")]
 
 
+# ---- Switching automatic context off -----------------------------------------
+#
+# Automatic context matches by keyword, so it can attach a passage that only
+# shares a word with the question. These tests pin down the way to stop that:
+# a setting for every window, and `/digest auto` for the one in front of you.
+
+
+ASSAY_QUESTION = "what was the ph in the assay results?"
+
+
+def make_app_with_assay(client: FakeAgentPackClient, tmp_path, **settings) -> AgentPackApp:
+    """An app whose context store holds a CSV that matches ASSAY_QUESTION."""
+    app = AgentPackApp(
+        settings=Settings(user_id="alice", context_dir=str(tmp_path / "ctx"), **settings),
+        client=client,
+        services=make_services(),
+    )
+    assay_file = tmp_path / "assay.csv"
+    assay_file.write_text("\n".join(["sample,ph,passed"] + [f"s{i},{6.0 + i * 0.1:.1f},true" for i in range(10)]))
+    from bedrock.context import ingest
+
+    ingest(assay_file, store=app.context_store)
+    return app
+
+
+def notice_texts(app: AgentPackApp) -> list[str]:
+    return [str(n.source) for n in app.query(SystemNotice)]
+
+
+async def type_line(pilot, text: str) -> None:
+    await pilot.press(*text, "enter")
+    await pilot.pause()
+
+
+async def test_injection_notice_says_how_to_stop_it(fake_client: FakeAgentPackClient, tmp_path):
+    """The way out is on screen at the moment a bad match could appear."""
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, ASSAY_QUESTION)
+
+        added = [n for n in notice_texts(app) if "Added stored context from" in n]
+        assert len(added) == 1
+        assert "`/digest auto off`" in added[0]
+
+
+async def test_auto_context_setting_off_sends_messages_exactly_as_typed(
+    fake_client: FakeAgentPackClient, tmp_path, monkeypatch
+):
+    app = make_app_with_assay(fake_client, tmp_path, auto_context=False)
+    searched = []
+    monkeypatch.setattr(app.context_store, "search", lambda *a, **k: searched.append(a) or [])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, ASSAY_QUESTION)
+
+        assert fake_client.sent_messages == [("sess_fake", ASSAY_QUESTION)]
+        assert not any("Added stored context" in n for n in notice_texts(app))
+        # Off means the store is not consulted at all, not searched and ignored.
+        assert searched == []
+
+
+async def test_digest_auto_off_then_on_changes_what_this_window_sends(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, "/digest auto off")
+        assert app.auto_context.enabled is False
+        assert "now **off**" in notice_texts(app)[-1]
+        # The notice says where the lasting setting lives, since this one is not saved.
+        assert "BEDROCK_AUTO_CONTEXT=0" in notice_texts(app)[-1]
+
+        await type_line(pilot, ASSAY_QUESTION)
+        assert fake_client.sent_messages == [("sess_fake", ASSAY_QUESTION)]
+        assert not any("Added stored context" in n for n in notice_texts(app))
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+
+        await type_line(pilot, "/digest auto on")
+        assert app.auto_context.enabled is True
+        assert "now **on**" in notice_texts(app)[-1]
+
+        await type_line(pilot, ASSAY_QUESTION)
+        assert len(fake_client.sent_messages) == 2
+        _, outgoing = fake_client.sent_messages[1]
+        assert "Relevant stored context" in outgoing
+        assert outgoing.endswith(ASSAY_QUESTION)
+
+
+async def test_digest_auto_off_typed_while_a_prompt_waits_applies_to_that_prompt(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    """The switch is read when a message is sent, not when it was typed."""
+    app = make_app_with_assay(fake_client, tmp_path)
+    second = "and what was the ph of sample s3?"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, ASSAY_QUESTION)
+        await type_line(pilot, second)
+        # The first went out with context; the second is waiting its turn.
+        assert len(fake_client.sent_messages) == 1
+        assert "Relevant stored context" in fake_client.sent_messages[0][1]
+        assert [item.text for item in app.queue_snapshot().pending] == [second]
+
+        # Commands run straight away, even while prompts wait.
+        await type_line(pilot, "/digest auto off")
+        assert app.auto_context.enabled is False
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+
+        assert fake_client.sent_messages[-1] == ("sess_fake", second)
+
+
+async def test_digest_auto_reports_the_setting_and_refuses_other_words(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, "/digest auto")
+        assert "is **on**" in notice_texts(app)[-1]
+
+        await type_line(pilot, "/digest auto off")
+        await type_line(pilot, "/digest auto off")
+        assert "already **off**" in notice_texts(app)[-1]
+
+        await type_line(pilot, "/digest auto")
+        assert "is **off**" in notice_texts(app)[-1]
+
+        await type_line(pilot, "/digest auto maybe")
+        refusal = app.query(SystemNotice)[-1]
+        assert refusal.has_class("error")
+        assert "takes `on` or `off`" in str(refusal.source)
+        # A word it does not understand changes nothing.
+        assert app.auto_context.enabled is False
+        # And nothing was sent to the AI system by any of this.
+        assert fake_client.sent_messages == []
+
+
+async def test_help_texts_offer_the_switch_in_agent_pack_mode(fake_client: FakeAgentPackClient, tmp_path):
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, "/help")
+        assert "/digest auto off" in notice_texts(app)[-1]
+
+        # `/digest help` runs in a worker, so wait for its notice.
+        await type_line(pilot, "/digest help")
+        joined = await wait_for_notice(app, pilot, "compress data so a model can read it cheaply")
+        assert "`/digest auto off` stops it for this window" in joined
+
+
 async def test_agent_panel_shows_friendly_status_and_clears_on_done(fake_client: FakeAgentPackClient):
     app = make_app(fake_client)
     async with app.run_test() as pilot:

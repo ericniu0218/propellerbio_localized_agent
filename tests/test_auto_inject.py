@@ -63,3 +63,15 @@ def test_a_search_failure_is_swallowed_not_raised(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store, "search", boom)
     assert find_relevant_context("what was the ph reading", store) is None
+
+
+def test_only_the_auto_verb_is_read_as_the_switch():
+    """`/digest automatic.csv` is a file to compress, not the switch."""
+    from bedrock.ui.digest_command import auto_context_argument
+
+    assert auto_context_argument("auto") == ""
+    assert auto_context_argument("AUTO  off ") == "off"
+    assert auto_context_argument("  auto on") == "on"
+    assert auto_context_argument("automatic.csv") is None
+    assert auto_context_argument("search auto") is None
+    assert auto_context_argument("") is None

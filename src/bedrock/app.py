@@ -46,7 +46,13 @@ from bedrock.titles import generate_title, wants_title
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
 from bedrock.ui.confidence_view import run_confidence_command
-from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.digest_command import (
+    AUTO_CONTEXT_OFF_HINT,
+    AutoContext,
+    auto_context_argument,
+    run_auto_context_command,
+    run_digest_command,
+)
 from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
@@ -118,6 +124,9 @@ class BedrockApp(App[None]):
         self.model_name: str | None = self.settings.model
         self._streaming = False
         self._context_store: ContextStore | None = None
+        # Whether matching /digest content goes out with each message. Starts
+        # from settings; `/digest auto on|off` changes it for this window only.
+        self.auto_context = AutoContext(enabled=self.settings.auto_context)
         # Tests pass a hub with fake connectors; real runs build one from settings.
         self._sources = sources
         self._workspace_session: WorkspaceCommandSession | None = None
@@ -225,7 +234,15 @@ class BedrockApp(App[None]):
             case "model":
                 await self.command_model(command.args)
             case "digest":
-                self.command_digest(command.args)
+                choice = auto_context_argument(command.args)
+                if choice is not None:
+                    # Not in a worker: a message sent straight after this must
+                    # already follow the new setting.
+                    await run_auto_context_command(
+                        choice, auto_context=self.auto_context, notify=self.post_notice
+                    )
+                else:
+                    self.command_digest(command.args)
             case "sources":
                 self.command_sources(command.args)
             case "runs":
@@ -283,6 +300,7 @@ class BedrockApp(App[None]):
             sources=self.sources,
             history=await self.services.optional_history(),
             actor_id=self.settings.user_id,
+            auto_context=self.auto_context,
         )
 
     @property
@@ -1207,10 +1225,12 @@ class BedrockApp(App[None]):
         # Without this, /digest did nothing for the next question you
         # asked unless you remembered to search it yourself; that gap was
         # closed for AgentPackApp first and is closed here the same way.
-        injected = find_relevant_context(text, self.context_store)
+        # The switch is read here, when the prompt actually starts, so one
+        # that waited in the queue follows `/digest auto off` typed meanwhile.
+        injected = find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
         if injected is not None:
             note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block
-            await self.post_notice(injected.summary)
+            await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
         reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)

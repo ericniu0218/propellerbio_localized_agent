@@ -54,6 +54,7 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/model <name>`  | Switch model                     |
 | `/digest <path>` | Compress a file into local context storage |
 | `/digest`        | List/search locally stored context |
+| `/digest auto off` | Stop adding matching stored context to messages in this window |
 | `/sources`       | List company data sources        |
 | `/digest <src>://<id>` | Pull a record from a source and compress it |
 | `/runs`          | Prediction runs recorded on this machine |
@@ -301,6 +302,7 @@ Settings are read from, highest priority first:
 | `BEDROCK_TIMEOUT`    | `request_timeout` | `120` seconds                |
 | `BEDROCK_HISTORY_DIR`| `history_dir`     | `~/.local/share/bedrock/conversations` |
 | `BEDROCK_SAVE_HISTORY` | `save_history`  | `true`                       |
+| `BEDROCK_AUTO_CONTEXT` | `auto_context`  | `true`                       |
 | `BEDROCK_CONTEXT_DIR`| `context_dir`     | `~/.local/share/bedrock/context` |
 | `BEDROCK_WORKSPACE_DIR`| `workspace_dir` | `~/.local/share/bedrock/workspaces` |
 | `BEDROCK_ACTION_HISTORY_DIR`| `action_history_dir` | `~/.local/share/bedrock/history` |
@@ -382,6 +384,15 @@ private model, but ingest still succeeds when inference is unavailable.
 
 Adding a data type is one adapter in `src/bedrock/context/adapters/` plus its
 registry entry. Nothing in the UI or storage layer needs to change.
+
+**Automatic context.** Before a chat message is sent, the store is searched
+with the message's own words and matching passages go along with it, in both
+modes; a notice names what was added. The match is by keyword, so it can attach
+a passage that only shares a word with the question. `/digest auto off` stops
+it for the open window, `/digest auto on` restarts it, and `/digest auto` shows
+the current setting. To start every window with it off, set
+`BEDROCK_AUTO_CONTEXT=0` or `auto_context = false` in the config file. Stored
+content is still there for `/digest search` either way.
 
 ## Company data sources (`/sources`)
 

@@ -14,6 +14,7 @@ Sub-commands::
     /digest search <words>  find exact content across everything stored
     /digest show <id>       print one digest
     /digest forget <id>     delete one artifact
+    /digest auto [on|off]   whether matching content is added to chat messages
 
 The ingest itself runs on a thread. Compressing a large file takes a moment and
 the interface must keep painting while it does - the app stays responsive and
@@ -25,14 +26,24 @@ code below: the ingest outcome is committed as soon as the artifact is stored
 and *before* the optional model summary, because the data is already saved at
 that point; and a cancelled ingest is recorded as **unknown**, because
 ``asyncio.to_thread`` cannot stop a thread that is already compressing a file.
+
+**Automatic context.** Both apps add matching stored passages to each outgoing
+chat message (``bedrock.context.auto_inject``). That matching is by keyword, so
+it can attach a passage that only shares a word with the question, and an
+employee who sees that happen needs a way to stop it on the spot.
+``/digest auto off`` is that way. It changes an :class:`AutoContext` held by
+the window, never the config file: the file is IT's to manage, and the app
+does not write to it.
 """
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from bedrock.config.settings import FALSE_VALUES, TRUE_VALUES
 from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
 from bedrock.context import ContextStore, ingest
 from bedrock.context.adapters import Source
@@ -47,7 +58,7 @@ from bedrock.ui.journal import JournalledAction
 
 Notify = Callable[[str, str], Awaitable[None]]
 
-USAGE = """\
+_USAGE_TABLE = """\
 **`/digest` — compress data so a model can read it cheaply**
 
 | Command | What it does |
@@ -58,15 +69,122 @@ USAGE = """\
 | `/digest search <words>` | Find exact content across everything stored |
 | `/digest show <id>` | Print one digest |
 | `/digest forget <id>` | Delete one artifact |
+"""
 
+_USAGE_AUTO_ROW = (
+    "| `/digest auto [on\\|off]` | Show or change whether matching stored content "
+    "is added to your messages |\n"
+)
+
+_USAGE_BODY = """
 Handles text, Markdown, CSV/TSV, JSON, source code, log files, and FASTA \
 (sequence count, length, and DNA/RNA/protein alphabet instead of treating it \
 as prose). Each one is stored twice over: a small digest a model can read on \
 every turn, and the full content compressed and indexed for exact lookup.
-
-Relevant stored context is now pulled into your questions automatically — \
-see the note after each answer that used any.
 """
+
+_USAGE_WITH_AUTO = """
+Stored content that matches the words of a message is added to it before it \
+is sent, and a notice names what was added. The match is by keyword, so check \
+that notice: `/digest auto off` stops it for this window.
+"""
+
+AUTO_CONTEXT_OFF_HINT = "If that is unrelated to your question, `/digest auto off` stops this."
+"""Follows every "Added stored context from ..." notice, so the way to stop a
+bad match is on screen at the moment one appears."""
+
+_NO_SWITCH_HERE = "Automatic context cannot be switched from here."
+
+
+@dataclass
+class AutoContext:
+    """Whether this window adds matching stored content to chat messages.
+
+    Created from ``Settings.auto_context`` and changed by ``/digest auto``.
+    The app reads ``enabled`` when a message is actually sent, not when it was
+    typed, so a prompt still waiting in the queue follows the switch as it is
+    by the time its turn comes.
+    """
+
+    enabled: bool
+
+
+def usage(auto_context: AutoContext | None) -> str:
+    """``/digest help``. Both apps pass their switch; the switch's row and note
+    are left out only for a caller that has none."""
+    if auto_context is None:
+        return _USAGE_TABLE + _USAGE_BODY
+    return _USAGE_TABLE + _USAGE_AUTO_ROW + _USAGE_BODY + _USAGE_WITH_AUTO
+
+
+def auto_context_argument(args: str) -> str | None:
+    """What follows ``/digest auto``, or None for any other ``/digest``.
+
+    Both apps use this to handle ``/digest auto`` straight away instead of in a
+    background worker like the rest of ``/digest``. Flipping a flag needs no
+    disk or network, and a message sent right after it must already follow it.
+    """
+    verb, _, rest = args.strip().partition(" ")
+    return rest.strip() if verb.lower() == "auto" else None
+
+
+async def run_auto_context_command(
+    choice: str, *, auto_context: AutoContext | None, notify: Notify
+) -> None:
+    """``/digest auto``, ``/digest auto on`` and ``/digest auto off``.
+
+    Changes this window only. The lasting setting is ``auto_context`` in the
+    config file (or ``BEDROCK_AUTO_CONTEXT``), and the notice says so rather
+    than writing it there.
+    """
+    choice = choice.strip().lower()
+    if auto_context is None:
+        await notify(_NO_SWITCH_HERE, "error")
+        return
+
+    if not choice:
+        if auto_context.enabled:
+            await notify(
+                "Automatic context is **on** in this window. Stored content that "
+                "matches a message's words is added to it, and a notice names what "
+                "was added. `/digest auto off` stops it.",
+                "info",
+            )
+        else:
+            await notify(
+                "Automatic context is **off** in this window. Messages are sent "
+                "exactly as typed; `/digest search <words>` still finds stored "
+                "content. `/digest auto on` turns it back on.",
+                "info",
+            )
+        return
+
+    if choice in FALSE_VALUES:
+        already = not auto_context.enabled
+        auto_context.enabled = False
+        await notify(
+            ("Automatic context was already **off**" if already else "Automatic context is now **off**")
+            + " in this window. Messages are sent exactly as typed. To start every "
+            "window with it off, set `auto_context = false` in "
+            "`~/.config/bedrock/config.toml`, or `BEDROCK_AUTO_CONTEXT=0`.",
+            "info",
+        )
+        return
+
+    if choice in TRUE_VALUES:
+        already = auto_context.enabled
+        auto_context.enabled = True
+        await notify(
+            ("Automatic context was already **on**" if already else "Automatic context is now **on**")
+            + " in this window. Stored content that matches a message's words is "
+            "added to it, and a notice names what was added. The match is by "
+            "keyword, so it can pick something that only shares a word with your "
+            "question.",
+            "info",
+        )
+        return
+
+    await notify("`/digest auto` takes `on` or `off`, or nothing to show the current setting.", "error")
 
 
 async def run_digest_command(
@@ -79,11 +197,13 @@ async def run_digest_command(
     sources: SourceHub | None = None,
     history: Any | None = None,
     actor_id: str | None = None,
+    auto_context: AutoContext | None = None,
 ) -> None:
     """Handle one ``/digest ...`` invocation.
 
     ``history`` and ``actor_id`` are optional so this function stays usable on
-    its own; both production apps always supply them.
+    its own; both production apps always supply them, and their
+    ``auto_context`` switch as well.
     """
     args = args.strip()
     verb, _, rest = args.partition(" ")
@@ -94,7 +214,11 @@ async def run_digest_command(
         return
 
     if verb in {"help", "?"}:
-        await notify(USAGE, "info")
+        await notify(usage(auto_context), "info")
+        return
+
+    if verb == "auto":
+        await run_auto_context_command(rest, auto_context=auto_context, notify=notify)
         return
 
     if verb == "search":

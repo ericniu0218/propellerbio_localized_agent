@@ -108,3 +108,40 @@ def test_biotech_tool_settings_can_be_provisioned_without_hard_coded_paths(tmp_p
     assert settings.alphafold_docker_image == "alphafold@sha256:test"
     assert settings.alphafold_database_version == "2026-01-01"
     assert settings.pymol_executable == "/opt/pymol/bin/pymol"
+
+
+def test_automatic_context_is_on_unless_switched_off(tmp_path: Path):
+    """On by default, which keeps agent-pack mode behaving as it always has."""
+    assert load_settings(config_path=tmp_path / "missing.toml", env={}).auto_context is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", " OFF "])
+def test_automatic_context_can_be_switched_off_from_the_environment(tmp_path: Path, value: str):
+    settings = load_settings(config_path=tmp_path / "missing.toml", env={"BEDROCK_AUTO_CONTEXT": value})
+    assert settings.auto_context is False
+
+
+def test_automatic_context_environment_overrides_file_and_blank_does_not(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text("auto_context = false\n")
+
+    assert load_settings(config_path=config, env={}).auto_context is False
+    assert load_settings(config_path=config, env={"BEDROCK_AUTO_CONTEXT": "1"}).auto_context is True
+    # An empty variable is "not set", as with BEDROCK_SAVE_HISTORY, so the file still decides.
+    assert load_settings(config_path=config, env={"BEDROCK_AUTO_CONTEXT": "  "}).auto_context is False
+    # It is a known key, not an unrecognised one kept in `extra`.
+    assert "auto_context" not in load_settings(config_path=config, env={}).extra
+
+
+@pytest.mark.parametrize(
+    ("config_text", "env", "name"),
+    [
+        ('auto_context = "sometimes"\n', {}, "auto_context"),
+        ("", {"BEDROCK_AUTO_CONTEXT": "maybe"}, "BEDROCK_AUTO_CONTEXT"),
+    ],
+)
+def test_an_unreadable_automatic_context_value_has_a_clear_error(tmp_path: Path, config_text, env, name):
+    config = tmp_path / "config.toml"
+    config.write_text(config_text)
+    with pytest.raises(ValueError, match=name):
+        load_settings(config_path=config, env=env)

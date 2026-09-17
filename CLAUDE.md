@@ -63,7 +63,7 @@ Conversation persistence: conversations are saved to `~/.local/share/bedrock/con
 History loading is demand-driven: keep only the open transcript and lightweight sidebar metadata. Never load other transcripts for title backfill. Legacy files require a metadata extraction scan off the UI thread; no message snapshots remain in the store. Large chats render in 50-message pages with a button to reveal earlier messages. Idle polling checks the directory signature, with a file-fingerprint scan once per minute or on explicit history refresh. Unchanged transcripts are not saved when leaving a chat. Writers merge title/timestamp-only changes, but preserve divergent transcripts as linked copies. `/forget` deletes the whole family and retains empty markers to block stale saves; new IDs contain no start timestamp. A filesystem without advisory locking uses the atomic-directory fallback, and UI saves fail promptly on contention; see README for stale-lock recovery. Files from newer schemas open read-only.
 
 Also built: company data-source connectors (`src/bedrock/connectors/`) -
-`/digest`, `/fold` and `bedrock-biotech fold` accept `<source>://<id>` and pull
+`/digest`, `/fold`, `/pymol` and their `bedrock-biotech` equivalents accept `<source>://<id>` and pull
 the record from a system of record instead of a manually exported file.
 `/sources` lists, searches and fetches. Two generic types, `rest` (HTTP/JSON)
 and `share` (export folder), configured as `[connectors.<name>]` tables.

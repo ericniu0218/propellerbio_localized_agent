@@ -47,7 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     fold.add_argument("--project", help="project label recorded with the run")
 
     pymol = subparsers.add_parser("pymol", help="open a structure, or the latest result")
-    pymol.add_argument("structure", nargs="?", type=Path)
+    pymol.add_argument(
+        "structure",
+        nargs="?",
+        help="a structure file, or a company source reference such as structures://XYZ.pdb",
+    )
 
     # `runs` with no sub-action lists; the filters live on the parent parser so
     # that `bedrock-biotech runs --project X --since 2026-07-01` reads the way
@@ -126,7 +130,15 @@ async def _run(args: argparse.Namespace) -> int:
 
     if args.command == "pymol":
         workflow = ProteinWorkflow.from_settings(settings)
-        opened = await workflow.open_in_pymol(args.structure)
+        structure = Path(args.structure).expanduser() if args.structure else None
+        source = parse_source_ref(args.structure) if args.structure else None
+        if source is not None:
+            # Staged with its provenance, exactly like a fold's sequence, and
+            # opened neutrally: the record's B-factors are not our confidence.
+            record, structure = await SourceHub.from_settings(settings).fetch_to_file(source)
+            print(f"fetched: {source} as {record.fetched_by} ({record.version or 'no version reported'})")
+            print(f"sha256: {record.sha256}")
+        opened = await workflow.open_in_pymol(structure)
         print(f"opened in PyMOL: {opened}")
         return 0
 

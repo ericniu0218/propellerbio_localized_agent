@@ -36,9 +36,9 @@ from bedrock import attachments
 from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
-from bedrock.biotech import ProteinWorkflow, ToolIntegrationError
+from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
-from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
+from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import ContextStore, find_relevant_context, with_injected_context
 from bedrock.inference.base import InferenceError
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
@@ -51,13 +51,14 @@ from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
 from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.fold_command import (
-    confidence_summary,
-    parse_fold_arguments,
+    parse_fold_request,
     parse_structure_argument,
-    predict_and_render,
+    run_fold,
+    run_pymol,
+    tool_status_text,
 )
 from bedrock.ui.journal import JournalledAction
-from bedrock.ui.rendering import as_code, safe_line
+from bedrock.ui.rendering import safe_line
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
@@ -86,7 +87,7 @@ AGENTPACK_HELP_TEXT = """\
 | Command | What it does |
 |---|---|
 | `/fold <fasta-path or source://id> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
-| `/pymol [structure-path]` | Open a structure, or the latest prediction, in PyMOL |
+| `/pymol [structure-path or source://id]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
 | `/runs` | Prediction runs recorded on this machine |
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
@@ -285,23 +286,12 @@ class AgentPackApp(App[None]):
                 )
 
     async def show_tool_status(self) -> None:
-        lines = ["**Scientific tools**", ""]
-        for status in self.biotech_workflow.status():
-            lines.append(f"- {'Ready' if status.ready else 'Not ready'}: **{status.name}**")
-            lines.extend(f"  - {issue}" for issue in status.issues)
-        await self.post_notice("\n".join(lines))
+        await self.post_notice(tool_status_text(self.biotech_workflow))
 
     async def start_fold(self, args: str) -> None:
         """Validate the arguments here, so a typo never starts a GPU job."""
-        if not args.strip():
-            await self.post_notice(
-                "Tell me which one-protein FASTA file to fold, or use "
-                "`/fold <path or source://id> [--project X]`.",
-                kind="error",
-            )
-            return
         try:
-            target, project_id = parse_fold_arguments(args)
+            target, project_id = parse_fold_request(args)
         except CommandUsageError as exc:
             await self.post_notice(str(exc), kind="error")
             return
@@ -309,106 +299,39 @@ class AgentPackApp(App[None]):
             await self.post_notice("A scientific job is already running.", kind="error")
             return
         self._scientific_job_running = True
-        # `registry://SEQ-00123` is fetched from a company system; anything
-        # else is a path on this machine.
-        source = parse_source_ref(target)
-        if source is not None:
-            self.fold_protein(project_id=project_id, source=source)
-        else:
-            self.fold_protein(Path(target).expanduser(), project_id)
+        self.fold_protein(target, project_id)
 
     @work(exclusive=True, group="scientific")
-    async def fold_protein(
-        self,
-        fasta_path: Path | None = None,
-        project_id: str | None = None,
-        source: SourceRef | None = None,
-    ) -> None:
+    async def fold_protein(self, target: Path | SourceRef, project_id: str | None = None) -> None:
         """Run AlphaFold 2 on a local FASTA, or on a record pulled from a company source.
 
-        A source record is fetched and staged with its provenance first, and
-        that provenance goes into the run manifest, so the prediction names the
-        registry record and version it came from rather than only the staging
-        file. The fetch sits inside the same ``try`` as the prediction so a
-        refused or failed fetch still frees the one-job-at-a-time slot.
-
-        ``project_id`` is orthogonal to where the sequence came from: a run can
-        be labelled for a project whether it was pulled or handed over.
+        The fetching, folding and reporting are shared with the plain model
+        mode (``bedrock.ui.fold_command.run_fold``). What is particular to this
+        mode is the queue: a fold is a request here, so the next prompt waits
+        until this one has really finished.
         """
-        provenance = None
         completed = False  # the queue may only advance on a finished prediction
-        label = f" for project {as_code(project_id)}" if project_id else ""
         try:
-            if source is not None:
-                await self.post_notice(f"Fetching {as_code(source)}…")
-                record, fasta_path = await self.sources.fetch_to_file(source)
-                provenance = record.provenance()
-            await self.post_notice(
-                f"Started AlphaFold 2 for {as_code(source or fasta_path)}{label}. This may "
-                "take a long time; the run is preserved if PyMOL rendering fails."
-            )
-            result = await predict_and_render(
-                self.biotech_workflow,
-                fasta_path,
+            completed = await run_fold(
+                target,
                 project_id,
-                source_provenance=provenance,
+                workflow=self.biotech_workflow,
+                sources=self.sources,
+                services=self.services,
+                notify=self.post_notice,
             )
-        except (ToolIntegrationError, ConnectorError) as exc:
-            await self.post_notice(safe_line(exc, limit=400), kind="error")
-        except asyncio.CancelledError:
-            # The prediction itself may still be running in its own process
-            # group; the workflow owns that outcome, not this notice.
-            await self.post_notice("The scientific job was cancelled.", kind="error")
-            raise
-        else:
-            lines = [
-                f"**Protein prediction completed** — run {as_code(result.run_id)}",
-                "",
-                f"- Structure: {as_code(result.structure_path)}",
-                f"- Provenance: {as_code(result.manifest_path)}",
-            ]
-            if provenance:
-                version = f", version {provenance['version']}" if provenance.get("version") else ""
-                lines.insert(
-                    2,
-                    f"- Source: `{provenance['ref']}`{version} (sha256 `{provenance['sha256'][:12]}`)",
-                )
-            if result.preview_path:
-                lines.append(f"- PyMOL preview: {as_code(result.preview_path)}")
-            if result.session_path:
-                lines.append(f"- PyMOL session: {as_code(result.session_path)}")
-            if getattr(result, "confidence_path", None):
-                lines.append(f"- Confidence summary: {as_code(result.confidence_path)}")
-            lines.extend(f"- Warning: {safe_line(warning, limit=300)}" for warning in result.warnings)
-            # A short line only: the full bands, intervals and PAE overview are
-            # a page of their own, and a failed confidence read must never
-            # take a successful, expensive structure down with it.
-            lines.extend(
-                [
-                    "",
-                    f"Confidence: {await confidence_summary(self.services, result.run_id)}",
-                    f"Full detail: `/confidence {safe_line(result.run_id, limit=64)}`",
-                    "",
-                    "Use `/pymol` to open the latest structure interactively.",
-                ]
-            )
-            completed = True
-            await self.post_notice("\n".join(lines))
         finally:
             self._scientific_job_running = False
             # A fold counts as finished only here, never when it starts.
             self.finish_running_prompt(ok=completed)
 
     @work(exclusive=True, group="pymol-open")
-    async def open_pymol(self, structure_path: Path | None) -> None:
+    async def open_pymol(self, target: Path | SourceRef | None) -> None:
         opened_ok = False
         try:
-            opened = await self.biotech_workflow.open_in_pymol(structure_path)
-        except ToolIntegrationError as exc:
-            await self.post_notice(str(exc), kind="error")
-        else:
-            opened_ok = True
-            await self.post_notice(f"Opened `{opened}` in PyMOL.")
+            opened_ok = await run_pymol(
+                target, workflow=self.biotech_workflow, sources=self.sources, notify=self.post_notice
+            )
         finally:
             self.finish_running_prompt(ok=opened_ok)
 

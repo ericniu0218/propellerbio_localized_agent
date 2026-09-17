@@ -24,6 +24,9 @@ HELP_TEXT = """\
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
 | `/digest <source>://<id>` | Pull a record from a company source and compress it |
+| `/fold <fasta-path or source://id> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
+| `/pymol [structure-path or source://id]` | Open a structure, or the latest prediction, in PyMOL |
+| `/tools` | Check AlphaFold 2 and PyMOL configuration |
 | `/runs` | Prediction runs recorded on this machine |
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
@@ -47,6 +50,9 @@ HELP_TEXT = """\
 
 `/runs`, `/confidence` and `/audit` read local files only. They work with the
 model server switched off, and nothing they show is sent to a model.
+
+A `/fold` runs beside the chat: keep asking the model questions while it
+works. `Esc` stops a streaming reply, never a fold.
 
 **Attaching files**
 
@@ -93,6 +99,9 @@ KNOWN_COMMANDS = {
     "forget",
     "recall",
     "context",
+    "fold",
+    "pymol",
+    "tools",
     "help",
     "exit",
     "quit",

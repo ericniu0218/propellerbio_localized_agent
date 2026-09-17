@@ -10,7 +10,7 @@ import pytest
 
 from bedrock.agentpack.models import AgentEvent
 from bedrock.agentpack_app import AgentPackApp
-from bedrock.biotech import ProteinWorkflowResult, ToolStatus
+from bedrock.biotech import ProteinWorkflowResult
 from bedrock.config import Settings
 from bedrock.inference import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
@@ -19,6 +19,7 @@ from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMe
 from textual.widgets import Input
 
 from tests.conftest import (
+    FakeBiotechWorkflow,
     FakeRunCatalog,
     make_confidence_report,
     make_services,
@@ -67,42 +68,6 @@ class FakeAgentPackClient:
 
     async def close(self) -> None:
         self.closed = True
-
-
-class FakeBiotechWorkflow:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.folded: list[tuple[Path, str | None]] = []
-        self.opened: list[Path | None] = []
-        self.provenance: list[dict | None] = []
-
-    def status(self):
-        return (
-            ToolStatus("AlphaFold 2", True, ()),
-            ToolStatus("open-source PyMOL", True, ()),
-        )
-
-    async def predict_and_render(
-        self,
-        fasta_path: Path,
-        *,
-        project_id: str | None = None,
-        source_provenance: dict | None = None,
-    ) -> ProteinWorkflowResult:
-        self.folded.append((fasta_path, project_id))
-        self.provenance.append(source_provenance)
-        return ProteinWorkflowResult(
-            run_id="run_test",
-            run_dir=self.root,
-            structure_path=self.root / "ranked_0.pdb",
-            preview_path=self.root / "preview.png",
-            session_path=self.root / "structure.pse",
-            manifest_path=self.root / "manifest.json",
-        )
-
-    async def open_in_pymol(self, structure_path: Path | None = None) -> Path:
-        self.opened.append(structure_path)
-        return structure_path or self.root / "ranked_0.pdb"
 
 
 @pytest.fixture
@@ -466,6 +431,45 @@ async def test_fold_pulls_the_sequence_from_a_company_source_with_provenance(fak
         assert provenance["ref"] == "registry://SEQ-00123.fasta"
         assert provenance["fetched_by"] == "alice"
         assert "Source: `registry://SEQ-00123.fasta`" in notices
+
+
+async def test_pymol_opens_a_structure_pulled_from_a_company_source(fake_client, tmp_path):
+    from textual.widgets import Input
+
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = source_app(fake_client, tmp_path, workflow)
+    (tmp_path / "registry-exports" / "STRUCT-9.pdb").write_text("ATOM      1  N   MET A   1\n")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "/pymol registry://STRUCT-9.pdb"
+        await pilot.press("enter")
+        await wait_for_notice(app, pilot, "Opened `registry://STRUCT-9.pdb` in PyMOL")
+
+        (opened,) = workflow.opened
+        # Named explicitly, so it is styled neutrally rather than as a prediction.
+        assert opened is not None and opened.parent == tmp_path / "work" / "sources"
+        assert (opened.parent / (opened.name + ".provenance.json")).is_file()
+
+
+async def test_quitting_while_a_fold_runs_closes_cleanly(fake_client, tmp_path):
+    """The screen is gone by the time the "cancelled" notice would be shown;
+    that used to fail the worker and end the app with a traceback."""
+    started = asyncio.Event()
+
+    class BlockingWorkflow(FakeBiotechWorkflow):
+        async def predict_and_render(self, fasta_path, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    app = make_app(fake_client, BlockingWorkflow(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await started.wait()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+    assert app.return_code == 0
+    assert app._exception is None
 
 
 async def test_a_refused_source_fetch_reports_and_frees_the_job_slot(fake_client, tmp_path):

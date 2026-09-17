@@ -27,6 +27,11 @@ The UI interface
 and ``clear_queue`` live on the app. They hand out ``QueueSnapshot``, whose
 items are frozen: a panel can render the queue but cannot reach into it. Every
 change posts a ``QueueChanged`` message.
+
+``QueueSnapshot.can_skip`` gates the panel's "Stop & run next" control
+(``PromptQueuePanel.SkipRequested``). The app computes it, not this module -
+whether stopping in-flight work can be done safely and confirmed depends on
+the backend, which this module never touches.
 """
 
 from __future__ import annotations
@@ -83,6 +88,12 @@ class QueueSnapshot:
     conversation_id: str | None = None
     """Which conversation this is a snapshot of, so the panel can reset its
     selection when the employee switches chats."""
+    can_skip: bool = False
+    """Whether "Stop & run next" should be offered right now.
+
+    Computed by the app, not this module: it depends on whether stopping the
+    backend's in-flight work can be done safely and confirmed, which this
+    module has no way to know. False unless the app says otherwise."""
 
     @property
     def is_idle(self) -> bool:
@@ -138,13 +149,14 @@ class PromptQueue:
     def pending_count(self) -> int:
         return sum(map(len, self._pending.values()))
 
-    def snapshot(self, conversation_id: str) -> QueueSnapshot:
+    def snapshot(self, conversation_id: str, *, can_skip: bool = False) -> QueueSnapshot:
         running = self._running
         return QueueSnapshot(
             pending=tuple(item.public() for item in self._pending.get(conversation_id, ())),
             running=running.public() if running is not None and running.conversation_id == conversation_id else None,
             paused=conversation_id in self._paused,
             conversation_id=conversation_id,
+            can_skip=can_skip,
         )
 
     def conversations(self) -> set[str]:

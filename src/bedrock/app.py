@@ -30,6 +30,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Input, OptionList
+from textual.worker import WorkerCancelled
 
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub
@@ -61,6 +62,7 @@ from bedrock.ui.widgets import (
 from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
+SKIP_CLEANUP_WARNING_SECONDS = 5.0
 
 HISTORY_DISABLED = (
     "Saving conversations is switched off on this machine "
@@ -132,6 +134,13 @@ class BedrockApp(App[None]):
         self._preparing_prompts: set[str] = set()
         self._queue_update_scheduled = False
         self._quit_confirmation = (0, 0.0)
+        # "Stop & run next": conversations currently being stopped (guards
+        # double clicks) and prompt ids whose cancellation must not requeue
+        # them, because the whole point of skipping is to drop that prompt.
+        self._skipping: set[str] = set()
+        self._skip_no_requeue: set[str] = set()
+        # Retry identities only, not cached transcripts; discarded with queue items.
+        self._prepared_questions: dict[str, datetime] = {}
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -788,7 +797,19 @@ class BedrockApp(App[None]):
 
     def queue_snapshot(self) -> QueueSnapshot:
         """The open conversation's pending prompts, running prompt and pause state."""
-        return self.prompt_queue.snapshot(self.conversation.id)
+        conversation_id = self.conversation.id
+        running = self.prompt_queue.running
+        # Stopping mid-stream is always safe here: cancellation is local
+        # (Esc already does it) and the fake or real backend just stops
+        # yielding fragments - there is no server-side task to lose track of.
+        can_skip = (
+            conversation_id not in self._skipping
+            and running is not None
+            and running.conversation_id == conversation_id
+            and bool(self.prompt_queue.pending_for(conversation_id))
+            and bool(self._active_prompt_workers())
+        )
+        return self.prompt_queue.snapshot(conversation_id, can_skip=can_skip)
 
     def remove_queued_prompt(self, item_id: str) -> bool:
         """Take one waiting prompt out of the queue. A running one cannot be removed."""
@@ -826,14 +847,24 @@ class BedrockApp(App[None]):
 
     def _emit_queue_changed(self) -> None:
         self._queue_update_scheduled = False
+        retained = {
+            item.id for cid in self.prompt_queue.conversations()
+            for item in self.prompt_queue.pending_for(cid)
+        }
+        if self.prompt_queue.running is not None:
+            retained.add(self.prompt_queue.running.id)
+        self._prepared_questions = {key: value for key, value in self._prepared_questions.items() if key in retained}
         self.post_message(QueueChanged(self.conversation.id, self.queue_snapshot()))
+
+    def _active_prompt_workers(self):
+        return [w for w in self.workers if w.group in {"queue", "chat"} and not w.is_finished]
 
     def recover_queue(self) -> None:
         """Recover a stranded item, never a slow but still active worker."""
         item = self.prompt_queue.running
         if item is None or item.id in self._preparing_prompts:
             return
-        if any(w.group in {"queue", "chat"} and not w.is_finished for w in self.workers):
+        if self._active_prompt_workers():
             return
         if self.prompt_queue.requeue_front(item):
             self._streaming = False
@@ -865,6 +896,100 @@ class BedrockApp(App[None]):
     @on(PromptQueuePanel.ClearRequested)
     def on_queue_clear(self) -> None:
         self.clear_queue()
+
+    @on(PromptQueuePanel.SkipRequested)
+    def on_queue_skip(self, message: PromptQueuePanel.SkipRequested) -> None:
+        # Fire-and-forget: cancellation can take a while on a real backend
+        # (or hang on one that never confirms), and this app has exactly one
+        # message queue. Awaiting the cleanup here would freeze every other
+        # message - typing, other buttons, even Esc - for as long as that
+        # takes. The dedicated worker group keeps this off the groups being
+        # cancelled, so cleanup is never cancelled by its own cancellation.
+        self.run_skip(message.item_id, message.conversation_id)
+
+    @work(group="skip")
+    async def run_skip(self, item_id: str, conversation_id: str | None) -> None:
+        await self.skip_running_prompt(item_id, conversation_id)
+
+    async def skip_running_prompt(self, item_id: str | None = None, conversation_id: str | None = None) -> None:
+        """Stop the running prompt and start the open conversation's next one.
+
+        ``item_id``/``conversation_id`` identify the prompt as displayed when
+        the click happened. A message can sit in the queue for a while behind
+        other work; by the time it is handled, the item that was running then
+        may have already finished naturally and a *different* one may be
+        running now. Checking identity, not just "is something running and
+        does it belong here", stops this from silently cancelling the wrong
+        prompt. Omitting them (only done by direct calls, e.g. in tests)
+        falls back to whatever is running now.
+
+        Eligibility is rechecked here rather than trusted from the click: the
+        panel's snapshot can be one event behind, so the run may already have
+        finished, moved to another prompt, or stopped belonging to the chat
+        that is open now. Only one skip runs at a time per conversation, so a
+        second click while cleanup is still in flight does nothing.
+        """
+        target_conversation_id = self.conversation.id
+        running = self.prompt_queue.running
+        if (
+            target_conversation_id in self._skipping
+            or running is None
+            or running.conversation_id != target_conversation_id
+            or not self.prompt_queue.pending_for(target_conversation_id)
+            or (item_id is not None and running.id != item_id)
+            or (conversation_id is not None and conversation_id != target_conversation_id)
+        ):
+            return
+        workers = self._active_prompt_workers()
+        if not workers:
+            self.recover_queue()
+            return
+        running_id = running.id
+        self._skipping.add(target_conversation_id)
+        self._skip_no_requeue.add(running_id)
+        # A fresh snapshot now, so the button disables immediately rather than
+        # staying clickable for however long cleanup below takes.
+        self.queue_changed(target_conversation_id)
+        try:
+            # These groups are global: safe only while PromptQueue is single-flight.
+            self.workers.cancel_group(self, "queue")
+            self.workers.cancel_group(self, "chat")
+            warned = False
+            for worker in workers:
+                wait_task = asyncio.ensure_future(worker.wait())
+                try:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=SKIP_CLEANUP_WARNING_SECONDS)
+                    except asyncio.TimeoutError:
+                        if not warned:
+                            warned = True
+                            self.notify("Stopping is taking longer than expected. Still waiting - nothing new will start until it finishes.", severity="warning", timeout=8)
+                        await wait_task  # same task, not a fresh call: must still be confirmed before proceeding
+                except WorkerCancelled:
+                    pass
+                except Exception as exc:
+                    self.pause_queue(target_conversation_id)
+                    self.notify(f"Could not finish stopping the prompt: {exc}. The queue is paused; nothing further was started.", severity="error", timeout=10)
+                    return
+            # A natural completion may have raced the cancellation and already
+            # finished this item (advancing the queue on its own) or started a
+            # different one. Either way there is nothing left for us to stop.
+            still_running = self.prompt_queue.running
+            if still_running is not None and still_running.id == running_id:
+                self.prompt_queue.finish(running_id)
+            if self.conversation.id != target_conversation_id:
+                # Left this chat while cleanup was in flight. Leaving a chat
+                # already pauses its queue; do not restart unwatched work in
+                # a chat nobody is looking at. But if /forget already dropped
+                # it entirely, leave no stray pause marker behind.
+                if target_conversation_id in self.prompt_queue.conversations():
+                    self.pause_queue(target_conversation_id)
+                return
+            self.resume_queue(target_conversation_id)
+        finally:
+            self._skip_no_requeue.discard(running_id)
+            self._skipping.discard(target_conversation_id)
+            self.queue_changed(target_conversation_id)
 
     def finish_prompt(self, item: PromptItem, *, ok: bool, quiet: bool = False) -> None:
         """End one run and, if it went well, let the next prompt start.
@@ -939,19 +1064,21 @@ class BedrockApp(App[None]):
         # ``start_next`` marks the queue busy before any awaiting work below,
         # so a prompt typed during preparation queues rather than racing it.
         self.queue_changed(conversation_id)
-        conversation = self.conversation
-        message_count = len(conversation.messages)
         self._preparing_prompts.add(item.id)
         try:
             await self.dispatch_prompt(item)
         except asyncio.CancelledError:
-            if self.prompt_queue.requeue_front(item):
-                del conversation.messages[message_count:]
+            if item.id in self._skip_no_requeue:
+                # Stopped by "Stop & run next" during preparation (e.g. a
+                # recall search): the whole point is to drop this prompt, not
+                # bring it back.
+                self.prompt_queue.finish(item.id)
+                self.queue_changed()
+            elif self.prompt_queue.requeue_front(item):
                 self.queue_changed()
             raise
         except Exception as exc:
             if self.prompt_queue.requeue_front(item):
-                del conversation.messages[message_count:]
                 self.queue_changed()
             self._streaming = False
             await self.post_notice(f"Could not start the prompt: {markdown_text(str(exc))}. The prompt was kept and its queue is paused. Resume to retry.", kind="error")
@@ -1001,16 +1128,29 @@ class BedrockApp(App[None]):
                 self.finish_prompt(item, ok=False)
                 return
 
-        question = self.conversation.add_user(text)
-        # Save the question before asking: if the app dies mid-answer, the
-        # employee still has what they typed.
-        if not self.save_conversation():
-            self.conversation.messages.remove(question)
-            self.query_one("#prompt", Input).value = text
-            await self.post_notice("Could not save this message. Your draft is still in the input; nothing was sent. Use `/new` if this chat was deleted.", kind="error")
-            self.finish_prompt(item, ok=False)
-            return
-        await self.mount_message(UserMessage(text))
+        conversation = self.conversation
+        # Esc may retry an already committed question, even after reopening its
+        # chat. Match its saved identity without caching any transcript objects.
+        timestamp = self._prepared_questions.get(item.id)
+        question = next((message for message in conversation.messages
+                         if message.timestamp == timestamp and message.role == Role.USER
+                         and message.content == text), None)
+        if question is None:
+            question = conversation.add_user(text)
+            # Only this attempt's unsaved, unseen question may be rolled back.
+            try:
+                saved = self.save_conversation()
+            except Exception:
+                conversation.messages[:] = [message for message in conversation.messages if message is not question]
+                raise
+            if not saved:
+                conversation.messages[:] = [message for message in conversation.messages if message is not question]
+                self.query_one("#prompt", Input).value = text
+                await self.post_notice("Could not save this message. Your draft is still in the input; nothing was sent. Use `/new` if this chat was deleted.", kind="error")
+                self.finish_prompt(item, ok=False)
+                return
+            self._prepared_questions[item.id] = question.timestamp
+            await self.mount_message(UserMessage(text))
 
         conversation, note = self.conversation, None
         if self.store is not None and wants_recall(text):

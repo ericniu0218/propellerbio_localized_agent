@@ -463,6 +463,12 @@ class AgentPackApp(App[None]):
         return self.session_id or "session"
 
     def queue_snapshot(self) -> QueueSnapshot:
+        # "Stop & run next" stays off here: the agent-pack backend has no
+        # cancel call, no way to confirm a stop was recorded, and (per
+        # _finish's own docstring) no correlation id to tell a stale event
+        # from this session's next request. Pretending to stop by just
+        # ignoring the backend's eventual event would be lying about what
+        # happened, so this always reports can_skip=False.
         return self.prompt_queue.snapshot(self.queue_key)
 
     def remove_queued_prompt(self, item_id: str) -> bool:
@@ -606,6 +612,12 @@ class AgentPackApp(App[None]):
     @on(PromptQueuePanel.ClearRequested)
     def on_queue_clear(self) -> None:
         self.clear_queue()
+
+    @on(PromptQueuePanel.SkipRequested)
+    def on_queue_skip(self) -> None:
+        # can_skip is always False here (see queue_snapshot), so the button
+        # is never enabled; this only guards a stale or forced message.
+        pass
 
     # ---- Stored context ---------------------------------------------------------
 

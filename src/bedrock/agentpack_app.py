@@ -32,6 +32,7 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Input
 
+from bedrock import attachments
 from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
@@ -92,6 +93,7 @@ AGENTPACK_HELP_TEXT = """\
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
 | `/audit` | What this client has done on this machine |
+| `@<path>` in a message | Attach a text file to that message, e.g. `summarise @notes.txt` |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
@@ -416,7 +418,19 @@ class AgentPackApp(App[None]):
             self.finish_running_prompt(ok=False)
             return
 
-        await self.mount_message(UserMessage(text))
+        # @files are read when the prompt starts, off the UI thread, because a
+        # large one is compressed first. See bedrock/attachments.py.
+        try:
+            attached = await asyncio.to_thread(attachments.load, attachments.resolve(text), self.context_store)
+        except attachments.AttachmentError as exc:
+            await self.post_notice(str(exc) + " Your draft is still in the input; nothing was sent.", kind="error")
+            self.query_one("#prompt", Input).value = text
+            self.finish_running_prompt(ok=False)
+            return
+
+        await self.mount_message(UserMessage(attachments.display_text(text, attached)))
+        if notice := attachments.summary(attached):
+            await self.post_notice(notice)
         self._agents.clear()
         self.query_one("#agent-panel", AgentPanel).clear()
 
@@ -428,7 +442,7 @@ class AgentPackApp(App[None]):
         # text actually sent to the model gets the extra context, and the
         # notice below says so out loud rather than doing it silently.
         injected = find_relevant_context(text, self.context_store)
-        outgoing_text = with_injected_context(text, injected)
+        outgoing_text = with_injected_context(attachments.with_attachments(text, attached), injected)
         if injected is not None:
             await self.post_notice(injected.summary)
 
@@ -516,6 +530,14 @@ class AgentPackApp(App[None]):
         """Queue a chat message or scientific request and run it when it can."""
         if not self.session_id:
             await self.post_notice("Still connecting to the AI system — try again in a moment.", kind="error")
+            return
+        try:
+            # Only checks that each @file exists, so a typo is reported before
+            # the prompt waits in the queue.
+            attachments.resolve(text)
+        except attachments.AttachmentError as exc:
+            self.query_one("#prompt", Input).value = text
+            await self.post_notice(str(exc) + " Your draft is still in the input.", kind="error")
             return
         try:
             self.prompt_queue.add(text, self.queue_key, "AI system")

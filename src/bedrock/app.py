@@ -32,6 +32,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Input, OptionList
 from textual.worker import WorkerCancelled
 
+from bedrock import attachments
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub
 from bedrock.context import ContextStore, find_relevant_context
@@ -588,7 +589,7 @@ class BedrockApp(App[None]):
         widgets = []
         for message in conversation.messages[-50:]:
             if message.role is Role.USER:
-                widgets.append(UserMessage(message.content))
+                widgets.append(UserMessage(attachments.display_text(message.content, message.attachments)))
             elif message.role is Role.ASSISTANT:
                 widgets.append(AssistantMessage(conversation.model or "", message.content))
         if widgets:
@@ -605,7 +606,7 @@ class BedrockApp(App[None]):
         button.disabled = True
         start = max(0, self._earliest_rendered - 50)
         widgets = [
-            UserMessage(message.content) if message.role is Role.USER
+            UserMessage(attachments.display_text(message.content, message.attachments)) if message.role is Role.USER
             else AssistantMessage(self.conversation.model or "", message.content)
             for message in self.conversation.messages[start:self._earliest_rendered]
             if message.role in (Role.USER, Role.ASSISTANT)
@@ -1042,6 +1043,14 @@ class BedrockApp(App[None]):
         if not self.model_name:
             await self.post_notice("No model selected. Use `/model` to see what is available.", kind="error")
             return
+        try:
+            # Only checks that each @file exists, so a typo is reported now
+            # rather than after the prompt has waited its turn in the queue.
+            attachments.resolve(text)
+        except attachments.AttachmentError as exc:
+            self.query_one("#prompt", Input).value = text
+            await self.post_notice(str(exc) + " Your draft is still in the input.", kind="error")
+            return
 
         conversation_id = self.conversation.id
         try:
@@ -1136,7 +1145,16 @@ class BedrockApp(App[None]):
                          if message.timestamp == timestamp and message.role == Role.USER
                          and message.content == text), None)
         if question is None:
-            question = conversation.add_user(text)
+            # Read @files when the prompt starts, off the UI thread: a large
+            # one is compressed first, which takes a moment.
+            try:
+                attached = await asyncio.to_thread(attachments.load, attachments.resolve(text), self.context_store)
+            except attachments.AttachmentError as exc:
+                self.query_one("#prompt", Input).value = text
+                await self.post_notice(str(exc) + " Your draft is still in the input; nothing was sent.", kind="error")
+                self.finish_prompt(item, ok=False)
+                return
+            question = conversation.add_user(text, attached)
             # Only this attempt's unsaved, unseen question may be rolled back.
             try:
                 saved = self.save_conversation()
@@ -1150,7 +1168,9 @@ class BedrockApp(App[None]):
                 self.finish_prompt(item, ok=False)
                 return
             self._prepared_questions[item.id] = question.timestamp
-            await self.mount_message(UserMessage(text))
+            await self.mount_message(UserMessage(attachments.display_text(text, attached)))
+            if notice := attachments.summary(attached):
+                await self.post_notice(notice)
 
         conversation, note = self.conversation, None
         if self.store is not None and wants_recall(text):

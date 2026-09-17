@@ -11,6 +11,13 @@
   let pollHandle = null;
   let lastRenderSig = { center: "", activity: "", sidebarList: "" };
 
+  function getEnterToSend() {
+    try { return localStorage.getItem("bedrock_enter_to_send") !== "false"; } catch { return true; }
+  }
+  function setEnterToSend(v) {
+    try { localStorage.setItem("bedrock_enter_to_send", v ? "true" : "false"); } catch {}
+  }
+
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const el = (tag, props = {}, children = []) => {
@@ -320,6 +327,12 @@
     const attachBtn = el("button", { type: "button", class: "icon-btn", title: "Attach a file", onclick: () => fileInput.click() }, icon("paperclip"));
     const textarea = el("textarea", { placeholder: activeRun ? "A task is already running for this chat…" : "Ask a question…", rows: "1" });
     textarea.disabled = !!activeRun;
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      const enterSends = getEnterToSend();
+      if (enterSends) { e.preventDefault(); form.requestSubmit(); }
+      // else: fall through to the browser's default newline insertion.
+    });
     const sendBtn = el("button", { class: "btn primary small", type: "submit", disabled: activeRun ? "disabled" : null }, [icon("send"), "Send"]);
     const agentBtn = el("button", { type: "button", class: "btn small", disabled: activeRun ? "disabled" : null, onclick: () => openAgentPicker(chat, textarea.value) }, [icon("agent"), "Create Agent"]);
     form.appendChild(fileInput);
@@ -338,6 +351,17 @@
       } catch (err) { alert(err.message); await refresh(); }
     });
     dock.appendChild(form);
+
+    const enterHint = el("div", { class: "composer-hint" });
+    const enterSwitch = el("label", { class: "switch small" }, [el("input", { type: "checkbox", checked: getEnterToSend() ? "checked" : null }), el("span", { class: "track" })]);
+    enterSwitch.querySelector("input").addEventListener("change", (e) => { setEnterToSend(e.target.checked); paintHint(); });
+    function paintHint() { hintLabel.textContent = getEnterToSend() ? "Enter sends · Shift+Enter for a new line" : "Enter adds a new line"; }
+    const hintLabel = el("span", {});
+    paintHint();
+    enterHint.appendChild(enterSwitch);
+    enterHint.appendChild(hintLabel);
+    dock.appendChild(enterHint);
+
     $("#center").appendChild(dock);
   }
 
@@ -397,10 +421,9 @@
       });
     }
     paintCards();
-    const body = el("div", {}, [
+    const body = el("div", { class: "simple-form" }, [
       cardsHost,
-      el("label", {}, "Task"),
-      task,
+      el("div", { class: "field" }, [el("label", {}, "Task"), task]),
     ]);
     const startBtn = el("button", { class: "btn primary" }, "Start agent");
     const { close } = openModal({
@@ -505,8 +528,8 @@
     const nameInput = el("input", { required: "required" });
     const descInput = el("textarea", {});
     const body = el("div", { class: "simple-form" }, [
-      el("div", {}, [el("label", {}, "Name"), nameInput]),
-      el("div", {}, [el("label", {}, "Description"), descInput]),
+      el("div", { class: "field" }, [el("label", {}, "Name"), nameInput]),
+      el("div", { class: "field" }, [el("label", {}, "Description"), descInput]),
     ]);
     const createBtn = el("button", { class: "btn primary" }, "Create project");
     const { close } = openModal({ title: "Start a project", body, footer: [el("button", { class: "btn ghost" }, "Cancel"), createBtn] });
@@ -524,9 +547,9 @@
     const nameInput = el("input", { placeholder: "Full name", required: "required" });
     const roleSelect = el("select", {}, ["Scientist", "Admin", "Viewer"].map((r) => el("option", {}, r)));
     const body = el("div", { class: "simple-form" }, [
-      el("div", {}, [el("label", {}, "Name"), nameInput]),
-      el("div", {}, [el("label", {}, "Role"), roleSelect]),
-      el("p", { class: "muted small" }, "This demo has no company directory yet — invites are recorded on the project but no email is sent."),
+      el("div", { class: "field" }, [el("label", {}, "Name"), nameInput]),
+      el("div", { class: "field" }, [el("label", {}, "Role"), roleSelect]),
+      el("p", { class: "form-note" }, "This demo has no company directory yet — invites are recorded on the project but no email is sent."),
     ]);
     const sendBtn = el("button", { class: "btn primary" }, "Send invite");
     const { close } = openModal({ title: "Invite a collaborator", body, footer: [el("button", { class: "btn ghost" }, "Cancel"), sendBtn] });
@@ -597,13 +620,13 @@
     const contentInput = el("textarea", { required: "required" });
     const scopeSelect = el("select", {}, ["Personal", "Project", "Team", "Company"].map((s) => el("option", {}, s)));
     const projSelect = el("select", {}, state.projects.map((p) => el("option", { value: p.id }, p.name)));
-    const projRow = el("div", {}, [el("label", {}, "Project"), projSelect]);
+    const projRow = el("div", { class: "field" }, [el("label", {}, "Project"), projSelect]);
     scopeSelect.addEventListener("change", () => { projRow.hidden = scopeSelect.value !== "Project"; });
     projRow.hidden = true;
     const body = el("div", { class: "simple-form" }, [
-      el("div", {}, [el("label", {}, "Title"), titleInput]),
-      el("div", {}, [el("label", {}, "Content"), contentInput]),
-      el("div", {}, [el("label", {}, "Scope"), scopeSelect]),
+      el("div", { class: "field" }, [el("label", {}, "Title"), titleInput]),
+      el("div", { class: "field" }, [el("label", {}, "Content"), contentInput]),
+      el("div", { class: "field" }, [el("label", {}, "Scope"), scopeSelect]),
       projRow,
     ]);
     const createBtn = el("button", { class: "btn primary" }, "Save");

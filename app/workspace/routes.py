@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.config import get_settings
 from app.workspace.store import WorkspaceStore, demo_mode, now, uid
 from app.workspace.files import extract, profile, transcript_summary, SENSITIVE
 from app.workspace.providers import MockAIProvider, LocalLLMProvider, ModelRouter
@@ -275,9 +276,12 @@ async def execute_run(owner, run, context):
     s = store()
     try:
         # The real orchestrator handles AGENT_PACK_MODE=mock/real itself
-        # (deterministic fixture model vs. a live one); this only chooses
-        # between that real path and the workspace's own simulated demo.
-        provider = MockAIProvider() if demo_mode() else LocalLLMProvider()
+        # (deterministic fixture model vs. a live one). Demo data (seeded
+        # projects/meetings, DEMO_MODE=true) and a real model are independent
+        # choices: a demo with AGENT_PACK_MODE=real configured should give
+        # genuine answers, not the canned MockAIProvider text, so this only
+        # falls back to the canned demo when no real model is configured.
+        provider = LocalLLMProvider() if get_settings().mode == "real" else MockAIProvider()
         await provider.execute(s, owner, run, context)
         if run["status"] == "completed":
             async with _chat_lock(run["chatId"]):

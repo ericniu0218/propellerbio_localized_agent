@@ -59,6 +59,7 @@ export type EventType =
   | "review.approved"
   | "review.rejected"
   | "approval.required"
+  | "approval.resolved"
   | "task.completed"
   | "task.failed"
   | "usage.updated";
@@ -178,6 +179,15 @@ export interface ReviewDecisionPayload {
   retry_count: number;
 }
 
+export interface ApprovalResolvedPayload {
+  task_id: string;
+  decision: string;
+  /** The person who signed off — recorded in the audit log. */
+  approved_by: string;
+  comment?: string | null;
+  recorded_at: string;
+}
+
 export interface ApprovalRequiredPayload {
   task_id: string;
   title: string;
@@ -224,6 +234,7 @@ export interface EventPayloadMap {
   "review.approved": ReviewDecisionPayload;
   "review.rejected": ReviewDecisionPayload;
   "approval.required": ApprovalRequiredPayload;
+  "approval.resolved": ApprovalResolvedPayload;
   "task.completed": TaskCompletedPayload;
   "task.failed": TaskFailedPayload;
   "usage.updated": UsageUpdatedPayload;

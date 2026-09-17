@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     routes_agent_tiers,
@@ -20,6 +21,7 @@ from app.compliance.airgap_check import AirgapViolation, run_airgap_check
 from app.compliance.audit import audit_event_sink
 from app.config import get_settings
 from app.events import get_event_bus
+from app.workspace import routes as routes_workspace
 
 logger = logging.getLogger("agent_pack")
 
@@ -35,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_agent_tiers.router)
     app.include_router(routes_results.router)
     app.include_router(sse.router)
+    app.include_router(routes_workspace.router)
 
     @app.on_event("startup")
     async def startup() -> None:
@@ -53,12 +56,20 @@ def create_app() -> FastAPI:
         return {"status": "ok", "mode": get_settings().mode}
 
     static_dir = Path(__file__).resolve().parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")
     async def index() -> FileResponse:
-        # A minimal reference web client (not the primary product surface —
-        # see the terminal client in ../frontend — but a real, no-install
-        # page anyone can open at this server's address in a browser).
+        # The scientist-facing workspace: three-column chat/projects/memory/
+        # meetings UI backed by /workspace/api, wrapping the existing
+        # orchestrator rather than replacing it (see WORKSPACE_ARCHITECTURE.md).
+        return FileResponse(static_dir / "workspace" / "index.html")
+
+    @app.get("/legacy")
+    async def legacy_index() -> FileResponse:
+        # The original minimal reference web client — kept, not deleted,
+        # per the redesign brief's instruction to wrap rather than remove
+        # working functionality.
         return FileResponse(static_dir / "index.html")
 
     return app

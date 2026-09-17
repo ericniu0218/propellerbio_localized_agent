@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bedrock Workspace</title>
+<link rel="stylesheet" href="/static/workspace/styles.css">
+</head>
+<body>
+
+<div id="login" class="login-screen" hidden>
+  <div class="login-card">
+    <div class="brand">Bedrock<span>Workspace</span></div>
+    <p id="login-copy" class="muted">Sign in to continue.</p>
+    <button id="demo-login-btn" class="btn primary" hidden>Continue as demo user</button>
+    <a id="sso-login-link" class="btn primary" href="/auth/login" hidden>Log in with company account</a>
+    <form id="dev-login-form" class="simple-form" hidden>
+      <div class="field"><label>Your name</label><input id="dev-login-name" placeholder="e.g. Alex Rivera" required></div>
+      <button type="submit" class="btn primary">Continue</button>
+    </form>
+    <p id="login-fallback" class="muted small" hidden>No sign-in method is configured on this server yet.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <aside id="sidebar">
+    <div class="brand-row">
+      <div class="brand">Bedrock<span>Workspace</span></div>
+    </div>
+
+    <nav id="nav">
+      <button class="nav-item active" data-view="chats" data-icon="chat">Chats</button>
+      <button class="nav-item" data-view="projects" data-icon="folder">Projects</button>
+      <button class="nav-item" data-view="memory" data-icon="brain">Memory</button>
+      <button class="nav-item" data-view="meetings" data-icon="calendar">Meetings</button>
+      <button class="nav-item disabled" data-view="knowledge" data-icon="database" title="Not yet connected">Company Knowledge</button>
+      <button class="nav-item disabled" data-view="tools" data-icon="tool" title="Not yet available">Tools</button>
+      <button class="nav-item" data-view="settings" data-icon="settings">Settings</button>
+    </nav>
+
+    <div id="sidebar-list" class="sidebar-list"></div>
+
+    <div id="sidebar-footer">
+      <div class="who">
+        <span id="user-avatar" class="avatar"></span>
+        <span id="user-name" class="muted"></span>
+      </div>
+      <button id="logout-btn" class="link-btn small">Sign out</button>
+    </div>
+  </aside>
+
+  <main id="center">
+    <header id="center-header">
+      <button id="sidebar-menu-btn" class="icon-btn" title="Menu" data-icon="menu"></button>
+      <h1 id="center-title">Chats</h1>
+      <div id="center-actions"></div>
+      <button id="activity-toggle" class="btn ghost small" data-icon="agent">Agent Activity</button>
+    </header>
+    <div id="center-body"></div>
+  </main>
+
+  <aside id="activity-panel">
+    <div id="activity-resizer"></div>
+    <header class="activity-header">
+      <h2><span data-icon="agent"></span>Agent Activity</h2>
+      <div class="activity-header-actions">
+        <button id="activity-popout" class="icon-btn" title="Open in a separate window" data-icon="popout"></button>
+        <button id="activity-collapse" class="icon-btn" title="Close panel" data-icon="close"></button>
+      </div>
+    </header>
+    <div id="activity-body"></div>
+  </aside>
+
+  <div id="sidebar-scrim"></div>
+</div>
+
+<div id="modal-root" hidden></div>
+
+<script src="/static/workspace/app.js"></script>
+</body>
+</html>

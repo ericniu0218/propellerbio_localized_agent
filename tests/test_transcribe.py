@@ -456,6 +456,62 @@ def test_a_file_with_no_participant_suffix_is_not_a_participant(tmp_path):
     assert discover_participant_tracks(tmp_path) == {}
 
 
+# --- the unseparated layout Zoom writes today ----------------------------
+
+
+def _unseparated_recording(tmp_path, *names, recording_id="1441831751", conf=True):
+    """A real 2026 Zoom folder: no underscore, id glued to the display name."""
+    rec = tmp_path / "Audio Record"
+    rec.mkdir(parents=True)
+    for name in names:
+        (rec / f"audio{name}{recording_id}.m4a").write_bytes(b"")
+    (tmp_path / f"audio{recording_id}.m4a").write_bytes(b"")
+    (tmp_path / f"video{recording_id}.mp4").write_bytes(b"")
+    if conf:
+        (tmp_path / "recording.conf").write_text(
+            '{"magic_number":"441831751","items":[{"process":100,'
+            f'"audio":"audio{recording_id}.m4a","prefix":"",'
+            f'"video":"video{recording_id}.mp4"}}]}}',
+            encoding="utf-8",
+        )
+    return tmp_path
+
+
+def test_participant_tracks_without_a_separator_are_found(tmp_path):
+    """The regression. These filenames matched nothing, so a recording that
+    did have per-participant tracks was transcribed as one anonymous mix —
+    while the tool told the user to switch on a setting already switched on."""
+    folder = _unseparated_recording(tmp_path, "303+G12+Eric2", "Goat1")
+    assert set(discover_participant_tracks(folder)) == {"303+G12+Eric2", "Goat1"}
+
+
+def test_a_name_ending_in_digits_keeps_them(tmp_path):
+    """"audioGoat11441831751" splits as "Goat1" or "Goat11" and the filename
+    cannot say which. recording.conf names the mixed track, whose digits are
+    the recording id, which settles it."""
+    folder = _unseparated_recording(tmp_path, "Goat1")
+    assert set(discover_participant_tracks(folder)) == {"Goat1"}
+
+
+def test_the_mixed_recording_is_not_mistaken_for_a_participant(tmp_path):
+    folder = _unseparated_recording(tmp_path, "Alice Chen")
+    assert set(discover_participant_tracks(folder)) == {"Alice Chen"}
+    assert [p.name for p in find_mixed_audio(folder)] == ["audio1441831751.m4a"]
+
+
+def test_both_naming_layouts_can_coexist(tmp_path):
+    folder = _unseparated_recording(tmp_path, "Goat1")
+    (folder / "Audio Record" / "audio999_Bob Ruiz.m4a").write_bytes(b"")
+    assert set(discover_participant_tracks(folder)) == {"Goat1", "Bob Ruiz"}
+
+
+def test_speakers_are_still_found_without_recording_conf(tmp_path):
+    """Two speakers share the recording id, so it is recoverable from the
+    filenames alone."""
+    folder = _unseparated_recording(tmp_path, "Alice Chen", "Bob Ruiz", conf=False)
+    assert set(discover_participant_tracks(folder)) == {"Alice Chen", "Bob Ruiz"}
+
+
 def test_an_unconverted_recording_is_recognised(tmp_path):
     """Zoom leaves .zoom files behind when it is quit before conversion
     finishes. They sit there forever, so 'wait for it to finish' is the wrong

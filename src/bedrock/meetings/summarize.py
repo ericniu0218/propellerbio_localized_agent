@@ -44,16 +44,24 @@ MAX_POINTS_PER_KIND = 25
 
 @dataclass(frozen=True)
 class Point:
-    """One decision or action item, with the timestamp where it was said."""
+    """One decision or action item, with the timestamp where it was said.
+
+    ``owner`` is who will do the work; ``speaker`` is who said the line. They
+    differ constantly — "Bob, send me the numbers" is owned by Bob and spoken
+    by whoever asked — so an action shows its owner and everything else shows
+    its speaker.
+    """
 
     text: str
     timestamp: str | None = None
     owner: str | None = None
+    speaker: str | None = None
 
     def render(self) -> str:
         parts = [self.text]
-        if self.owner:
-            parts.append(f"— {self.owner}")
+        attribution = self.owner or self.speaker
+        if attribution:
+            parts.append(f"— {attribution}")
         if self.timestamp:
             parts.append(f"[{self.timestamp}]")
         return " ".join(parts)
@@ -99,6 +107,10 @@ class MeetingSummary:
         if self.degraded_reason:
             lines += ["", f"> Summary unavailable: {self.degraded_reason}"]
             return "\n".join(lines)
+
+        if self.facts.speakers:
+            lines += ["", "## Participants", ""]
+            lines += [f"- {name}" for name in self.facts.speakers]
 
         if self.enhanced_notes:
             lines += ["", self.enhanced_notes]
@@ -181,9 +193,18 @@ Write an overview of this meeting: what it was about and where it landed.
 Keep every specific. Numbers, dates, deadlines, names and statuses go in \
 exactly as said - write "enrollment is 148 of 200", never "they discussed \
 enrollment numbers". A reader who was not there should learn the actual \
-figures from this paragraph, not learn that figures exist.
+figures from these points, not learn that figures exist.
 
-Plain prose, no headings, no bullet points. Use only what the transcript says.
+Format:
+- Three to six markdown bullet points, each starting with "- ".
+- One idea per bullet, one or two sentences each.
+- Name the speaker when a point is something a particular person said or \
+argued, using the name shown before their words in the transcript. Write it \
+as "Alice Chen said ..." or "... , per Alice Chen". Use only names that appear \
+in the transcript; if a line has no name in front of it, do not attribute it.
+- No headings, no preamble, no closing remark.
+
+Use only what the transcript says.
 
 Transcript:
 {transcript}
@@ -331,14 +352,37 @@ def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]
             continue
         owner = item.get("owner") if with_owner else None
         owner = str(owner).strip() if owner and str(owner).lower() != "null" else None
+        timestamp = _repair_timestamp(item.get("timestamp"), text, cues)
         points.append(
             Point(
                 text=text,
-                timestamp=_repair_timestamp(item.get("timestamp"), text, cues),
+                timestamp=timestamp,
                 owner=owner,
+                speaker=_speaker_at(timestamp, text, cues),
             )
         )
     return points
+
+
+def _speaker_at(timestamp: str | None, text: str, cues: list[Cue]) -> str | None:
+    """Who was speaking at a verified timestamp.
+
+    Taken from the transcript rather than asked of the model, which is the
+    whole reason it can be trusted: the cue already carries the name Zoom
+    attached to that audio track, so there is no way to attribute a line to
+    somebody who never said it. A point with no timestamp gets no speaker —
+    the same honesty rule the citation itself follows.
+
+    Several cues can share a second. The one whose words match the point best
+    wins, since that is the line the point came from.
+    """
+    if not timestamp:
+        return None
+    candidates = [cue for cue in cues if cue.timestamp == timestamp and cue.speaker]
+    if not candidates:
+        return None
+    needle = {word for word in _words(text) if len(word) > 3}
+    return max(candidates, key=lambda cue: _overlap(needle, cue)).speaker
 
 
 def _dedupe(points: list[Point]) -> list[Point]:

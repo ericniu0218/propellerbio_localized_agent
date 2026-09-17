@@ -25,6 +25,8 @@ from bedrock.meetings.transcribe import (
     WhisperConfig,
     WhisperTranscriber,
     discover_participant_tracks,
+    find_mixed_audio,
+    find_unconverted,
     to_vtt,
     transcribe_recording,
 )
@@ -50,7 +52,8 @@ unnamed speaker.
 
 
 def recordings_in(folder: Path) -> list[Path]:
-    """Zoom writes one folder per meeting, newest last by name."""
+    """Zoom writes one folder per meeting. Ordered oldest first by modification
+    time, so the caller's "most recent" is the last entry."""
     if not folder.is_dir():
         return []
     return sorted(
@@ -84,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--terms", help="comma-separated names and jargon to expect")
     parser.add_argument("--model", default=os.environ.get("BEDROCK_MODEL", "qwen2.5:7b"))
     parser.add_argument(
+        "--speech-model",
+        default=os.environ.get("BEDROCK_SPEECH_MODEL", SPEECH_MODEL),
+        help=f"ggml filename in {DEFAULT_MODEL_DIR} (default: {SPEECH_MODEL})",
+    )
+    parser.add_argument(
         "--api-base",
         default=os.environ.get("BEDROCK_API_BASE", "http://localhost:11434/v1"),
     )
@@ -105,9 +113,25 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
         for folder in found:
             tracks = discover_participant_tracks(folder)
-            who = f"{len(tracks)} participant tracks" if tracks else "no per-participant audio"
+            files = sum(len(f) for f in tracks.values())
+            if tracks:
+                who = f"{len(tracks)} participants, {files} audio files"
+            elif find_unconverted(folder):
+                who = "NOT CONVERTED — double-click the .zoom file in Finder"
+            elif find_mixed_audio(folder):
+                who = "no per-participant audio (speakers will not be named)"
+            else:
+                who = "no audio"
             print(f"{folder.name}\n    {who}")
         return 0
+
+    # Validate arguments before doing any work: being told a path is wrong
+    # after a minute of transcription is the same mistake as not checking.
+    if args.notes and not args.notes.exists():
+        # Summarising without them would look like success while ignoring the
+        # thing the user most wanted included.
+        print(f"No notes file at {args.notes}.", file=sys.stderr)
+        return 1
 
     folder = args.folder
     if folder is None:
@@ -119,7 +143,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"Using the most recent recording: {folder.name}\n")
 
     config = WhisperConfig(
-        model=DEFAULT_MODEL_DIR / SPEECH_MODEL,
+        model=DEFAULT_MODEL_DIR / args.speech_model,
         vad_model=DEFAULT_MODEL_DIR / VAD_MODEL,
         initial_prompt=args.terms,
     )
@@ -133,16 +157,46 @@ async def _run(args: argparse.Namespace) -> int:
 
     tracks = discover_participant_tracks(folder)
     if tracks:
-        print(f"Transcribing {len(tracks)} participant tracks: {', '.join(tracks)}")
-    else:
+        total = sum(len(files) for files in tracks.values())
+        extra = f" ({total} files)" if total > len(tracks) else ""
+        print(f"Transcribing {len(tracks)} participant tracks{extra}: {', '.join(tracks)}")
+    elif find_mixed_audio(folder):
         print("No per-participant audio in this recording — speakers will not be named.")
         print('Turn on "Record a separate audio file for each participant" in Zoom for next time.')
+    elif unconverted := find_unconverted(folder):
+        # Telling someone to wait is wrong here: nothing is running. Zoom leaves
+        # these behind when it is quit before conversion finishes, and they sit
+        # there until a human starts it.
+        print(f"\nThis recording has not been converted yet.", file=sys.stderr)
+        print(f"  {folder} holds {len(unconverted)} .zoom file(s).\n", file=sys.stderr)
+        print("Convert it, then run this again:", file=sys.stderr)
+        print(f'  open "{folder}"   then double-click {unconverted[0].name}', file=sys.stderr)
+        print("  or in Zoom: Meetings > Recorded > Convert", file=sys.stderr)
+        return 1
+    else:
+        # Don't advise changing a Zoom setting when the real problem is that
+        # there is no audio here at all — that sends people to fix the wrong thing.
+        print(f"\nNo audio files in {folder}.", file=sys.stderr)
+        return 1
 
     try:
         result = await transcribe_recording(folder, transcriber)
     except ToolIntegrationError as exc:
         print(f"\nTranscription failed: {exc}", file=sys.stderr)
         return 1
+
+    if result.multi_file_speakers:
+        print(
+            f"  Note: {', '.join(result.multi_file_speakers)} had several audio files, "
+            "joined as consecutive parts of a split recording."
+        )
+        print(
+            "  If two people shared that Zoom display name, their timings will be wrong — "
+            "rename one in Zoom and record again."
+        )
+    if result.speakers and len(result.speakers) < len(result.per_speaker_counts):
+        quiet = [s for s, n in result.per_speaker_counts.items() if not n]
+        print(f"  {', '.join(quiet)} never spoke — no lines attributed to them.")
 
     transcript_path = folder / "transcript.vtt"
     transcript_path.write_text(to_vtt(result.cues))
@@ -151,7 +205,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.transcript_only:
         return 0
 
-    notes = args.notes.read_text() if args.notes and args.notes.exists() else None
+    notes = args.notes.read_text() if args.notes else None
     backend = OpenAICompatibleBackend(args.api_base, timeout=600.0)
     try:
         if not await backend.check_connection():

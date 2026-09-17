@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
+import time
 import unicodedata
 from datetime import datetime
 
@@ -29,20 +30,23 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Input, OptionList
+from textual.worker import WorkerCancelled
 
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub
-from bedrock.context import ContextStore
+from bedrock.context import ContextStore, find_relevant_context
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
 from bedrock.storage import ConversationDeleted, ConversationStore, ConversationSummary, StorageConflict, StorageError, create_store
+from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
 from bedrock.titles import generate_title, wants_title
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
 from bedrock.ui.confidence_view import run_confidence_command
 from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
@@ -58,6 +62,7 @@ from bedrock.ui.widgets import (
 from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
+SKIP_CLEANUP_WARNING_SECONDS = 5.0
 
 HISTORY_DISABLED = (
     "Saving conversations is switched off on this machine "
@@ -123,6 +128,19 @@ class BedrockApp(App[None]):
         self._recalled: dict[str, tuple[str, list[str]]] = {}
         # Run and action-journal browsing. Built on first use, injected by tests.
         self.services = services or ComplianceServices(self.settings)
+        # Prompts typed while a reply is arriving wait here instead of being
+        # refused. In memory, and only for this window; see prompt_queue.py.
+        self.prompt_queue = PromptQueue()
+        self._preparing_prompts: set[str] = set()
+        self._queue_update_scheduled = False
+        self._quit_confirmation = (0, 0.0)
+        # "Stop & run next": conversations currently being stopped (guards
+        # double clicks) and prompt ids whose cancellation must not requeue
+        # them, because the whole point of skipping is to drop that prompt.
+        self._skipping: set[str] = set()
+        self._skip_no_requeue: set[str] = set()
+        # Retry identities only, not cached transcripts; discarded with queue items.
+        self._prepared_questions: dict[str, datetime] = {}
 
     # ---- Screen layout ----------------------------------------------------
 
@@ -134,11 +152,13 @@ class BedrockApp(App[None]):
                 yield ConversationList(id="sidebar")
             with Vertical(id="main"):
                 yield VerticalScroll(id="chat")
+                yield PromptQueuePanel(id="queue-panel")
                 yield Input(placeholder="Type a message, or /help for commands", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:
         self.query_one("#prompt", Input).focus()
+        self.query_one(PromptQueuePanel).show_queue(self.queue_snapshot())
         # Reopen the last conversation first: it may name the model to use, in
         # which case ``pick_default_model`` has nothing left to do.
         await self.restore_last_conversation()
@@ -146,6 +166,7 @@ class BedrockApp(App[None]):
         self._refresh_status()
         self.set_interval(CONNECTION_CHECK_SECONDS, self.check_connection)
         self.set_interval(2, self.poll_history)
+        self.set_interval(2, self.recover_queue)
         self.check_connection()
         self.pick_default_model()
 
@@ -229,6 +250,9 @@ class BedrockApp(App[None]):
             self.model_name = name
             self._refresh_status()
             await self.post_notice(f"Switched to model `{name}`.")
+            models = sorted({item.model for item in self.prompt_queue.pending_for(self.conversation.id) if item.model and item.model != name})
+            if models:
+                await self.post_notice("Prompts already waiting will keep their selected models: " + ", ".join(markdown_text(model) for model in models) + ".")
             return
         try:
             models = await self.backend.list_models()
@@ -381,6 +405,7 @@ class BedrockApp(App[None]):
         """
         if self.store is None:
             return None
+        self.pause_queue_for_switch(self.conversation.id)
         self.save_conversation()  # never lose the one being left behind
         try:
             conversation = await asyncio.to_thread(self.store.load, conversation_id, system_prompt=self.settings.system_prompt)
@@ -404,6 +429,7 @@ class BedrockApp(App[None]):
         self.save_conversation(mark_access=True)
         await self.render_conversation(conversation)
         self.write_missing_titles()
+        self.queue_changed(conversation.id)
         return conversation
 
     async def command_recall(self, argument: str) -> None:
@@ -486,6 +512,12 @@ class BedrockApp(App[None]):
             return
         forgotten = self.conversation.id
         self._recalled.pop(forgotten, None)
+        # Pending prompts for a deleted chat must never be sent, including
+        # those queued against a linked copy of it.
+        family = {forgotten} | ({self.conversation.family_id} if self.conversation.family_id else set())
+        if self.prompt_queue.drop_conversations(family):
+            for conversation_id in family:
+                self.queue_changed(conversation_id)
         forgotten_family = self.conversation.family_id
         # Start the new conversation *first* and without saving, otherwise the
         # conversation being deleted would be written straight back to disk.
@@ -607,6 +639,7 @@ class BedrockApp(App[None]):
         if self.store is None or not conversation.messages:
             return True
         if conversation.source_version > SCHEMA_VERSION:
+            self.notify("This conversation is read-only because it was saved by a newer app. Use /new to continue.", severity="error", timeout=8)
             return False
         messages_changed = self.store.messages_changed(conversation)
         if not messages_changed and not mark_access:
@@ -760,40 +793,366 @@ class BedrockApp(App[None]):
             return
         self.refresh_sidebar()
 
+    # ---- Prompt queue: the interface the queue panel uses ------------------
+
+    def queue_snapshot(self) -> QueueSnapshot:
+        """The open conversation's pending prompts, running prompt and pause state."""
+        conversation_id = self.conversation.id
+        running = self.prompt_queue.running
+        # Stopping mid-stream is always safe here: cancellation is local
+        # (Esc already does it) and the fake or real backend just stops
+        # yielding fragments - there is no server-side task to lose track of.
+        can_skip = (
+            conversation_id not in self._skipping
+            and running is not None
+            and running.conversation_id == conversation_id
+            and bool(self.prompt_queue.pending_for(conversation_id))
+            and bool(self._active_prompt_workers())
+        )
+        return self.prompt_queue.snapshot(conversation_id, can_skip=can_skip)
+
+    def remove_queued_prompt(self, item_id: str) -> bool:
+        """Take one waiting prompt out of the queue. A running one cannot be removed."""
+        removed = self.prompt_queue.remove(item_id)
+        if removed is not None:
+            self.queue_changed(removed.conversation_id)
+        return removed is not None
+
+    def pause_queue(self, conversation_id: str | None = None) -> None:
+        """Stop the queue advancing. Whatever is running now still finishes."""
+        conversation_id = conversation_id or self.conversation.id
+        if self.prompt_queue.pause(conversation_id):
+            self.queue_changed(conversation_id)
+
+    def resume_queue(self, conversation_id: str | None = None) -> None:
+        """Let the queue advance again, starting the next prompt when nothing runs."""
+        conversation_id = conversation_id or self.conversation.id
+        if self.prompt_queue.resume(conversation_id):
+            self.queue_changed(conversation_id)
+        if not self.prompt_queue.busy:
+            self.advance_queue_soon(conversation_id)
+
+    def clear_queue(self, conversation_id: str | None = None) -> None:
+        """Drop the waiting prompts. The running request is left alone."""
+        conversation_id = conversation_id or self.conversation.id
+        self.prompt_queue.clear(conversation_id)
+        self.queue_changed(conversation_id)
+
+    def queue_changed(self, conversation_id: str | None = None) -> None:
+        """Tell the queue panel that this conversation's queue looks different."""
+        if not self._queue_update_scheduled:
+            self._queue_update_scheduled = True
+            # Batch nearby lifecycle changes into one display update.
+            self.set_timer(1 / 60, self._emit_queue_changed)
+
+    def _emit_queue_changed(self) -> None:
+        self._queue_update_scheduled = False
+        retained = {
+            item.id for cid in self.prompt_queue.conversations()
+            for item in self.prompt_queue.pending_for(cid)
+        }
+        if self.prompt_queue.running is not None:
+            retained.add(self.prompt_queue.running.id)
+        self._prepared_questions = {key: value for key, value in self._prepared_questions.items() if key in retained}
+        self.post_message(QueueChanged(self.conversation.id, self.queue_snapshot()))
+
+    def _active_prompt_workers(self):
+        return [w for w in self.workers if w.group in {"queue", "chat"} and not w.is_finished]
+
+    def recover_queue(self) -> None:
+        """Recover a stranded item, never a slow but still active worker."""
+        item = self.prompt_queue.running
+        if item is None or item.id in self._preparing_prompts:
+            return
+        if self._active_prompt_workers():
+            return
+        if self.prompt_queue.requeue_front(item):
+            self._streaming = False
+            self.queue_changed()
+            self.notify("The previous request stopped unexpectedly. Its prompt was kept and the queue is paused; resume to retry.", severity="error", timeout=10)
+
+    @on(QueueChanged)
+    def show_queue(self, message: QueueChanged) -> None:
+        """Render the open conversation's queue; other chats' changes are ignored."""
+        if message.conversation_id != self.conversation.id:
+            return
+        try:
+            self.query_one(PromptQueuePanel).show_queue(message.snapshot)
+        except NoMatches:
+            pass  # the screen is still being built, or already torn down
+
+    @on(PromptQueuePanel.RemoveRequested)
+    def on_queue_remove(self, message: PromptQueuePanel.RemoveRequested) -> None:
+        self.remove_queued_prompt(message.item_id)
+
+    @on(PromptQueuePanel.PauseRequested)
+    def on_queue_pause(self) -> None:
+        self.pause_queue()
+
+    @on(PromptQueuePanel.ResumeRequested)
+    def on_queue_resume(self) -> None:
+        self.resume_queue()
+
+    @on(PromptQueuePanel.ClearRequested)
+    def on_queue_clear(self) -> None:
+        self.clear_queue()
+
+    @on(PromptQueuePanel.SkipRequested)
+    def on_queue_skip(self, message: PromptQueuePanel.SkipRequested) -> None:
+        # Fire-and-forget: cancellation can take a while on a real backend
+        # (or hang on one that never confirms), and this app has exactly one
+        # message queue. Awaiting the cleanup here would freeze every other
+        # message - typing, other buttons, even Esc - for as long as that
+        # takes. The dedicated worker group keeps this off the groups being
+        # cancelled, so cleanup is never cancelled by its own cancellation.
+        self.run_skip(message.item_id, message.conversation_id)
+
+    @work(group="skip")
+    async def run_skip(self, item_id: str, conversation_id: str | None) -> None:
+        await self.skip_running_prompt(item_id, conversation_id)
+
+    async def skip_running_prompt(self, item_id: str | None = None, conversation_id: str | None = None) -> None:
+        """Stop the running prompt and start the open conversation's next one.
+
+        ``item_id``/``conversation_id`` identify the prompt as displayed when
+        the click happened. A message can sit in the queue for a while behind
+        other work; by the time it is handled, the item that was running then
+        may have already finished naturally and a *different* one may be
+        running now. Checking identity, not just "is something running and
+        does it belong here", stops this from silently cancelling the wrong
+        prompt. Omitting them (only done by direct calls, e.g. in tests)
+        falls back to whatever is running now.
+
+        Eligibility is rechecked here rather than trusted from the click: the
+        panel's snapshot can be one event behind, so the run may already have
+        finished, moved to another prompt, or stopped belonging to the chat
+        that is open now. Only one skip runs at a time per conversation, so a
+        second click while cleanup is still in flight does nothing.
+        """
+        target_conversation_id = self.conversation.id
+        running = self.prompt_queue.running
+        if (
+            target_conversation_id in self._skipping
+            or running is None
+            or running.conversation_id != target_conversation_id
+            or not self.prompt_queue.pending_for(target_conversation_id)
+            or (item_id is not None and running.id != item_id)
+            or (conversation_id is not None and conversation_id != target_conversation_id)
+        ):
+            return
+        workers = self._active_prompt_workers()
+        if not workers:
+            self.recover_queue()
+            return
+        running_id = running.id
+        self._skipping.add(target_conversation_id)
+        self._skip_no_requeue.add(running_id)
+        # A fresh snapshot now, so the button disables immediately rather than
+        # staying clickable for however long cleanup below takes.
+        self.queue_changed(target_conversation_id)
+        try:
+            # These groups are global: safe only while PromptQueue is single-flight.
+            self.workers.cancel_group(self, "queue")
+            self.workers.cancel_group(self, "chat")
+            warned = False
+            for worker in workers:
+                wait_task = asyncio.ensure_future(worker.wait())
+                try:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=SKIP_CLEANUP_WARNING_SECONDS)
+                    except asyncio.TimeoutError:
+                        if not warned:
+                            warned = True
+                            self.notify("Stopping is taking longer than expected. Still waiting - nothing new will start until it finishes.", severity="warning", timeout=8)
+                        await wait_task  # same task, not a fresh call: must still be confirmed before proceeding
+                except WorkerCancelled:
+                    pass
+                except Exception as exc:
+                    self.pause_queue(target_conversation_id)
+                    self.notify(f"Could not finish stopping the prompt: {exc}. The queue is paused; nothing further was started.", severity="error", timeout=10)
+                    return
+            # A natural completion may have raced the cancellation and already
+            # finished this item (advancing the queue on its own) or started a
+            # different one. Either way there is nothing left for us to stop.
+            still_running = self.prompt_queue.running
+            if still_running is not None and still_running.id == running_id:
+                self.prompt_queue.finish(running_id)
+            if self.conversation.id != target_conversation_id:
+                # Left this chat while cleanup was in flight. Leaving a chat
+                # already pauses its queue; do not restart unwatched work in
+                # a chat nobody is looking at. But if /forget already dropped
+                # it entirely, leave no stray pause marker behind.
+                if target_conversation_id in self.prompt_queue.conversations():
+                    self.pause_queue(target_conversation_id)
+                return
+            self.resume_queue(target_conversation_id)
+        finally:
+            self._skip_no_requeue.discard(running_id)
+            self._skipping.discard(target_conversation_id)
+            self.queue_changed(target_conversation_id)
+
+    def finish_prompt(self, item: PromptItem, *, ok: bool, quiet: bool = False) -> None:
+        """End one run and, if it went well, let the next prompt start.
+
+        ``PromptQueue.finish`` refuses anything that is not the running prompt,
+        so a duplicate, delayed or unrelated completion cannot advance the
+        queue. Anything other than a finished, saved answer pauses instead:
+        the employee decides whether the rest should still be sent.
+        """
+        if not self.prompt_queue.finish(item.id):
+            return
+        if ok:
+            self.queue_changed(item.conversation_id)
+            self.advance_queue_soon(self.conversation.id)
+            return
+        # Pausing only matters while prompts are waiting. With an empty queue
+        # there is nothing to hold back, and pausing would silently swallow
+        # the next thing the employee types.
+        if self.prompt_queue.pending_for(item.conversation_id) or quiet:
+            paused = self.prompt_queue.pause(item.conversation_id)
+            if paused and not quiet:
+                self.notify("That request did not finish, so the rest of the queue is paused. Resume it when you are ready.", timeout=8)
+        self.queue_changed(item.conversation_id)
+
+        # Preparation may finish after a switch. Release the open chat's queue
+        # too; start_next still respects its pause state and the global busy guard.
+        if self.conversation.id != item.conversation_id:
+            self.advance_queue_soon(self.conversation.id)
+
+    def pause_queue_for_switch(self, conversation_id: str) -> None:
+        """Leaving a chat pauses its queue; coming back needs an explicit resume."""
+        running = self.prompt_queue.running
+        if self.prompt_queue.pending_for(conversation_id) or (
+            running is not None and running.conversation_id == conversation_id
+        ):
+            self.pause_queue(conversation_id)
+
     # ---- Chat -------------------------------------------------------------
 
     async def send_message(self, text: str) -> None:
+        """Put what the employee typed in the queue, and run it when it can.
+
+        A prompt sent while a reply is still arriving used to be refused. Now
+        it waits its turn, so the employee can keep typing ahead.
+        """
         if self.conversation.source_version > SCHEMA_VERSION:
             self.query_one("#prompt", Input).value = text
             await self.post_notice("This conversation is read-only. Your text has not been sent. Use `/new` to continue.", kind="error")
-            return
-        if self._streaming:
-            await self.post_notice("Still responding - press Esc to stop it first.", kind="error")
             return
         if not self.model_name:
             await self.post_notice("No model selected. Use `/model` to see what is available.", kind="error")
             return
 
+        conversation_id = self.conversation.id
+        try:
+            self.prompt_queue.add(text, conversation_id, self.model_name)
+        except QueueFull as exc:
+            self.query_one("#prompt", Input).value = text
+            await self.post_notice(str(exc) + " Your draft is still in the input.", kind="error")
+            return
+        self.queue_changed(conversation_id)
+        if self.prompt_queue.is_paused(conversation_id) and not self.prompt_queue.busy:
+            await self.post_notice("Queued. This chat's queue is paused - resume it to send.", kind="error")
+        self.advance_queue_soon(conversation_id)
+
+    async def advance_queue(self, conversation_id: str | None = None) -> None:
+        """Start the next waiting prompt, if one can start right now."""
+        conversation_id = conversation_id or self.conversation.id
+        item = self.prompt_queue.start_next(conversation_id)
+        if item is None:
+            return
+        # ``start_next`` marks the queue busy before any awaiting work below,
+        # so a prompt typed during preparation queues rather than racing it.
+        self.queue_changed(conversation_id)
+        self._preparing_prompts.add(item.id)
+        try:
+            await self.dispatch_prompt(item)
+        except asyncio.CancelledError:
+            if item.id in self._skip_no_requeue:
+                # Stopped by "Stop & run next" during preparation (e.g. a
+                # recall search): the whole point is to drop this prompt, not
+                # bring it back.
+                self.prompt_queue.finish(item.id)
+                self.queue_changed()
+            elif self.prompt_queue.requeue_front(item):
+                self.queue_changed()
+            raise
+        except Exception as exc:
+            if self.prompt_queue.requeue_front(item):
+                self.queue_changed()
+            self._streaming = False
+            await self.post_notice(f"Could not start the prompt: {markdown_text(str(exc))}. The prompt was kept and its queue is paused. Resume to retry.", kind="error")
+        finally:
+            self._preparing_prompts.discard(item.id)
+
+    @work(group="queue")
+    async def advance_queue_soon(self, conversation_id: str) -> None:
+        """Advance from outside the worker that has just finished."""
+        await self.advance_queue(conversation_id)
+
+    async def dispatch_prompt(self, item: PromptItem) -> None:
+        """Run one queued prompt: save the question, recall if asked, answer.
+
+        The conversation is read here, when the prompt actually starts, so a
+        prompt that waited sees the answers that arrived while it waited.
+        """
+        text = item.text
+        if self.conversation.id != item.conversation_id:
+            # Switching chats pauses the queue, so this should not happen; if
+            # it does, stop rather than typing into the wrong conversation.
+            if self.prompt_queue.requeue_front(item):
+                self.queue_changed()
+                self.notify("That chat is no longer open, so its queued prompts are paused.", timeout=8)
+            return
+        if self.conversation.source_version > SCHEMA_VERSION:
+            self.prompt_queue.requeue_front(item)
+            self.queue_changed()
+            await self.post_notice("This conversation is read-only. Your queued prompt has been kept; nothing was sent. Use `/new` to continue.", kind="error")
+            return
+        model_name = item.model or self.model_name
+        if not model_name:
+            await self.post_notice("No model selected. Use `/model` to see what is available.", kind="error")
+            self.query_one("#prompt", Input).value = text
+            self.finish_prompt(item, ok=False)
+            return
+
         if self.store is not None:
             try:
+                # Re-checked here rather than when the prompt was typed: the
+                # chat may have been deleted in another window while it waited.
                 self.store.ensure_available(self.conversation)
             except ConversationDeleted as exc:
                 self.query_one("#prompt", Input).value = text
                 await self.post_notice(str(exc) + " Your draft is still in the input; nothing was sent.", kind="error")
                 self.refresh_sidebar()
+                self.finish_prompt(item, ok=False)
                 return
 
-        question = self.conversation.add_user(text)
-        # Save the question before asking: if the app dies mid-answer, the
-        # employee still has what they typed.
-        if not self.save_conversation():
-            self.conversation.messages.remove(question)
-            self.query_one("#prompt", Input).value = text
-            await self.post_notice("Could not save this message. Your draft is still in the input; nothing was sent. Use `/new` if this chat was deleted.", kind="error")
-            return
-        await self.mount_message(UserMessage(text))
+        conversation = self.conversation
+        # Esc may retry an already committed question, even after reopening its
+        # chat. Match its saved identity without caching any transcript objects.
+        timestamp = self._prepared_questions.get(item.id)
+        question = next((message for message in conversation.messages
+                         if message.timestamp == timestamp and message.role == Role.USER
+                         and message.content == text), None)
+        if question is None:
+            question = conversation.add_user(text)
+            # Only this attempt's unsaved, unseen question may be rolled back.
+            try:
+                saved = self.save_conversation()
+            except Exception:
+                conversation.messages[:] = [message for message in conversation.messages if message is not question]
+                raise
+            if not saved:
+                conversation.messages[:] = [message for message in conversation.messages if message is not question]
+                self.query_one("#prompt", Input).value = text
+                await self.post_notice("Could not save this message. Your draft is still in the input; nothing was sent. Use `/new` if this chat was deleted.", kind="error")
+                self.finish_prompt(item, ok=False)
+                return
+            self._prepared_questions[item.id] = question.timestamp
+            await self.mount_message(UserMessage(text))
 
-        conversation, model_name, note = self.conversation, self.model_name, None
+        conversation, note = self.conversation, None
         if self.store is not None and wants_recall(text):
             # Plain-English recall ("do you remember when we..."). Block a second
             # send while searching; the reply goes to this chat even if the
@@ -817,14 +1176,34 @@ class BedrockApp(App[None]):
                 # widgets are gone, so say what happened instead of answering
                 # into another chat's screen.
                 self.notify("You switched chats while your past chats were being searched, so that question was not answered. Reopen the chat and send it again.", timeout=8)
+                self.finish_prompt(item, ok=False)
                 return
+
+        # Anything compressed earlier with /digest that matches this
+        # question, folded into `note` the same one-turn, never-saved way
+        # recall's NO_TOPIC/NOTHING_FOUND are - see
+        # bedrock.context.auto_inject for what this can and can't do.
+        # Without this, /digest did nothing for the next question you
+        # asked unless you remembered to search it yourself; that gap was
+        # closed for AgentPackApp first and is closed here the same way.
+        injected = find_relevant_context(text, self.context_store)
+        if injected is not None:
+            note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block
+            await self.post_notice(injected.summary)
 
         reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)
-        self.stream_reply(reply_widget, conversation, model_name, note)
+        self.stream_reply(reply_widget, conversation, model_name, note, item)
 
     @work(exclusive=True, group="chat")
-    async def stream_reply(self, widget: AssistantMessage, conversation: Conversation, model_name: str, note: str | None = None) -> None:
+    async def stream_reply(
+        self,
+        widget: AssistantMessage,
+        conversation: Conversation,
+        model_name: str,
+        note: str | None = None,
+        item: PromptItem | None = None,
+    ) -> None:
         """Background worker: pull fragments from the backend into the widget.
 
         Takes the conversation as an argument rather than reading
@@ -839,11 +1218,13 @@ class BedrockApp(App[None]):
         api_messages = conversation.to_api(note)
         reply = conversation.add_assistant()
         stream = widget.begin_stream()
+        answered = False
         try:
             async for fragment in self.backend.stream_chat(model_name, api_messages):
                 reply.content += fragment
                 await stream.write(fragment)
                 self.scroll_chat_to_end()
+            answered = True
         except InferenceError as exc:
             if not reply.content and reply in conversation.messages:
                 conversation.messages.remove(reply)
@@ -856,10 +1237,19 @@ class BedrockApp(App[None]):
             # Runs on success, on error and on Esc, so a half-finished answer is
             # kept rather than thrown away.
             is_open = conversation is self.conversation
-            self.save_conversation(conversation, touch=is_open, model=model_name)
-            await widget.end_stream()
-            self._streaming = False
-            prompt_box.placeholder = "Type a message, or /help for commands"
+            saved = self.save_conversation(conversation, touch=is_open, model=model_name)
+            try:
+                await widget.end_stream()
+            finally:
+                # Only now, with the answer complete, cleaned up and saved, may
+                # the next prompt start. A failed, cancelled or unsaved reply
+                # pauses instead. This runs in a finally of its own because
+                # cancellation makes every await above raise again: a cancelled
+                # reply must not leave the queue busy for ever.
+                self._streaming = False
+                prompt_box.placeholder = "Type a message, or /help for commands"
+                if item is not None:
+                    self.finish_prompt(item, ok=answered and saved)
             if is_open:
                 self.scroll_chat_to_end()
             self.write_missing_titles()
@@ -879,6 +1269,8 @@ class BedrockApp(App[None]):
 
     async def start_new_conversation(self, save: bool = True) -> None:
         """Put the current conversation away and begin an empty one."""
+        waiting = len(self.prompt_queue.pending_for(self.conversation.id))
+        self.pause_queue_for_switch(self.conversation.id)
         self.workers.cancel_group(self, "chat")
         if save:
             self.save_conversation()
@@ -886,15 +1278,27 @@ class BedrockApp(App[None]):
         await self.query_one("#chat", VerticalScroll).remove_children()
         self._streaming = False
         self.refresh_sidebar()
+        self.queue_changed(self.conversation.id)
+        if waiting:
+            await self.post_notice(f"Started a new chat. {waiting} waiting prompt(s) are paused in the previous chat; reopen it and resume to send them.")
 
     async def action_clear_chat(self) -> None:
         """``/new``, ``/clear`` and Ctrl+L: the old conversation stays saved."""
         await self.start_new_conversation()
 
     def action_cancel_stream(self) -> None:
+        if self.prompt_queue.busy or self.queue_snapshot().pending:
+            self.pause_queue()
+        self.workers.cancel_group(self, "queue")
         self.workers.cancel_group(self, "chat")
 
     async def action_quit(self) -> None:
+        waiting = self.prompt_queue.pending_count
+        count, deadline = self._quit_confirmation
+        if waiting and (waiting != count or time.monotonic() > deadline):
+            self._quit_confirmation = (waiting, time.monotonic() + 5)
+            self.notify(f"Quitting will discard {waiting} waiting prompt(s). Press Ctrl+C again within 5 seconds to confirm, or keep working.", severity="warning", timeout=5)
+            return
         self.save_conversation()
         if self._workspace_session is not None:
             self._workspace_session.close()

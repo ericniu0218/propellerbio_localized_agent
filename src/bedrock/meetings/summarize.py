@@ -77,6 +77,9 @@ class MeetingSummary:
     overview: str = ""
     decisions: list[Point] = field(default_factory=list)
     actions: list[Point] = field(default_factory=list)
+    details: list[Point] = field(default_factory=list)
+    """Concrete specifics - figures, dates, statuses - extracted per chunk so
+    they survive whatever the single-prompt overview chooses to compress."""
     enhanced_notes: str = ""
     model_used: str | None = None
     degraded_reason: str | None = None
@@ -108,6 +111,9 @@ class MeetingSummary:
         if self.actions:
             lines += ["", "## Action items", ""]
             lines += [f"- {point.render()}" for point in self.actions]
+        if self.details:
+            lines += ["", "## Details", ""]
+            lines += [f"- {point.render()}" for point in self.details]
         return "\n".join(lines)
 
 
@@ -147,7 +153,8 @@ said in it.
 
 Respond with JSON and nothing else:
 {{"decisions": [{{"text": "...", "timestamp": "00:12:34"}}],
- "actions": [{{"text": "...", "owner": "name or null", "timestamp": "00:12:34"}}]}}
+ "actions": [{{"text": "...", "owner": "name or null", "timestamp": "00:12:34"}}],
+ "facts": [{{"text": "...", "timestamp": "00:12:34"}}]}}
 
 Rules:
 - A decision is something the group settled on. Phrases like "then we", "let's",
@@ -156,6 +163,9 @@ Rules:
 - An action is something a specific person will do next.
 - "owner" is the person who will DO the task, not the person who assigned it.
   In "Bob, send me the numbers", the owner is Bob, not the speaker.
+- A fact is any concrete detail stated: a number, a count, a date, a deadline,
+  a name, a status. Copy the actual value. "Enrollment is 148 of 200" is a
+  fact; "they discussed enrollment" is not.
 - Write each item as a short standalone sentence. Do not start it with a name
   being addressed; put that name in "owner" instead.
 - Use the timestamp shown at the start of the line where it was said.
@@ -166,9 +176,14 @@ Transcript part:
 """
 
 _OVERVIEW_PROMPT = """\
-Write a short overview of this meeting: what it was about and where it landed. \
-Three sentences at most. Plain prose, no headings, no bullet points. Use only \
-what the transcript says.
+Write an overview of this meeting: what it was about and where it landed.
+
+Keep every specific. Numbers, dates, deadlines, names and statuses go in \
+exactly as said - write "enrollment is 148 of 200", never "they discussed \
+enrollment numbers". A reader who was not there should learn the actual \
+figures from this paragraph, not learn that figures exist.
+
+Plain prose, no headings, no bullet points. Use only what the transcript says.
 
 Transcript:
 {transcript}
@@ -183,6 +198,8 @@ Rules, in order of importance:
 - Fill in detail underneath their points using the transcript.
 - Add nothing that is not in the transcript. If a note is not discussed, leave \
 it as they wrote it.
+- Keep every specific: numbers, dates, deadlines and names go in exactly as \
+said, never summarised into "the numbers" or "the deadline".
 - Cite timestamps like [00:12:34] for facts you add.
 - Return markdown. No preamble, no closing remark.
 
@@ -194,8 +211,32 @@ Transcript:
 """
 
 
+# The overview and notes passes get one prompt, not the chunked treatment the
+# extraction pass gets, so a long meeting has to be trimmed to fit.
+MAX_OVERVIEW_CUES = 400
+
+
 def _render(cues: list[Cue]) -> str:
     return "\n".join(cue.render() for cue in cues)
+
+
+def _for_one_prompt(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES) -> str:
+    """Trim a long meeting for a single-prompt pass, keeping both ends.
+
+    Taking the first N cues loses the entire back half of a long meeting —
+    including the wrap-up, which is where decisions and owners usually land.
+    The opening states the agenda and the close states the outcome, so when a
+    meeting is too long to send whole, those are the parts to keep.
+    """
+    if len(cues) <= limit:
+        return _render(cues)
+    head, tail = limit // 2, limit - limit // 2
+    skipped = len(cues) - limit
+    return (
+        _render(cues[:head])
+        + f"\n\n[... {skipped} lines omitted from the middle of the meeting ...]\n\n"
+        + _render(cues[-tail:])
+    )
 
 
 async def _complete(backend: InferenceBackend, model: str, prompt: str) -> str:
@@ -311,6 +352,7 @@ async def summarize_meeting(
     chunks = chunk_cues(cues, words_per_chunk=words_per_chunk)
     decisions: list[Point] = []
     actions: list[Point] = []
+    details: list[Point] = []
 
     try:
         for chunk in chunks:
@@ -324,16 +366,17 @@ async def summarize_meeting(
                 continue
             decisions += _points(data.get("decisions"), chunk, with_owner=False)
             actions += _points(data.get("actions"), chunk, with_owner=True)
+            details += _points(data.get("facts"), chunk, with_owner=False)
 
         if notes and notes.strip():
             summary.enhanced_notes = await _complete(
                 backend,
                 model,
-                _NOTES_PROMPT.format(notes=notes.strip(), transcript=_render(cues[:400])),
+                _NOTES_PROMPT.format(notes=notes.strip(), transcript=_for_one_prompt(cues)),
             )
         else:
             summary.overview = await _complete(
-                backend, model, _OVERVIEW_PROMPT.format(transcript=_render(cues[:400]))
+                backend, model, _OVERVIEW_PROMPT.format(transcript=_for_one_prompt(cues))
             )
     except InferenceError as exc:
         summary.degraded_reason = str(exc)
@@ -341,5 +384,6 @@ async def summarize_meeting(
 
     summary.decisions = _dedupe(decisions)
     summary.actions = _dedupe(actions)
+    summary.details = _dedupe(details)
     summary.model_used = model
     return summary

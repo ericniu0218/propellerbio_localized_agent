@@ -139,3 +139,25 @@ AssistantMessage MarkdownBlock, SystemNotice MarkdownBlock {
     border: tall $foreground-muted;
     color: $text-muted;
 }
+
+/* ---- Pending prompts (display-only queue panel) ------------------------ */
+
+PromptQueuePanel {
+    height: auto;
+    padding: 0 1;
+    background: $panel;
+}
+PromptQueuePanel .queue-heading { height: 1; text-style: bold; }
+PromptQueuePanel .queue-running { height: auto; max-height: 2; color: $accent; }
+PromptQueuePanel .queue-empty { height: 1; color: $text-muted; }
+PromptQueuePanel #queue-pending {
+    height: auto;
+    max-height: 4;
+    padding: 0;
+    border: none;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+PromptQueuePanel .queue-actions { height: 3; }
+PromptQueuePanel .queue-actions Button { width: auto; min-width: 8; margin-right: 1; }
+PromptQueuePanel .queue-hint { height: auto; color: $text-muted; }

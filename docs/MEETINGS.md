@@ -133,6 +133,23 @@ re-derived by locating the quoted text, and dropped if that fails. A note with n
 timestamp is honest; a fabricated one is not. Across test runs this holds at
 zero fabricated citations.
 
+## Choosing models — measured on real audio
+
+Both defaults were checked against a real recording rather than assumed, and in
+both cases the bigger model was **not** better:
+
+| | Result |
+|---|---|
+| `small.en` vs `large-v3-turbo` | turbo wrote "side four" where small.en got "Site four" right, dropped punctuation across a long run, hallucinated on the same noisy patch, and took 2.3x longer |
+| `qwen2.5:7b` vs `qwen2.5:14b` | 14b returned 0 decisions and 0 actions where 7b found 1 and 2; both emitted valid JSON, so this is the model being conservative, not a parse failure. 14b writes a better prose overview and is 50% slower |
+
+So the defaults stay `small.en` and `qwen2.5:7b`. `--speech-model` and `--model`
+exist to re-run this comparison on your own audio, which is the only way to
+settle it — recording quality and how people actually talk matter more here
+than parameter count.
+
+The limiting factor on casual, noisy audio is the recording, not the model.
+
 ## Quality, measured not assumed
 
 With `qwen2.5:7b` on a real 38-turn transcript:

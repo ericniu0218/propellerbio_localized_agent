@@ -24,6 +24,7 @@ class Snapshot:
     running: Item | None = None
     paused: bool = False
     conversation_id: str = "chat-a"
+    can_skip: bool = False
 
 
 class QueueHarness(App):
@@ -56,6 +57,10 @@ class QueueHarness(App):
     @on(PromptQueuePanel.ClearRequested)
     def cleared(self):
         self.requests.append(("clear",))
+
+    @on(PromptQueuePanel.SkipRequested)
+    def skipped(self):
+        self.requests.append(("skip",))
 
 
 async def test_empty_queue_and_lifetime_notice():
@@ -261,3 +266,111 @@ async def test_pending_changes_do_not_redraw_unchanged_running_prompt(monkeypatc
         app.panel.show_queue(replace(snapshot, pending=(Item("waiting", "Changed preview"), Item("next", "Next"))))
         await pilot.pause()
         assert "Changed preview" in app.query_one(OptionList).get_option_at_index(0).prompt
+
+
+@pytest.mark.parametrize("can_skip", [False, True])
+@pytest.mark.parametrize("has_running", [False, True])
+@pytest.mark.parametrize("has_pending", [False, True])
+async def test_skip_requires_permission_running_and_pending(can_skip, has_running, has_pending):
+    snapshot = Snapshot(
+        pending=(Item("next", "Next"),) if has_pending else (),
+        running=Item("active", "Working") if has_running else None,
+        can_skip=can_skip,
+    )
+    app = QueueHarness(snapshot)
+    async with app.run_test() as pilot:
+        button = app.query_one("#queue-skip", Button)
+        enabled = can_skip and has_running and has_pending
+        assert button.disabled is not enabled
+        # Also reject an activation queued before eligibility changed.
+        app.panel.handle_queue_button(Button.Pressed(button))
+        await pilot.pause()
+        assert app.requests == ([("skip",)] if enabled else [])
+
+
+async def test_old_snapshot_cannot_skip():
+    app = QueueHarness(SimpleNamespace(
+        pending=(Item("next", "Next"),), running=Item("active", "Working"), paused=False,
+    ))
+    async with app.run_test():
+        assert app.query_one("#queue-skip", Button).disabled
+
+
+@pytest.mark.parametrize("activation", ["click", "enter"])
+@pytest.mark.parametrize("paused", [False, True])
+async def test_skip_emits_only_request_without_mutating_snapshot(activation, paused):
+    snapshot = Snapshot(
+        pending=(Item("next", "Next"),), running=Item("active", "Working"),
+        can_skip=True, paused=paused,
+    )
+    app = QueueHarness(snapshot)
+    async with app.run_test() as pilot:
+        button = app.query_one("#queue-skip", Button)
+        assert "resuming a paused queue" in str(button.tooltip)
+        if activation == "click":
+            await pilot.click("#queue-skip")
+        else:
+            app.query_one("#queue-toggle", Button).focus()
+            await pilot.press("tab")
+            assert app.focused is button
+            await pilot.press("enter")
+        assert app.requests == [("skip",)]
+        assert app.query_one(OptionList).get_option_at_index(0).id == "next"
+        assert "Working" in str(app.query_one(".queue-running", Static).content)
+        assert str(app.query_one("#queue-toggle", Button).label) == ("Resume" if paused else "Pause")
+        assert not button.disabled  # Execution state changes only through a snapshot.
+
+
+async def test_skip_eligibility_only_update_preserves_draft_and_scroll(monkeypatch):
+    snapshot = Snapshot(
+        pending=tuple(Item(str(n), f"Prompt {n}") for n in range(30)),
+        running=Item("active", "Working"),
+    )
+    app = QueueHarness(snapshot)
+    async with app.run_test(size=(70, 28)) as pilot:
+        options = app.query_one(OptionList)
+        options.focus()
+        await pilot.press("end")
+        await pilot.pause()
+        offset = options.scroll_offset.y
+        prompt = app.query_one(Input)
+        prompt.focus()
+        prompt.value = "unfinished draft"
+
+        def unexpected_rebuild(*args, **kwargs):
+            pytest.fail("Eligibility alone must not rebuild the waiting list")
+
+        monkeypatch.setattr(options, "set_options", unexpected_rebuild)
+        app.panel.show_queue(replace(snapshot, can_skip=True))
+        await pilot.pause()
+        button = app.query_one("#queue-skip", Button)
+        assert not button.disabled
+        assert app.focused is prompt and prompt.value == "unfinished draft"
+        assert options.highlighted == 29 and options.scroll_offset.y == offset
+        button.focus()
+        await pilot.pause()
+        app.panel.show_queue(snapshot)
+        await pilot.pause()
+        assert button.disabled
+        assert app.focused is not button
+        app.panel.handle_queue_button(Button.Pressed(button))
+        await pilot.pause()
+        assert not app.requests
+
+
+@pytest.mark.parametrize("width", [32, 48, 100])
+async def test_skip_button_is_reachable_in_narrow_terminals(width):
+    app = QueueHarness(Snapshot(
+        pending=(Item("next", "Next"),), running=Item("active", "Working"), can_skip=True,
+    ))
+    async with app.run_test(size=(width, 32)) as pilot:
+        app.query_one("#queue-toggle", Button).focus()
+        await pilot.press("tab")
+        await pilot.pause()
+        button = app.query_one("#queue-skip", Button)
+        assert app.focused is button
+        assert button.region.x >= app.panel.region.x
+        assert button.region.right <= app.panel.region.right <= width
+        await pilot.press("enter")
+        assert app.requests == [("skip",)]
+        assert app.query_one(Input).region.bottom <= 32

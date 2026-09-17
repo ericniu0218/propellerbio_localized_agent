@@ -5,10 +5,14 @@ Snapshots expose ``pending``, ``running`` (an item or None), and ``paused``;
 items expose ``id``, ``text``, and ``model``. An optional ``conversation_id``
 (or ``session_id``) resets selection when switching conversations. Structural
 protocols let the execution session supply its own immutable snapshot types.
+Optional ``can_skip`` enables stopping the running prompt for the next one;
+older snapshots default to disabling that control.
 
 Handle PromptQueuePanel.RemoveRequested (``item_id``), PauseRequested,
-ResumeRequested, and ClearRequested in the app. These requests never mutate
-the displayed queue; only a new snapshot does. Load ui/styles.tcss in the host.
+ResumeRequested, ClearRequested, and SkipRequested (``item_id``,
+``conversation_id`` - the running item as displayed when clicked) in the app.
+These requests never mutate the displayed queue; only a new snapshot does.
+Load ui/styles.tcss in the host.
 """
 from __future__ import annotations
 
@@ -77,11 +81,27 @@ class PromptQueuePanel(Widget):
     class ClearRequested(Message):
         pass
 
+    class SkipRequested(Message):
+        """Ask the app to stop the running prompt and start the next waiting one.
+
+        Carries the identity of the running item as displayed at click time,
+        so a click delayed behind other messages cannot land on a different
+        prompt that has since taken its place - the app checks both still
+        match before doing anything.
+        """
+
+        def __init__(self, item_id: str, conversation_id: str | None) -> None:
+            super().__init__()
+            self.item_id = item_id
+            self.conversation_id = conversation_id
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._rows: tuple[tuple[str, str], ...] = ()
         self._queue_running_label: str | None = None
         self._queue_paused = False
+        self._can_skip = False
+        self._running_id: str | None = None
         self._conversation: str | None = None
         self._rendered_conversation: str | None = None
         self._rendered_ids: tuple[str, ...] = ()
@@ -95,6 +115,10 @@ class PromptQueuePanel(Widget):
         with HorizontalScroll(classes="queue-actions"):
             yield Button("Remove selected", id="queue-remove", disabled=True)
             yield Button("Pause", id="queue-toggle", disabled=True)
+            yield Button(
+                "Stop & run next", id="queue-skip", disabled=True,
+                tooltip="Stop the current prompt and start the next waiting prompt, resuming a paused queue.",
+            )
             yield Button("Clear queue", id="queue-clear", disabled=True)
         yield Static(
             "Clear queue removes waiting prompts only. Pending prompts are kept only while the app is open.",
@@ -106,7 +130,7 @@ class PromptQueuePanel(Widget):
 
     def show_queue(self, snapshot: QueueSnapshotView) -> None:
         """Accept a snapshot before or after mounting, without retaining its bodies."""
-        previous = (self._rows, self._queue_running_label, self._queue_paused, self._conversation)
+        previous = (self._rows, self._queue_running_label, self._queue_paused, self._conversation, self._can_skip)
         self._rows = tuple(
             (item.id, f"{number}. [{_preview(item.model or 'default model', 40)}] {_preview(item.text)}")
             for number, item in enumerate(snapshot.pending, 1)
@@ -117,8 +141,10 @@ class PromptQueuePanel(Widget):
             if running is not None else None
         )
         self._queue_paused = snapshot.paused
+        self._can_skip = bool(getattr(snapshot, "can_skip", False) and running is not None and self._rows)
+        self._running_id = running.id if running is not None else None
         self._conversation = getattr(snapshot, "conversation_id", getattr(snapshot, "session_id", None))
-        current = (self._rows, self._queue_running_label, self._queue_paused, self._conversation)
+        current = (self._rows, self._queue_running_label, self._queue_paused, self._conversation, self._can_skip)
         if self.is_mounted and current != previous:
             self._render_queue()
 
@@ -169,6 +195,7 @@ class PromptQueuePanel(Widget):
         toggle.label = "Resume" if self._queue_paused else "Pause"
         toggle.disabled = not (identifiers or self._queue_running_label or self._queue_paused)
         self.query_one("#queue-clear", Button).disabled = not identifiers
+        self.query_one("#queue-skip", Button).disabled = not self._can_skip
         # Keep focus within the panel if a snapshot hides/disables its control.
         focused = self.app.focused
         if focused is not None and focused in self.walk_children() and (focused.disabled or not focused.display):
@@ -202,12 +229,15 @@ class PromptQueuePanel(Widget):
 
     @on(Button.Pressed)
     def handle_queue_button(self, event: Button.Pressed) -> None:
-        if event.button.id not in {"queue-remove", "queue-toggle", "queue-clear"}:
+        if event.button.id not in {"queue-remove", "queue-toggle", "queue-clear", "queue-skip"}:
             return
         event.stop()
         if event.button.id == "queue-remove":
             self.action_remove_selected()
         elif event.button.id == "queue-toggle":
             self.post_message(self.ResumeRequested() if self._queue_paused else self.PauseRequested())
+        elif event.button.id == "queue-skip":
+            if self._can_skip and self._running_id is not None:
+                self.post_message(self.SkipRequested(self._running_id, self._conversation))
         elif self._rows:
             self.post_message(self.ClearRequested())

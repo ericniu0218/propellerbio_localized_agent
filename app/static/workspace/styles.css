@@ -106,12 +106,15 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .nav-item.disabled:hover { background: none; }
 .sidebar-list { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 1px; padding-top: 8px; margin-top: 4px; border-top: 1px solid var(--border); }
 .sidebar-list-item {
-  padding: 8px 10px; border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 1px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer; display: flex; flex-direction: row; align-items: center; gap: 4px;
 }
+.sidebar-list-item-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .sidebar-list-item:hover { background: var(--panel-2); }
 .sidebar-list-item.active { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
 .sidebar-list-item .title { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px; }
 .sidebar-list-item .meta { font-size: 11px; color: var(--muted); }
+.icon-btn.small { width: 26px; height: 26px; border-radius: 7px; }
+.icon-btn.small svg.icon { width: 14px; height: 14px; }
 #sidebar-footer { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 2px; border-top: 1px solid var(--border); gap: 8px; }
 #sidebar-footer .who { display: flex; align-items: center; gap: 8px; min-width: 0; }
 #sidebar-footer .who span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }

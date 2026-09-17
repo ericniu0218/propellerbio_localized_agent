@@ -263,10 +263,19 @@
       const newBtn = el("button", { class: "btn primary small", style: "margin-bottom:10px;width:100%;justify-content:center", onclick: () => createChat() }, [icon("plus"), "New chat"]);
       host.appendChild(newBtn);
       chats.forEach((c) => {
-        const item = el("div", { class: "sidebar-list-item" + (c.id === currentChatId ? " active" : "") }, [
+        const info = el("div", { class: "sidebar-list-item-info" }, [
           el("div", { class: "title" }, (c.pinned ? "★ " : "") + (c.title || "New chat")),
           el("div", { class: "meta" }, c.projectId ? (byId(state.projects, c.projectId)?.name || "Project") : "Personal"),
         ]);
+        const forgetBtn = el("button", { class: "icon-btn small", title: "Forget this chat", onclick: async (e) => {
+          e.stopPropagation();
+          try {
+            await api(`/records/chats/${c.id}`, { method: "DELETE" });
+            if (currentChatId === c.id) currentChatId = null;
+            await refresh();
+          } catch (err) { alert(err.message); }
+        } }, icon("trash"));
+        const item = el("div", { class: "sidebar-list-item" + (c.id === currentChatId ? " active" : "") }, [info, forgetBtn]);
         item.addEventListener("click", () => { currentChatId = c.id; appEl.classList.remove("sidebar-open"); render(true); });
         host.appendChild(item);
       });

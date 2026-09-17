@@ -266,6 +266,11 @@ def build_context(s, owner, chat):
     ids = set(chat.get("artifactIds", []))
     if chat.get("projectId"):
         ids.update(a["id"] for a in s.list(owner, "artifacts") if a.get("projectId") == chat["projectId"])
+    # Personal-library files (uploaded from the Memory tab: no chat, no
+    # project) are available everywhere, the same way Personal-scope memory
+    # already is below — otherwise a file saved to "your" memory is visible
+    # to no chat at all.
+    ids.update(a["id"] for a in s.list(owner, "artifacts") if not a.get("chatId") and not a.get("projectId"))
     artifacts = [require_object(s, owner, a, "artifacts") for a in ids]
     artifacts = [a for a in artifacts if a.get("scanStatus") != "review" and a.get("text")]
     memory = [m for m in s.list(owner, "memory") if m.get("scope") == "Personal" or (m.get("scope") == "Project" and m.get("projectId") == chat.get("projectId") and chat.get("projectId"))]

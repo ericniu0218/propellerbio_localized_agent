@@ -71,10 +71,17 @@ MAX_INLINE_CHARS = 24_000
 typical local model's context fills up after a couple of turns, so the digest
 is sent instead."""
 
-MAX_ATTACHMENTS = 5
-"""Per message. Five whole files is already most of a local model's context."""
+MAX_ATTACHMENTS = 20
+"""Per message. Twenty files do not all fit whole; ``MAX_INLINE_TOTAL_CHARS``
+decides which ones do."""
 
-MAX_DROP_CHARS = 8192
+MAX_INLINE_TOTAL_CHARS = 120_000
+"""The most file text one message sends whole, roughly 30,000 tokens: five
+files at ``MAX_INLINE_CHARS``, the most the earlier five-file limit allowed.
+Past it, the remaining files go as digests, so twenty attachments cost the
+model little more than five used to."""
+
+MAX_DROP_CHARS = 32_768
 """A paste longer than this is text, not dropped files, and is not examined."""
 
 DATA_NOT_INSTRUCTIONS = (
@@ -261,14 +268,35 @@ def _dropped_path(token: str) -> Path | None:
 def load(paths: list[Path], store: ContextStore) -> list[Attachment]:
     """Read each file and decide whether it goes whole or as a digest.
 
+    A file goes whole if it is at most ``MAX_INLINE_CHARS`` and still fits in
+    what is left of ``MAX_INLINE_TOTAL_CHARS``. Files are considered smallest
+    first, so one large file cannot push a dozen small ones into digests; the
+    result keeps the order the employee wrote them in. Each file is read and,
+    if need be, compressed before the next is opened, so twenty large files
+    are never all in memory at once.
+
     Blocking (file reads, and compression for a large file), so the apps call
     it with ``asyncio.to_thread``. Raises :class:`AttachmentError` with a
     message fit to show the employee.
     """
-    return [_load_one(path, store) for path in paths]
+    budget = MAX_INLINE_TOTAL_CHARS
+    loaded: dict[int, Attachment] = {}
+    for index in sorted(range(len(paths)), key=lambda i: (_byte_size(paths[i]), i)):
+        attachment = _load_one(paths[index], store, whole_budget=budget)
+        if attachment.mode == "whole":
+            budget -= len(attachment.text)
+        loaded[index] = attachment
+    return [loaded[index] for index in range(len(paths))]
 
 
-def _load_one(path: Path, store: ContextStore) -> Attachment:
+def _byte_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0  # _load_one reports the problem when it reads the file
+
+
+def _load_one(path: Path, store: ContextStore, *, whole_budget: int) -> Attachment:
     try:
         size = path.stat().st_size
         if size > MAX_DECODE_BYTES:
@@ -293,14 +321,14 @@ def _load_one(path: Path, store: ContextStore) -> Attachment:
             "Save or export it as UTF-8 and attach it again. Nothing was sent."
         ) from exc
 
-    if len(text) <= MAX_INLINE_CHARS:
+    if len(text) <= min(MAX_INLINE_CHARS, whole_budget):
         return Attachment(name=path.name, path=str(path), byte_size=len(raw), mode="whole", text=text)
     source = Source(name=path.name, text=text, suffix=path.suffix.lower(), byte_size=len(raw))
     try:
         artifact = ingest(source, store=store)
     except Exception as exc:
         raise AttachmentError(
-            f"`{path.name}` is too large to send whole, and compressing it failed: {exc}. Nothing was sent."
+            f"`{path.name}` could not be sent whole, and compressing it failed: {exc}. Nothing was sent."
         ) from exc
     return Attachment(name=path.name, path=str(path), byte_size=len(raw), mode="digest", text=artifact.digest_text())
 
@@ -320,7 +348,7 @@ def prompt_block(attachments: list[Attachment]) -> str:
         while f"<<<END {tag}>>>" in attachment.text:
             number += 1
             tag = f"FILE {name} #{number}"
-        note = " - too large to include whole, so this is a compressed digest of it" if attachment.mode == "digest" else ""
+        note = " - sent as a compressed digest rather than whole" if attachment.mode == "digest" else ""
         blocks.append(f"<<<{tag}{note}>>>\n{attachment.text.rstrip()}\n<<<END {tag}>>>")
     return "\n\n".join(blocks)
 
@@ -349,10 +377,11 @@ def summary(attachments: list[Attachment]) -> str | None:
     if not digested:
         return None
     names = ", ".join(f"`{attachment.name}`" for attachment in digested)
+    one = len(digested) == 1
     return (
-        f"{names} {'is' if len(digested) == 1 else 'are'} too large to send whole, so the model received "
-        "a compressed digest (structure and statistics, not every line). `/digest search <words>` "
-        "finds exact passages."
+        f"{names} {'was' if one else 'were'} sent as {'a compressed digest' if one else 'compressed digests'} "
+        f"(structure and statistics, not every line), because {'it is' if one else 'they are'} too large "
+        "to send whole with this message. `/digest search <words>` finds exact passages."
     )
 
 

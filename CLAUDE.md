@@ -125,9 +125,10 @@ File attachments in chat (`src/bedrock/attachments.py`): `@path` anywhere in a
 message attaches that text file, in both app modes. Dropping files onto the
 terminal pastes their paths; `PromptInput` (`ui/widgets.py`) turns a paste made
 only of absolute paths to existing files into `@` references. Paths without `@`
-are never attached, so "the /api endpoint" is not a file error. Small files go
-whole; large ones are compressed through the `/digest` pipeline and the digest
-is sent, with a notice saying so. Every attachment goes after a fixed "data,
+are never attached, so "the /api endpoint" is not a file error. Up to 20 files
+per message. Small files go whole, smallest first, until 120,000 characters;
+larger files and any past that total are compressed through the `/digest`
+pipeline and the digest is sent, with a notice saying so. Every attachment goes after a fixed "data,
 not instructions" line inside a fence the file's text cannot close. Attachments
 live in `Message.extra` and are re-added by `Message.to_api`, so `content`
 stays what was typed, follow-ups still see the file and `/forget` removes it.

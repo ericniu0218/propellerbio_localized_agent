@@ -29,6 +29,22 @@ DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 DEFAULT_WORKSPACE_DIR = Path.home() / ".local" / "share" / "bedrock" / "workspaces"
 DEFAULT_ACTION_HISTORY_DIR = Path.home() / ".local" / "share" / "bedrock" / "history"
 DEFAULT_BIOTECH_WORK_DIR = Path.home() / ".local" / "share" / "bedrock" / "biotech"
+DEFAULT_AGENT_ROSTER_PATH = Path.home() / ".config" / "bedrock" / "agents.toml"
+
+AGENT_CAPABILITY_NAMES = (
+    "echo",
+    "files.search",
+    "files.read",
+    "sources.fetch",
+    "digest.query",
+    "web.fetch",
+    "web.search",
+    "calendar.create",
+    "mail.draft",
+    "mail.send",
+    "files.write",
+    "shell.run",
+)
 
 FALSE_VALUES = {"0", "false", "no", "off"}
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -48,6 +64,41 @@ def default_history_dir(env: dict[str, str] | None = None) -> Path:
     base = env.get("XDG_DATA_HOME")
     root = Path(base) if base and Path(base).is_absolute() else Path.home() / ".local" / "share"
     return root / "bedrock" / "conversations"
+
+
+def default_agent_settings() -> dict:
+    """Return the complete, safe-by-default ``[agents]`` configuration.
+
+    Dotted capability names are quoted table names in TOML, for example
+    ``[agents.capabilities."files.read"]``.  Keeping every planned capability
+    present but empty gives its adapter a stable place for configuration
+    without enabling it; the separate roster decides what an agent may use.
+    """
+    return {
+        "roster_path": str(DEFAULT_AGENT_ROSTER_PATH),
+        "max_steps": 8,
+        "max_seconds": 30.0,
+        "max_bytes": 1_048_576,
+        "capabilities": {name: {} for name in AGENT_CAPABILITY_NAMES},
+    }
+
+
+def _agent_settings(value: object) -> dict:
+    """Merge a configured ``[agents]`` table over the complete defaults."""
+    if value is None:
+        return default_agent_settings()
+    if not isinstance(value, dict):
+        raise ValueError("agents must be a [agents] table")
+
+    merged = default_agent_settings()
+    configured = dict(value)
+    capabilities = configured.pop("capabilities", None)
+    merged.update(configured)
+    if capabilities is not None:
+        if not isinstance(capabilities, dict):
+            raise ValueError("agents.capabilities must contain capability tables")
+        merged["capabilities"].update(capabilities)
+    return merged
 
 
 @dataclass(frozen=True)
@@ -128,6 +179,11 @@ class Settings:
     here, so a broken table is reported by ``/sources`` instead of stopping
     the app from starting."""
 
+    agents: dict = field(default_factory=default_agent_settings)
+    """The ``[agents]`` block: roster path, execution budgets and capability
+    configuration. A configured capability is still unavailable unless an
+    agent's roster entry names it explicitly."""
+
     extra: dict = field(default_factory=dict)
     """Any unrecognised keys from the config file, kept for forward compatibility."""
 
@@ -178,7 +234,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "alphafold_database_version", "alphafold_model_preset",
         "alphafold_db_preset", "alphafold_gpu_devices",
         "alphafold_models_to_relax", "biotech_max_sequence_length",
-        "pymol_executable", "connectors",
+        "pymol_executable", "connectors", "agents",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -227,6 +283,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     # not fit in one environment variable. Secrets still stay out of the
     # file - a connector names the environment variable that holds its token.
     connectors = file_values.get("connectors") or {}
+    agents = _agent_settings(file_values.get("agents"))
 
     return Settings(
         backend=backend,
@@ -258,5 +315,6 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         biotech_max_sequence_length=int(env.get("BEDROCK_MAX_SEQUENCE_LENGTH") or file_values.get("biotech_max_sequence_length") or 2500),
         pymol_executable=env.get("PYMOL_EXECUTABLE") or file_values.get("pymol_executable") or "pymol",
         connectors=connectors,
+        agents=agents,
         extra=extra,
     )

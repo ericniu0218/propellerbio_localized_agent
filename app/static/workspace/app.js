@@ -35,7 +35,6 @@
     });
     return node;
   };
-  const escapeHtml = (s) => (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const byId = (list, id) => (list || []).find((x) => x.id === id);
   const initials = (name) => (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
   const fmtSize = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? (n / 1e3).toFixed(1) + " KB" : n + " B");
@@ -116,15 +115,25 @@
     if (!cfg) return;
     $("#demo-login-btn").hidden = !cfg.demo;
     $("#sso-login-link").hidden = !cfg.sso;
-    $("#login-fallback").hidden = cfg.demo || cfg.sso;
+    $("#dev-login-form").hidden = !cfg.devLogin;
+    $("#login-fallback").hidden = cfg.demo || cfg.sso || cfg.devLogin;
     $("#login-copy").textContent = cfg.demo
       ? "This is a demo environment with fictional data."
+      : cfg.devLogin
+      ? "No company login is configured yet — enter a name to continue."
       : "Sign in with your company account to continue.";
   }
   function showApp() { $("#login").hidden = true; $("#app").hidden = false; }
 
   $("#demo-login-btn").addEventListener("click", async () => {
     await fetch(API + "/demo-login", { method: "POST", credentials: "same-origin" });
+    boot();
+  });
+  $("#dev-login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("#dev-login-name").value.trim();
+    if (!name) return;
+    await api("/dev-login", { method: "POST", body: { name } });
     boot();
   });
   $("#logout-btn").addEventListener("click", async () => {
@@ -295,14 +304,14 @@
     const thread = el("div", { class: "chat-thread" });
     (chat.messages || []).forEach((m) => {
       if (m.role === "user") {
-        thread.appendChild(el("div", { class: "msg user" }, escapeHtml(m.text)));
+        thread.appendChild(el("div", { class: "msg user" }, m.text));
       } else {
         const meta = [];
         if (m.citations && m.citations.length) meta.push(m.citations.length + " source(s) cited");
         thread.appendChild(el("div", { class: "msg assistant" }, [
           el("span", { class: "avatar" }, "AI"),
           el("div", { class: "bubble" }, [
-            el("div", {}, escapeHtml(m.text)),
+            el("div", {}, m.text),
             meta.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
           ]),
         ]));

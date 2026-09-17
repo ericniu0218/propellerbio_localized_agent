@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import os
+import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -88,10 +89,19 @@ class FollowupInput(BaseModel):
 def config():
     from app.config import get_settings
     settings = get_settings()
-    return {"demo": demo_mode(), "sso": settings.sso_enabled,
-        "ai": "Demo provider" if demo_mode() else "Local agents (availability checked when requested)",
+    if demo_mode():
+        ai = "Demo provider"
+    elif settings.mode == "real":
+        ai = "Local agents — real model backend"
+    else:
+        ai = "Local agents — mock model backend (deterministic, no live model)"
+    zoom_connected = bool(os.getenv("DATACENTER_BASE_URL") and os.getenv("DATACENTER_SIGNING_SECRET"))
+    connectors = [{"name": name, "status": "Not configured"} for name in ["Shared Drive", "Lab System", "Internal Database", "AlphaFold", "Semantic Search"]]
+    connectors.insert(2, {"name": "Zoom", "status": "Connected" if zoom_connected else "Not configured"})
+    return {"demo": demo_mode(), "sso": settings.sso_enabled, "ai": ai,
+        "devLogin": not demo_mode() and not settings.sso_enabled,
         "auth": "Keycloak" if settings.sso_enabled else "Development identity",
-        "connectors": [{"name": name, "status": "Not configured"} for name in ["Shared Drive", "Lab System", "Zoom", "Internal Database", "AlphaFold", "Semantic Search"]]}
+        "connectors": connectors}
 
 
 @router.post("/demo-login")
@@ -100,6 +110,26 @@ def demo_login(response: Response):
         raise HTTPException(403, "Development login is disabled.")
     issue_session(response, "demo-maya", "Maya Chen")
     store().seed("demo-maya")
+    return {"ok": True}
+
+
+class DevLoginInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+@router.post("/dev-login")
+def dev_login(body: DevLoginInput, response: Response):
+    # A named identity for real (non-demo) mode before SSO is configured —
+    # no fake data is seeded (WorkspaceStore.seed no-ops outside demo mode),
+    # so this is a real, empty workspace for whoever signs in.
+    from app.config import get_settings
+    if demo_mode():
+        raise HTTPException(403, "Use the demo login while running in demo mode.")
+    if get_settings().sso_enabled:
+        raise HTTPException(403, "Single sign-on is configured; use the company login instead.")
+    name = body.name.strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "user"
+    issue_session(response, "dev-" + slug, name)
     return {"ok": True}
 
 
@@ -244,13 +274,10 @@ def build_context(s, owner, chat):
 async def execute_run(owner, run, context):
     s = store()
     try:
-        if demo_mode():
-            provider = MockAIProvider()
-        else:
-            from app.config import get_settings
-            if get_settings().mode != "real":
-                raise RuntimeError("Real mode is selected but local model serving is not configured.")
-            provider = LocalLLMProvider()
+        # The real orchestrator handles AGENT_PACK_MODE=mock/real itself
+        # (deterministic fixture model vs. a live one); this only chooses
+        # between that real path and the workspace's own simulated demo.
+        provider = MockAIProvider() if demo_mode() else LocalLLMProvider()
         await provider.execute(s, owner, run, context)
         if run["status"] == "completed":
             async with _chat_lock(run["chatId"]):
@@ -290,9 +317,6 @@ async def execute_followup(owner, run_id, followup_id, context, prompt, mode):
             parts.append("This demonstration does not establish scientific, clinical, or safety conclusions.")
             _update_followup(owner, run_id, followup_id, answer="\n\n".join(parts), status="completed")
             return
-        from app.config import get_settings
-        if get_settings().mode != "real":
-            raise RuntimeError("Real mode is selected but local model serving is not configured.")
         from app.events import get_event_bus
         from app.orchestrator.session import start_session
         from app.orchestrator.loop import handle_message

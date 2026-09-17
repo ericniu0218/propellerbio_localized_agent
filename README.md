@@ -62,6 +62,8 @@ app/            FastAPI app: schemas, events, orchestrator, agents, models,
                 task_store, tools, compliance, api, db
 config/         models.yaml, budgets.yaml — the only place model names and
                 token budgets are defined
+contrib/        reference implementations that a customer replaces — currently
+                the datacenter transcript connector (see docs/MEETINGS.md)
 contracts/      types.ts — TypeScript mirror of app/schemas for the frontend
 data/           sample internal-docs/literature corpora for the RAG tools
                 (replace with the company's real corpus)
@@ -94,6 +96,13 @@ external services required.
   logged), Runner-based PHI redaction before logging/handoff, RBAC-filtered
   document search, human approval gates on high-stakes final output, and a
   startup air-gap check.
+- **Meeting transcripts**: `meeting_transcripts` answers questions about the
+  company's own Zoom meetings, citing meeting, date, and timestamp. It reads
+  from the customer's datacenter connector over the internal network — never
+  through the public Zoom relay, which would defeat the air gap. Unconfigured
+  deployments get a clear "not configured" result rather than an error.
+  Transcripts are parsed by the reader in bedrock-private-ai, pinned in
+  `requirements.txt`, rather than a copy kept here. See `docs/MEETINGS.md`.
 - **Swappable everything**: model names/endpoints only ever live in
   `config/models.yaml`; the `ModelClient` protocol swaps mock/real/serving
   engine without touching agent code; tools are stubbed with a clear

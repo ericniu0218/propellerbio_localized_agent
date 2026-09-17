@@ -100,8 +100,15 @@ class Specialist(BaseAgent):
         if tool_name == "rag_search":
             return {"query": task.description, "user_id": self._user_id}
         if tool_name == "meeting_transcripts":
+            # The tool ranks excerpts against the question, so it needs the
+            # question itself as well as the date range to fetch.
             from_time, to_time = await self._extract_date_range(task)
-            return {"from_time": from_time, "to_time": to_time, "user_id": self._user_id}
+            return {
+                "query": task.description,
+                "from_time": from_time,
+                "to_time": to_time,
+                "user_id": self._user_id,
+            }
         return {"query": task.description}
 
     async def _extract_date_range(self, task: TaskNode) -> tuple[str, str]:

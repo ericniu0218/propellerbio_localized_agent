@@ -8,6 +8,14 @@ httpx>=0.27
 psycopg2-binary>=2.9   # only needed when DATABASE_URL points at Postgres (real mode)
 python-jose[cryptography]>=3.3   # verifies Keycloak-issued JWTs; only needed when SSO is configured
 
+# The meeting transcript reader. It lives in the employee terminal client,
+# bedrock-private-ai, so both products share one VTT parser instead of two
+# copies. Pinned to an exact commit: change it on purpose and rerun the tests.
+# The repo is private, so installing it needs GitHub access (CI uses the
+# BEDROCK_PRIVATE_AI_TOKEN secret). The import is guarded: without it the
+# server still starts and only meeting_transcripts reports it is unavailable.
+bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@d210db6eaa9cc61270670e63aadffceaddff6380
+
 # Optional biotech tool dependencies — imports are guarded so the app still
 # runs without them (stub results instead); install for real tool behavior.
 biopython>=1.83

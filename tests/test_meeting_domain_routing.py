@@ -1,6 +1,6 @@
 """End-to-end check that a meetings-domain task actually reaches the
 meeting_transcripts tool through the real Specialist/Director flow —
-not just that the tool works in isolation (tests/test_meeting_transcripts_tool.py
+not just that the tool works in isolation (tests/test_meeting_transcripts.py
 already covers that). Registering a tool is not the same as it being
 reachable; this is what catches the difference.
 """
@@ -16,6 +16,8 @@ from pydantic import BaseModel
 
 
 class _RecordingArgs(BaseModel):
+    # Required, like the real tool's: it ranks excerpts against the question.
+    query: str
     from_time: str
     to_time: str
     user_id: str
@@ -72,6 +74,7 @@ async def test_meetings_domain_task_reaches_the_tool_with_a_resolved_date_range(
     assert len(tool.calls) == 1
     call = tool.calls[0]
     assert call.user_id == "alice"
+    assert call.query == "What happened in yesterday's standup meeting?"
     # The mock date-range fixture resolves "yesterday" to a real ISO range,
     # not a placeholder — this is the actual proof the extraction step ran.
     assert call.from_time < call.to_time
@@ -116,7 +119,7 @@ async def test_a_raw_chat_message_reaches_the_real_tool_through_handle_message(s
     calls exactly this) with the real tool registry — no stub. With
     DATACENTER_BASE_URL unset in the test environment, the real tool
     correctly reports itself unconfigured rather than attempting a
-    network call (see test_meeting_transcripts_tool.py), which is what
+    network call (see test_meeting_transcripts.py), which is what
     this test actually verifies reaches all the way through: mock
     classification -> meetings domain -> date extraction -> real tool.
 
@@ -142,4 +145,5 @@ async def test_a_raw_chat_message_reaches_the_real_tool_through_handle_message(s
     tool_call = next(e for e in tool_calls if e.payload["tool_name"] == "meeting_transcripts")
     args = tool_call.payload["arguments"]
     assert args["user_id"] == "alice"
+    assert args["query"] == "What happened in yesterday's standup meeting?"
     assert args["from_time"] < args["to_time"]

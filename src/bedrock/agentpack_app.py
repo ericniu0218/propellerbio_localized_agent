@@ -62,7 +62,7 @@ from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.workspace_command import WorkspaceCommandSession
-from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
+from bedrock.ui.widgets import AssistantMessage, PromptInput, StatusBar, SystemNotice, UserMessage
 from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
@@ -93,7 +93,7 @@ AGENTPACK_HELP_TEXT = """\
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
 | `/audit` | What this client has done on this machine |
-| `@<path>` in a message | Attach a text file to that message, e.g. `summarise @notes.txt` |
+| `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
@@ -188,7 +188,7 @@ class AgentPackApp(App[None]):
         yield AgentPanel(id="agent-panel")
         yield VerticalScroll(id="chat")
         yield PromptQueuePanel(id="queue-panel")
-        yield Input(placeholder="Type a message, or /help for commands", id="prompt")
+        yield PromptInput(placeholder="Type a message, or /help for commands", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:

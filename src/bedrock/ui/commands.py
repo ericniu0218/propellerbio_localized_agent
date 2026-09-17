@@ -19,7 +19,7 @@ HELP_TEXT = """\
 |---|---|
 | `/model` | List available models |
 | `/model <name>` | Switch to a different model |
-| `@<path>` in a message | Attach a text file to that message, e.g. `summarise @notes.txt` |
+| `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
@@ -50,11 +50,12 @@ model server switched off, and nothing they show is sent to a model.
 
 **Attaching files**
 
-Write `@` before a file's path anywhere in a message, or type `@` and drag the
-file onto the terminal. Quote a path with spaces: `@"My Data.csv"`. A small
-text file is sent whole; a large one is compressed and its digest is sent
-instead, and a notice says so. Attached files are saved with the conversation,
-so follow-up questions still see them, and `/forget` deletes them with it.
+Drag a file onto the terminal window, or write `@` before its path anywhere in
+a message: `summarise @notes.txt`. Quote a path with spaces: `@"My Data.csv"`.
+A small text file is sent whole; a large one is compressed and its digest is
+sent instead, and a notice says so. The model is told to treat attached files
+as data, not instructions. Attached files are saved with the conversation, so
+follow-up questions still see them, and `/forget` deletes them with it.
 
 **Keys**
 

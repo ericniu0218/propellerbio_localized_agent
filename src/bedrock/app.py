@@ -56,6 +56,7 @@ from bedrock.ui.widgets import (
     NEW_CONVERSATION,
     AssistantMessage,
     ConversationList,
+    PromptInput,
     StatusBar,
     SystemNotice,
     UserMessage,
@@ -154,7 +155,7 @@ class BedrockApp(App[None]):
             with Vertical(id="main"):
                 yield VerticalScroll(id="chat")
                 yield PromptQueuePanel(id="queue-panel")
-                yield Input(placeholder="Type a message, or /help for commands", id="prompt")
+                yield PromptInput(placeholder="Type a message, or /help for commands", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:

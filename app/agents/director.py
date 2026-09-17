@@ -33,6 +33,7 @@ _CITATION_REQUIRED_DOMAINS = {
     TaskDomain.INTERNAL_DOCS,
     TaskDomain.REGULATORY,
     TaskDomain.CLINICAL,
+    TaskDomain.MEETINGS,
 }
 
 

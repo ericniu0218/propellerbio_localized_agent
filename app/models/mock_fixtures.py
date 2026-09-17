@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 
 def fake_reply(prompt: str, model_name: str) -> str:
     if 'Respond with JSON: {"complexity"' in prompt:
         return _fake_classification(prompt)
+    if "Extract the date/time range" in prompt:
+        return _fake_date_range(prompt)
     if "Extract structured entities as JSON" in prompt:
         return json.dumps({"genes": [], "proteins": [], "compound_ids": [], "dates": [], "doses": []})
     if "Format this content as clean markdown" in prompt:
@@ -58,6 +61,8 @@ def _fake_classification(prompt: str) -> str:
         domain, complexity = "literature", "normal"
     elif any(k in text for k in ("sop", "protocol", "study report", "internal")):
         domain, complexity = "internal_docs", "normal"
+    elif any(k in text for k in ("meeting", "zoom", "standup", "sync", "call")):
+        domain, complexity = "meetings", "normal"
     elif any(k in text for k in ("sequence", "gene", "protein", "blast")):
         domain, complexity = "bioinformatics", "normal"
     elif any(k in text for k in ("compound", "molecule", "smiles")):
@@ -71,6 +76,51 @@ def _fake_classification(prompt: str) -> str:
     else:
         domain, complexity = "general", "normal"
     return json.dumps({"complexity": complexity, "domain": domain, "reason": "mock heuristic, not a real model"})
+
+
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _fake_date_range(prompt: str) -> str:
+    """Deterministic stand-in for a real model resolving relative dates
+    ("last Tuesday", "yesterday") against the reference time the prompt
+    provides — same "mock heuristic, not a real model" spirit as
+    _fake_classification. Handles the common phrasings; anything it
+    doesn't recognize falls back to a bounded 7-day lookback rather than
+    an empty range, so a search never silently returns nothing just
+    because this heuristic didn't understand the phrasing."""
+    reference_match = re.search(
+        r"current date and time is (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)",
+        prompt,
+    )
+    reference = (
+        datetime.fromisoformat(reference_match.group(1).replace("Z", "+00:00"))
+        if reference_match
+        else datetime.now(timezone.utc)
+    )
+    text = _extract_request(prompt)
+    start_of_today = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if "yesterday" in text:
+        start, end = start_of_today - timedelta(days=1), start_of_today
+    elif "today" in text:
+        start, end = start_of_today, reference
+    elif "this week" in text:
+        start, end = start_of_today - timedelta(days=start_of_today.weekday()), reference
+    elif "last week" in text:
+        this_week_start = start_of_today - timedelta(days=start_of_today.weekday())
+        start, end = this_week_start - timedelta(days=7), this_week_start
+    else:
+        weekday_index = next((i for i, name in enumerate(_WEEKDAYS) if name in text), None)
+        if weekday_index is not None:
+            days_since = (start_of_today.weekday() - weekday_index) % 7
+            days_since = days_since or 7  # e.g. "last Monday" said on a Monday means a week ago
+            start = start_of_today - timedelta(days=days_since)
+            end = start + timedelta(days=1)
+        else:
+            start, end = reference - timedelta(days=7), reference
+
+    return json.dumps({"from": start.isoformat(), "to": end.isoformat()})
 
 
 def _fake_format(prompt: str) -> str:

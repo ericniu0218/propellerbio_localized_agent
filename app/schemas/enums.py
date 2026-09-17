@@ -63,6 +63,7 @@ class EventType(StrEnum):
     REVIEW_APPROVED = "review.approved"
     REVIEW_REJECTED = "review.rejected"
     APPROVAL_REQUIRED = "approval.required"
+    APPROVAL_RESOLVED = "approval.resolved"
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     USAGE_UPDATED = "usage.updated"

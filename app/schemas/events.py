@@ -80,6 +80,21 @@ class ReviewDecisionPayload(BaseModel):
     retry_count: int = 0
 
 
+class ApprovalResolvedPayload(BaseModel):
+    """Who signed off on a high-stakes task, and what they decided.
+
+    This is the electronic-signature record. 21 CFR Part 11 asks a signed
+    record to carry the signer, the moment, and the meaning of the signature,
+    so all three are here rather than only the outcome.
+    """
+
+    task_id: str
+    decision: str
+    approved_by: str
+    comment: str | None = None
+    recorded_at: str
+
+
 class ApprovalRequiredPayload(BaseModel):
     task_id: str
     title: str

@@ -152,6 +152,13 @@
   }
   function stopPolling() { if (pollHandle) clearInterval(pollHandle); pollHandle = null; }
   async function refresh() { state = await api("/state"); render(); }
+  // A backgrounded tab has its poll interval skipped (line above) and is
+  // additionally throttled by the browser itself, so a run can finish while
+  // hidden and sit stale for a long time after the tab is shown again.
+  // Catch up immediately instead of waiting for the next tick.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state) refresh().catch(() => {});
+  });
 
   // ---------------- nav ----------------
   $$(".nav-item[data-view]").forEach((btn) => {

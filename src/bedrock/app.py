@@ -10,6 +10,8 @@ Responsibilities of this file, and nothing more:
 * save the conversation as it goes, and reopen the last one on startup
 * keep the conversation sidebar in step with what is saved, and fill in the
   short summary titles it shows
+* start ``/fold`` and ``/pymol`` jobs beside the chat (the work itself is
+  ``bedrock.ui.fold_command``, shared with agent-pack mode)
 
 It talks to the model *only* through the ``InferenceBackend`` interface, and to
 the disk *only* through ``ConversationStore``.
@@ -23,6 +25,7 @@ import sys
 import time
 import unicodedata
 from datetime import datetime
+from pathlib import Path
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -33,8 +36,9 @@ from textual.widgets import Button, Footer, Input, OptionList
 from textual.worker import WorkerCancelled
 
 from bedrock import attachments
+from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
-from bedrock.connectors import SourceHub
+from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import ContextStore, find_relevant_context
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
@@ -43,6 +47,7 @@ from bedrock.storage import ConversationDeleted, ConversationStore, Conversation
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
 from bedrock.titles import generate_title, wants_title
+from bedrock.ui.argparsing import CommandUsageError
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
 from bedrock.ui.confidence_view import run_confidence_command
@@ -52,6 +57,13 @@ from bedrock.ui.digest_command import (
     auto_context_argument,
     run_auto_context_command,
     run_digest_command,
+)
+from bedrock.ui.fold_command import (
+    parse_fold_request,
+    parse_structure_argument,
+    run_fold,
+    run_pymol,
+    tool_status_text,
 )
 from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.runs_command import run_runs_command
@@ -112,6 +124,7 @@ class BedrockApp(App[None]):
         store: ConversationStore | None = None,
         sources: SourceHub | None = None,
         services: ComplianceServices | None = None,
+        biotech_workflow: ProteinWorkflow | None = None,
     ) -> None:
         super().__init__()
         self.theme = "textual-dark"
@@ -129,6 +142,10 @@ class BedrockApp(App[None]):
         self.auto_context = AutoContext(enabled=self.settings.auto_context)
         # Tests pass a hub with fake connectors; real runs build one from settings.
         self._sources = sources
+        # AlphaFold 2 and PyMOL. Built on first use, so chatting never depends
+        # on scientific tool settings; tests pass a fake.
+        self._biotech_workflow = biotech_workflow
+        self._scientific_job_running = False
         self._workspace_session: WorkspaceCommandSession | None = None
         self._title_worker_running = False
         self._titles_pending = False
@@ -261,6 +278,17 @@ class BedrockApp(App[None]):
                 await self.command_forget()
             case "recall" | "context":
                 await self.command_recall(command.args)
+            case "fold":
+                await self.start_fold(command.args)
+            case "pymol":
+                try:
+                    target = parse_structure_argument(command.args)
+                except CommandUsageError as exc:
+                    await self.post_notice(str(exc), kind="error")
+                else:
+                    self.open_pymol(target)
+            case "tools":
+                await self.post_notice(tool_status_text(self.biotech_workflow))
             case _:
                 await self.post_notice(f"Unknown command `/{command.name}`. Type `/help` for a list.", kind="error")
 
@@ -319,6 +347,54 @@ class BedrockApp(App[None]):
         if self._sources is None:
             self._sources = SourceHub.from_settings(self.settings)
         return self._sources
+
+    # ---- Structure prediction and viewing ---------------------------------
+    #
+    # A fold is not a chat prompt and does not wait in the prompt queue. It
+    # takes hours on a GPU host that is not the model server, so the chat keeps
+    # working while it runs, and Esc - which stops a streaming reply - leaves
+    # it alone. One fold at a time. Its notices appear in whichever chat is on
+    # screen when they arrive, and are not saved into any conversation: the
+    # run itself is recorded, and `/runs` finds it.
+
+    async def start_fold(self, args: str) -> None:
+        """Validate the arguments here, so a typo never starts a GPU job."""
+        try:
+            target, project_id = parse_fold_request(args)
+        except CommandUsageError as exc:
+            await self.post_notice(str(exc), kind="error")
+            return
+        if self._scientific_job_running:
+            await self.post_notice("A scientific job is already running.", kind="error")
+            return
+        self._scientific_job_running = True
+        self.fold_protein(target, project_id)
+
+    # Not exclusive: the flag above is what keeps it to one fold, and an
+    # exclusive worker would cancel an hours-long prediction if that ever failed.
+    @work(group="scientific")
+    async def fold_protein(self, target: Path | SourceRef, project_id: str | None) -> None:
+        try:
+            await run_fold(
+                target,
+                project_id,
+                workflow=self.biotech_workflow,
+                sources=self.sources,
+                services=self.services,
+                notify=self.post_notice,
+            )
+        finally:
+            self._scientific_job_running = False
+
+    @work(exclusive=True, group="pymol-open")
+    async def open_pymol(self, target: Path | SourceRef | None) -> None:
+        await run_pymol(target, workflow=self.biotech_workflow, sources=self.sources, notify=self.post_notice)
+
+    @property
+    def biotech_workflow(self) -> ProteinWorkflow:
+        if self._biotech_workflow is None:
+            self._biotech_workflow = ProteinWorkflow.from_settings(self.settings)
+        return self._biotech_workflow
 
     # ---- Local history and run browsing -----------------------------------
     #

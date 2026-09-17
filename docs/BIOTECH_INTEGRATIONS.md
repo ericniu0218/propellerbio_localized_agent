@@ -79,7 +79,7 @@ bedrock-biotech fold /approved/project/candidate.fasta
 bedrock-biotech pymol
 ```
 
-In `BEDROCK_BACKEND=agentpack` mode, the same operations are available inside the terminal application:
+The same operations are available inside the terminal application, in either mode:
 
 ```text
 /tools
@@ -88,7 +88,7 @@ In `BEDROCK_BACKEND=agentpack` mode, the same operations are available inside th
 /pymol /path/to/an/existing/structure.cif
 ```
 
-The same actions can be written naturally. For example:
+In agent-pack mode, the same actions can also be written naturally. (In the default mode those words go to the model; use the commands above.) For example:
 
 ```text
 Run AlphaFold 2 on /approved/project/candidate.fasta

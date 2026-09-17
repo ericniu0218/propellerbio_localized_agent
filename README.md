@@ -57,6 +57,9 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/digest auto off` | Stop adding matching stored context to messages in this window |
 | `/sources`       | List company data sources        |
 | `/digest <src>://<id>` | Pull a record from a source and compress it |
+| `/fold <fasta or src://id> [--project X]` | Predict one monomer with AlphaFold 2 |
+| `/pymol [structure or src://id]` | Open a structure, or the latest prediction, in PyMOL |
+| `/tools`         | Check AlphaFold 2 and PyMOL configuration |
 | `/runs`          | Prediction runs recorded on this machine |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions, PAE |
 | `/audit`         | What this client has done on this machine |
@@ -132,14 +135,19 @@ preserve its structure and confidence artifacts, render a PNG and session with
 open-source PyMOL, and record hashes and provenance in a per-run manifest.
 
 After operator provisioning, check it with `bedrock-biotech status` and run it
-with `bedrock-biotech fold candidate.fasta --project X`. In agent-pack mode the
-equivalent commands are `/tools`, `/fold <fasta-path> [--project X]`, and
-`/pymol [structure-path]`. Both `/fold` and `bedrock-biotech fold` also accept
-a company source reference such as `registry://SEQ-00123` — see "Company data
-sources" below.
-Direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
+with `bedrock-biotech fold candidate.fasta --project X`. Inside the app, in
+either mode, the equivalent commands are `/tools`,
+`/fold <fasta-path> [--project X]`, and `/pymol [structure-path]`. `/fold`,
+`/pymol` and their `bedrock-biotech` equivalents also accept a company source
+reference such as `registry://SEQ-00123` — see "Company data sources" below.
+
+In the default mode a fold runs beside the chat: the model keeps answering
+while it works, and `Esc` stops a streaming reply, never a fold. In agent-pack
+mode a fold is a request like any other, so later prompts wait for it, and
+direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
 open the latest structure interactively in PyMOL.” Questions about the tools
-remain normal agent conversations.
+remain normal agent conversations. (In the default mode those words go to the
+model; use the slash commands to start a job.)
 `/pymol` opens the structure in a desktop PyMOL window with the same four
 pLDDT bands the saved preview uses — one fixed script and one palette serve
 both, so the window and the PNG cannot disagree. A structure you point at
@@ -404,7 +412,8 @@ system instead:
 /sources                              what is configured, and whether it is set up
 /sources search registry kinase       find a record without knowing its id
 /digest lims://plates/P42.csv         pull a record and compress it for the model
-/fold registry://SEQ-00123            pull a sequence and run AlphaFold 2 (agent-pack mode)
+/fold registry://SEQ-00123            pull a sequence and run AlphaFold 2
+/pymol structures://XYZ.pdb           pull a structure and open it in PyMOL
 bedrock-biotech fold registry://SEQ-00123
 ```
 
@@ -481,9 +490,8 @@ workflow changes.
   `<biotech_work_dir>/sources/`.
 - **Limited search.** REST search reads one page of results; share search
   matches file paths, not contents, and stops after 20,000 files.
-- **`/pymol` does not accept references.** Use `/sources fetch` and open the
-  saved file. `/fold` exists only in agent-pack mode; `/digest <ref>` and
-  `/sources` work in both modes.
+- **A fold lives in the window that started it.** Quitting the app stops it;
+  there is no job queue yet.
 
 ## Two modes
 

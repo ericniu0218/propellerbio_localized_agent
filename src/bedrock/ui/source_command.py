@@ -33,7 +33,8 @@ USAGE = """\
 | `/sources search <source> <words>` | Find records in one source |
 | `/sources fetch <source>://<id>` | Pull a record into your private staging folder |
 | `/digest <source>://<id>` | Pull a record and compress it for the model |
-| `/fold <source>://<id>` | Pull a sequence and run AlphaFold 2 on it (agent-pack mode) |
+| `/fold <source>://<id>` | Pull a sequence and run AlphaFold 2 on it |
+| `/pymol <source>://<id>` | Pull a structure and open it in PyMOL |
 
 Each source decides for itself what you are allowed to see. Everything pulled \
 is saved with a record of which system, record and version it came from.

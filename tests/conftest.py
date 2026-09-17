@@ -20,6 +20,7 @@ from typing import AsyncIterator
 
 import pytest
 
+from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.biotech.confidence import ConfidenceReport, PaeOverview
 from bedrock.config import Settings
 from bedrock.inference import InferenceError, ModelInfo
@@ -95,6 +96,46 @@ def _title_for(messages: list[dict[str, str]]) -> str:
     """The fake model's title: "Re " plus the first question in the request."""
     first_question = re.search(r"^User: (.+)$", messages[1]["content"], re.MULTILINE)
     return f"Re {first_question.group(1)}" if first_question else "Untitled"
+
+
+class FakeBiotechWorkflow:
+    """In-memory stand-in for ``ProteinWorkflow``: records what it was asked
+    to fold and open, and returns a finished run without any tool installed.
+    Shared by both apps' tests, which must drive `/fold` and `/pymol` alike."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.folded: list[tuple[Path, str | None]] = []
+        self.opened: list[Path | None] = []
+        self.provenance: list[dict | None] = []
+
+    def status(self):
+        return (
+            ToolStatus("AlphaFold 2", True, ()),
+            ToolStatus("open-source PyMOL", True, ()),
+        )
+
+    async def predict_and_render(
+        self,
+        fasta_path: Path,
+        *,
+        project_id: str | None = None,
+        source_provenance: dict | None = None,
+    ) -> ProteinWorkflowResult:
+        self.folded.append((fasta_path, project_id))
+        self.provenance.append(source_provenance)
+        return ProteinWorkflowResult(
+            run_id="run_test",
+            run_dir=self.root,
+            structure_path=self.root / "ranked_0.pdb",
+            preview_path=self.root / "preview.png",
+            session_path=self.root / "structure.pse",
+            manifest_path=self.root / "manifest.json",
+        )
+
+    async def open_in_pymol(self, structure_path: Path | None = None) -> Path:
+        self.opened.append(structure_path)
+        return structure_path or self.root / "ranked_0.pdb"
 
 
 @pytest.fixture

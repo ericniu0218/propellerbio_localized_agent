@@ -8,14 +8,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import unicodedata
 
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.reactive import reactive
-from textual.widgets import Label, Markdown, OptionList, Static
+from textual.widgets import Input, Label, Markdown, OptionList, Static
 from textual.widgets._markdown import MarkdownStream
 from textual.widgets.option_list import Option, OptionDoesNotExist
 
+from bedrock.attachments import dropped_references
 from bedrock.models import UNTITLED
 
 if TYPE_CHECKING:  # only for type hints; widgets never touch the disk
@@ -73,6 +75,33 @@ class StatusBar(Horizontal):
         else:
             label.update("● disconnected")
             label.add_class("bad")
+
+
+class PromptInput(Input):
+    """The message box. Dropping files onto the terminal attaches them.
+
+    A terminal reports a dropped file as a paste of its path. When a paste is
+    nothing but paths to existing files, they are written as ``@`` references
+    instead, so the employee sees what will be attached and can type the
+    question around them. Any other paste behaves exactly like ``Input``'s.
+    See ``bedrock/attachments.py``; checking that the paths exist is the only
+    disk access here.
+    """
+
+    def _on_paste(self, event: events.Paste) -> None:
+        references = dropped_references(event.text) if event.text else None
+        if references is None:
+            return  # Textual then runs Input's own paste handler as usual.
+        event.prevent_default()  # otherwise Input's handler pastes the raw path too
+        event.stop()
+        start, end = sorted(self.selection)
+        if start == end and start > 0 and self.value[start - 1] == "@":
+            start -= 1  # "type @, then drop the file": that @ is already in the reference
+        if start > 0 and not self.value[start - 1].isspace():
+            references = " " + references
+        if end == len(self.value) or not self.value[end].isspace():
+            references += " "
+        self.replace(references, start, end)
 
 
 class UserMessage(Static):

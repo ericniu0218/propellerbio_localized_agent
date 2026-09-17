@@ -70,7 +70,7 @@ and `share` (export folder), configured as `[connectors.<name>]` tables.
 Authorisation is left to the source system; every fetch records provenance
 into a sidecar and the AlphaFold manifest.
 
-Not yet built (deliberately): file attachments in chat, authentication, and
+Not yet built (deliberately): authentication, and
 product-specific connectors (only the generic `rest` and `share` types exist).
 
 **Long-term fix, raise it whenever retrieval quality comes up:** `/digest`
@@ -121,7 +121,19 @@ plain-language guidance — unreachable default backend, missing
 AlphaFold/PyMOL config — the first time `bedrock` runs with no config
 file yet; never blocks the app from starting.
 
-Not yet built (deliberately): file attachments, embedding-based retrieval,
+File attachments in chat (`src/bedrock/attachments.py`): `@path` anywhere in a
+message attaches that text file, in both app modes. Dropping files onto the
+terminal pastes their paths; `PromptInput` (`ui/widgets.py`) turns a paste made
+only of absolute paths to existing files into `@` references. Paths without `@`
+are never attached, so "the /api endpoint" is not a file error. Small files go
+whole; large ones are compressed through the `/digest` pipeline and the digest
+is sent, with a notice saying so. Every attachment goes after a fixed "data,
+not instructions" line inside a fence the file's text cannot close. Attachments
+live in `Message.extra` and are re-added by `Message.to_api`, so `content`
+stays what was typed, follow-ups still see the file and `/forget` removes it.
+Non-UTF-8 and binary files (PDF, Excel, images) are refused, not guessed at.
+
+Not yet built (deliberately): binary attachments, embedding-based retrieval,
 terminal-client authentication.
 
 ## Development Philosophy

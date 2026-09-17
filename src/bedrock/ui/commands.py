@@ -19,6 +19,7 @@ HELP_TEXT = """\
 |---|---|
 | `/model` | List available models |
 | `/model <name>` | Switch to a different model |
+| `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
@@ -46,6 +47,15 @@ HELP_TEXT = """\
 
 `/runs`, `/confidence` and `/audit` read local files only. They work with the
 model server switched off, and nothing they show is sent to a model.
+
+**Attaching files**
+
+Drag a file onto the terminal window, or write `@` before its path anywhere in
+a message: `summarise @notes.txt`. Quote a path with spaces: `@"My Data.csv"`.
+A small text file is sent whole; a large one is compressed and its digest is
+sent instead, and a notice says so. The model is told to treat attached files
+as data, not instructions. Attached files are saved with the conversation, so
+follow-up questions still see them, and `/forget` deletes them with it.
 
 **Keys**
 
@@ -152,7 +162,8 @@ def _extract_supported_path(text: str) -> str:
     except ValueError:
         return ""
     for word in reversed(words):
-        candidate = word.rstrip(".,!?;:")
+        # "fold @candidate.fasta" names the file the same way attaching does.
+        candidate = word.rstrip(".,!?;:").removeprefix("@")
         if _has_suffix(candidate, (".fasta", ".fa", ".faa", ".pdb", ".cif", ".mmcif")):
             return candidate
     return ""

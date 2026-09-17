@@ -72,6 +72,41 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 `Esc` stops a response that is still streaming. `/clear` is an alias for `/new`.
 `Ctrl+B` shows or hides the conversation sidebar.
 
+### Attaching a file
+
+Drag a file onto the terminal window, or write `@` before its path anywhere in
+a message:
+
+`What are the last 10 letters of candidate_3_control in @~/Downloads/candidate_proteins.fasta?`
+
+A dropped file appears in the prompt as an `@` reference, so you can see what
+will be attached and type your question around it. Quote a path that contains
+spaces (`@"My Data.csv"`); dropped files are quoted for you. Up to five files
+can go with one message. A path written *without* `@` is ordinary text, so
+"check the /api endpoint" is never mistaken for a file.
+
+The client reads the file **on this computer** and sends it with the question
+to the configured model or agent-pack server, which cannot open a path on your
+laptop itself.
+
+- A text file up to about 24,000 characters is sent whole.
+- A larger one is compressed the way `/digest` does it, and the model receives
+  the digest (structure and statistics, not every line). A notice says so, and
+  `/digest search` finds exact passages in it afterwards.
+- UTF-8 text, FASTA, CSV, JSON, code and logs work. Files that are not UTF-8,
+  and binary formats such as PDF, Word and Excel, are refused rather than
+  guessed at. Nothing is sent when a file cannot be attached, and your draft
+  stays in the input.
+
+The model is told to treat an attached file as data, not as instructions, and
+the file is fenced so its text cannot pose as your message. That lowers the
+risk from a file that contains instructions; it cannot remove it, so attach
+files you would be comfortable pasting.
+
+The chat shows your question with a 📎 line per file. The file's contents are
+saved with that message in the conversation, so follow-up questions still see
+it after a restart, and `/forget` deletes it along with the chat.
+
 ## Private shared workspaces
 
 `/workspace` provides native terminal collaboration backed by a private SQLite

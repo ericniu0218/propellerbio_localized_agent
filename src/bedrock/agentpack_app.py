@@ -32,6 +32,7 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Input
 
+from bedrock import attachments
 from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
@@ -61,7 +62,7 @@ from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
 from bedrock.ui.workspace_command import WorkspaceCommandSession
-from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMessage
+from bedrock.ui.widgets import AssistantMessage, PromptInput, StatusBar, SystemNotice, UserMessage
 from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
@@ -92,6 +93,7 @@ AGENTPACK_HELP_TEXT = """\
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
 | `/audit` | What this client has done on this machine |
+| `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
 | `/digest` | List and search what you have compressed |
 | `/sources` | List the company data sources you can pull from |
@@ -186,7 +188,7 @@ class AgentPackApp(App[None]):
         yield AgentPanel(id="agent-panel")
         yield VerticalScroll(id="chat")
         yield PromptQueuePanel(id="queue-panel")
-        yield Input(placeholder="Type a message, or /help for commands", id="prompt")
+        yield PromptInput(placeholder="Type a message, or /help for commands", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -416,7 +418,19 @@ class AgentPackApp(App[None]):
             self.finish_running_prompt(ok=False)
             return
 
-        await self.mount_message(UserMessage(text))
+        # @files are read when the prompt starts, off the UI thread, because a
+        # large one is compressed first. See bedrock/attachments.py.
+        try:
+            attached = await asyncio.to_thread(attachments.load, attachments.resolve(text), self.context_store)
+        except attachments.AttachmentError as exc:
+            await self.post_notice(str(exc) + " Your draft is still in the input; nothing was sent.", kind="error")
+            self.query_one("#prompt", Input).value = text
+            self.finish_running_prompt(ok=False)
+            return
+
+        await self.mount_message(UserMessage(attachments.display_text(text, attached)))
+        if notice := attachments.summary(attached):
+            await self.post_notice(notice)
         self._agents.clear()
         self.query_one("#agent-panel", AgentPanel).clear()
 
@@ -432,6 +446,8 @@ class AgentPackApp(App[None]):
         if injected is not None:
             await self.post_notice(injected.summary)
 
+        # Attached files follow the typed question, after any stored context.
+        outgoing_text = attachments.with_attachments(outgoing_text, attached)
         try:
             task_id = await self.client.send_message(self.session_id, outgoing_text)
         except InferenceError as exc:
@@ -516,6 +532,14 @@ class AgentPackApp(App[None]):
         """Queue a chat message or scientific request and run it when it can."""
         if not self.session_id:
             await self.post_notice("Still connecting to the AI system — try again in a moment.", kind="error")
+            return
+        try:
+            # Only checks that each @file exists, so a typo is reported before
+            # the prompt waits in the queue.
+            attachments.resolve(text)
+        except attachments.AttachmentError as exc:
+            self.query_one("#prompt", Input).value = text
+            await self.post_notice(str(exc) + " Your draft is still in the input.", kind="error")
             return
         try:
             self.prompt_queue.add(text, self.queue_key, "AI system")

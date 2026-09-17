@@ -2,8 +2,9 @@
 
 There is deliberately no registry in this module.  A roster entry naming
 ``echo`` causes ``bedrock.agents.capabilities.echo`` to be imported and its
-module-level ``CAPABILITY`` value to be inspected.  A capability absent from
-the roster is never imported and therefore cannot be offered to the planner.
+module-level ``CAPABILITY`` or ``CAPABILITIES`` value to be inspected.  A
+capability absent from the roster is never imported and therefore cannot be
+offered to the planner.
 """
 
 from __future__ import annotations
@@ -125,10 +126,15 @@ def discover_capability(name: str) -> Capability:
         module = importlib.import_module(qualified_name)
     except (ImportError, ModuleNotFoundError) as exc:
         raise RosterError(f"Capability module is unavailable: {module_name}") from exc
-    if not hasattr(module, "CAPABILITY"):
-        raise RosterError(f"Capability module {module_name!r} has no CAPABILITY export.")
+    export = getattr(module, "CAPABILITY", None)
+    if export is None:
+        export = getattr(module, "CAPABILITIES", None)
+    if export is None:
+        raise RosterError(
+            f"Capability module {module_name!r} has no CAPABILITY or CAPABILITIES export."
+        )
 
-    capability = _select_export(module.CAPABILITY, name)
+    capability = _select_export(export, name)
     _validate_capability(capability, name)
     return capability
 

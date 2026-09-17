@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -23,7 +24,8 @@ from bedrock.agents.contract import (
 )
 from bedrock.agents.grants import GrantError, GrantStore
 from bedrock.agents.planner import Planner
-from bedrock.agents.roster import RosterError, load_roster
+import bedrock.agents.roster as roster_module
+from bedrock.agents.roster import RosterError, discover_capability, load_roster
 from bedrock.agents.supervisor import ExecutionBudget, Supervisor, SupervisorError
 from bedrock.config import load_settings
 from bedrock.provenance import HistoryStore
@@ -185,6 +187,13 @@ def test_roster_does_not_fall_back_to_a_hardcoded_capability(tmp_path: Path):
 
     with pytest.raises(RosterError, match="unavailable"):
         load_roster(path)
+
+
+def test_roster_accepts_a_plural_only_capabilities_export(monkeypatch):
+    module = SimpleNamespace(CAPABILITIES=(ECHO,))
+    monkeypatch.setattr(roster_module.importlib, "import_module", lambda _name: module)
+
+    assert discover_capability("echo") is ECHO
 
 
 async def test_forged_missing_and_reused_grants_never_execute():

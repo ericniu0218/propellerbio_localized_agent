@@ -232,7 +232,11 @@ async def _run(args: argparse.Namespace) -> int:
 
     notes_path = folder / "notes.md"
     notes_path.write_text(summary.render())
-    print(f"  notes -> {notes_path}\n")
+    print(f"  notes -> {notes_path}")
+    checked = summary.citations.describe()
+    if checked and not summary.degraded_reason:
+        print(f"  {checked}")
+    print()
     print(summary.render())
     return 0
 

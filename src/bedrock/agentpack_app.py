@@ -442,10 +442,12 @@ class AgentPackApp(App[None]):
         # text actually sent to the model gets the extra context, and the
         # notice below says so out loud rather than doing it silently.
         injected = find_relevant_context(text, self.context_store)
-        outgoing_text = with_injected_context(attachments.with_attachments(text, attached), injected)
+        outgoing_text = with_injected_context(text, injected)
         if injected is not None:
             await self.post_notice(injected.summary)
 
+        # Attached files follow the typed question, after any stored context.
+        outgoing_text = attachments.with_attachments(outgoing_text, attached)
         try:
             task_id = await self.client.send_message(self.session_id, outgoing_text)
         except InferenceError as exc:

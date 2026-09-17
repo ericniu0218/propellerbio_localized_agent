@@ -85,6 +85,7 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 
 /* ---- shell ---- */
 #app { display: grid; grid-template-columns: 250px 1fr; height: 100vh; }
+#app.activity-open { grid-template-columns: 250px 1fr var(--activity-w, 380px); }
 .brand { font-weight: 700; letter-spacing: -0.02em; font-size: 15px; }
 .brand span { color: var(--accent); }
 
@@ -256,15 +257,14 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .agent-card-detail { font-size: 12.5px; color: var(--text-secondary); margin: 10px 0 0 40px; line-height: 1.55; }
 .agent-card-expand { margin-left: auto; color: var(--muted); flex-shrink: 0; }
 
-/* ---- activity drawer (overlay at every width; agent runs only) ---- */
-#activity-scrim { display: none; position: fixed; inset: 0; background: rgba(10,8,6,0.5); z-index: 29; }
-#app.activity-open #activity-scrim { display: block; }
+/* ---- activity panel: a real sibling column, not a modal overlay — it
+   never dims or blocks the chat, so you can keep working while it runs ---- */
 #activity-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; width: var(--activity-w, 380px); max-width: 92vw;
-  background: var(--sidebar); border-left: 1px solid var(--border); display: flex; flex-direction: column;
-  min-height: 0; z-index: 30; transform: translateX(100%); transition: transform 0.2s ease; box-shadow: var(--shadow);
+  display: none; flex-direction: column; min-height: 0; position: relative;
+  width: var(--activity-w, 380px); max-width: 92vw; flex-shrink: 0;
+  background: var(--sidebar); border-left: 1px solid var(--border);
 }
-#app.activity-open #activity-panel { transform: translateX(0); }
+#app.activity-open #activity-panel { display: flex; }
 #activity-resizer { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 5; }
 #activity-resizer:hover, #activity-resizer.dragging { background: var(--accent-soft); }
 .activity-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -288,12 +288,28 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .run-actions { display: flex; gap: 6px; margin-top: 10px; }
 .run-answer-link { font-size: 12px; margin-top: 10px; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); cursor: pointer; }
 
+.followup-box { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.followup-toggle { padding: 0; }
+.followup-thread { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.followup-q { font-size: 12.5px; font-weight: 500; background: var(--panel-2); border-radius: 10px; padding: 7px 11px; align-self: flex-end; max-width: 90%; }
+.followup-a { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap; }
+.thinking-dots.small { padding: 2px 0; }
+.thinking-dots.small span { width: 5px; height: 5px; }
+.followup-form { display: flex; gap: 6px; align-items: flex-end; }
+.followup-form textarea { flex: 1; min-width: 0; resize: none; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--panel-2); padding: 7px 10px; max-height: 100px; min-height: 32px; font-size: 12.5px; }
+.followup-form textarea:focus { outline: none; border-color: var(--accent); }
+.followup-form .icon-btn { width: 32px; height: 32px; }
+
 /* ---- responsive ---- */
 #sidebar-menu-btn { display: none; }
 #sidebar-scrim { display: none; }
 @media (max-width: 720px) {
-  #app { grid-template-columns: 1fr; }
+  #app, #app.activity-open { grid-template-columns: 1fr; }
   #sidebar-menu-btn { display: inline-flex; }
+  /* No room for a third column on a phone — the panel overlays here, but
+     still without dimming the page behind it (close via its own button). */
+  #activity-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 25; box-shadow: var(--shadow); transform: translateX(100%); transition: transform 0.2s ease; display: flex; }
+  #app.activity-open #activity-panel { transform: translateX(0); }
   #sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: min(270px, 85vw); z-index: 31; transform: translateX(-100%); transition: transform 0.18s ease; box-shadow: var(--shadow); }
   #app.sidebar-open #sidebar { transform: translateX(0); }
   #sidebar-scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 30; }

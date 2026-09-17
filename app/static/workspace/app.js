@@ -167,19 +167,28 @@
   function closeActivity() { appEl.classList.remove("activity-open"); }
   $("#activity-toggle").addEventListener("click", () => appEl.classList.toggle("activity-open"));
   $("#activity-collapse").addEventListener("click", closeActivity);
-  $("#activity-scrim").addEventListener("click", closeActivity);
   $("#activity-popout").addEventListener("click", () => {
-    const w = window.open("", "bedrock-agent-activity", "width=420,height=720");
-    if (!w) return;
-    w.document.write("<title>Agent Activity</title>");
+    const w = window.open("about:blank", "bedrock-agent-activity", "width=420,height=720");
+    if (!w) {
+      alert("Your browser blocked this pop-up. Allow pop-ups for this page and click Pop out again.");
+      return;
+    }
+    w.document.title = "Agent Activity";
     const link = w.document.createElement("link");
     link.rel = "stylesheet"; link.href = location.origin + "/static/workspace/styles.css";
     w.document.head.appendChild(link);
-    w.document.body.style.cssText = "margin:0;background:#171614";
-    w.document.body.appendChild(el("div", { id: "activity-body", style: "padding:14px" }));
-    w.renderPopout = () => { w.document.getElementById("activity-body").innerHTML = $("#activity-body").innerHTML; };
-    w.renderPopout();
-    const iv = setInterval(() => { if (w.closed) return clearInterval(iv); w.renderPopout(); }, 1800);
+    w.document.body.style.cssText = "margin:0;background:#171614;color:#ece6dc";
+    const note = w.document.createElement("div");
+    note.style.cssText = "padding:10px 14px;font-size:11px;color:#8c8478;border-bottom:1px solid #37332e";
+    note.textContent = "Live view — approve, reject, and cancel from the main window.";
+    w.document.body.appendChild(note);
+    const container = w.document.createElement("div");
+    container.id = "activity-body";
+    container.style.padding = "14px";
+    w.document.body.appendChild(container);
+    const paint = () => { container.innerHTML = $("#activity-body").innerHTML; };
+    paint();
+    const iv = setInterval(() => { if (w.closed) { clearInterval(iv); return; } paint(); }, 1500);
   });
 
   // resizable drawer
@@ -734,9 +743,11 @@
   }
 
   // ==================== ACTIVITY (agents only) ====================
+  const expandedFollowups = new Set();
+
   function renderActivity() {
     const runs = [...state.runs].filter((r) => r.mode && !["ask", "auto"].includes(r.mode)).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
-    const sig = JSON.stringify(runs.map((r) => [r.id, r.status, r.currentStep, (r.steps || []).map((s) => s.status)]));
+    const sig = JSON.stringify(runs.map((r) => [r.id, r.status, r.currentStep, (r.steps || []).map((s) => s.status), (r.followups || []).map((f) => [f.id, f.status]), expandedFollowups.has(r.id)]));
     if (sig === lastRenderSig.activity) return;
     lastRenderSig.activity = sig;
     const host = $("#activity-body");
@@ -768,10 +779,51 @@
       if (chat) card.appendChild(el("a", { class: "run-answer-link", onclick: () => {
         view = "chats"; currentChatId = chat.id;
         $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "chats"));
-        closeActivity(); render(true);
+        render(true);
       } }, ["View in chat", icon("chevronright")]));
+      if (["completed", "failed"].includes(r.status)) card.appendChild(renderFollowupBox(r));
       host.appendChild(card);
     });
+  }
+
+  function renderFollowupBox(run) {
+    const isOpen = expandedFollowups.has(run.id);
+    const wrap = el("div", { class: "followup-box" });
+    const toggle = el("button", { type: "button", class: "link-btn small followup-toggle", onclick: () => { isOpen ? expandedFollowups.delete(run.id) : expandedFollowups.add(run.id); lastRenderSig.activity = ""; renderActivity(); } },
+      [icon(isOpen ? "chevrondown" : "chevronright"), "Ask this agent"]);
+    wrap.appendChild(toggle);
+    if (!isOpen) return wrap;
+    const thread = el("div", { class: "followup-thread" });
+    (run.followups || []).forEach((f) => {
+      thread.appendChild(el("div", { class: "followup-q" }, f.prompt));
+      if (f.status === "running") thread.appendChild(el("div", { class: "thinking-dots small" }, [el("span"), el("span"), el("span")]));
+      else thread.appendChild(el("div", { class: "followup-a" }, f.answer || ""));
+    });
+    wrap.appendChild(thread);
+    const pending = (run.followups || []).some((f) => f.status === "running");
+    const form = el("form", { class: "followup-form" });
+    const input = el("textarea", { rows: "1", placeholder: pending ? "Waiting for a reply…" : "Ask a follow-up…" });
+    input.disabled = pending;
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      if (getEnterToSend()) { e.preventDefault(); form.requestSubmit(); }
+    });
+    const sendBtn = el("button", { type: "submit", class: "icon-btn small", disabled: pending ? "disabled" : null }, icon("send"));
+    form.appendChild(input);
+    form.appendChild(sendBtn);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      try {
+        await api(`/runs/${run.id}/followups`, { method: "POST", body: { prompt: text } });
+        lastRenderSig.activity = "";
+        await refresh();
+      } catch (err) { alert(err.message); }
+    });
+    wrap.appendChild(form);
+    return wrap;
   }
 
   async function decide(runId, decision) {

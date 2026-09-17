@@ -33,7 +33,7 @@ from textual.widgets import Button, Footer, Input, OptionList
 
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub
-from bedrock.context import ContextStore
+from bedrock.context import ContextStore, find_relevant_context
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
@@ -1038,6 +1038,18 @@ class BedrockApp(App[None]):
                 self.notify("You switched chats while your past chats were being searched, so that question was not answered. Reopen the chat and send it again.", timeout=8)
                 self.finish_prompt(item, ok=False)
                 return
+
+        # Anything compressed earlier with /digest that matches this
+        # question, folded into `note` the same one-turn, never-saved way
+        # recall's NO_TOPIC/NOTHING_FOUND are - see
+        # bedrock.context.auto_inject for what this can and can't do.
+        # Without this, /digest did nothing for the next question you
+        # asked unless you remembered to search it yourself; that gap was
+        # closed for AgentPackApp first and is closed here the same way.
+        injected = find_relevant_context(text, self.context_store)
+        if injected is not None:
+            note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block
+            await self.post_notice(injected.summary)
 
         reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)

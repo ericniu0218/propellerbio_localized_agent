@@ -281,12 +281,15 @@ async def execute_run(owner, run, context):
     s = store()
     try:
         # The real orchestrator handles AGENT_PACK_MODE=mock/real itself
-        # (deterministic fixture model vs. a live one). Demo data (seeded
-        # projects/meetings, DEMO_MODE=true) and a real model are independent
-        # choices: a demo with AGENT_PACK_MODE=real configured should give
-        # genuine answers, not the canned MockAIProvider text, so this only
-        # falls back to the canned demo when no real model is configured.
-        provider = LocalLLMProvider() if get_settings().mode == "real" else MockAIProvider()
+        # (deterministic fixture model vs. a live one) — that's independent
+        # of whether this falls back to the workspace's own canned
+        # MockAIProvider text. demo-zoom.sh, for one, wants the real
+        # orchestrator (tool calls, real citations) with AGENT_PACK_MODE=mock
+        # for a deterministic fixture model client — not the canned text.
+        # So: only fall back to canned text in a demo (DEMO_MODE=true) that
+        # has no real model configured; AGENT_PACK_MODE=real always means a
+        # real model is configured and should be used, demo or not.
+        provider = MockAIProvider() if (demo_mode() and get_settings().mode != "real") else LocalLLMProvider()
         await provider.execute(s, owner, run, context)
         if run["status"] == "completed":
             async with _chat_lock(run["chatId"]):

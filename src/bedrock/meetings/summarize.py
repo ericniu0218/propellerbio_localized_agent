@@ -35,6 +35,11 @@ from datetime import date
 
 from bedrock.inference.base import InferenceBackend, InferenceError
 from bedrock.json_reply import decode_json_reply
+from bedrock.meetings.citations import (
+    apply_citations,
+    resolve_timestamp,
+    strip_citation_markup,
+)
 from bedrock.meetings.transcript import Cue, speakers, word_count
 
 # Chunks are sized for the smallest context window we expect to meet (Ollama's
@@ -153,9 +158,9 @@ You are reading one part of a meeting transcript. Report only what is actually \
 said in it.
 
 Respond with JSON and nothing else:
-{{"decisions": [{{"text": "...", "timestamp": "00:12:34"}}],
- "actions": [{{"text": "...", "owner": "name or null", "timestamp": "00:12:34"}}],
- "facts": [{{"text": "...", "timestamp": "00:12:34"}}]}}
+{{"decisions": [{{"text": "...", "quote": "...", "timestamp": "00:12:34"}}],
+ "actions": [{{"text": "...", "owner": "name or null", "quote": "...", "timestamp": "00:12:34"}}],
+ "facts": [{{"text": "...", "quote": "...", "timestamp": "00:12:34"}}]}}
 
 Rules:
 - A decision is something the group settled on. Phrases like "then we", "let's",
@@ -169,7 +174,11 @@ Rules:
   fact; "they discussed enrollment" is not.
 - Write each item as a short standalone sentence. Do not start it with a name
   being addressed; put that name in "owner" instead.
-- Use the timestamp shown at the start of the line where it was said.
+- "quote" is a short run of words copied EXACTLY from the line above, letter
+  for letter. Do not tidy it, shorten it below about five words, or join words
+  from two different lines. It is what proves the timestamp, and an item whose
+  quote cannot be found in the transcript keeps its text but loses its citation.
+- Use the timestamp shown at the start of the line the quote came from.
 - If this part contains none, return empty arrays. Never invent one.
 
 Transcript part:
@@ -201,8 +210,16 @@ Rules, in order of importance:
 it as they wrote it.
 - Keep every specific: numbers, dates, deadlines and names go in exactly as \
 said, never summarised into "the numbers" or "the deadline".
-- Cite timestamps like [00:12:34] for facts you add.
-- Return markdown. No preamble, no closing remark.
+- To cite a detail you added, put a marker like [[cite:c1]] at the end of that \
+line and list c1 below. Never write a timestamp into the markdown yourself.
+
+Respond with JSON and nothing else:
+{{"markdown": "their notes, rewritten",
+  "citations": [{{"id": "c1", "quote": "...", "timestamp": "00:12:34"}}]}}
+
+Each citation's "quote" is a short run of words copied EXACTLY from one \
+transcript line, letter for letter. Each id is used once. A marker whose quote \
+cannot be found is removed, and the line it was on keeps its words.
 
 Their notes:
 {notes}
@@ -219,6 +236,19 @@ MAX_OVERVIEW_CUES = 400
 
 def _render(cues: list[Cue]) -> str:
     return "\n".join(cue.render() for cue in cues)
+
+
+def _shown_cues(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES) -> list[Cue]:
+    """The cues a single-prompt pass is actually given, in order.
+
+    Returned as cues rather than text because the citation check has to run
+    against exactly this list. Checking a quote against the whole meeting would
+    let a citation point at a passage that model call never read.
+    """
+    if len(cues) <= limit:
+        return list(cues)
+    head, tail = limit // 2, limit - limit // 2
+    return list(cues[:head]) + list(cues[-tail:])
 
 
 def _for_one_prompt(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES) -> str:
@@ -252,31 +282,27 @@ async def _complete(backend: InferenceBackend, model: str, prompt: str) -> str:
     return "".join(parts).strip()
 
 
-def _valid_timestamps(cues: list[Cue]) -> set[str]:
-    return {cue.timestamp for cue in cues}
+def _repair_timestamp(value: object, evidence: object, cues: list[Cue]) -> str | None:
+    """The timestamp a quoted line earns, checked against the words themselves.
 
-
-def _repair_timestamp(value: object, text: str, cues: list[Cue]) -> str | None:
-    """Keep a timestamp only if the meeting really contains it.
-
-    A model that invents `00:47:00` for a 6-minute meeting is producing a
-    citation that cannot be checked. Rather than pass that on, the quoted text
-    is located in the transcript and that cue's real timestamp used; if the text
-    cannot be found either, the point keeps its words and loses its citation.
+    Kept as a name of its own because it reads at the call site, but the rule
+    lives in ``citations.resolve_timestamp``: a timestamp survives only when the
+    quote is found in a cue that really carries it. A timestamp that merely
+    exists somewhere in the meeting proves nothing.
     """
-    if isinstance(value, str) and value in _valid_timestamps(cues):
-        return value
+    return resolve_timestamp(evidence, value, cues)
 
-    needle = {word for word in re.findall(r"[a-z0-9]+", text.lower()) if len(word) > 3}
-    if needle:
-        best, best_overlap = None, 0
-        for cue in cues:
-            overlap = len(needle & set(re.findall(r"[a-z0-9]+", cue.text.lower())))
-            if overlap > best_overlap:
-                best, best_overlap = cue, overlap
-        if best is not None and best_overlap >= 2:
-            return best.timestamp
-    return None
+
+# The key is looked for, not its value. A model that sent ``"quote": ""`` made a
+# broken claim rather than no claim, so it does not get a second attempt at the
+# paraphrase - but a reply from the older prompt, with no ``quote`` key at all,
+# still has its text tried as evidence against the same strict matcher.
+_MISSING = object()
+
+
+def _evidence_for(item: dict, text: str) -> object:
+    supplied = item.get("quote", _MISSING)
+    return text if supplied is _MISSING else supplied
 
 
 def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]:
@@ -294,7 +320,9 @@ def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]
         points.append(
             Point(
                 text=text,
-                timestamp=_repair_timestamp(item.get("timestamp"), text, cues),
+                timestamp=_repair_timestamp(
+                    item.get("timestamp"), _evidence_for(item, text), cues
+                ),
                 owner=owner,
             )
         )
@@ -316,6 +344,34 @@ def _dedupe(points: list[Point]) -> list[Point]:
         kept.append(point)
         seen.append(words)
     return kept
+
+
+def _verified_notes(reply: str, cues: list[Cue], rough: str) -> str:
+    """The rewritten notes, carrying only citations that checked out.
+
+    Three shapes arrive here and all three have to end as readable notes:
+
+    - The envelope that was asked for: its markers are resolved against its own
+      citation records, and anything unsupported is erased.
+    - Plain Markdown, because a small model ignored the JSON instruction. The
+      prose is kept and every citation in it is removed unverified - it was
+      never backed by a quote anybody could check.
+    - An envelope with no usable markdown in it. Their own rough notes are
+      returned instead, because rendering a JSON blob where somebody's notes
+      should be is the one outcome worse than a plain rewrite.
+    """
+    try:
+        envelope = decode_json_reply(reply, allow_surrounding_text=True)
+    except (ValueError, json.JSONDecodeError):
+        return strip_citation_markup(reply.strip())
+
+    if not isinstance(envelope, dict):
+        return strip_citation_markup(reply.strip())
+
+    markdown = envelope.get("markdown")
+    if not isinstance(markdown, str) or not markdown.strip():
+        return rough.strip()
+    return apply_citations(markdown.strip(), envelope.get("citations"), cues)
 
 
 async def summarize_meeting(
@@ -360,16 +416,23 @@ async def summarize_meeting(
             actions += _points(data.get("actions"), chunk, with_owner=True)
             details += _points(data.get("facts"), chunk, with_owner=False)
 
+        # Both single-prompt passes are checked against the cues they were
+        # shown, never the whole meeting.
+        shown = _shown_cues(cues)
         if notes and notes.strip():
-            summary.enhanced_notes = await _complete(
+            reply = await _complete(
                 backend,
                 model,
                 _NOTES_PROMPT.format(notes=notes.strip(), transcript=_for_one_prompt(cues)),
             )
+            summary.enhanced_notes = _verified_notes(reply, shown, notes)
         else:
-            summary.overview = await _complete(
+            overview = await _complete(
                 backend, model, _OVERVIEW_PROMPT.format(transcript=_for_one_prompt(cues))
             )
+            # The overview prompt does not ask for citations. One that appears
+            # anyway is the model's own invention, so it goes without checking.
+            summary.overview = strip_citation_markup(overview)
     except InferenceError as exc:
         summary.degraded_reason = str(exc)
         return summary

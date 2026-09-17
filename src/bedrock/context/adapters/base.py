@@ -49,6 +49,12 @@ class Source:
     @classmethod
     def from_path(cls, path: Path | str) -> "Source":
         path = Path(path)
+        size = path.stat().st_size
+        if size > MAX_DECODE_BYTES:
+            raise ValueError(
+                f"{path.name} is {size / 1_000_000:.0f} MB, over the "
+                f"{MAX_DECODE_BYTES // 1_000_000} MB limit for a single source."
+            )
         raw = path.read_bytes()
         if len(raw) > MAX_DECODE_BYTES:
             raise ValueError(

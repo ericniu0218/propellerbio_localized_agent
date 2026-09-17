@@ -58,7 +58,7 @@ class CodeAdapter:
     def _python(self, source: Source) -> tuple[list[str], list[Segment]]:
         try:
             tree = ast.parse(source.text)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError):
             # A file that does not parse is still worth storing; just treat it
             # like any other language rather than failing the ingest.
             return self._generic(source)

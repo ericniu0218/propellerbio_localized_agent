@@ -16,6 +16,7 @@ from typing import Any
 from bedrock.agents.contract import Ask, Plan, Step
 from bedrock.agents.protocol import Capability
 from bedrock.inference.base import InferenceBackend
+from bedrock.json_reply import decode_json_reply
 
 _SYSTEM_PROMPT = """You turn one evidenced request into a small tool plan.
 Return JSON only, with this exact shape:
@@ -121,13 +122,8 @@ class Planner:
 
 
 def _decode_reply(text: str) -> dict[str, Any]:
-    stripped = text.strip()
-    if stripped.startswith("```") and stripped.endswith("```"):
-        lines = stripped.splitlines()
-        if len(lines) >= 3 and lines[0].strip() in ("```", "```json"):
-            stripped = "\n".join(lines[1:-1]).strip()
     try:
-        value = json.loads(stripped)
+        value = decode_json_reply(text)
     except json.JSONDecodeError as exc:
         raise ValueError("model reply was not JSON") from exc
     if not isinstance(value, dict):

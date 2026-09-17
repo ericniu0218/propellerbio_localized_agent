@@ -18,10 +18,8 @@ the disk *only* through ``ConversationStore``.
 from __future__ import annotations
 
 import asyncio
-import re
 import sys
 import time
-import unicodedata
 from datetime import datetime
 
 from textual import on, work
@@ -34,7 +32,7 @@ from textual.worker import WorkerCancelled
 
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub
-from bedrock.context import ContextStore, find_relevant_context
+from bedrock.context import find_relevant_context
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
@@ -42,15 +40,11 @@ from bedrock.storage import ConversationDeleted, ConversationStore, Conversation
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
 from bedrock.titles import generate_title, wants_title
-from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
-from bedrock.ui.confidence_view import run_confidence_command
-from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.local_commands import LocalCommandsMixin
 from bedrock.ui.prompt_queue import PromptQueuePanel
-from bedrock.ui.runs_command import run_runs_command
+from bedrock.ui.rendering import markdown_text
 from bedrock.ui.services import ComplianceServices
-from bedrock.ui.source_command import run_sources_command
-from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import (
     NEW_CONVERSATION,
     AssistantMessage,
@@ -59,7 +53,6 @@ from bedrock.ui.widgets import (
     SystemNotice,
     UserMessage,
 )
-from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
 SKIP_CLEANUP_WARNING_SECONDS = 5.0
@@ -68,12 +61,6 @@ HISTORY_DISABLED = (
     "Saving conversations is switched off on this machine "
     "(`BEDROCK_SAVE_HISTORY=0`), so there is no history to show."
 )
-
-
-def markdown_text(value: str) -> str:
-    """Escape untrusted text before placing it in a Markdown notice."""
-    value = "".join(c for c in value if unicodedata.category(c)[0] != "C")
-    return re.sub(r"([\\`*_{}\[\]()<>#+.!|~-])", r"\\\1", value)
 
 
 def format_when(when: datetime) -> str:
@@ -87,9 +74,10 @@ def format_when(when: datetime) -> str:
     return f"{local:%Y-%m-%d %H:%M}"
 
 
-class BedrockApp(App[None]):
+class BedrockApp(LocalCommandsMixin, App[None]):
     TITLE = "Bedrock Private AI"
     CSS_PATH = "ui/styles.tcss"
+    LOCAL_DIGEST_USES_MODEL = True
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear_chat", "New"),
@@ -115,10 +103,7 @@ class BedrockApp(App[None]):
         self.conversation = Conversation(system_prompt=self.settings.system_prompt)
         self.model_name: str | None = self.settings.model
         self._streaming = False
-        self._context_store: ContextStore | None = None
-        # Tests pass a hub with fake connectors; real runs build one from settings.
-        self._sources = sources
-        self._workspace_session: WorkspaceCommandSession | None = None
+        self._init_local_commands(sources=sources, services=services)
         self._title_worker_running = False
         self._titles_pending = False
         self._title_failures: set[str] = set()
@@ -126,8 +111,6 @@ class BedrockApp(App[None]):
         # Recalled excerpts per conversation id, for this session only, so
         # clicking away from a chat and back does not silently drop them.
         self._recalled: dict[str, tuple[str, list[str]]] = {}
-        # Run and action-journal browsing. Built on first use, injected by tests.
-        self.services = services or ComplianceServices(self.settings)
         # Prompts typed while a reply is arriving wait here instead of being
         # refused. In memory, and only for this window; see prompt_queue.py.
         self.prompt_queue = PromptQueue()
@@ -213,6 +196,8 @@ class BedrockApp(App[None]):
             await self.send_message(text)
 
     async def run_command(self, command: Command) -> None:
+        if self.run_local_command(command):
+            return
         match command.name:
             case "help":
                 await self.post_notice(HELP_TEXT)
@@ -222,18 +207,6 @@ class BedrockApp(App[None]):
                 await self.action_quit()
             case "model":
                 await self.command_model(command.args)
-            case "digest":
-                self.command_digest(command.args)
-            case "sources":
-                self.command_sources(command.args)
-            case "runs":
-                self.command_runs(command.args)
-            case "confidence":
-                self.command_confidence(command.args)
-            case "audit":
-                self.command_audit(command.args)
-            case "workspace" | "team":
-                self.command_workspace(command.args)
             case "history":
                 await self.command_history()
             case "resume":
@@ -267,82 +240,6 @@ class BedrockApp(App[None]):
             marker = "→" if model.id == self.model_name else " "
             lines.append(f"- {marker} `{model.id}`")
         await self.post_notice("\n".join(lines))
-
-    # ---- Stored context ---------------------------------------------------
-
-    @work(group="digest")
-    async def command_digest(self, args: str) -> None:
-        await run_digest_command(
-            args,
-            store=self.context_store,
-            notify=self.post_notice,
-            backend=self.backend,
-            model=self.model_name,
-            sources=self.sources,
-            history=await self.services.optional_history(),
-            actor_id=self.settings.user_id,
-        )
-
-    @property
-    def context_store(self) -> ContextStore:
-        if self._context_store is None:
-            self._context_store = ContextStore(self.settings.context_dir)
-        return self._context_store
-
-    @work(group="sources")
-    async def command_sources(self, args: str) -> None:
-        """``/sources``: list, search and fetch from company systems of record."""
-        await run_sources_command(args, hub=self.sources, notify=self.post_notice)
-
-    @property
-    def sources(self) -> SourceHub:
-        if self._sources is None:
-            self._sources = SourceHub.from_settings(self.settings)
-        return self._sources
-
-    # ---- Local history and run browsing -----------------------------------
-    #
-    # These three read files this machine already has. They never contact the
-    # model server, so they keep working when it is down, and they never send
-    # what they find to a model: "which runs did project X do last quarter" is
-    # a question with a correct answer, and a plausible one would be worse
-    # than none. Each runs in a worker because all of the work is disk work.
-
-    @work(group="history")
-    async def command_runs(self, args: str) -> None:
-        await run_runs_command(args, services=self.services, notify=self.post_notice)
-
-    @work(group="history")
-    async def command_confidence(self, args: str) -> None:
-        await run_confidence_command(args, services=self.services, notify=self.post_notice)
-
-    @work(group="history")
-    async def command_audit(self, args: str) -> None:
-        await run_audit_command(args, services=self.services, notify=self.post_notice)
-
-    # ---- Shared workspaces -----------------------------------------------
-
-    @work(group="workspace")
-    async def command_workspace(self, args: str) -> None:
-        await self.workspace_session.run(args, self.post_notice)
-
-    @property
-    def workspace_session(self) -> WorkspaceCommandSession:
-        if self._workspace_session is None:
-            store = WorkspaceStore.for_user(
-                self.settings.workspace_dir,
-                self.settings.user_id,
-                self.settings.display_name,
-            )
-            self._workspace_session = WorkspaceCommandSession(
-                store,
-                self.context_store,
-                selection_changed=self._set_workspace_name,
-            )
-        return self._workspace_session
-
-    def _set_workspace_name(self, name: str | None) -> None:
-        self.query_one(StatusBar).workspace_name = name
 
     # ---- Saved conversations ----------------------------------------------
 
@@ -1183,9 +1080,6 @@ class BedrockApp(App[None]):
         # question, folded into `note` the same one-turn, never-saved way
         # recall's NO_TOPIC/NOTHING_FOUND are - see
         # bedrock.context.auto_inject for what this can and can't do.
-        # Without this, /digest did nothing for the next question you
-        # asked unless you remembered to search it yourself; that gap was
-        # closed for AgentPackApp first and is closed here the same way.
         injected = find_relevant_context(text, self.context_store)
         if injected is not None:
             note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block

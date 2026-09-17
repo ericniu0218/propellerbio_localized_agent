@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from bedrock.inference.base import InferenceBackend, InferenceError
+from bedrock.json_reply import decode_json_reply
 from bedrock.meetings.transcript import Cue, speakers, word_count
 
 # Chunks are sized for the smallest context window we expect to meet (Ollama's
@@ -251,15 +252,6 @@ async def _complete(backend: InferenceBackend, model: str, prompt: str) -> str:
     return "".join(parts).strip()
 
 
-def _extract_json(raw: str) -> dict:
-    """Pull the JSON object out of a reply that may be wrapped in prose or fences."""
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
-    candidate = fenced.group(1) if fenced else raw[raw.find("{") : raw.rfind("}") + 1]
-    if not candidate.strip():
-        raise ValueError("no JSON object in reply")
-    return json.loads(candidate)
-
-
 def _valid_timestamps(cues: list[Cue]) -> set[str]:
     return {cue.timestamp for cue in cues}
 
@@ -360,7 +352,7 @@ async def summarize_meeting(
                 backend, model, _EXTRACT_PROMPT.format(transcript=_render(chunk))
             )
             try:
-                data = _extract_json(reply)
+                data = decode_json_reply(reply, allow_surrounding_text=True)
             except (ValueError, json.JSONDecodeError):
                 # One unparseable chunk should not lose the other nine.
                 continue

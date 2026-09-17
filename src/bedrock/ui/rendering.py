@@ -19,6 +19,7 @@ to test, and the hardest to reason about by eye.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # C0 and C1 control characters, plus DEL. Tab and newline are included on
 # purpose: every value we render this way belongs on exactly one line.
@@ -27,6 +28,14 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # Unicode direction overrides can visually reorder a file name so that what
 # the employee reads is not what is on disk.
 _BIDI = re.compile(r"[‪-‮⁦-⁩]")
+
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()<>#+.!|~-])")
+
+
+def markdown_text(value: str) -> str:
+    """Escape untrusted text before placing it in a Markdown notice."""
+    value = "".join(c for c in value if unicodedata.category(c)[0] != "C")
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", value)
 
 
 def safe_line(value: object, limit: int = 160) -> str:

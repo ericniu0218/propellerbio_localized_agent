@@ -63,7 +63,14 @@ class OpenAICompatibleBackend:
         except (ValueError, KeyError, TypeError) as exc:
             raise InferenceError("Server returned an unexpected /models response.") from exc
 
-        return [ModelInfo(id=item["id"]) for item in data if "id" in item]
+        # Ollama answers `"data": null`, not `[]`, until a model has been
+        # pulled. That is an empty list, not a broken server: treating it as
+        # one to iterate crashed the app on startup on a fresh install.
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise InferenceError("Server returned an unexpected /models response.")
+        return [ModelInfo(id=str(item["id"])) for item in data if isinstance(item, dict) and "id" in item]
 
     async def stream_chat(self, model: str, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         payload = {"model": model, "messages": messages, "stream": True}

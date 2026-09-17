@@ -154,3 +154,34 @@ async def test_workspace_command_is_native_and_updates_status(fake_backend, tmp_
 
         await pilot.press(*"/exit", "enter")
         await pilot.pause()
+
+
+async def test_the_app_starts_against_a_server_with_no_models_pulled(tmp_path):
+    """A fresh Ollama answers `/models` with `"data": null`. The app used to
+    crash on launch there; it must start, say it has no model, and tell the
+    employee how to get one."""
+    import httpx
+
+    from bedrock.inference.openai_compatible import OpenAICompatibleBackend
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"object": "list", "data": None})
+
+    backend = OpenAICompatibleBackend("http://fake/v1", transport=httpx.MockTransport(handler))
+    app = BedrockApp(settings=Settings(context_dir=str(tmp_path / "context")), backend=backend)
+    async with app.run_test() as pilot:
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert app.model_name is None
+        assert app.query_one(StatusBar).model_name == "no model"
+
+        await pilot.press(*"/model", "enter")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert "The server reports no models" in str(app.query(SystemNotice)[-1].source)
+
+        await pilot.press(*"hello", "enter")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert "No model selected" in str(app.query(SystemNotice)[-1].source)
+    assert app._exception is None

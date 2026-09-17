@@ -618,6 +618,10 @@ async def test_the_written_notes_file_carries_only_verified_citations(tmp_path, 
 
     folder = tmp_path / "2026-09-15 09.00.12 Phase II weekly sync"
     folder.mkdir()
+    # A real Zoom folder to hand the command. Transcription itself is faked
+    # below, so the bytes never matter - but the command checks that a
+    # recording is there before it starts, and that check is worth keeping.
+    (folder / "audio_only.m4a").write_bytes(b"")
     rough = tmp_path / "rough.md"
     rough.write_text("## Enrollment\n- site 4? decided around [00:14:00]\n")
 

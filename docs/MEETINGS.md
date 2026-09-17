@@ -196,7 +196,10 @@ and record the name, revision, hash, and license alongside the deployment.
 - **Whisper is not run against meetings with crosstalk.** Per-participant
   tracks make overlapping speech easy in principle, but it has only been tested
   on synthesised audio where nobody interrupts.
-- **The VTT parser is duplicated** in bedrock-agent-pack for its server-side
-  `meeting_transcripts` tool. The repos share no package; keep them in step.
+- **The VTT parser is shared with bedrock-agent-pack.** Its server-side
+  `meeting_transcripts` tool imports `bedrock.meetings.transcript`, pinned to a
+  commit in its `requirements.txt`, rather than keeping a copy. It relies on
+  `Cue`, `parse_vtt`, `speakers`, `Cue.timestamp` and `Cue.render()`; changing
+  those needs a matching backend change when the pin is next updated.
 - **Prompts are only hand-verified.** The tests fake the backend, so they check
   the plumbing, not the wording. Changing a prompt needs a manual run.

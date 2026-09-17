@@ -275,8 +275,11 @@
   // ==================== CHATS ====================
   function renderChatView(body, force) {
     const chat = currentChatId ? byId(state.chats, currentChatId) : null;
-    const activeRun = chat && state.runs.find((r) => r.chatId === chat.id && ["queued", "running", "waiting"].includes(r.status));
-    const sig = "chat:" + (chat ? chat.id + (chat.messages || []).length + JSON.stringify(chat.artifactIds || []) + (activeRun ? activeRun.id + activeRun.status : "") : "none");
+    const isPending = (r) => ["queued", "running", "waiting"].includes(r.status);
+    const activeAskRun = chat && state.runs.find((r) => r.chatId === chat.id && ["ask", "auto"].includes(r.mode) && isPending(r));
+    const activeAgentRun = chat && state.runs.find((r) => r.chatId === chat.id && !["ask", "auto"].includes(r.mode) && isPending(r));
+    const sig = "chat:" + (chat ? chat.id + (chat.messages || []).length + JSON.stringify(chat.artifactIds || [])
+      + (activeAskRun ? activeAskRun.id + activeAskRun.status : "") + (activeAgentRun ? activeAgentRun.id + activeAgentRun.status : "") : "none");
     if (sig === lastRenderSig.center && !force) return;
     lastRenderSig.center = sig;
     body.innerHTML = "";
@@ -305,22 +308,21 @@
         ]));
       }
     });
-    const askRun = state.runs.find((r) => r.chatId === chat.id && (r.mode === "ask" || r.mode === "auto") && ["queued", "running"].includes(r.status));
-    if (askRun) {
+    if (activeAskRun) {
       thread.appendChild(el("div", { class: "thinking-row" }, [
         el("span", { class: "avatar" }, "AI"),
         el("div", { class: "thinking-dots" }, [el("span"), el("span"), el("span")]),
       ]));
     }
-    if (!(chat.messages || []).length && !askRun) {
+    if (!(chat.messages || []).length && !activeAskRun) {
       thread.appendChild(el("div", { class: "empty-state" }, "Attach a file or ask a question to begin."));
     }
     body.appendChild(thread);
     body.scrollTop = body.scrollHeight;
-    renderComposer(chat, activeRun);
+    renderComposer(chat, activeAskRun, activeAgentRun);
   }
 
-  function renderComposer(chat, activeRun) {
+  function renderComposer(chat, activeAskRun, activeAgentRun) {
     let dock = document.getElementById("composer-wrap");
     if (dock) dock.remove();
     dock = el("div", { id: "composer-wrap" });
@@ -334,16 +336,18 @@
     const fileInput = el("input", { type: "file", hidden: "hidden" });
     fileInput.addEventListener("change", () => { if (fileInput.files[0]) attachFile(chat, fileInput.files[0]); });
     const attachBtn = el("button", { type: "button", class: "icon-btn", title: "Attach a file", onclick: () => fileInput.click() }, icon("paperclip"));
-    const textarea = el("textarea", { placeholder: activeRun ? "A task is already running for this chat…" : "Ask a question…", rows: "1" });
-    textarea.disabled = !!activeRun;
+    const textarea = el("textarea", { placeholder: activeAskRun ? "Waiting for a reply…" : "Ask a question…", rows: "1" });
+    textarea.disabled = !!activeAskRun;
     textarea.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.shiftKey) return;
       const enterSends = getEnterToSend();
       if (enterSends) { e.preventDefault(); form.requestSubmit(); }
       // else: fall through to the browser's default newline insertion.
     });
-    const sendBtn = el("button", { class: "btn primary small", type: "submit", disabled: activeRun ? "disabled" : null }, [icon("send"), "Send"]);
-    const agentBtn = el("button", { type: "button", class: "btn small", disabled: activeRun ? "disabled" : null, onclick: () => openAgentPicker(chat, textarea.value) }, [icon("agent"), "Create Agent"]);
+    const sendBtn = el("button", { class: "btn primary small", type: "submit", disabled: activeAskRun ? "disabled" : null }, [icon("send"), "Send"]);
+    const agentBtn = el("button", { type: "button", class: "btn small", disabled: activeAgentRun ? "disabled" : null,
+      title: activeAgentRun ? "An agent is already working on this chat" : "",
+      onclick: () => openAgentPicker(chat, textarea.value) }, [icon("agent"), activeAgentRun ? "Agent running…" : "Create Agent"]);
     form.appendChild(fileInput);
     form.appendChild(attachBtn);
     form.appendChild(textarea);
@@ -353,7 +357,7 @@
       e.preventDefault();
       const text = textarea.value.trim();
       if (!text) return;
-      textarea.value = ""; textarea.disabled = true; sendBtn.disabled = true; agentBtn.disabled = true;
+      textarea.value = ""; textarea.disabled = true; sendBtn.disabled = true;
       try {
         await api("/runs", { method: "POST", body: { chatId: chat.id, prompt: text, mode: "ask" } });
         await refresh();

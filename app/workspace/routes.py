@@ -17,6 +17,21 @@ from app.workspace.providers import MockAIProvider, LocalLLMProvider, ModelRoute
 router = APIRouter(prefix="/workspace/api", tags=["workspace"])
 KINDS = {"chats", "projects", "memory", "meetings", "tasks", "preferences"}
 jobs = {}
+_chat_locks: dict[str, "asyncio.Lock"] = {}
+
+
+def _chat_lock(chat_id):
+    # A quick reply and a longer agent run can be in flight on the same chat
+    # at once; this only serializes the read-append-write of chat.messages
+    # itself, so neither one clobbers the other's appended message.
+    lock = _chat_locks.get(chat_id)
+    if lock is None:
+        lock = _chat_locks[chat_id] = asyncio.Lock()
+    return lock
+
+
+def _run_category(mode):
+    return "ask" if mode in {"ask", "auto"} else "agent"
 
 
 def store():
@@ -238,10 +253,11 @@ async def execute_run(owner, run, context):
             provider = LocalLLMProvider()
         await provider.execute(s, owner, run, context)
         if run["status"] == "completed":
-            chat = require_object(s, owner, run["chatId"], "chats")
-            chat.setdefault("messages", []).append({"id": uid(), "role": "assistant", "text": run.get("answer", "No answer returned."),
-                "runId": run["id"], "citations": run.get("citations", []), "demo": demo_mode()})
-            s.put(owner, "chats", chat)
+            async with _chat_lock(run["chatId"]):
+                chat = require_object(s, owner, run["chatId"], "chats")
+                chat.setdefault("messages", []).append({"id": uid(), "role": "assistant", "text": run.get("answer", "No answer returned."),
+                    "runId": run["id"], "citations": run.get("citations", []), "demo": demo_mode()})
+                s.put(owner, "chats", chat)
     except asyncio.CancelledError:
         run.update(status="cancelled", currentStep="Stopped", finishedAt=now())
     except Exception as exc:
@@ -332,19 +348,25 @@ async def create_followup(object_id: str, body: FollowupInput, user=Depends(iden
 async def start_run(body: RunInput, user=Depends(identity)):
     s = store()
     chat = require_object(s, user["id"], body.chatId, "chats")
-    if any(r["chatId"] == chat["id"] and r["status"] in {"queued", "running", "waiting"} for r in s.list(user["id"], "runs")):
-        raise HTTPException(409, "This chat is already running a task. Start another chat to work in parallel.")
-    context = build_context(s, user["id"], chat)
     if SENSITIVE.search(body.prompt):
         raise HTTPException(422, "Your request may contain sensitive identifiers. Remove them before sending in this preview.")
-    run = s.put(user["id"], "runs", {"chatId": body.chatId, "prompt": body.prompt, "title": body.prompt[:70], "mode": body.mode,
-        "projectId": chat.get("projectId"), "status": "queued", "currentStep": "Preparing request", "steps": [],
-        "progressKind": "unknown", "role": "Planner" if body.mode in {"research", "agent"} else "Researcher", "demo": demo_mode(),
-        "sourceIds": [a["id"] for a in context["artifacts"]]})
-    chat.setdefault("messages", []).append({"id": uid(), "role": "user", "text": body.prompt})
-    if chat.get("title") == "New chat":
-        chat["title"] = body.prompt[:54]
-    s.put(user["id"], "chats", chat)
+    category = _run_category(body.mode)
+    async with _chat_lock(chat["id"]):
+        # A quick reply and a longer agent task run in separate lanes, so
+        # asking a question no longer has to wait for Create Agent to finish —
+        # only two runs of the *same* lane on one chat are refused.
+        if any(_run_category(r["mode"]) == category and r["status"] in {"queued", "running", "waiting"} for r in s.list(user["id"], "runs") if r["chatId"] == chat["id"]):
+            raise HTTPException(409, "This chat already has a task like that running. Wait for it to finish, or start another chat to work in parallel.")
+        context = build_context(s, user["id"], chat)
+        run = s.put(user["id"], "runs", {"chatId": body.chatId, "prompt": body.prompt, "title": body.prompt[:70], "mode": body.mode,
+            "projectId": chat.get("projectId"), "status": "queued", "currentStep": "Preparing request", "steps": [],
+            "progressKind": "unknown", "role": "Planner" if body.mode in {"research", "agent"} else "Researcher", "demo": demo_mode(),
+            "sourceIds": [a["id"] for a in context["artifacts"]]})
+        chat = require_object(s, user["id"], body.chatId, "chats")
+        chat.setdefault("messages", []).append({"id": uid(), "role": "user", "text": body.prompt})
+        if chat.get("title") == "New chat":
+            chat["title"] = body.prompt[:54]
+        s.put(user["id"], "chats", chat)
     s.audit(user["id"], "started analysis", run["id"])
     jobs[run["id"]] = asyncio.create_task(execute_run(user["id"], run, context))
     return run

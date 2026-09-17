@@ -5,6 +5,7 @@ app against the same directory - which is what actually happens when an
 employee quits the terminal and comes back tomorrow.
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 from tests.workers import wait_for_app_workers
@@ -69,7 +70,7 @@ async def test_a_resumed_conversation_keeps_its_context_for_the_next_question(fa
 
 async def test_the_question_is_saved_before_the_answer_arrives(fake_backend, store):
     """If the app dies mid-answer, what the employee typed is not lost."""
-    fake_backend.fragment_delay = 0.05
+    fake_backend.hold_reply = asyncio.Event()
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"slow question", "enter")
@@ -78,6 +79,7 @@ async def test_the_question_is_saved_before_the_answer_arrives(fake_backend, sto
         saved = ConversationStore(store.directory).latest()
         assert [m.content for m in saved.messages] == ["slow question"]
 
+        fake_backend.hold_reply.set()
         await wait_for_app_workers(app)
 
 

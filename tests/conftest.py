@@ -58,6 +58,7 @@ class FakeBackend:
         self.title_requests: list[tuple[str, list[dict[str, str]]]] = []
         self.closed = False
         self.fragment_delay = 0.0
+        self.hold_reply: asyncio.Event | None = None
 
     async def check_connection(self) -> bool:
         return self.connected
@@ -79,6 +80,8 @@ class FakeBackend:
             yield self.title_reply if self.title_reply is not None else _title_for(messages)
             return
         self.requests.append((model, list(messages)))
+        if self.hold_reply is not None:
+            await self.hold_reply.wait()
         for word in self.reply.split(" "):
             if self.fragment_delay:
                 await asyncio.sleep(self.fragment_delay)

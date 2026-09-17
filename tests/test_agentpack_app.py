@@ -234,6 +234,7 @@ async def test_approval_prompt_approve_calls_backend_and_clears(fake_client: Fak
 
         await pilot.click("#approve")
         await pilot.pause()
+        await pilot.pause()
 
         assert fake_client.approvals == [("task_fake", "approve", "alice")]
         assert not app.query(ApprovalPrompt)

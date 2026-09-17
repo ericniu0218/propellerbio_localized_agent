@@ -20,10 +20,13 @@ So the transcript is cut into chunks that comfortably fit anywhere, each is read
 on its own, and the findings are merged. This costs more calls and works on
 every backend, including the small ones.
 
-*Never cite a timestamp that was not said.* Models invent citations. Every
-timestamp the model returns is checked against the real cue list; one that does
-not exist is re-derived by finding the quoted text, and dropped if that fails
-too. A note with no timestamp is honest. A note with a fabricated one is not.
+*Never cite a timestamp for something not said then.* Models invent citations,
+and they also attach real timestamps to the wrong line. Every timestamp the
+model returns - in a decision, an action, a fact, the overview or the rewritten
+notes - is checked against the line it points at: kept if that line says it,
+moved to the line that does, dropped if none does. See ``citations.py`` for how
+"says it" is judged. A note with no timestamp is honest. A note with a wrong one
+is not.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from bedrock.inference.base import InferenceBackend, InferenceError
+from bedrock.meetings.citations import CitationGuard, CitationReport
 from bedrock.meetings.transcript import Cue, speakers, word_count
 
 # Chunks are sized for the smallest context window we expect to meet (Ollama's
@@ -85,6 +89,8 @@ class MeetingSummary:
     degraded_reason: str | None = None
     """Set when the model could not be reached or could not be parsed. The
     facts above are still valid; everything the model produces is empty."""
+    citations: CitationReport = field(default_factory=CitationReport)
+    """How many of the model's timestamps were checked, moved and removed."""
 
     def render(self) -> str:
         lines = [f"# {self.facts.title}"]
@@ -260,34 +266,19 @@ def _extract_json(raw: str) -> dict:
     return json.loads(candidate)
 
 
-def _valid_timestamps(cues: list[Cue]) -> set[str]:
-    return {cue.timestamp for cue in cues}
-
-
 def _repair_timestamp(value: object, text: str, cues: list[Cue]) -> str | None:
-    """Keep a timestamp only if the meeting really contains it.
+    """The timestamp a point saying ``text`` should cite, or None.
 
-    A model that invents `00:47:00` for a 6-minute meeting is producing a
-    citation that cannot be checked. Rather than pass that on, the quoted text
-    is located in the transcript and that cue's real timestamp used; if the text
-    cannot be found either, the point keeps its words and loses its citation.
+    A model that invents `00:47:00` for a 6-minute meeting, or cites the line
+    after the one where something was agreed, is producing a citation that
+    sends the reader to the wrong place. The cited line has to say the thing;
+    otherwise the line that does is cited instead, and if no line does, the
+    point keeps its words and loses its citation. See ``citations.py``.
     """
-    if isinstance(value, str) and value in _valid_timestamps(cues):
-        return value
-
-    needle = {word for word in re.findall(r"[a-z0-9]+", text.lower()) if len(word) > 3}
-    if needle:
-        best, best_overlap = None, 0
-        for cue in cues:
-            overlap = len(needle & set(re.findall(r"[a-z0-9]+", cue.text.lower())))
-            if overlap > best_overlap:
-                best, best_overlap = cue, overlap
-        if best is not None and best_overlap >= 2:
-            return best.timestamp
-    return None
+    return CitationGuard(cues).check(value, text)
 
 
-def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]:
+def _points(raw_items: object, guard: CitationGuard, with_owner: bool) -> list[Point]:
     if not isinstance(raw_items, list):
         return []
     points: list[Point] = []
@@ -302,7 +293,7 @@ def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]
         points.append(
             Point(
                 text=text,
-                timestamp=_repair_timestamp(item.get("timestamp"), text, cues),
+                timestamp=guard.check(item.get("timestamp"), text),
                 owner=owner,
             )
         )
@@ -364,20 +355,28 @@ async def summarize_meeting(
             except (ValueError, json.JSONDecodeError):
                 # One unparseable chunk should not lose the other nine.
                 continue
-            decisions += _points(data.get("decisions"), chunk, with_owner=False)
-            actions += _points(data.get("actions"), chunk, with_owner=True)
-            details += _points(data.get("facts"), chunk, with_owner=False)
+            # Checked against this chunk only: it is all the model was shown,
+            # so a line outside it cannot be where the model found anything.
+            guard = CitationGuard(chunk, summary.citations)
+            decisions += _points(data.get("decisions"), guard, with_owner=False)
+            actions += _points(data.get("actions"), guard, with_owner=True)
+            details += _points(data.get("facts"), guard, with_owner=False)
 
+        # The notes and overview read the whole meeting (trimmed if long), so
+        # their citations are checked against every line of it.
+        whole_meeting = CitationGuard(cues, summary.citations)
         if notes and notes.strip():
-            summary.enhanced_notes = await _complete(
+            written = await _complete(
                 backend,
                 model,
                 _NOTES_PROMPT.format(notes=notes.strip(), transcript=_for_one_prompt(cues)),
             )
+            summary.enhanced_notes = whole_meeting.clean_text(written, leave_alone=notes)
         else:
-            summary.overview = await _complete(
+            written = await _complete(
                 backend, model, _OVERVIEW_PROMPT.format(transcript=_for_one_prompt(cues))
             )
+            summary.overview = whole_meeting.clean_text(written)
     except InferenceError as exc:
         summary.degraded_reason = str(exc)
         return summary

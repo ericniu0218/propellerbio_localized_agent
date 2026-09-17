@@ -127,10 +127,19 @@ Ollama's default context is 4,096. The transcript is cut on cue boundaries into
 chunks that fit anywhere, each read separately, findings merged and deduplicated.
 Pass `words_per_chunk` to use a bigger window on a server that has one.
 
-**Never cite a timestamp that was not said.** Models invent citations. Every
-timestamp is checked against the real cue list; one that does not exist is
-re-derived by locating the quoted text, and dropped if that fails. A note with no
-timestamp is honest; a fabricated one is not. Across test runs this holds at
+**Never cite a moment that did not say it.** Models invent citations, and they
+also put real timestamps on the wrong line. Every timestamp the model writes -
+in decisions, action items, facts, the overview and rewritten notes - is checked
+against the line it points at, by the distinctive words the note and that line
+share (numbers count at any length; filler words do not):
+
+- **kept** if that line shares two or more, or one and no other line shares more;
+- **moved** to the line that shares the most, if that is at least two;
+- **removed** otherwise. A note with no timestamp is honest; a wrong one is not.
+
+`bedrock-meeting` prints how many citations it checked, moved and removed.
+Bracketed times you typed in your own notes (`[14:00] standup`) are left alone.
+The logic is `src/bedrock/meetings/citations.py`. Across test runs this holds at
 zero fabricated citations.
 
 ## Choosing models — measured on real audio
@@ -178,11 +187,12 @@ and record the name, revision, hash, and license alongside the deployment.
 
 - **No PHI redaction.** Meeting transcripts in a biotech company will discuss
   patients, and nothing on this path redacts anything.
-- **A verified timestamp is not a correct one.** The citation guard checks that
-  a timestamp exists in the transcript, not that it is the moment the quoted
-  thing was said. Observed once in testing: an action item cited a cue six
-  seconds after the one it came from. Real, and much smaller than a fabricated
-  citation, but not nothing.
+- **Citations are checked by shared words, not meaning.** A note that
+  paraphrases its line without sharing one distinctive word with it loses its
+  citation rather than keeping an unverifiable one. When two lines say the same
+  thing equally well (the request and the reply, say) the model's choice or the
+  earlier line wins, which may not be the one you would pick. The six-second
+  wrong-line citation seen in testing is now moved to the right line.
 - **Whisper is not run against meetings with crosstalk.** Per-participant
   tracks make overlapping speech easy in principle, but it has only been tested
   on synthesised audio where nobody interrupts.

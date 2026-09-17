@@ -8,7 +8,7 @@
 director:
   role: director
   # Reasoning model: expensive, called rarely, thinks a lot when it runs.
-  model_name: deepseek-ai/DeepSeek-V4-Flash-0731
+  model_name: ${DIRECTOR_MODEL_NAME:-deepseek-ai/DeepSeek-V4-Flash-0731}
   endpoint: ${DIRECTOR_LLM_URL:-http://director-llm:8001/v1}
   served_via: vllm
   precision: fp8
@@ -24,7 +24,7 @@ director:
 specialist:
   role: specialist
   # Large workhorse model: does most real work via tools.
-  model_name: Qwen/Qwen3.8-27B
+  model_name: ${SPECIALIST_MODEL_NAME:-Qwen/Qwen3.8-27B}
   endpoint: ${SPECIALIST_LLM_URL:-http://specialist-llm:8002/v1}
   served_via: vllm
   precision: fp8
@@ -41,7 +41,7 @@ runner:
   role: runner
   # Small, fast, cheap: classification, summarization, extraction, redaction,
   # compaction, formatting. Configurable size per spec's request.
-  model_name: Qwen/Qwen3.6-35B-A3B
+  model_name: ${RUNNER_MODEL_NAME:-Qwen/Qwen3.6-35B-A3B}
   endpoint: ${RUNNER_LLM_URL:-http://runner-llm:8003/v1}
   served_via: vllm
   precision: fp8

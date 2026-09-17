@@ -35,6 +35,56 @@ async def test_send_message_streams_reply(fake_backend: FakeBackend):
         assert fake_backend.requests[0][1] == [{"role": "user", "content": "hi there"}]
 
 
+async def test_relevant_stored_context_is_added_to_the_outgoing_message(fake_backend: FakeBackend, tmp_path):
+    """Closes the same /digest-never-reaches-the-model gap fixed for
+    AgentPackApp - compressing a file used to do nothing for the next
+    question asked here, unless the search result was pasted in by hand."""
+    app = BedrockApp(
+        settings=Settings(model="test-model", context_dir=str(tmp_path / "context")),
+        backend=fake_backend,
+    )
+    (tmp_path / "assay.csv").write_text(
+        "\n".join(["sample,ph,passed"] + [f"s{i},{6.0 + i * 0.1:.1f},true" for i in range(10)])
+    )
+    from bedrock.context import ingest
+
+    ingest(tmp_path / "assay.csv", store=app.context_store)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"what was the ph in the assay results?", "enter")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        model_name, api_messages = fake_backend.requests[-1]
+        system_text = "\n".join(m["content"] for m in api_messages if m["role"] == "system")
+        assert "Relevant stored context" in system_text
+        assert "assay.csv" in system_text
+
+        # The user's own bubble and the saved conversation both stay exactly
+        # what was typed - the injected context lives only in the one-turn
+        # note, never in what's shown or saved.
+        assert str(app.query_one(UserMessage).content) == "what was the ph in the assay results?"
+        assert app.conversation.messages[0].content == "what was the ph in the assay results?"
+        notices = [n.source for n in app.query(SystemNotice)]
+        assert any("Added stored context from" in n and "assay.csv" in n for n in notices)
+
+
+async def test_unrelated_message_has_no_injected_context(fake_backend: FakeBackend, tmp_path):
+    app = BedrockApp(
+        settings=Settings(model="test-model", context_dir=str(tmp_path / "context")),
+        backend=fake_backend,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"good morning", "enter")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        model_name, api_messages = fake_backend.requests[-1]
+        assert api_messages == [{"role": "user", "content": "good morning"}]
+
+
 async def test_model_command_lists_and_switches(fake_backend: FakeBackend):
     app = make_app(fake_backend, model="test-model")
     async with app.run_test() as pilot:

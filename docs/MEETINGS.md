@@ -85,6 +85,23 @@ When nothing matches, the tool returns how each meeting opened — usually where
 the agenda is stated — and **says explicitly that this is not a match**, so the
 agent doesn't present an unrelated meeting as an answer.
 
+## Where the transcript parser lives
+
+Turning WEBVTT into speaker-attributed cues is done by
+`bedrock.meetings.transcript` from **bedrock-private-ai**, the employee terminal
+client, which uses the same code for its own meeting notes. This repo does not
+keep a copy, so a parsing fix is made once and reaches both products.
+
+- `requirements.txt` pins it to one commit. To pick up a change, update that
+  commit hash on purpose and run the tests. The tool uses `Cue`, `parse_vtt`
+  and `speakers`, plus `Cue.timestamp` and `Cue.render()`.
+- The repo is private. Installing needs GitHub access; CI reads it with the
+  `BEDROCK_PRIVATE_AI_TOKEN` repository secret, a read-only token for that repo.
+- The import is guarded. Without the package (the Docker image does not install
+  it), the server starts normally and `meeting_transcripts` returns "the
+  transcript reader from bedrock-private-ai is not installed" instead of
+  results.
+
 ## Known gaps
 
 - **No per-user access control.** `rag_search` filters hits through

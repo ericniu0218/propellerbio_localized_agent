@@ -100,8 +100,9 @@ external services required.
   company's own Zoom meetings, citing meeting, date, and timestamp. It reads
   from the customer's datacenter connector over the internal network — never
   through the public Zoom relay, which would defeat the air gap. Unconfigured
-  deployments get a clear "not configured" result rather than an error. See
-  `docs/MEETINGS.md`.
+  deployments get a clear "not configured" result rather than an error.
+  Transcripts are parsed by the reader in bedrock-private-ai, pinned in
+  `requirements.txt`, rather than a copy kept here. See `docs/MEETINGS.md`.
 - **Swappable everything**: model names/endpoints only ever live in
   `config/models.yaml`; the `ModelClient` protocol swaps mock/real/serving
   engine without touching agent code; tools are stubbed with a clear

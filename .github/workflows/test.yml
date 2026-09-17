@@ -36,6 +36,22 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # requirements.txt installs the meeting transcript reader from the
+      # private bedrock-private-ai repo, which this workflow's own GITHUB_TOKEN
+      # cannot read. BEDROCK_PRIVATE_AI_TOKEN is a read-only token for that
+      # one repo; the rewrite below only applies to that repo's URL.
+      - name: Allow access to bedrock-private-ai
+        env:
+          TOKEN: ${{ secrets.BEDROCK_PRIVATE_AI_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::The BEDROCK_PRIVATE_AI_TOKEN secret is not set. Add a read-only token for Bedrock-Technical-Consulting/bedrock-private-ai in the repository settings."
+            exit 1
+          fi
+          git config --global \
+            url."https://x-access-token:${TOKEN}@github.com/Bedrock-Technical-Consulting/bedrock-private-ai".insteadOf \
+            "https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai"
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 

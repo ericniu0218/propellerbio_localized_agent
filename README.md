@@ -81,7 +81,7 @@ a message:
 
 A dropped file appears in the prompt as an `@` reference, so you can see what
 will be attached and type your question around it. Quote a path that contains
-spaces (`@"My Data.csv"`); dropped files are quoted for you. Up to five files
+spaces (`@"My Data.csv"`); dropped files are quoted for you. Up to 20 files
 can go with one message. A path written *without* `@` is ordinary text, so
 "check the /api endpoint" is never mistaken for a file.
 
@@ -89,10 +89,13 @@ The client reads the file **on this computer** and sends it with the question
 to the configured model or agent-pack server, which cannot open a path on your
 laptop itself.
 
-- A text file up to about 24,000 characters is sent whole.
-- A larger one is compressed the way `/digest` does it, and the model receives
-  the digest (structure and statistics, not every line). A notice says so, and
-  `/digest search` finds exact passages in it afterwards.
+- A text file up to about 24,000 characters is sent whole, as long as the
+  message's files add up to no more than about 120,000 characters sent whole.
+- A larger file, or one that no longer fits in that total, is compressed the
+  way `/digest` does it, and the model receives the digest (structure and
+  statistics, not every line). Smaller files are sent whole first. A notice
+  says which files went as digests, and `/digest search` finds exact passages
+  in them afterwards.
 - UTF-8 text, FASTA, CSV, JSON, code and logs work. Files that are not UTF-8,
   and binary formats such as PDF, Word and Excel, are refused rather than
   guessed at. Nothing is sent when a file cannot be attached, and your draft

@@ -98,8 +98,40 @@ def test_a_large_file_is_sent_as_its_digest_and_stored_for_search(tmp_path):
     assert attached.mode == "digest"
     assert len(attached.text) < attachments.MAX_INLINE_CHARS
     assert "sent as a digest" in attached.label
-    assert "too large to send whole" in attachments.summary([attached])
+    assert "sent as a compressed digest" in attachments.summary([attached])
     assert store.search("s4999", limit=1)
+
+
+def test_twenty_files_can_be_attached_but_not_twenty_one(tmp_path):
+    for i in range(21):
+        (tmp_path / f"f{i}.txt").write_text("x")
+    twenty = " ".join(f"@f{i}.txt" for i in range(20))
+    assert len(attachments.resolve(twenty, cwd=tmp_path)) == 20
+    with pytest.raises(attachments.AttachmentError, match="at most 20 files"):
+        attachments.resolve(twenty + " @f20.txt", cwd=tmp_path)
+
+
+def test_files_past_the_whole_text_budget_go_as_digests_largest_first(tmp_path):
+    """Twenty full-size files must not all go whole; the small ones must not
+    be the ones squeezed out, and the order written is kept."""
+    line = "sample,ph,passed\n"
+    big = [tmp_path / f"big{i}.csv" for i in range(7)]
+    for index, path in enumerate(big):
+        rows = attachments.MAX_INLINE_CHARS // len(line) - index  # 7 sizes, all under the per-file limit
+        path.write_text(line * rows)
+    small = tmp_path / "small.txt"
+    small.write_text("the pH was 6.8")
+    paths = [big[0], small, *big[1:]]
+
+    loaded = attachments.load(paths, ContextStore(tmp_path / "ctx"))
+
+    assert [attachment.name for attachment in loaded] == [path.name for path in paths]
+    whole = [attachment for attachment in loaded if attachment.mode == "whole"]
+    assert sum(len(attachment.text) for attachment in whole) <= attachments.MAX_INLINE_TOTAL_CHARS
+    assert small.name in {attachment.name for attachment in whole}
+    digested = {attachment.name for attachment in loaded if attachment.mode == "digest"}
+    assert digested == {"big0.csv", "big1.csv"}  # the two largest
+    assert "were sent as compressed digests" in attachments.summary(loaded)
 
 
 def test_a_file_that_is_not_utf8_is_refused_rather_than_guessed(tmp_path):

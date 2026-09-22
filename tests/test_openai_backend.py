@@ -31,6 +31,29 @@ async def test_list_models():
     assert [m.id for m in await backend.list_models()] == ["llama3.2", "qwen2.5"]
 
 
+async def test_a_server_with_no_models_pulled_lists_none():
+    """What Ollama really returns before `ollama pull`: `data` is null."""
+    backend = make_backend(lambda request: httpx.Response(200, json={"object": "list", "data": None}))
+    assert await backend.list_models() == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"data": "llama3.2"}, {"data": {"id": "llama3.2"}}, {"models": []}, ["llama3.2"]],
+)
+async def test_an_unexpected_models_response_is_an_inference_error(body):
+    backend = make_backend(lambda request: httpx.Response(200, json=body))
+    with pytest.raises(InferenceError, match="unexpected /models response"):
+        await backend.list_models()
+
+
+async def test_entries_that_are_not_models_are_skipped():
+    """A bare string used to pass `"id" in item` as a substring test and then fail."""
+    body = {"data": ["idle", {"id": "qwen2.5"}, {"name": "no id"}, None]}
+    backend = make_backend(lambda request: httpx.Response(200, json=body))
+    assert [m.id for m in await backend.list_models()] == ["qwen2.5"]
+
+
 async def test_stream_chat_yields_fragments_and_sends_messages():
     seen = {}
 

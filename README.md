@@ -54,8 +54,12 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/model <name>`  | Switch model                     |
 | `/digest <path>` | Compress a file into local context storage |
 | `/digest`        | List/search locally stored context |
+| `/digest auto off` | Stop adding matching stored context to messages in this window |
 | `/sources`       | List company data sources        |
 | `/digest <src>://<id>` | Pull a record from a source and compress it |
+| `/fold <fasta or src://id> [--project X]` | Predict one monomer with AlphaFold 2 |
+| `/pymol [structure or src://id]` | Open a structure, or the latest prediction, in PyMOL |
+| `/tools`         | Check AlphaFold 2 and PyMOL configuration |
 | `/runs`          | Prediction runs recorded on this machine |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions, PAE |
 | `/audit`         | What this client has done on this machine |
@@ -71,6 +75,44 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 
 `Esc` stops a response that is still streaming. `/clear` is an alias for `/new`.
 `Ctrl+B` shows or hides the conversation sidebar.
+
+### Attaching a file
+
+Drag a file onto the terminal window, or write `@` before its path anywhere in
+a message:
+
+`What are the last 10 letters of candidate_3_control in @~/Downloads/candidate_proteins.fasta?`
+
+A dropped file appears in the prompt as an `@` reference, so you can see what
+will be attached and type your question around it. Quote a path that contains
+spaces (`@"My Data.csv"`); dropped files are quoted for you. Up to 20 files
+can go with one message. A path written *without* `@` is ordinary text, so
+"check the /api endpoint" is never mistaken for a file.
+
+The client reads the file **on this computer** and sends it with the question
+to the configured model or agent-pack server, which cannot open a path on your
+laptop itself.
+
+- A text file up to about 24,000 characters is sent whole, as long as the
+  message's files add up to no more than about 120,000 characters sent whole.
+- A larger file, or one that no longer fits in that total, is compressed the
+  way `/digest` does it, and the model receives the digest (structure and
+  statistics, not every line). Smaller files are sent whole first. A notice
+  says which files went as digests, and `/digest search` finds exact passages
+  in them afterwards.
+- UTF-8 text, FASTA, CSV, JSON, code and logs work. Files that are not UTF-8,
+  and binary formats such as PDF, Word and Excel, are refused rather than
+  guessed at. Nothing is sent when a file cannot be attached, and your draft
+  stays in the input.
+
+The model is told to treat an attached file as data, not as instructions, and
+the file is fenced so its text cannot pose as your message. That lowers the
+risk from a file that contains instructions; it cannot remove it, so attach
+files you would be comfortable pasting.
+
+The chat shows your question with a 📎 line per file. The file's contents are
+saved with that message in the conversation, so follow-up questions still see
+it after a restart, and `/forget` deletes it along with the chat.
 
 ## Private shared workspaces
 
@@ -93,14 +135,19 @@ preserve its structure and confidence artifacts, render a PNG and session with
 open-source PyMOL, and record hashes and provenance in a per-run manifest.
 
 After operator provisioning, check it with `bedrock-biotech status` and run it
-with `bedrock-biotech fold candidate.fasta --project X`. In agent-pack mode the
-equivalent commands are `/tools`, `/fold <fasta-path> [--project X]`, and
-`/pymol [structure-path]`. Both `/fold` and `bedrock-biotech fold` also accept
-a company source reference such as `registry://SEQ-00123` — see "Company data
-sources" below.
-Direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
+with `bedrock-biotech fold candidate.fasta --project X`. Inside the app, in
+either mode, the equivalent commands are `/tools`,
+`/fold <fasta-path> [--project X]`, and `/pymol [structure-path]`. `/fold`,
+`/pymol` and their `bedrock-biotech` equivalents also accept a company source
+reference such as `registry://SEQ-00123` — see "Company data sources" below.
+
+In the default mode a fold runs beside the chat: the model keeps answering
+while it works, and `Esc` stops a streaming reply, never a fold. In agent-pack
+mode a fold is a request like any other, so later prompts wait for it, and
+direct requests work too: “Run AlphaFold 2 on `candidate.fasta`” or “Please
 open the latest structure interactively in PyMOL.” Questions about the tools
-remain normal agent conversations.
+remain normal agent conversations. (In the default mode those words go to the
+model; use the slash commands to start a job.)
 `/pymol` opens the structure in a desktop PyMOL window with the same four
 pLDDT bands the saved preview uses — one fixed script and one palette serve
 both, so the window and the PNG cannot disagree. A structure you point at
@@ -263,6 +310,7 @@ Settings are read from, highest priority first:
 | `BEDROCK_TIMEOUT`    | `request_timeout` | `120` seconds                |
 | `BEDROCK_HISTORY_DIR`| `history_dir`     | `~/.local/share/bedrock/conversations` |
 | `BEDROCK_SAVE_HISTORY` | `save_history`  | `true`                       |
+| `BEDROCK_AUTO_CONTEXT` | `auto_context`  | `true`                       |
 | `BEDROCK_CONTEXT_DIR`| `context_dir`     | `~/.local/share/bedrock/context` |
 | `BEDROCK_WORKSPACE_DIR`| `workspace_dir` | `~/.local/share/bedrock/workspaces` |
 | `BEDROCK_ACTION_HISTORY_DIR`| `action_history_dir` | `~/.local/share/bedrock/history` |
@@ -345,6 +393,15 @@ private model, but ingest still succeeds when inference is unavailable.
 Adding a data type is one adapter in `src/bedrock/context/adapters/` plus its
 registry entry. Nothing in the UI or storage layer needs to change.
 
+**Automatic context.** Before a chat message is sent, the store is searched
+with the message's own words and matching passages go along with it, in both
+modes; a notice names what was added. The match is by keyword, so it can attach
+a passage that only shares a word with the question. `/digest auto off` stops
+it for the open window, `/digest auto on` restarts it, and `/digest auto` shows
+the current setting. To start every window with it off, set
+`BEDROCK_AUTO_CONTEXT=0` or `auto_context = false` in the config file. Stored
+content is still there for `/digest search` either way.
+
 ## Company data sources (`/sources`)
 
 Without connectors, data reaches Bedrock only after someone exports a file and
@@ -355,7 +412,8 @@ system instead:
 /sources                              what is configured, and whether it is set up
 /sources search registry kinase       find a record without knowing its id
 /digest lims://plates/P42.csv         pull a record and compress it for the model
-/fold registry://SEQ-00123            pull a sequence and run AlphaFold 2 (agent-pack mode)
+/fold registry://SEQ-00123            pull a sequence and run AlphaFold 2
+/pymol structures://XYZ.pdb           pull a structure and open it in PyMOL
 bedrock-biotech fold registry://SEQ-00123
 ```
 
@@ -432,9 +490,8 @@ workflow changes.
   `<biotech_work_dir>/sources/`.
 - **Limited search.** REST search reads one page of results; share search
   matches file paths, not contents, and stops after 20,000 files.
-- **`/pymol` does not accept references.** Use `/sources fetch` and open the
-  saved file. `/fold` exists only in agent-pack mode; `/digest <ref>` and
-  `/sources` work in both modes.
+- **A fold lives in the window that started it.** Quitting the app stops it;
+  there is no job queue yet.
 
 ## Two modes
 

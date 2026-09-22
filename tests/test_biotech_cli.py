@@ -131,3 +131,34 @@ def test_browsing_needs_no_scientific_tools(operator, capsys, monkeypatch):
     assert run("runs") == 0
     assert run("audit") == 0
     assert "20260715T090000Z-aaaaaaaa" in capsys.readouterr().out
+
+
+def test_pymol_accepts_a_company_source_reference(tmp_path, monkeypatch, capsys):
+    """Like `fold`: the structure is fetched and staged with its provenance,
+    then opened by path - so it is styled neutrally, never as a prediction."""
+    from tests.conftest import FakeBiotechWorkflow
+
+    exports = tmp_path / "structures"
+    exports.mkdir()
+    (exports / "XYZ.pdb").write_text("ATOM      1  N   MET A   1\n")
+    settings = Settings(
+        user_id="alice",
+        biotech_work_dir=tmp_path / "biotech",
+        connectors={"structures": {"type": "share", "root": str(exports)}},
+    )
+    workflow = FakeBiotechWorkflow(tmp_path)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli.ProteinWorkflow, "from_settings", classmethod(lambda cls, s, **k: workflow))
+
+    assert run("pymol", "structures://XYZ.pdb") == 0
+    (opened,) = workflow.opened
+    assert opened.parent == tmp_path / "biotech" / "sources"
+    assert (opened.parent / (opened.name + ".provenance.json")).is_file()
+    out = capsys.readouterr().out
+    assert "fetched: structures://XYZ.pdb as alice" in out
+    assert "opened in PyMOL:" in out
+
+    assert run("pymol", "~/some structure.pdb") == 0
+    assert workflow.opened[-1] == Path("~/some structure.pdb").expanduser()
+    assert run("pymol") == 0
+    assert workflow.opened[-1] is None

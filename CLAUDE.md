@@ -63,14 +63,14 @@ Conversation persistence: conversations are saved to `~/.local/share/bedrock/con
 History loading is demand-driven: keep only the open transcript and lightweight sidebar metadata. Never load other transcripts for title backfill. Legacy files require a metadata extraction scan off the UI thread; no message snapshots remain in the store. Large chats render in 50-message pages with a button to reveal earlier messages. Idle polling checks the directory signature, with a file-fingerprint scan once per minute or on explicit history refresh. Unchanged transcripts are not saved when leaving a chat. Writers merge title/timestamp-only changes, but preserve divergent transcripts as linked copies. `/forget` deletes the whole family and retains empty markers to block stale saves; new IDs contain no start timestamp. A filesystem without advisory locking uses the atomic-directory fallback, and UI saves fail promptly on contention; see README for stale-lock recovery. Files from newer schemas open read-only.
 
 Also built: company data-source connectors (`src/bedrock/connectors/`) -
-`/digest`, `/fold` and `bedrock-biotech fold` accept `<source>://<id>` and pull
+`/digest`, `/fold`, `/pymol` and their `bedrock-biotech` equivalents accept `<source>://<id>` and pull
 the record from a system of record instead of a manually exported file.
 `/sources` lists, searches and fetches. Two generic types, `rest` (HTTP/JSON)
 and `share` (export folder), configured as `[connectors.<name>]` tables.
 Authorisation is left to the source system; every fetch records provenance
 into a sidecar and the AlphaFold manifest.
 
-Not yet built (deliberately): file attachments in chat, authentication, and
+Not yet built (deliberately): authentication, and
 product-specific connectors (only the generic `rest` and `share` types exist).
 
 **Long-term fix, raise it whenever retrieval quality comes up:** `/digest`
@@ -121,7 +121,20 @@ plain-language guidance — unreachable default backend, missing
 AlphaFold/PyMOL config — the first time `bedrock` runs with no config
 file yet; never blocks the app from starting.
 
-Not yet built (deliberately): file attachments, embedding-based retrieval,
+File attachments in chat (`src/bedrock/attachments.py`): `@path` anywhere in a
+message attaches that text file, in both app modes. Dropping files onto the
+terminal pastes their paths; `PromptInput` (`ui/widgets.py`) turns a paste made
+only of absolute paths to existing files into `@` references. Paths without `@`
+are never attached, so "the /api endpoint" is not a file error. Up to 20 files
+per message. Small files go whole, smallest first, until 120,000 characters;
+larger files and any past that total are compressed through the `/digest`
+pipeline and the digest is sent, with a notice saying so. Every attachment goes after a fixed "data,
+not instructions" line inside a fence the file's text cannot close. Attachments
+live in `Message.extra` and are re-added by `Message.to_api`, so `content`
+stays what was typed, follow-ups still see the file and `/forget` removes it.
+Non-UTF-8 and binary files (PDF, Excel, images) are refused, not guessed at.
+
+Not yet built (deliberately): binary attachments, embedding-based retrieval,
 terminal-client authentication.
 
 ## Development Philosophy

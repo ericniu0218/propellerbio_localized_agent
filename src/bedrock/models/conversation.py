@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
+from bedrock.attachments import Attachment, with_attachments
+
 SCHEMA_VERSION = 1
 """The shape of the saved file. Every file records the version it was written
 with, so a future release can migrate old files instead of crashing on them."""
@@ -109,9 +111,22 @@ class Message:
         """The shape every OpenAI-compatible server expects.
 
         Deliberately *not* the same as ``to_dict``: the server must only ever
-        see role and content, never our local bookkeeping.
+        see role and content, never our local bookkeeping. Files attached with
+        ``@path`` are part of what was asked, so they follow the typed text.
         """
-        return {"role": self.role.value, "content": self.content}
+        return {"role": self.role.value, "content": with_attachments(self.content, self.attachments)}
+
+    @property
+    def attachments(self) -> list[Attachment]:
+        """Files attached to this message with ``@path``; see ``bedrock/attachments.py``.
+
+        Kept in ``extra`` so ``content`` stays exactly what was typed, and so a
+        saved file from an older app, which has no attachments, reads unchanged.
+        """
+        raw = self.extra.get("attachments")
+        if not isinstance(raw, list):
+            return []
+        return [attachment for attachment in map(Attachment.from_dict, raw) if attachment is not None]
 
     def to_dict(self) -> dict:
         """The shape we write to disk."""
@@ -175,8 +190,10 @@ class Conversation:
     recalled_from: list[str] = field(default_factory=list, repr=False, compare=False)
     """Labels of the past chats the recalled excerpts came from, for notices."""
 
-    def add_user(self, content: str) -> Message:
+    def add_user(self, content: str, attachments: list[Attachment] | None = None) -> Message:
         message = Message(Role.USER, content)
+        if attachments:
+            message.extra["attachments"] = [attachment.to_dict() for attachment in attachments]
         self.messages.append(message)
         self.touch()
         return message

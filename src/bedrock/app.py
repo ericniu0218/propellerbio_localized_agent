@@ -10,6 +10,8 @@ Responsibilities of this file, and nothing more:
 * save the conversation as it goes, and reopen the last one on startup
 * keep the conversation sidebar in step with what is saved, and fill in the
   short summary titles it shows
+* start ``/fold`` and ``/pymol`` jobs beside the chat (the work itself is
+  ``bedrock.ui.fold_command``, shared with agent-pack mode)
 
 It talks to the model *only* through the ``InferenceBackend`` interface, and to
 the disk *only* through ``ConversationStore``.
@@ -21,6 +23,7 @@ import asyncio
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -30,8 +33,10 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Footer, Input, OptionList
 from textual.worker import WorkerCancelled
 
+from bedrock import attachments
+from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
-from bedrock.connectors import SourceHub
+from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import find_relevant_context
 from bedrock.inference import InferenceBackend, InferenceError, create_backend
 from bedrock.models import Conversation, Role
@@ -40,7 +45,16 @@ from bedrock.storage import ConversationDeleted, ConversationStore, Conversation
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
 from bedrock.titles import generate_title, wants_title
+from bedrock.ui.argparsing import CommandUsageError
 from bedrock.ui.commands import HELP_TEXT, Command, parse_command
+from bedrock.ui.digest_command import AUTO_CONTEXT_OFF_HINT
+from bedrock.ui.fold_command import (
+    parse_fold_request,
+    parse_structure_argument,
+    run_fold,
+    run_pymol,
+    tool_status_text,
+)
 from bedrock.ui.local_commands import LocalCommandsMixin
 from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.rendering import markdown_text
@@ -49,6 +63,7 @@ from bedrock.ui.widgets import (
     NEW_CONVERSATION,
     AssistantMessage,
     ConversationList,
+    PromptInput,
     StatusBar,
     SystemNotice,
     UserMessage,
@@ -92,6 +107,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         store: ConversationStore | None = None,
         sources: SourceHub | None = None,
         services: ComplianceServices | None = None,
+        biotech_workflow: ProteinWorkflow | None = None,
     ) -> None:
         super().__init__()
         self.theme = "textual-dark"
@@ -104,6 +120,10 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         self.model_name: str | None = self.settings.model
         self._streaming = False
         self._init_local_commands(sources=sources, services=services)
+        # AlphaFold 2 and PyMOL. Built on first use, so chatting never depends
+        # on scientific tool settings; tests pass a fake.
+        self._biotech_workflow = biotech_workflow
+        self._scientific_job_running = False
         self._title_worker_running = False
         self._titles_pending = False
         self._title_failures: set[str] = set()
@@ -136,7 +156,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
             with Vertical(id="main"):
                 yield VerticalScroll(id="chat")
                 yield PromptQueuePanel(id="queue-panel")
-                yield Input(placeholder="Type a message, or /help for commands", id="prompt")
+                yield PromptInput(placeholder="Type a message, or /help for commands", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -196,7 +216,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
             await self.send_message(text)
 
     async def run_command(self, command: Command) -> None:
-        if self.run_local_command(command):
+        if await self.run_local_command(command):
             return
         match command.name:
             case "help":
@@ -215,6 +235,17 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 await self.command_forget()
             case "recall" | "context":
                 await self.command_recall(command.args)
+            case "fold":
+                await self.start_fold(command.args)
+            case "pymol":
+                try:
+                    target = parse_structure_argument(command.args)
+                except CommandUsageError as exc:
+                    await self.post_notice(str(exc), kind="error")
+                else:
+                    self.open_pymol(target)
+            case "tools":
+                await self.post_notice(tool_status_text(self.biotech_workflow))
             case _:
                 await self.post_notice(f"Unknown command `/{command.name}`. Type `/help` for a list.", kind="error")
 
@@ -240,6 +271,54 @@ class BedrockApp(LocalCommandsMixin, App[None]):
             marker = "→" if model.id == self.model_name else " "
             lines.append(f"- {marker} `{model.id}`")
         await self.post_notice("\n".join(lines))
+
+    # ---- Structure prediction and viewing ---------------------------------
+    #
+    # A fold is not a chat prompt and does not wait in the prompt queue. It
+    # takes hours on a GPU host that is not the model server, so the chat keeps
+    # working while it runs, and Esc - which stops a streaming reply - leaves
+    # it alone. One fold at a time. Its notices appear in whichever chat is on
+    # screen when they arrive, and are not saved into any conversation: the
+    # run itself is recorded, and `/runs` finds it.
+
+    async def start_fold(self, args: str) -> None:
+        """Validate the arguments here, so a typo never starts a GPU job."""
+        try:
+            target, project_id = parse_fold_request(args)
+        except CommandUsageError as exc:
+            await self.post_notice(str(exc), kind="error")
+            return
+        if self._scientific_job_running:
+            await self.post_notice("A scientific job is already running.", kind="error")
+            return
+        self._scientific_job_running = True
+        self.fold_protein(target, project_id)
+
+    # Not exclusive: the flag above is what keeps it to one fold, and an
+    # exclusive worker would cancel an hours-long prediction if that ever failed.
+    @work(group="scientific")
+    async def fold_protein(self, target: Path | SourceRef, project_id: str | None) -> None:
+        try:
+            await run_fold(
+                target,
+                project_id,
+                workflow=self.biotech_workflow,
+                sources=self.sources,
+                services=self.services,
+                notify=self.post_notice,
+            )
+        finally:
+            self._scientific_job_running = False
+
+    @work(exclusive=True, group="pymol-open")
+    async def open_pymol(self, target: Path | SourceRef | None) -> None:
+        await run_pymol(target, workflow=self.biotech_workflow, sources=self.sources, notify=self.post_notice)
+
+    @property
+    def biotech_workflow(self) -> ProteinWorkflow:
+        if self._biotech_workflow is None:
+            self._biotech_workflow = ProteinWorkflow.from_settings(self.settings)
+        return self._biotech_workflow
 
     # ---- Saved conversations ----------------------------------------------
 
@@ -485,7 +564,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         widgets = []
         for message in conversation.messages[-50:]:
             if message.role is Role.USER:
-                widgets.append(UserMessage(message.content))
+                widgets.append(UserMessage(attachments.display_text(message.content, message.attachments)))
             elif message.role is Role.ASSISTANT:
                 widgets.append(AssistantMessage(conversation.model or "", message.content))
         if widgets:
@@ -502,7 +581,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         button.disabled = True
         start = max(0, self._earliest_rendered - 50)
         widgets = [
-            UserMessage(message.content) if message.role is Role.USER
+            UserMessage(attachments.display_text(message.content, message.attachments)) if message.role is Role.USER
             else AssistantMessage(self.conversation.model or "", message.content)
             for message in self.conversation.messages[start:self._earliest_rendered]
             if message.role in (Role.USER, Role.ASSISTANT)
@@ -939,6 +1018,14 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if not self.model_name:
             await self.post_notice("No model selected. Use `/model` to see what is available.", kind="error")
             return
+        try:
+            # Only checks that each @file exists, so a typo is reported now
+            # rather than after the prompt has waited its turn in the queue.
+            attachments.resolve(text)
+        except attachments.AttachmentError as exc:
+            self.query_one("#prompt", Input).value = text
+            await self.post_notice(str(exc) + " Your draft is still in the input.", kind="error")
+            return
 
         conversation_id = self.conversation.id
         try:
@@ -1033,7 +1120,16 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                          if message.timestamp == timestamp and message.role == Role.USER
                          and message.content == text), None)
         if question is None:
-            question = conversation.add_user(text)
+            # Read @files when the prompt starts, off the UI thread: a large
+            # one is compressed first, which takes a moment.
+            try:
+                attached = await asyncio.to_thread(attachments.load, attachments.resolve(text), self.context_store)
+            except attachments.AttachmentError as exc:
+                self.query_one("#prompt", Input).value = text
+                await self.post_notice(str(exc) + " Your draft is still in the input; nothing was sent.", kind="error")
+                self.finish_prompt(item, ok=False)
+                return
+            question = conversation.add_user(text, attached)
             # Only this attempt's unsaved, unseen question may be rolled back.
             try:
                 saved = self.save_conversation()
@@ -1047,7 +1143,9 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 self.finish_prompt(item, ok=False)
                 return
             self._prepared_questions[item.id] = question.timestamp
-            await self.mount_message(UserMessage(text))
+            await self.mount_message(UserMessage(attachments.display_text(text, attached)))
+            if notice := attachments.summary(attached):
+                await self.post_notice(notice)
 
         conversation, note = self.conversation, None
         if self.store is not None and wants_recall(text):
@@ -1080,10 +1178,15 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # question, folded into `note` the same one-turn, never-saved way
         # recall's NO_TOPIC/NOTHING_FOUND are - see
         # bedrock.context.auto_inject for what this can and can't do.
-        injected = find_relevant_context(text, self.context_store)
+        # Without this, /digest did nothing for the next question you
+        # asked unless you remembered to search it yourself; that gap was
+        # closed for AgentPackApp first and is closed here the same way.
+        # The switch is read here, when the prompt actually starts, so one
+        # that waited in the queue follows `/digest auto off` typed meanwhile.
+        injected = find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
         if injected is not None:
             note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block
-            await self.post_notice(injected.summary)
+            await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
         reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)

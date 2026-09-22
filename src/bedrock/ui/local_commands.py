@@ -17,7 +17,12 @@ from bedrock.context import ContextStore
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command
 from bedrock.ui.confidence_view import run_confidence_command
-from bedrock.ui.digest_command import run_digest_command
+from bedrock.ui.digest_command import (
+    AutoContext,
+    auto_context_argument,
+    run_auto_context_command,
+    run_digest_command,
+)
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
@@ -36,6 +41,7 @@ class LocalCommandsMixin:
     _context_store: ContextStore | None
     _sources: SourceHub | None
     _workspace_session: WorkspaceCommandSession | None
+    auto_context: AutoContext
 
     def _init_local_commands(
         self,
@@ -46,13 +52,25 @@ class LocalCommandsMixin:
         self._context_store = None
         self._sources = sources
         self._workspace_session = None
+        self.auto_context = AutoContext(enabled=self.settings.auto_context)
         self.services = services or ComplianceServices(self.settings)
 
-    def run_local_command(self, command: Command) -> bool:
+    async def run_local_command(self, command: Command) -> bool:
         """Start a shared command and report whether its name was handled."""
         match command.name:
             case "digest":
-                self.command_digest(command.args)
+                choice = auto_context_argument(command.args)
+                if choice is not None:
+                    # Apply immediately: a prompt sent next must already follow
+                    # the new setting, even though ordinary digest work runs in
+                    # a background worker.
+                    await run_auto_context_command(
+                        choice,
+                        auto_context=self.auto_context,
+                        notify=self.post_notice,
+                    )
+                else:
+                    self.command_digest(command.args)
             case "sources":
                 self.command_sources(command.args)
             case "runs":
@@ -79,6 +97,7 @@ class LocalCommandsMixin:
             sources=self.sources,
             history=await self.services.optional_history(),
             actor_id=self.settings.user_id,
+            auto_context=self.auto_context,
             **model_options,
         )
 

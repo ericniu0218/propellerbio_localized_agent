@@ -10,7 +10,7 @@ import pytest
 
 from bedrock.agentpack.models import AgentEvent
 from bedrock.agentpack_app import AgentPackApp
-from bedrock.biotech import ProteinWorkflowResult, ToolStatus
+from bedrock.biotech import ProteinWorkflowResult
 from bedrock.config import Settings
 from bedrock.inference import InferenceError
 from bedrock.ui.agent_panel import AgentPanel
@@ -19,6 +19,7 @@ from bedrock.ui.widgets import AssistantMessage, StatusBar, SystemNotice, UserMe
 from textual.widgets import Input
 
 from tests.conftest import (
+    FakeBiotechWorkflow,
     FakeRunCatalog,
     make_confidence_report,
     make_services,
@@ -67,42 +68,6 @@ class FakeAgentPackClient:
 
     async def close(self) -> None:
         self.closed = True
-
-
-class FakeBiotechWorkflow:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.folded: list[tuple[Path, str | None]] = []
-        self.opened: list[Path | None] = []
-        self.provenance: list[dict | None] = []
-
-    def status(self):
-        return (
-            ToolStatus("AlphaFold 2", True, ()),
-            ToolStatus("open-source PyMOL", True, ()),
-        )
-
-    async def predict_and_render(
-        self,
-        fasta_path: Path,
-        *,
-        project_id: str | None = None,
-        source_provenance: dict | None = None,
-    ) -> ProteinWorkflowResult:
-        self.folded.append((fasta_path, project_id))
-        self.provenance.append(source_provenance)
-        return ProteinWorkflowResult(
-            run_id="run_test",
-            run_dir=self.root,
-            structure_path=self.root / "ranked_0.pdb",
-            preview_path=self.root / "preview.png",
-            session_path=self.root / "structure.pse",
-            manifest_path=self.root / "manifest.json",
-        )
-
-    async def open_in_pymol(self, structure_path: Path | None = None) -> Path:
-        self.opened.append(structure_path)
-        return structure_path or self.root / "ranked_0.pdb"
 
 
 @pytest.fixture
@@ -179,6 +144,164 @@ async def test_unrelated_message_is_sent_unchanged_when_nothing_matches(
         await pilot.pause()
 
         assert fake_client.sent_messages == [("sess_fake", "good morning")]
+
+
+# ---- Switching automatic context off -----------------------------------------
+#
+# Automatic context matches by keyword, so it can attach a passage that only
+# shares a word with the question. These tests pin down the way to stop that:
+# a setting for every window, and `/digest auto` for the one in front of you.
+
+
+ASSAY_QUESTION = "what was the ph in the assay results?"
+
+
+def make_app_with_assay(client: FakeAgentPackClient, tmp_path, **settings) -> AgentPackApp:
+    """An app whose context store holds a CSV that matches ASSAY_QUESTION."""
+    app = AgentPackApp(
+        settings=Settings(user_id="alice", context_dir=str(tmp_path / "ctx"), **settings),
+        client=client,
+        services=make_services(),
+    )
+    assay_file = tmp_path / "assay.csv"
+    assay_file.write_text("\n".join(["sample,ph,passed"] + [f"s{i},{6.0 + i * 0.1:.1f},true" for i in range(10)]))
+    from bedrock.context import ingest
+
+    ingest(assay_file, store=app.context_store)
+    return app
+
+
+def notice_texts(app: AgentPackApp) -> list[str]:
+    return [str(n.source) for n in app.query(SystemNotice)]
+
+
+async def type_line(pilot, text: str) -> None:
+    await pilot.press(*text, "enter")
+    await pilot.pause()
+
+
+async def test_injection_notice_says_how_to_stop_it(fake_client: FakeAgentPackClient, tmp_path):
+    """The way out is on screen at the moment a bad match could appear."""
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, ASSAY_QUESTION)
+
+        added = [n for n in notice_texts(app) if "Added stored context from" in n]
+        assert len(added) == 1
+        assert "`/digest auto off`" in added[0]
+
+
+async def test_auto_context_setting_off_sends_messages_exactly_as_typed(
+    fake_client: FakeAgentPackClient, tmp_path, monkeypatch
+):
+    app = make_app_with_assay(fake_client, tmp_path, auto_context=False)
+    searched = []
+    monkeypatch.setattr(app.context_store, "search", lambda *a, **k: searched.append(a) or [])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, ASSAY_QUESTION)
+
+        assert fake_client.sent_messages == [("sess_fake", ASSAY_QUESTION)]
+        assert not any("Added stored context" in n for n in notice_texts(app))
+        # Off means the store is not consulted at all, not searched and ignored.
+        assert searched == []
+
+
+async def test_digest_auto_off_then_on_changes_what_this_window_sends(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, "/digest auto off")
+        assert app.auto_context.enabled is False
+        assert "now **off**" in notice_texts(app)[-1]
+        # The notice says where the lasting setting lives, since this one is not saved.
+        assert "BEDROCK_AUTO_CONTEXT=0" in notice_texts(app)[-1]
+
+        await type_line(pilot, ASSAY_QUESTION)
+        assert fake_client.sent_messages == [("sess_fake", ASSAY_QUESTION)]
+        assert not any("Added stored context" in n for n in notice_texts(app))
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+
+        await type_line(pilot, "/digest auto on")
+        assert app.auto_context.enabled is True
+        assert "now **on**" in notice_texts(app)[-1]
+
+        await type_line(pilot, ASSAY_QUESTION)
+        assert len(fake_client.sent_messages) == 2
+        _, outgoing = fake_client.sent_messages[1]
+        assert "Relevant stored context" in outgoing
+        assert outgoing.endswith(ASSAY_QUESTION)
+
+
+async def test_digest_auto_off_typed_while_a_prompt_waits_applies_to_that_prompt(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    """The switch is read when a message is sent, not when it was typed."""
+    app = make_app_with_assay(fake_client, tmp_path)
+    second = "and what was the ph of sample s3?"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, ASSAY_QUESTION)
+        await type_line(pilot, second)
+        # The first went out with context; the second is waiting its turn.
+        assert len(fake_client.sent_messages) == 1
+        assert "Relevant stored context" in fake_client.sent_messages[0][1]
+        assert [item.text for item in app.queue_snapshot().pending] == [second]
+
+        # Commands run straight away, even while prompts wait.
+        await type_line(pilot, "/digest auto off")
+        assert app.auto_context.enabled is False
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+        await pilot.pause()
+
+        assert fake_client.sent_messages[-1] == ("sess_fake", second)
+
+
+async def test_digest_auto_reports_the_setting_and_refuses_other_words(
+    fake_client: FakeAgentPackClient, tmp_path
+):
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, "/digest auto")
+        assert "is **on**" in notice_texts(app)[-1]
+
+        await type_line(pilot, "/digest auto off")
+        await type_line(pilot, "/digest auto off")
+        assert "already **off**" in notice_texts(app)[-1]
+
+        await type_line(pilot, "/digest auto")
+        assert "is **off**" in notice_texts(app)[-1]
+
+        await type_line(pilot, "/digest auto maybe")
+        refusal = app.query(SystemNotice)[-1]
+        assert refusal.has_class("error")
+        assert "takes `on` or `off`" in str(refusal.source)
+        # A word it does not understand changes nothing.
+        assert app.auto_context.enabled is False
+        # And nothing was sent to the AI system by any of this.
+        assert fake_client.sent_messages == []
+
+
+async def test_help_texts_offer_the_switch_in_agent_pack_mode(fake_client: FakeAgentPackClient, tmp_path):
+    app = make_app_with_assay(fake_client, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await type_line(pilot, "/help")
+        assert "/digest auto off" in notice_texts(app)[-1]
+
+        # `/digest help` runs in a worker, so wait for its notice.
+        await type_line(pilot, "/digest help")
+        joined = await wait_for_notice(app, pilot, "compress data so a model can read it cheaply")
+        assert "`/digest auto off` stops it for this window" in joined
 
 
 async def test_agent_panel_shows_friendly_status_and_clears_on_done(fake_client: FakeAgentPackClient):
@@ -466,6 +589,45 @@ async def test_fold_pulls_the_sequence_from_a_company_source_with_provenance(fak
         assert provenance["ref"] == "registry://SEQ-00123.fasta"
         assert provenance["fetched_by"] == "alice"
         assert "Source: `registry://SEQ-00123.fasta`" in notices
+
+
+async def test_pymol_opens_a_structure_pulled_from_a_company_source(fake_client, tmp_path):
+    from textual.widgets import Input
+
+    workflow = FakeBiotechWorkflow(tmp_path)
+    app = source_app(fake_client, tmp_path, workflow)
+    (tmp_path / "registry-exports" / "STRUCT-9.pdb").write_text("ATOM      1  N   MET A   1\n")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", Input).value = "/pymol registry://STRUCT-9.pdb"
+        await pilot.press("enter")
+        await wait_for_notice(app, pilot, "Opened `registry://STRUCT-9.pdb` in PyMOL")
+
+        (opened,) = workflow.opened
+        # Named explicitly, so it is styled neutrally rather than as a prediction.
+        assert opened is not None and opened.parent == tmp_path / "work" / "sources"
+        assert (opened.parent / (opened.name + ".provenance.json")).is_file()
+
+
+async def test_quitting_while_a_fold_runs_closes_cleanly(fake_client, tmp_path):
+    """The screen is gone by the time the "cancelled" notice would be shown;
+    that used to fail the worker and end the app with a traceback."""
+    started = asyncio.Event()
+
+    class BlockingWorkflow(FakeBiotechWorkflow):
+        async def predict_and_render(self, fasta_path, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    app = make_app(fake_client, BlockingWorkflow(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/fold /tmp/protein.fasta", "enter")
+        await started.wait()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+    assert app.return_code == 0
+    assert app._exception is None
 
 
 async def test_a_refused_source_fetch_reports_and_frees_the_job_slot(fake_client, tmp_path):

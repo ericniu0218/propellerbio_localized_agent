@@ -16,12 +16,14 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # BEDROCK_PRIVATE_AI_TOKEN secret). The import is guarded: without it the
 # server still starts and only meeting_transcripts reports it is unavailable.
 #
-# Moved forward from d210db6 for two reasons. app/meetings/ needs the
-# transcription pipeline (bedrock.meetings.transcribe), and d210db6 predates
+# Moved forward from d210db6 for three reasons. app/meetings/ needs the
+# transcription pipeline (bedrock.meetings.transcribe); d210db6 predates
 # "Check that meeting citations point at the line that says it" (00cc9c9) — so
 # on the old pin every timestamp in a generated meeting note was unverified,
-# and an invented one was indistinguishable from a real one.
-bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@bf4e4ccc5649ae798b2cf3c048e523f032e824c8
+# and an invented one was indistinguishable from a real one; and it predates
+# the summariser fix that stops llama3.1:8b handing its own JSON placeholders
+# back as content ("owner": "name or null" reaching a reader as an action item).
+bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@19708d24443728f1d63347d5a3449be6bd8c139d
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 

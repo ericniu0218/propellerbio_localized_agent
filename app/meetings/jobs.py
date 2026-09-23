@@ -25,7 +25,7 @@ import logging
 import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig
@@ -207,7 +207,3 @@ async def process(
     if delivery_note:
         notes.append(delivery_note)
     jobs.finish(job, record["id"], notes)
-
-
-def meeting_date_of(started_at: datetime) -> date:
-    return started_at.astimezone(timezone.utc).date()

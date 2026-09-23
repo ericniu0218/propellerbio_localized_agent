@@ -5,6 +5,10 @@ venv/
 *.db
 .env
 data/workspace/
+# Recorded meeting audio and the transcripts made from them. Real meeting
+# content, and large — it must never reach the repository.
+data/recordings/
+data/demo-recorder/
 .pytest_cache/
 *.egg-info/
 

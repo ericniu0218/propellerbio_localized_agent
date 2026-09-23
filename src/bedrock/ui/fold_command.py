@@ -28,7 +28,7 @@ from bedrock.biotech import ToolIntegrationError
 from bedrock.connectors import ConnectorError, SourceHub, SourceRef, parse_source_ref
 from bedrock.ui.argparsing import CommandParser, CommandUsageError, split_arguments
 from bedrock.ui.confidence_view import short_confidence_summary
-from bedrock.ui.rendering import as_code, safe_line
+from bedrock.ui.rendering import as_code, as_code_path, safe_line
 
 Notify = Callable[[str, str], Awaitable[None]]
 
@@ -174,8 +174,8 @@ async def run_fold(
     lines = [
         f"**Protein prediction completed** — run {as_code(result.run_id)}",
         "",
-        f"- Structure: {as_code(result.structure_path)}",
-        f"- Provenance: {as_code(result.manifest_path)}",
+        f"- Structure: {as_code_path(result.structure_path)}",
+        f"- Provenance: {as_code_path(result.manifest_path)}",
     ]
     if provenance:
         version = f", version {provenance['version']}" if provenance.get("version") else ""
@@ -184,11 +184,11 @@ async def run_fold(
             f"- Source: `{provenance['ref']}`{version} (sha256 `{provenance['sha256'][:12]}`)",
         )
     if result.preview_path:
-        lines.append(f"- PyMOL preview: {as_code(result.preview_path)}")
+        lines.append(f"- PyMOL preview: {as_code_path(result.preview_path)}")
     if result.session_path:
-        lines.append(f"- PyMOL session: {as_code(result.session_path)}")
+        lines.append(f"- PyMOL session: {as_code_path(result.session_path)}")
     if getattr(result, "confidence_path", None):
-        lines.append(f"- Confidence summary: {as_code(result.confidence_path)}")
+        lines.append(f"- Confidence summary: {as_code_path(result.confidence_path)}")
     lines.extend(f"- Warning: {safe_line(warning, limit=300)}" for warning in result.warnings)
     # A short line only: the full bands, intervals and PAE overview are a page
     # of their own, and a failed confidence read must never take a successful,
@@ -232,12 +232,12 @@ async def run_pymol(
             version = f"version {safe_line(record.version, limit=80)}, " if record.version else ""
             await notify(
                 f"Opened {as_code(target)} in PyMOL ({version}sha256 "
-                f"`{record.sha256[:12]}`, saved at {as_code(opened)}).",
+                f"`{record.sha256[:12]}`, saved at {as_code_path(opened)}).",
                 "info",
             )
         else:
             opened = await workflow.open_in_pymol(target)
-            await notify(f"Opened {as_code(opened)} in PyMOL.", "info")
+            await notify(f"Opened {as_code_path(opened)} in PyMOL.", "info")
     except (ToolIntegrationError, ConnectorError) as exc:
         await notify(safe_line(exc, limit=400), "error")
         return False

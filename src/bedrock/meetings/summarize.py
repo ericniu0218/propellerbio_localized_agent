@@ -157,10 +157,11 @@ _EXTRACT_PROMPT = """\
 You are reading one part of a meeting transcript. Report only what is actually \
 said in it.
 
-Respond with JSON and nothing else:
-{{"decisions": [{{"text": "...", "timestamp": "00:12:34"}}],
- "actions": [{{"text": "...", "owner": "name or null", "timestamp": "00:12:34"}}],
- "facts": [{{"text": "...", "timestamp": "00:12:34"}}]}}
+Respond with JSON and nothing else. Replace every <...> with real content from
+the transcript; never copy the words inside the angle brackets:
+{{"decisions": [{{"text": "<what the group settled on>", "timestamp": "00:12:34"}}],
+ "actions": [{{"text": "<what will be done>", "owner": "<who will do it, or null>", "timestamp": "00:12:34"}}],
+ "facts": [{{"text": "<the concrete detail>", "timestamp": "00:12:34"}}]}}
 
 Rules:
 - A decision is something the group settled on. Phrases like "then we", "let's",
@@ -278,6 +279,53 @@ def _repair_timestamp(value: object, text: str, cues: list[Cue]) -> str | None:
     return CitationGuard(cues).check(value, text)
 
 
+# A small model sometimes hands the JSON skeleton back instead of filling it
+# in: an action owned by "name or null", a fact whose text is "...". Those are
+# the prompt's own placeholder words, not anything anybody said - but by the
+# time they reach a reader they look exactly like content, and an action item
+# assigned to "name or null" reads as a bug in the product rather than as the
+# model having nothing to say. Seen from llama3.1:8b, twice in one 28-second
+# meeting, which is why the prompt wording alone is not trusted to prevent it.
+_SCHEMA_ECHOES = frozenset(
+    {
+        "",
+        "...",
+        "null",
+        "none",
+        "n/a",
+        "na",
+        "text",
+        "owner",
+        "timestamp",
+        "name",
+        "name or null",
+        "who will do it, or null",
+        "what the group settled on",
+        "what will be done",
+        "the concrete detail",
+    }
+)
+
+
+# "I will send the tracker tonight" yields an owner of "I", which names nobody.
+# On a transcript with speaker labels the pronoun could in principle be
+# resolved to the speaker; on one recorded from a single microphone - which is
+# every in-room recording - there are no labels to resolve it against, and
+# "Send the tracker — I" is worse than no owner at all.
+_PRONOUN_OWNERS = frozenset({"i", "me", "my", "we", "us", "our", "you", "they", "he", "she", "it"})
+
+
+def _is_schema_echo(value: object) -> bool:
+    """True when the model returned the placeholder instead of an answer."""
+    cleaned = str(value or "").strip().strip("<>\"'").casefold()
+    return cleaned in _SCHEMA_ECHOES
+
+
+def _is_unusable_owner(value: object) -> bool:
+    cleaned = str(value or "").strip().strip("<>\"'.,").casefold()
+    return _is_schema_echo(value) or cleaned in _PRONOUN_OWNERS
+
+
 def _points(raw_items: object, guard: CitationGuard, with_owner: bool) -> list[Point]:
     if not isinstance(raw_items, list):
         return []
@@ -286,10 +334,12 @@ def _points(raw_items: object, guard: CitationGuard, with_owner: bool) -> list[P
         if not isinstance(item, dict):
             continue
         text = str(item.get("text") or "").strip()
-        if not text:
+        if not text or _is_schema_echo(text):
             continue
         owner = item.get("owner") if with_owner else None
-        owner = str(owner).strip() if owner and str(owner).lower() != "null" else None
+        # A dropped owner costs the reader a name. A placeholder owner tells
+        # them the wrong thing, so an unusable one becomes no owner at all.
+        owner = str(owner).strip() if owner and not _is_unusable_owner(owner) else None
         points.append(
             Point(
                 text=text,

@@ -454,3 +454,67 @@ def test_the_report_line_is_plain_and_absent_when_nothing_was_cited():
         "Checked 1 citation against the transcript: 0 moved to the line that says it, "
         "1 removed because no line says it."
     )
+
+
+# --- The model handing back its own JSON skeleton -----------------------------
+
+
+def test_a_placeholder_owner_becomes_no_owner():
+    """llama3.1:8b returned `"owner": "name or null"` verbatim. An action item
+    assigned to "name or null" reads as a broken product; no owner is honest."""
+    from bedrock.meetings.summarize import _points
+    from bedrock.meetings.citations import CitationGuard
+
+    points = _points(
+        [{"text": "Send the enrollment tracker tonight.", "owner": "name or null"}],
+        CitationGuard([]),
+        with_owner=True,
+    )
+    assert len(points) == 1
+    assert points[0].owner is None
+    assert "name or null" not in points[0].render()
+
+
+def test_a_point_that_is_only_a_placeholder_is_dropped():
+    """The same run produced a "fact" whose entire text was the placeholder."""
+    from bedrock.meetings.summarize import _points
+    from bedrock.meetings.citations import CitationGuard
+
+    points = _points(
+        [
+            {"text": "name or null"},
+            {"text": "..."},
+            {"text": "<the concrete detail>"},
+            {"text": "148 of 200 patients"},
+        ],
+        CitationGuard([]),
+        with_owner=False,
+    )
+    assert [p.text for p in points] == ["148 of 200 patients"]
+
+
+def test_a_real_owner_still_survives():
+    """The filter must not eat ordinary names."""
+    from bedrock.meetings.summarize import _points
+    from bedrock.meetings.citations import CitationGuard
+
+    points = _points(
+        [{"text": "Update the protocol document.", "owner": "Priya"}],
+        CitationGuard([]),
+        with_owner=True,
+    )
+    assert points[0].owner == "Priya"
+
+
+def test_a_first_person_owner_becomes_no_owner():
+    """"I will send the tracker" names nobody, and an in-room recording has no
+    speaker labels to resolve the pronoun against."""
+    from bedrock.meetings.summarize import _points
+    from bedrock.meetings.citations import CitationGuard
+
+    points = _points(
+        [{"text": "Send the enrollment tracker tonight.", "owner": "I"}],
+        CitationGuard([]),
+        with_owner=True,
+    )
+    assert points[0].owner is None

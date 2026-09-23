@@ -45,6 +45,37 @@ def as_code(value: object, limit: int = 160) -> str:
     return f"`{safe_line(value, limit).replace('`', '')}`"
 
 
+def elide_path(value: object, limit: int = 160) -> str:
+    """A filesystem path shortened from the middle, so the file name survives.
+
+    ``safe_line`` cuts the end off, which is right for a sentence and wrong for
+    a path: "saved at /very/long/directory/…" has told the reader nothing they
+    can act on, because the name of the file is the part they need. Keeping the
+    front as well means they can still see which tree it landed in.
+
+    Found by a test that passes or fails depending on how long the developer's
+    user name is - a temporary directory under "pytest-of-alejandrojarquin"
+    pushes the path past the limit where "pytest-of-runner" does not. Ordinary
+    home directories are short enough that this rarely triggers in real use,
+    which is exactly why it went unnoticed.
+    """
+    text = _BIDI.sub("", _CONTROL.sub(" ", str(value)))
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    name = text.rsplit("/", 1)[-1]
+    # A file name that is itself longer than the limit leaves nothing to
+    # protect, so fall back to the ordinary end-truncation.
+    if len(name) + 2 >= limit:
+        return safe_line(text, limit)
+    return f"{text[: limit - len(name) - 2].rstrip()}…/{name}"
+
+
+def as_code_path(value: object, limit: int = 160) -> str:
+    """A Markdown code span holding a path, keeping its file name visible."""
+    return f"`{elide_path(value, limit).replace('`', '')}`"
+
+
 def as_cell(value: object, limit: int = 60) -> str:
     """Text inside a Markdown table cell, where ``|`` ends the cell."""
     return safe_line(value, limit).replace("\\", "\\\\").replace("|", "\\|")

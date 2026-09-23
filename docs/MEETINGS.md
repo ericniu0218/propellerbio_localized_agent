@@ -1,7 +1,12 @@
 # Meeting transcripts
 
-Lets someone ask the assistant what was said or decided in a Zoom meeting,
-and get an answer with the meeting, date, and timestamp cited.
+Lets someone ask the assistant what was said or decided in a meeting, and get
+an answer with the meeting, date, and timestamp cited.
+
+Meetings arrive two ways. Zoom records some of them for us. The rest are
+recorded here, from the Meetings tab — a microphone in a room, or the audio of
+an online call somebody is already sitting in. Both end up in the same storage
+in the same format, so retrieval does not know or care which is which.
 
 ## How the pieces connect
 
@@ -13,10 +18,14 @@ Zoom  ──webhook──▶  zoom-transcript-vault        (public internet, a r
                           ▼
               Datacenter transcript connector    ← the customer's own storage
                  (their infrastructure)
-                          ▲
-                          │ GET /transcripts?from=&to=  (signed, INTERNAL network)
-                          │
-                 app/tools/meeting_transcripts.py   ← this repo
+                     ▲    ▲
+                     │    │ GET /transcripts?from=&to=  (signed, INTERNAL network)
+                     │    │
+                     │    └──── app/tools/meeting_transcripts.py   ← this repo
+                     │
+                     │ POST /transcripts  (signed, INTERNAL network)
+                     │
+              app/meetings/  ← this repo: record in the browser, transcribe here
 ```
 
 The vault is a relay on the public internet. It captures transcripts from
@@ -102,6 +111,86 @@ keep a copy, so a parsing fix is made once and reaches both products.
   transcript reader from bedrock-private-ai is not installed" instead of
   results.
 
+## Recording a meeting here (`app/meetings/`)
+
+The Meetings tab has a Record button. It captures the device's microphone, the
+audio of a browser tab, or both mixed together, uploads the audio, and turns it
+into a meeting with notes.
+
+Everything runs on this machine: `whisper.cpp` for speech, and whichever local
+model the deployment already uses for the notes. No audio and no transcript
+reaches a third party, which is the whole reason this is a recorder rather than
+a meeting bot — every off-the-shelf bot relays the call through its own servers.
+
+### One-time setup
+
+```bash
+brew install whisper-cpp ffmpeg
+mkdir -p ~/.cache/whisper-models && cd ~/.cache/whisper-models
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+curl -LO https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+```
+
+The VAD model is in a *different* Hugging Face repo from the speech model, and
+it is not optional: without it, timestamps on a track containing silence drift
+by minutes and every citation points at the wrong line.
+
+`GET /workspace/api/meetings/readiness` reports anything missing, and the
+Record button refuses to start until it is clean — finding out afterwards means
+the meeting is already gone.
+
+### Configuration
+
+| Variable | Default | Why you would change it |
+|---|---|---|
+| `MEETING_MODEL_DIR` | `~/.cache/whisper-models` | models kept elsewhere |
+| `MEETING_SPEECH_MODEL` | `<dir>/ggml-small.en.bin` | a larger model for accuracy, smaller for speed |
+| `MEETING_VAD_MODEL` | `<dir>/ggml-silero-v5.1.2.bin` | |
+| `MEETING_WHISPER_THREADS` | cores − 2, capped at 10 | leave the box more headroom |
+| `MEETING_VOCABULARY` | unset | **set this** — see below |
+| `MEETING_SUMMARY_MODEL` | `llama3.1:8b` | the local model that writes the notes |
+| `MEETING_SUMMARY_ENDPOINT` | `http://localhost:11434/v1` | vLLM/SGLang in production |
+| `MEETING_RECORDING_DIR` | `data/recordings` | where audio is kept |
+
+**`MEETING_VOCABULARY` is the highest-value setting here.** Whisper spells
+words it does not know phonetically: on the first test run it wrote "CROS" for
+"KRAS" and turned "Priya can own" into "Priya Kanone". Seeding the decoder with
+the study's real terms fixed both. Set it to the drug names, assay names, gene
+symbols and people's names this customer actually says out loud:
+
+```bash
+MEETING_VOCABULARY="KRAS, EGFR, G12D, Priya, interim analysis, enrollment, protocol"
+```
+
+### What it costs
+
+Transcription runs at roughly real time on an 18-core Mac with `small.en`, so
+an hour-long meeting is about an hour of work *after* the meeting ends. That is
+why uploading returns a job id and the browser polls rather than waiting. Jobs
+live in memory: a server restart mid-transcription loses the job but not the
+audio, which stays under `MEETING_RECORDING_DIR` and can be re-submitted.
+
+### Speakers are not identified
+
+Zoom's local recordings can write one audio file per participant, which is
+where bedrock-private-ai's perfect speaker labels come from — every word in
+Bob's file was said by Bob, by construction. A microphone in a room is one
+mixed track and offers nothing equivalent, and a diarisation model would put
+confident names on the wrong sentences. So these transcripts record what was
+said, not who said it, and the meeting page says so where somebody will read it.
+
+### Capturing an online meeting
+
+Chrome only exposes audio through `getDisplayMedia` for a **tab**, and on macOS
+whole-screen audio is not available at all. In practice:
+
+- **Join the call in a browser tab** (Zoom, Meet and Teams all support this) and
+  tick "Also share tab audio" in Chrome's picker. This is the path that works
+  everywhere with no extra software.
+- **Using a desktop app instead?** Install a loopback audio device (BlackHole,
+  Loopback) and pick it as the microphone. It appears in the device list
+  automatically.
+
 ## Known gaps
 
 - **No per-user access control.** `rag_search` filters hits through
@@ -118,4 +207,12 @@ keep a copy, so a parsing fix is made once and reaches both products.
 - **Keyword, not semantic, ranking.** "What did we decide about recruitment?"
   will not match a meeting that only ever says "enrollment."
 - **No retention policy.** Transcripts accumulate in the datacenter forever.
-  Whoever owns that storage owns deciding how long meetings are kept.
+  Whoever owns that storage owns deciding how long meetings are kept. Recorded
+  audio also accumulates under `MEETING_RECORDING_DIR` and nothing prunes it.
+- **Recording consent is left to the person recording.** The UI shows a live
+  indicator and warns before starting, but the product does not collect or
+  record anyone's consent. Several US states require all parties to agree.
+- **Recording jobs do not survive a restart.** They live in one process's
+  memory. Moving this off a single box means a real queue.
+- **No PHI redaction on recordings either.** The same gap as above, and a
+  recording is the likeliest place for a patient to be discussed by name.

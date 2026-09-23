@@ -170,6 +170,10 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .card:hover { border-color: var(--border-strong); background: var(--panel-2); }
 .card h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .card p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+/* A generated summary can run to a full paragraph, which makes one card tower
+   over its neighbours and leaves the grid ragged. The card is a way in, not
+   the place to read the summary — that is what opening the meeting is for. */
+.card p { display: -webkit-box; -webkit-line-clamp: 5; line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
 .card-footer { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .avatar-stack { display: flex; }
 .avatar-stack .avatar { width: 22px; height: 22px; font-size: 10px; margin-left: -6px; border: 2px solid var(--panel); }
@@ -323,4 +327,67 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
   #composer .icon-btn { order: 2; }
   #composer .btn { order: 3; }
   .modal { width: calc(100vw - 24px); padding: 18px; }
+}
+
+/* ==================== meeting recorder ==================== */
+.record-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 18px;
+}
+.record-bar-warn { border-color: var(--warn); background: var(--warn-soft); }
+.record-bar-live { border-color: var(--bad); background: var(--bad-soft); }
+
+.record-dot-idle, .record-dot-live {
+  width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--bad);
+}
+.record-dot-idle { background: var(--muted); }
+.record-dot-live { animation: record-pulse 1.6s ease-in-out infinite; }
+@keyframes record-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .record-dot-live { animation: none; } }
+
+.record-live-info { flex: 1 1 200px; min-width: 0; }
+.record-live-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-live-sub { font-size: 12px; color: var(--muted); margin-top: 2px; display: flex; gap: 6px; flex-wrap: wrap; }
+.record-clock { font-family: var(--font-mono); color: var(--text-secondary); }
+.record-silence { color: var(--warn); font-weight: 600; }
+
+/* The meter is the only live proof that sound is arriving, so it is given
+   real width rather than being tucked into a corner. */
+.record-meter {
+  flex: 0 1 140px; height: 8px; border-radius: 4px;
+  background: var(--panel-3); overflow: hidden;
+}
+.record-meter-fill { width: 0%; height: 100%; background: var(--accent); transition: width 80ms linear; }
+
+.record-job {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
+}
+.record-job-main { flex: 1; min-width: 0; }
+.record-job .row-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-job .row-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.record-job-spinner {
+  width: 14px; height: 14px; flex: none; border-radius: 50%;
+  border: 2px solid var(--border-strong); border-top-color: var(--accent);
+  animation: record-spin 0.9s linear infinite;
+}
+@keyframes record-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .record-job-spinner { animation-duration: 3s; } }
+
+.check-row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; font-size: 13px; }
+.check-row input { margin-top: 2px; flex: none; width: auto; }
+.form-error { color: var(--bad); font-size: 13px; margin: 0; }
+
+.meeting-caveat {
+  font-size: 12px; color: var(--text-secondary); background: var(--panel-2);
+  border-left: 2px solid var(--warn); border-radius: 0 6px 6px 0;
+  padding: 8px 12px; margin: 10px 0 0; line-height: 1.5;
+}
+.card .row-sub, .detail-card > .row-sub { font-size: 12px; color: var(--muted); margin: 2px 0 6px; }
+
+@media (max-width: 700px) {
+  .record-bar { gap: 10px; }
+  .record-meter { flex-basis: 100%; }
 }

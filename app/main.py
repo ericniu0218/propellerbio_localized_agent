@@ -21,6 +21,7 @@ from app.compliance.airgap_check import AirgapViolation, run_airgap_check
 from app.compliance.audit import audit_event_sink
 from app.config import get_settings
 from app.events import get_event_bus
+from app.meetings import routes as routes_meetings
 from app.workspace import routes as routes_workspace
 
 logger = logging.getLogger("agent_pack")
@@ -38,6 +39,9 @@ def create_app() -> FastAPI:
     app.include_router(routes_results.router)
     app.include_router(sse.router)
     app.include_router(routes_workspace.router)
+    # After the workspace router: this one reuses its `identity` dependency and
+    # its store, and sits under the same /workspace/api prefix.
+    app.include_router(routes_meetings.router)
 
     @app.on_event("startup")
     async def startup() -> None:

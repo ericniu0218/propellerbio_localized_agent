@@ -15,7 +15,17 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # The repo is private, so installing it needs GitHub access (CI uses the
 # BEDROCK_PRIVATE_AI_TOKEN secret). The import is guarded: without it the
 # server still starts and only meeting_transcripts reports it is unavailable.
-bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@d210db6eaa9cc61270670e63aadffceaddff6380
+#
+# Moved forward from d210db6 for three reasons. app/meetings/ needs the
+# transcription pipeline (bedrock.meetings.transcribe); d210db6 predates
+# "Check that meeting citations point at the line that says it" (00cc9c9) — so
+# on the old pin every timestamp in a generated meeting note was unverified,
+# and an invented one was indistinguishable from a real one; and it predates
+# the summariser fix that stops llama3.1:8b handing its own JSON placeholders
+# back as content ("owner": "name or null" reaching a reader as an action item).
+bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@19708d24443728f1d63347d5a3449be6bd8c139d
+
+python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 
 # Optional biotech tool dependencies — imports are guarded so the app still
 # runs without them (stub results instead); install for real tool behavior.

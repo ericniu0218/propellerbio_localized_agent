@@ -11,6 +11,13 @@
   let pollHandle = null;
   let lastRenderSig = { center: "", activity: "", sidebarList: "" };
 
+  // Live recording state. Held outside `state` because it is this browser tab's
+  // business only — nothing about a half-finished recording belongs on the
+  // server until the audio is uploaded.
+  let recording = null;          // the active BedrockRecorder.Session
+  let recordingJobs = [];        // uploads being transcribed, newest first
+  let recordingJobPoll = null;
+
   function getEnterToSend() {
     try { return localStorage.getItem("bedrock_enter_to_send") !== "false"; } catch { return true; }
   }
@@ -690,40 +697,336 @@
       pane.appendChild(el("a", { class: "back-link", onclick: () => { currentMeetingId = null; renderCenter(true); } }, [icon("chevronright", "rotate180"), "All meetings"]));
       const card = el("div", { class: "detail-card" });
       card.appendChild(el("h2", {}, meeting.title));
+      const facts = [];
+      if (meeting.recordedAt) facts.push(new Date(meeting.recordedAt).toLocaleString());
+      if (meeting.durationMs) facts.push(Recorder.formatClock(meeting.durationMs / 1000));
+      if (meeting.wordCount) facts.push(meeting.wordCount.toLocaleString() + " words");
+      if (facts.length) card.appendChild(el("div", { class: "row-sub" }, facts.join(" · ")));
+      (meeting.caveats || []).forEach((note) =>
+        card.appendChild(el("div", { class: "meeting-caveat" }, note)));
       card.appendChild(el("p", { class: "detail-desc" }, meeting.summary || ""));
+      // Only sections that have something in them. A recording never has
+      // speaker names or extracted deadlines, so printing "None extracted."
+      // three times buries the sections that do say something — and the
+      // caveat above already explains why the people list is empty.
       const block = (label, items) => el("div", { style: "margin-top:14px" }, [
         el("div", { class: "section-title", style: "margin:0 0 6px" }, label),
-        el("ul", { style: "margin:0;padding-left:18px" }, (items || []).length ? items.map((i) => el("li", {}, i)) : [el("li", { class: "muted" }, "None extracted.")]),
+        el("ul", { style: "margin:0;padding-left:18px" }, items.map((i) => el("li", {}, i))),
       ]);
-      card.appendChild(block("Decisions", meeting.decisions));
-      card.appendChild(block("Action items", meeting.actions));
-      card.appendChild(block("Deadlines", meeting.deadlines));
-      card.appendChild(block("Open questions", meeting.questions));
-      card.appendChild(block("Findings", meeting.findings));
-      card.appendChild(block("People", meeting.people));
+      const sections = [
+        ["Decisions", meeting.decisions], ["Action items", meeting.actions],
+        ["Deadlines", meeting.deadlines], ["Open questions", meeting.questions],
+        ["Findings", meeting.findings], ["People", meeting.people],
+      ].filter(([, items]) => (items || []).length);
+      if (sections.length) sections.forEach(([label, items]) => card.appendChild(block(label, items)));
+      else card.appendChild(el("p", { class: "muted small", style: "margin-top:14px" },
+        "Nothing was extracted from this meeting. The transcript below is still complete."));
       if (meeting.transcript) {
         card.appendChild(el("div", { class: "section-title" }, "Transcript"));
         card.appendChild(el("div", { class: "transcript-box" }, meeting.transcript));
       }
-      card.appendChild(el("p", { class: "muted small", style: "margin-top:12px" }, "Rule-based extraction — review before treating as verified minutes."));
+      // How this meeting was produced, in the meeting's own words rather than
+      // one fixed sentence: a recording transcribed locally and a transcript
+      // somebody pasted in have very different reliability, and the reader
+      // cannot tell them apart otherwise.
+      card.appendChild(el("p", { class: "muted small", style: "margin-top:12px" },
+        meeting.method || "Rule-based extraction — review before treating as verified minutes."));
       pane.appendChild(card);
       body.appendChild(pane);
       return;
     }
-    pane.appendChild(el("p", { class: "pane-intro" }, "Meetings imported from a transcript, with decisions and action items pulled out automatically."));
+    pane.appendChild(el("p", { class: "pane-intro" }, "Record a meeting on this device, or import a transcript. Decisions and action items are pulled out automatically, and the assistant can answer questions about any meeting here."));
+    pane.appendChild(renderRecordBar());
+    recordingJobs.forEach((job) => pane.appendChild(renderJobRow(job)));
+
     if (!state.meetings.length) {
-      pane.appendChild(el("div", { class: "empty-state" }, [icon("calendar"), el("p", {}, "No meetings yet. Attach a transcript file from a chat to import one.")]));
+      pane.appendChild(el("div", { class: "empty-state" }, [icon("calendar"), el("p", {}, "No meetings yet. Press Record to capture one, or attach a transcript file from a chat.")]));
       body.appendChild(pane);
       return;
     }
     const grid = el("div", { class: "card-grid" });
-    state.meetings.forEach((m) => {
-      const c = el("div", { class: "card" }, [el("h3", {}, m.title), el("p", {}, m.summary || "")]);
-      c.addEventListener("click", () => { currentMeetingId = m.id; renderCenter(true); });
-      grid.appendChild(c);
-    });
+    [...state.meetings]
+      .sort((a, b) => (b.recordedAt || "").localeCompare(a.recordedAt || ""))
+      .forEach((m) => {
+        const meta = [];
+        if (m.recordedAt) meta.push(new Date(m.recordedAt).toLocaleString());
+        if (m.durationMs) meta.push(Recorder.formatClock(m.durationMs / 1000));
+        const c = el("div", { class: "card" }, [
+          el("h3", {}, m.title),
+          meta.length ? el("div", { class: "row-sub" }, meta.join(" · ")) : null,
+          el("p", {}, m.summary || ""),
+        ]);
+        c.addEventListener("click", () => { currentMeetingId = m.id; renderCenter(true); });
+        grid.appendChild(c);
+      });
     pane.appendChild(grid);
     body.appendChild(pane);
+  }
+
+  // ==================== RECORDING ====================
+  const Recorder = window.BedrockRecorder;
+  let recordingUI = null;     // live DOM nodes the timer/meter write into
+  let readiness = null;       // cached /meetings/readiness answer
+
+  async function loadReadiness() {
+    if (readiness) return readiness;
+    try { readiness = await api("/meetings/readiness"); }
+    catch { readiness = { ready: false, issues: ["The server did not answer the readiness check."] }; }
+    return readiness;
+  }
+
+  function renderRecordBar() {
+    const bar = el("div", { class: "record-bar" });
+
+    if (!Recorder || !Recorder.supported) {
+      bar.classList.add("record-bar-warn");
+      bar.appendChild(el("p", { class: "muted small", style: "margin:0" },
+        "This browser cannot record audio. Use Chrome or Edge."));
+      return bar;
+    }
+
+    if (!recording) {
+      const btn = el("button", { class: "btn primary", onclick: () => openRecorderSetup() }, [
+        el("span", { class: "record-dot-idle" }), "Record meeting",
+      ]);
+      bar.appendChild(btn);
+      bar.appendChild(el("p", { class: "muted small", style: "margin:0" },
+        "Audio is transcribed on this server. Nothing is sent to any outside service."));
+      return bar;
+    }
+
+    // Live. These nodes are written to directly by the session callbacks
+    // below, sixty times a second, so they must not be rebuilt by a re-render.
+    bar.classList.add("record-bar-live");
+    const clock = el("span", { class: "record-clock" }, "00:00");
+    const meterFill = el("div", { class: "record-meter-fill" });
+    const silence = el("span", { class: "record-silence", hidden: true }, "No sound detected");
+    const stopBtn = el("button", { class: "btn danger", onclick: () => finishRecording() }, "Stop and save");
+    bar.appendChild(el("span", { class: "record-dot-live" }));
+    bar.appendChild(el("div", { class: "record-live-info" }, [
+      el("div", { class: "record-live-title" }, recording.meetingTitle),
+      el("div", { class: "record-live-sub" }, [clock, el("span", {}, " · "), el("span", {}, recording.sourceLabel), silence]),
+    ]));
+    bar.appendChild(el("div", { class: "record-meter" }, meterFill));
+    bar.appendChild(stopBtn);
+    recordingUI = { clock, meterFill, silence, stopBtn };
+    return bar;
+  }
+
+  function renderJobRow(job) {
+    const row = el("div", { class: "record-job" });
+    const done = job.status === "done";
+    const failed = job.status === "failed";
+    row.appendChild(el("div", { class: "record-job-main" }, [
+      el("div", { class: "row-title" }, job.title),
+      el("div", { class: "row-sub" },
+        failed ? (job.error || "Failed")
+          : done ? "Saved" + (job.notes && job.notes.length ? " — " + job.notes.join(" ") : "")
+          : job.stage + "…"),
+    ]));
+    if (!done && !failed) row.appendChild(el("div", { class: "record-job-spinner" }));
+    if (done) {
+      row.appendChild(el("button", { class: "btn ghost small", onclick: async () => {
+        await refresh();
+        currentMeetingId = job.meetingId;
+        renderCenter(true);
+      } }, "Open"));
+    }
+    if (done || failed) {
+      row.appendChild(el("button", { class: "icon-btn", title: "Dismiss", onclick: () => {
+        recordingJobs = recordingJobs.filter((j) => j.id !== job.id);
+        renderCenter(true);
+      } }, icon("close")));
+    }
+    return row;
+  }
+
+  async function openRecorderSetup() {
+    const ready = await loadReadiness();
+    const body = el("div", { class: "simple-form" });
+
+    if (!ready.ready) {
+      body.appendChild(el("p", { class: "muted" },
+        "This server cannot transcribe recordings yet. Ask whoever runs it to fix the following, then reload:"));
+      body.appendChild(el("ul", { class: "muted small" }, ready.issues.map((i) => el("li", {}, i))));
+      openModal({ title: "Recording is not set up", body });
+      return;
+    }
+
+    const titleInput = el("input", { placeholder: "e.g. KRAS research weekly" });
+    const micSelect = el("select", {});
+    const useMic = el("input", { type: "checkbox", checked: true });
+    const useSystem = el("input", { type: "checkbox" });
+    const notesInput = el("textarea", { rows: "3", placeholder: "Optional. Anything you jot here is rewritten into the notes using the transcript as the source of fact." });
+
+    const projSelect = el("select", {}, [el("option", { value: "" }, "Personal — no project")]);
+    (state.projects || []).forEach((p) => projSelect.appendChild(el("option", { value: p.id }, p.name)));
+
+    micSelect.appendChild(el("option", { value: "" }, "Default microphone"));
+    try {
+      // Labels are blank until the page has been granted microphone access
+      // once; the default entry above still works, so this is not fatal.
+      (await Recorder.listMicrophones()).forEach((d, i) => {
+        if (d.deviceId && d.deviceId !== "default") {
+          micSelect.appendChild(el("option", { value: d.deviceId }, d.label || `Microphone ${i + 1}`));
+        }
+      });
+    } catch (_) {}
+
+    const field = (label, control, hint) => el("div", { class: "field" }, [
+      el("label", {}, label), control,
+      hint ? el("div", { class: "muted small" }, hint) : null,
+    ]);
+    const check = (control, label, hint) => el("label", { class: "check-row" }, [
+      control, el("div", {}, [el("div", {}, label), hint ? el("div", { class: "muted small" }, hint) : null]),
+    ]);
+
+    body.appendChild(field("Meeting name", titleInput));
+    body.appendChild(field("Project", projSelect));
+    body.appendChild(check(useMic, "This device's microphone", "For a meeting in a room, and for your own voice on a call."));
+    body.appendChild(check(useSystem, "Audio from an online meeting",
+      "Captures a browser tab. Chrome will ask which to share — pick the meeting tab and tick “Also share tab audio”. On macOS whole-screen audio is not available, so join the call in a browser tab, or select a loopback device above."));
+    body.appendChild(field("Microphone", micSelect));
+    body.appendChild(field("Your notes during the meeting", notesInput));
+    body.appendChild(el("p", { class: "muted small" },
+      "Everyone present should know they are being recorded — in some states that is the law, not a courtesy."));
+
+    const startBtn = el("button", { class: "btn primary" }, "Start recording");
+    const error = el("p", { class: "form-error", hidden: true });
+    body.appendChild(error);
+
+    const dialog = openModal({ title: "Record a meeting", body, footer: startBtn });
+    startBtn.addEventListener("click", async () => {
+      error.hidden = true;
+      startBtn.disabled = true;
+      startBtn.textContent = "Starting…";
+      try {
+        await beginRecording({
+          title: titleInput.value.trim(),
+          projectId: projSelect.value || null,
+          notes: notesInput.value.trim() || null,
+          useMic: useMic.checked,
+          useSystem: useSystem.checked,
+          deviceId: micSelect.value || null,
+        });
+        dialog.close();
+      } catch (err) {
+        error.textContent = err.message;
+        error.hidden = false;
+        startBtn.disabled = false;
+        startBtn.textContent = "Start recording";
+      }
+    });
+  }
+
+  async function beginRecording(opts) {
+    if (!opts.useMic && !opts.useSystem) throw new Error("Choose at least one audio source.");
+
+    let quietSince = null;
+    const session = new Recorder.Session({
+      useMic: opts.useMic,
+      useSystem: opts.useSystem,
+      deviceId: opts.deviceId,
+      onLevel: (level) => {
+        if (!recordingUI) return;
+        recordingUI.meterFill.style.width = Math.round(level * 100) + "%";
+        // Ten seconds of near-silence is worth saying out loud. A muted
+        // microphone is the one failure that cannot be recovered afterwards.
+        if (level > 0.03) { quietSince = null; recordingUI.silence.hidden = true; }
+        else {
+          if (quietSince === null) quietSince = Date.now();
+          if (Date.now() - quietSince > 10000) recordingUI.silence.hidden = false;
+        }
+      },
+      onTick: (seconds) => { if (recordingUI) recordingUI.clock.textContent = Recorder.formatClock(seconds); },
+      onEnded: (reason) => { finishRecording(reason); },
+      onError: (message) => { finishRecording(message); },
+    });
+
+    await session.start();
+    session.meetingTitle = opts.title || "Untitled meeting";
+    session.sourceLabel = opts.useMic && opts.useSystem ? "microphone + meeting audio"
+      : opts.useSystem ? "meeting audio" : "microphone";
+    session.options = opts;
+    recording = session;
+    window.addEventListener("beforeunload", warnWhileRecording);
+    renderCenter(true);
+  }
+
+  function warnWhileRecording(e) {
+    if (!recording) return;
+    e.preventDefault();
+    e.returnValue = "";
+  }
+
+  async function finishRecording(reason) {
+    const session = recording;
+    if (!session) return;
+    recording = null;
+    recordingUI = null;
+    window.removeEventListener("beforeunload", warnWhileRecording);
+
+    const result = await session.stop();
+    renderCenter(true);
+    if (!result || !result.blob.size) {
+      alert(reason || "Nothing was recorded.");
+      return;
+    }
+
+    const durationSeconds = (Date.now() - result.startedAt.getTime()) / 1000;
+    const pending = {
+      id: "upload-" + Date.now(),
+      title: session.meetingTitle,
+      status: "running",
+      stage: "Uploading",
+      notes: [],
+    };
+    recordingJobs = [pending, ...recordingJobs];
+    renderCenter(true);
+
+    try {
+      const job = await Recorder.upload({
+        blob: result.blob,
+        startedAt: result.startedAt,
+        mime: result.mime,
+        title: session.meetingTitle,
+        projectId: session.options.projectId,
+        notes: session.options.notes,
+        durationSeconds,
+        onProgress: (fraction) => {
+          pending.stage = "Uploading " + Math.round(fraction * 100) + "%";
+          const row = recordingJobs.find((j) => j.id === pending.id);
+          if (row) row.stage = pending.stage;
+          renderCenter(true);
+        },
+      });
+      recordingJobs = recordingJobs.map((j) => (j.id === pending.id ? job : j));
+      startJobPolling();
+    } catch (err) {
+      recordingJobs = recordingJobs.map((j) =>
+        j.id === pending.id ? { ...j, status: "failed", stage: "Failed", error: err.message } : j);
+    }
+    renderCenter(true);
+  }
+
+  function startJobPolling() {
+    if (recordingJobPoll) return;
+    recordingJobPoll = setInterval(async () => {
+      const live = recordingJobs.filter((j) => j.status !== "done" && j.status !== "failed" && !String(j.id).startsWith("upload-"));
+      if (!live.length) { clearInterval(recordingJobPoll); recordingJobPoll = null; return; }
+      let changed = false;
+      for (const job of live) {
+        try {
+          const updated = await api(`/meetings/recordings/${job.id}`);
+          if (updated.status !== job.status || updated.stage !== job.stage) changed = true;
+          recordingJobs = recordingJobs.map((j) => (j.id === job.id ? updated : j));
+          // A finished transcription added a meeting; pull it into `state` so
+          // the card appears without the person having to reload.
+          if (updated.status === "done") await refresh();
+        } catch (_) { /* transient; the next tick retries */ }
+      }
+      if (changed && view === "meetings") renderCenter(true);
+    }, 2000);
   }
 
   // ==================== SETTINGS ====================

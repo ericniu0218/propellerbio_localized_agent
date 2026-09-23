@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -129,7 +130,17 @@ class DatacenterConfig:
 
 
 class DatacenterTranscriptClient:
-    """Reads transcripts from the customer's own infrastructure."""
+    """Reads transcripts from the customer's own infrastructure, and writes the
+    ones this deployment recorded itself.
+
+    Reading is the original job: zoom-transcript-vault puts Zoom's transcripts
+    into the datacenter and `meeting_transcripts` reads them back. Writing was
+    added for `app/meetings/`, which records meetings nobody else captured — a
+    microphone in a room, or the audio of an online call. Those are delivered
+    through endpoint 1 of the same contract, in the same shape the Worker uses,
+    so a recorded meeting and a Zoom meeting are indistinguishable to every
+    reader downstream and retrieval needed no new code.
+    """
 
     def __init__(
         self,
@@ -184,6 +195,52 @@ class DatacenterTranscriptClient:
             for record in records[:MAX_MEETINGS_PER_CALL]
             if isinstance(record, dict) and record.get("transcript")
         ]
+
+    async def store(self, transcript: MeetingTranscript) -> None:
+        """Hand one transcript to the datacenter (contract endpoint 1).
+
+        The body is serialised once and both signed and sent as that exact
+        string. Re-serialising it — letting httpx take a dict and encode it
+        itself — can reorder keys or change separators, and the signature is
+        over bytes, so the connector would reject every request with a 401.
+        """
+        body = json.dumps(
+            {
+                "meetingId": transcript.meeting_id,
+                "topic": transcript.topic,
+                "hostEmail": transcript.host_email,
+                "startTime": transcript.start_time,
+                "endTime": transcript.end_time,
+                "transcript": transcript.transcript,
+                "format": transcript.format,
+            },
+            separators=(",", ":"),
+        )
+        path = "/transcripts"
+        headers = signed_headers(self._config.signing_secret, "POST", path, body)
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._config.timeout_s, transport=self._transport
+            ) as client:
+                response = await client.post(
+                    f"{self._config.base_url}{path}", content=body, headers=headers
+                )
+        except httpx.HTTPError as exc:
+            raise DatacenterError(
+                f"Could not reach the datacenter transcript connector: {exc}"
+            ) from exc
+
+        if response.status_code == 401:
+            raise DatacenterError(
+                "The datacenter connector rejected our signature (401). Check that "
+                "DATACENTER_SIGNING_SECRET matches the secret the connector holds."
+            )
+        if response.status_code >= 400:
+            raise DatacenterError(
+                f"The datacenter connector returned {response.status_code} storing "
+                f"meeting {transcript.meeting_id}."
+            )
 
 
 def _to_transcript(record: dict) -> MeetingTranscript:

@@ -153,14 +153,33 @@ the meeting is already gone.
 | `MEETING_RECORDING_DIR` | `data/recordings` | where audio is kept |
 
 **`MEETING_VOCABULARY` is the highest-value setting here.** Whisper spells
-words it does not know phonetically: on the first test run it wrote "CROS" for
-"KRAS" and turned "Priya can own" into "Priya Kanone". Seeding the decoder with
-the study's real terms fixed both. Set it to the drug names, assay names, gene
-symbols and people's names this customer actually says out loud:
+words it does not know phonetically: across test runs of the same audio it
+wrote "CROS" and then "CRAS" for "KRAS", and "PREA" for "Priya". Set it to the
+drug names, assay names, gene symbols and people's names this customer actually
+says out loud:
 
 ```bash
 MEETING_VOCABULARY="KRAS, EGFR, G12D, Priya, interim analysis, enrollment, protocol"
 ```
+
+It is used twice. First as whisper's decoder hint, which is what gets most of
+these right. Then `app/meetings/vocabulary.py` repairs near-misses that slipped
+through, because the hint is a bias and not a guarantee — the same audio gave
+"KRAS" on one run and "CRAS" on the next, and a transcript that says CRAS is
+not merely untidy, it is unsearchable.
+
+That repair is deliberately conservative, and catches less than it could:
+
+- only single-word terms; a multi-word entry stays a decoder hint only;
+- one edit for a short term, two for a long one. Two edits on a five-letter
+  name also turns "Rain" into "Ravi", so "PREA" → "Priya" is *not* repaired;
+- an inflection is never touched — with `cohort` set, "cohorts" stays;
+- a lower-case ordinary word must be a very close miss, so "grass" never
+  becomes "KRAS"; a token shaped like a name (capitals, or containing digits
+  like `G12C`) gets a little more latitude, because the shape is evidence.
+
+Every substitution is recorded and shown in the meeting's provenance line, so a
+reader can see the transcript was edited and what it said before.
 
 ### What it costs
 

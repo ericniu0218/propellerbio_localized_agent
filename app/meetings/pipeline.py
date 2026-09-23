@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
+from app.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,8 @@ class TranscriptionOutcome:
     """False whenever the audio was one mixed track, which is every recording
     this module makes. Kept as a field rather than hardcoded so a future
     per-participant capture path does not have to change every caller."""
+    vocabulary: VocabularyReport = field(default_factory=VocabularyReport)
+    """Which mis-heard words were repaired against the configured terms."""
     notes: list[str] = field(default_factory=list)
     """Plain-language caveats worth showing the person who pressed Record."""
 
@@ -148,16 +151,32 @@ async def transcribe(
             )
         raise RecordingError(f"Transcription failed: {exc}") from exc
 
+    # Whisper's vocabulary hint is a bias, not a guarantee: the same audio gave
+    # "KRAS" on one run and "CRAS" on the next. Repairing the near-misses here,
+    # before anything reads the cues, means the notes and the transcript agree
+    # and retrieval can match the word somebody actually said.
+    repaired, vocabulary_report = correct_texts([cue.text for cue in cues], config.vocabulary)
+    cues = [
+        cue if cue.text == text else replace(cue, text=text)
+        for cue, text in zip(cues, repaired)
+    ]
+
     outcome = TranscriptionOutcome(
         vtt=to_vtt(cues),
         cues=cues,
         duration_ms=duration_ms,
         attributed=False,
+        vocabulary=vocabulary_report,
         notes=[
             "Speakers are not identified. This was recorded as a single mixed "
             "audio track, so the transcript records what was said, not who said it."
         ],
     )
+    if vocabulary_report.total:
+        outcome.notes.append(
+            f"Corrected {vocabulary_report.total} mis-heard word(s) against the "
+            f"configured vocabulary: {vocabulary_report.describe().split(': ', 1)[1]}."
+        )
     if not cues:
         outcome.notes.append("No speech was found in this recording.")
     return outcome
@@ -246,6 +265,12 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
     an uploaded transcript. Rendering each point through `Point.render()` keeps
     the owner and the verified timestamp attached to the sentence they belong to.
     """
+    # A transcript that was edited must say so. The rest of this product is
+    # careful to separate what was said from what a model inferred, and a
+    # silent repair would undo that.
+    repair = outcome.vocabulary.describe()
+    repair_suffix = f"; {repair}" if repair else ""
+
     summary = outcome.summary
     if summary is None:
         return {
@@ -256,7 +281,7 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
             "questions": [],
             "findings": [],
             "people": [],
-            "method": "local transcription; no notes written",
+            "method": "local transcription; no notes written" + repair_suffix,
         }
 
     citations = getattr(summary, "citations", None)
@@ -272,6 +297,7 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
         )
     else:
         method += "; timestamps NOT verified (update the bedrock-private-ai pin)"
+    method += repair_suffix
 
     # `summarize_meeting` fills in *either* the overview or the rewritten
     # notes, never both: when somebody typed notes during the call, those

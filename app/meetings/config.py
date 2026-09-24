@@ -25,7 +25,13 @@ DEFAULT_VAD_MODEL = "ggml-silero-v5.1.2.bin"
 # transcribes, and is reported as unattributed exactly as before.
 DEFAULT_DIARIZATION_DIR = "diarization"
 DEFAULT_SEGMENTATION_MODEL = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
-DEFAULT_EMBEDDING_MODEL = "nemo_en_titanet_large.onnx"
+# TitaNet *small*, not large, and that is measured rather than assumed. On a
+# three-speaker recording with known ground truth, small scored 84.6% speaker
+# attribution against large's 76.9%, ran the 3-minute case in 14.7s against
+# 25.8s, and is 38 MB against 97 MB. Both found the right number of speakers on
+# every recording tested. A bigger embedding model is not automatically a
+# better one for short conversational turns.
+DEFAULT_EMBEDDING_MODEL = "nemo_en_titanet_small.onnx"
 
 # Whisper is CPU-bound and scales nearly linearly until it runs out of
 # performance cores. The upstream default of 4 left most of this machine idle

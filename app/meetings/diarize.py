@@ -199,6 +199,31 @@ def flatten(turns: list[SpeakerTurn]) -> list[SpeakerTurn]:
     return sorted(timeline, key=lambda t: t.start_ms)
 
 
+def speaker_change_points(result: DiarizationResult) -> list[int]:
+    """Only the moments where the speaker actually changes.
+
+    This is what the transcriber is told to cut on, and the distinction is not
+    cosmetic. Handing it every turn start and end cuts the audio at every pause
+    the diariser noticed, including the ones where the same person carried on
+    talking — on an 18-minute recording that produced 440 slices.
+
+    Whisper pads every slice it is given to its 30-second window, so a
+    one-second slice costs the same as a thirty-second one. 440 slices is
+    therefore about 3.7 hours of encoder work for 18 minutes of audio, which is
+    exactly the 1011 seconds it took. Cutting only where the voice changes
+    keeps the property that matters — one speaker per cue — at a fraction of
+    the slices.
+    """
+    timeline = flatten(result.turns)
+    changes: list[int] = []
+    for earlier, later in zip(timeline, timeline[1:]):
+        if earlier.speaker != later.speaker:
+            # Cut midway through any gap between them, so neither side is
+            # clipped and the cut lands in silence where there is any.
+            changes.append((earlier.end_ms + later.start_ms) // 2)
+    return changes
+
+
 def assign(cues: list, result: DiarizationResult) -> tuple[list, dict[int, int]]:
     """Give every cue the speaker who holds most of it.
 

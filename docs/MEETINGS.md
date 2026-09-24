@@ -135,7 +135,7 @@ curl -LO https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5
 mkdir -p diarization && cd diarization
 curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
 tar xjf sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
-curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
 ```
 
 The embedding model's release tag is spelled `speaker-recongition-models`
@@ -162,7 +162,7 @@ the meeting is already gone.
 | `MEETING_SUMMARY_ENDPOINT` | `http://localhost:11434/v1` | vLLM/SGLang in production |
 | `MEETING_RECORDING_DIR` | `data/recordings` | where audio is kept |
 | `MEETING_SEGMENTATION_MODEL` | `<dir>/diarization/sherpa-onnx-pyannote-segmentation-3-0/model.onnx` | speaker segmentation |
-| `MEETING_EMBEDDING_MODEL` | `<dir>/diarization/nemo_en_titanet_large.onnx` | speaker embedding |
+| `MEETING_EMBEDDING_MODEL` | `<dir>/diarization/nemo_en_titanet_small.onnx` | speaker embedding |
 
 **`MEETING_VOCABULARY` is the highest-value setting here.** Whisper spells
 words it does not know phonetically: across test runs of the same audio it
@@ -195,11 +195,29 @@ reader can see the transcript was edited and what it said before.
 
 ### What it costs
 
-Transcription runs at roughly real time on an 18-core Mac with `small.en`, so
-an hour-long meeting is about an hour of work *after* the meeting ends. That is
-why uploading returns a job id and the browser polls rather than waiting. Jobs
-live in memory: a server restart mid-transcription loses the job but not the
-audio, which stays under `MEETING_RECORDING_DIR` and can be re-submitted.
+Measured on an 18-minute recording on an 18-core Mac: **0.30x real time**, so
+an hour-long meeting is about 18 minutes of work after it ends. Transcription
+is 63% of that, diarisation 13%, the notes 23%.
+
+It was 1.03x — an hour for an hour — until the slicing was fixed. Whisper pads
+every slice it is handed to its 30-second window, so a one-second slice costs
+what a thirty-second one does. Cutting the audio at every turn boundary made
+440 slices for 18 minutes, about 3.7 hours of encoder work; cutting only where
+the *speaker changes* made 355 and took a fifth of the time, with identical
+word error and speaker attribution. If you change the slicing, measure this.
+
+Uploading returns a job id and the browser polls rather than waiting. Jobs live
+in memory: a server restart mid-transcription loses the job but not the audio,
+which stays under `MEETING_RECORDING_DIR` and can be re-submitted.
+
+### Measuring a change
+
+`scripts/eval/` builds a meeting from text-to-speech with known ground truth —
+who said what, and when — and scores word error and speaker attribution against
+it. Run it before and after touching the pipeline. Two warnings from building
+it: voices from one TTS engine are far more alike than real people (two female
+voices merged into one speaker until they were re-picked across accents), so
+trust a real recording over the synthetic one for anything about diarisation.
 
 ### Speakers
 

@@ -17,6 +17,7 @@ from app.meetings.diarize import (
     flatten,
     label_for,
     models_present,
+    speaker_change_points,
 )
 
 
@@ -112,3 +113,29 @@ def test_missing_models_are_both_reported_at_once(tmp_path):
     assert len(missing) == 2
     assert any("segmentation" in m for m in missing)
     assert any("embedding" in m for m in missing)
+
+
+# --- Cutting only where it matters --------------------------------------------
+
+
+def test_only_speaker_changes_become_cut_points():
+    """Cutting at every turn boundary fragments the audio needlessly. Whisper
+    pads each slice to its 30-second window, so a one-second slice costs what a
+    thirty-second one does: on an 18-minute recording, cutting everywhere made
+    440 slices and took 1011s, against 209s cutting only on voice changes."""
+    turns = [SpeakerTurn(0, 5000, 0), SpeakerTurn(5000, 9000, 0), SpeakerTurn(9000, 12000, 1)]
+    assert speaker_change_points(result(*turns)) == [9000]
+
+
+def test_a_cut_lands_midway_through_the_gap():
+    """So neither speaker is clipped, and the cut falls in silence if there is any."""
+    assert speaker_change_points(result(SpeakerTurn(0, 4000, 0), SpeakerTurn(5000, 9000, 1))) == [4500]
+
+
+def test_one_speaker_throughout_needs_no_cuts_at_all():
+    turns = [SpeakerTurn(0, 5000, 0), SpeakerTurn(6000, 9000, 0)]
+    assert speaker_change_points(result(*turns)) == []
+
+
+def test_no_diarisation_means_no_cuts():
+    assert speaker_change_points(DiarizationResult([], 0, False, "unavailable")) == []

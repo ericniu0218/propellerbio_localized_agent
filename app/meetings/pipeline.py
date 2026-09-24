@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
-from app.meetings.diarize import assign, diarize
+from app.meetings.diarize import assign, diarize, speaker_change_points
 from app.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ async def transcribe(
         expected_speakers=expected_speakers,
         threads=min(config.threads, 4),
     )
-    boundaries = sorted({t.start_ms for t in speakers.turns} | {t.end_ms for t in speakers.turns})
+    boundaries = speaker_change_points(speakers)
 
     if on_progress:
         on_progress("Transcribing speech")

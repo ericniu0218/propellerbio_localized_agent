@@ -16,3 +16,5 @@ data/demo-recorder/
 # github.com/Bedrock-Technical-Consulting/bedrock-private-ai), just cloned
 # here locally for convenience while wiring the two together.
 frontend/
+# Audio and scores the eval harness generates.
+scripts/eval/build/

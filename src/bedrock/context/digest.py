@@ -16,12 +16,22 @@ is down, or the reply comes back unparseable, the rules digest stands and the
 ingest still succeeds. Nothing in this pipeline is allowed to fail because a
 model was unavailable - that is the difference between a store you can rely on
 and one that is only as good as your GPU's uptime.
+
+The model pass is a job the employee asked for (``Priority.USER_JOB``), so it
+goes through the ``Scheduler``: it waits while a chat reply is streaming and
+never runs alongside one on a laptop. It asks for a short reply
+(``DIGEST_REPLY_TOKENS``) with thinking switched off, and its prompt is sized
+in tokens against the machine profile's context window
+(``DIGEST_WINDOW_SHARE``), so it cannot overflow the window on a small machine.
 """
 
 from __future__ import annotations
 
+from bedrock.config.profile import DEFAULT_PROFILE, PROFILES
 from bedrock.context.store import Artifact, ContextStore
 from bedrock.context.types import Chunk, Digest, Extraction
+from bedrock.inference import Priority, RequestOptions, Scheduler, estimate_tokens
+from bedrock.inference import tokens as token_estimate
 
 # Data types where the computed overview is already the best summary there is,
 # so the model pass is skipped entirely. Asking a model to describe a table
@@ -31,7 +41,17 @@ from bedrock.context.types import Chunk, Digest, Extraction
 # - which is why it is the one kind not listed here.
 RULES_SUFFICE = frozenset({"tabular", "structured", "logs", "code", "fasta"})
 
-MAX_PROMPT_CHARS = 6000
+DIGEST_WINDOW_SHARE = 0.25
+"""The fraction of the context window a digest prompt may fill. On the laptop
+profile that is about 2,000 tokens - roughly the 6,000 characters this used to
+be capped at - and it grows with the window on bigger machines."""
+
+DIGEST_REPLY_TOKENS = 300
+"""The reply limit: a one-line gist and up to six short bullets fit easily."""
+
+MIN_CONTENT_TOKENS = 50
+"""A chunk trimmed to less than this is not worth sending."""
+
 MAX_SAMPLE_CHUNKS = 6
 MAX_KEY_POINTS = 6
 
@@ -73,7 +93,7 @@ def build_digest(extraction: Extraction, chunks: list[Chunk]) -> Digest:
 
 async def summarize(
     artifact: Artifact,
-    backend,
+    scheduler,
     model: str,
     *,
     store: ContextStore | None = None,
@@ -81,17 +101,24 @@ async def summarize(
 ) -> Digest:
     """Ask a local model to improve an artifact's digest.
 
+    ``scheduler`` is the app's ``Scheduler``. A plain ``InferenceBackend``
+    also works (``ingest_and_summarize`` and scripts pass one); it is given a
+    scheduler of its own with the default profile.
+
     Returns the upgraded digest, or the artifact's existing one unchanged if
     anything at all went wrong. When ``store`` is given the result is written
     back, so the better digest is what everyone gets from then on.
     """
-    sample = _sample_text(artifact, max_chunks)
+    if not isinstance(scheduler, Scheduler):
+        scheduler = Scheduler(scheduler, PROFILES[DEFAULT_PROFILE])
+    sample = _sample_text(artifact, max_chunks, content_budget(scheduler.profile.context_window))
     prompt = PROMPT.format(content=sample, max_points=MAX_KEY_POINTS)
+    options = RequestOptions(max_tokens=DIGEST_REPLY_TOKENS, reasoning=False)
 
     try:
-        reply = ""
-        async for fragment in backend.stream_chat(model, [{"role": "user", "content": prompt}]):
-            reply += fragment
+        reply = await scheduler.complete(
+            model, [{"role": "user", "content": prompt}], priority=Priority.USER_JOB, options=options
+        )
     except Exception:
         # Deliberately broad, and the one place in this package where that is
         # right: a better digest is a nice-to-have, and no failure in an
@@ -113,6 +140,11 @@ async def summarize(
     if store is not None:
         store.update_digest(artifact.id, upgraded)
     return upgraded
+
+
+def content_budget(context_window: int) -> int:
+    """Tokens of document content a digest prompt may carry for this window."""
+    return max(MIN_CONTENT_TOKENS, int(context_window * DIGEST_WINDOW_SHARE) - estimate_tokens(PROMPT))
 
 
 def parse_reply(reply: str) -> tuple[str, list[str]]:
@@ -145,25 +177,33 @@ def parse_reply(reply: str) -> tuple[str, list[str]]:
     return gist, points
 
 
-def _sample_text(artifact: Artifact, max_chunks: int) -> str:
-    """Overview plus a bounded slice of content, within the prompt budget.
+def _sample_text(artifact: Artifact, max_chunks: int, budget_tokens: int) -> str:
+    """Overview plus a bounded slice of content, within ``budget_tokens``.
 
-    The overview goes in first and is never trimmed: it is the densest, most
-    reliable thing we have, and on structured data it is worth more to the
-    model than any number of raw rows.
+    The overview goes in first and is only trimmed if it alone would not fit:
+    it is the densest, most reliable thing we have, and on structured data it
+    is worth more to the model than any number of raw rows.
     """
-    parts = [artifact.digest.overview or artifact.digest.gist]
-    used = len(parts[0])
+    overview = artifact.digest.overview or artifact.digest.gist
+    parts = [_trim_to_tokens(overview, budget_tokens)]
+    used = estimate_tokens(parts[0])
     for index in range(min(max_chunks, artifact.chunk_count)):
         try:
             text = artifact.chunk(index)
         except (KeyError, IndexError, OSError):
             break
-        if used + len(text) > MAX_PROMPT_CHARS:
-            remaining = MAX_PROMPT_CHARS - used
-            if remaining > 200:
-                parts.append(text[:remaining])
+        cost = estimate_tokens(text)
+        if used + cost > budget_tokens:
+            remaining = budget_tokens - used
+            if remaining > MIN_CONTENT_TOKENS:
+                parts.append(_trim_to_tokens(text, remaining))
             break
         parts.append(text)
-        used += len(text)
+        used += cost
     return "\n\n".join(part for part in parts if part)
+
+
+def _trim_to_tokens(text: str, budget_tokens: int) -> str:
+    if estimate_tokens(text) <= budget_tokens:
+        return text
+    return text[: int(budget_tokens * token_estimate.characters_per_token())]

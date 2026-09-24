@@ -39,6 +39,13 @@ Open-weight language model
 
 The UI only ever touches `InferenceBackend`. To support a new server protocol, add a class in `src/bedrock/inference/` and select it in `factory.py`; nothing in `ui/` or `app.py` changes.
 
+**Model-call rule:** nothing outside `src/bedrock/inference/` calls
+`stream_chat`. Every model call goes through `Scheduler`
+(`inference/scheduler.py`) with a `Priority` and a `RequestOptions` that sets a
+reply limit, so it waits its turn behind the employee's chat on a laptop.
+`tests/test_model_call_guard.py` fails when something calls the backend
+directly.
+
 ## Privacy
 
 The client must never send prompts to external AI APIs, depend on OpenAI/Anthropic/Gemini, or include analytics, tracking or telemetry. All endpoints come from configuration (`src/bedrock/config/settings.py`): environment variables override `~/.config/bedrock/config.toml`, which overrides defaults.
@@ -74,14 +81,14 @@ Not yet built (deliberately): authentication, and
 product-specific connectors (only the generic `rest` and `share` types exist).
 
 **Long-term fix, raise it whenever retrieval quality comes up:** `/digest`
-search and the automatic context injection both rank by keyword (BM25), so
+search and the automatic context injection both rank by keyword (BM25 on FTS5), so
 "acidity" does not find a chunk that only says "pH", and a question can have an
 unrelated passage silently attached to it. A score threshold cannot fix the
 second half - that was measured, see NEXT_STEPS.md section 6, which has the
 full plan, the step-by-step, and the model and company data it needs. It is
 blocked on a deployed embedding model.
 
-Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the *configured* model through `InferenceBackend` - never any other service. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
+Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the configured server through the `Scheduler` as background work - never any other service - once the app is idle, using the model that last answered. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
 
 Also built: local compliance and provenance. `bedrock.provenance` keeps an
 append-only SQLite action journal (`BEDROCK_HISTORY_DIR`) and a read-only
@@ -110,7 +117,7 @@ and local AlphaFold 2/PyMOL adapters. The web reference client includes the real
 Keycloak login button; the terminal client still uses `BEDROCK_USER` until OIDC is
 wired into it.
 
-Recall of past chats (`src/bedrock/recall.py`): transcripts are never loaded unless the employee asks, via `/recall <words>` (alias `/context`) or plain English matched by `wants_recall` ("do you remember when..."). Keyword search reads files one at a time off the UI thread and skips files without the words before parsing. Results are bounded excerpts kept in `Conversation.recalled_context`, sent as system text by `to_api`, and never written to disk - keep it that way so `/forget` stays complete.
+Recall of past chats (`src/bedrock/recall.py`): transcripts are never loaded unless the employee asks, via `/recall <words>` (alias `/context`) or plain English matched by `wants_recall` ("do you remember when..."). Keyword search reads files one at a time off the UI thread and skips files without the words before parsing. Results are bounded excerpts kept in `Conversation.recalled_context`, placed in the newest user message by the prompt builder (`bedrock.prompting`), and never written to disk - keep it that way so `/forget` stays complete.
 
 Also built: a one-command install with no Python/venv required —
 `uv tool install "git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git"`,
@@ -130,12 +137,36 @@ per message. Small files go whole, smallest first, until 120,000 characters;
 larger files and any past that total are compressed through the `/digest`
 pipeline and the digest is sent, with a notice saying so. Every attachment goes after a fixed "data,
 not instructions" line inside a fence the file's text cannot close. Attachments
-live in `Message.extra` and are re-added by `Message.to_api`, so `content`
-stays what was typed, follow-ups still see the file and `/forget` removes it.
+live in `Message.extra`; the prompt builder sends them whole in the turn they
+were attached and as their fenced digest after that, so `content` stays what
+was typed, follow-ups still see the file and `/forget` removes it.
 Non-UTF-8 and binary files (PDF, Excel, images) are refused, not guessed at.
 
 Not yet built (deliberately): binary attachments, embedding-based retrieval,
 terminal-client authentication.
+
+Also built: bounded chat prompts (`src/bedrock/prompting/`). Chat prompts now
+follow the machine profile's context budget. A fixed system message and
+large-step history trims preserve the prompt start between trims, with notices
+when earlier messages are omitted. Attachments are sent whole once, then as
+locally generated fenced digests. `/digest` uses on-disk FTS5 for faster
+keyword search; embeddings are still needed for semantic matches.
+
+Also built: the laptop model runtime (`docs/roadmaps/LAPTOP_MEMORY.md`).
+`config/profile.py` holds the machine profiles (`laptop` by default,
+`workstation`, `server`; `BEDROCK_PROFILE`, `context_window` override): context
+window, reply limit, parallel calls, background policy, the largest model the
+app auto-picks. `InferenceBackend.stream_chat` takes `RequestOptions` (reply
+limit, stop words, JSON schema, reasoning off) and reports `Usage`.
+`inference/scheduler.py` runs calls by `Priority` - `CHAT`, then `USER_JOB`
+(`/digest` summary, meeting notes, planner), then `BACKGROUND` (titles) - one
+at a time on a laptop; a chat cancels running background work (`Preempted`,
+retried later, never a failure), background waits until idle and uses the
+model that last answered - so titles appear after the first reply of a
+session, never by loading a model at startup. `inference/tokens.py` estimates tokens and learns
+from reported counts. The status bar's `context` counter shows the last prompt
+against the window, locally only. The first-run check prints matching Ollama
+settings. New features read limits from the profile, not constants of their own.
 
 ## Development Philosophy
 

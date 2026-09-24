@@ -63,9 +63,9 @@ async def test_a_resumed_conversation_keeps_its_context_for_the_next_question(fa
 
     # The model is sent the whole history, including yesterday's turns.
     sent = later_backend.requests[0][1]
-    assert [m["role"] for m in sent] == ["user", "assistant", "user"]
-    assert sent[0]["content"] == "first question"
-    assert sent[2]["content"] == "follow-up question"
+    assert [m["role"] for m in sent] == ["system", "user", "assistant", "user"]
+    assert sent[1]["content"] == "first question"
+    assert sent[3]["content"] == "follow-up question"
 
 
 async def test_the_question_is_saved_before_the_answer_arrives(fake_backend, store):

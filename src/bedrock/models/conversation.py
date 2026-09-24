@@ -36,7 +36,7 @@ RECALL_INTRO = (
     "If they do not contain what the user is asking about, say you could not find "
     "it rather than guessing."
 )
-"""System guidance sent whenever recalled excerpts are attached; see ``bedrock/recall.py``."""
+"""Fixed system guidance, present from the first turn so recall never changes the prompt start."""
 
 UNTITLED = "Untitled"
 """What a conversation is called until the model finds a concrete topic in it."""
@@ -232,31 +232,29 @@ class Conversation:
     # ---- Talking to the model ---------------------------------------------
 
     def to_api(self, note: str | None = None) -> list[dict[str, str]]:
-        """Full message list to send to the model, including the system prompt.
+        """Delegate prompt placement and budgeting to the shared builder.
 
-        Recalled excerpts are placed at the start of the latest user message,
-        with fixed guidance in the system message: quoted old text must not get
-        the authority of a system instruction. A one-turn ``note`` from the app
-        is system text. Neither is ever written to the saved file.
+        This convenience method uses a roomy default for callers without a
+        machine profile. The app passes its actual profile to PromptBuilder.
+        Recalled text stays in memory and never enters ``to_dict``.
         """
-        api_messages: list[dict[str, str]] = []
-        system = [text for text in (self.system_prompt, RECALL_INTRO if self.recalled_context else None, note) if text]
-        if system:
-            api_messages.append(Message(Role.SYSTEM, "\n\n".join(system)).to_api())
-        for message in self.messages:
-            item = message.to_api()
-            if api_messages and api_messages[-1]["role"] == item["role"]:
-                api_messages[-1]["content"] += "\n\n" + item["content"]
-            else:
-                api_messages.append(item)
+        from bedrock.prompting import PromptBudget, PromptBuilder
+
+        extras: dict[str, object] = {}
+        if note:
+            extras["note"] = note
         if self.recalled_context:
-            for item in reversed(api_messages):
-                if item["role"] == Role.USER.value:
-                    item["content"] = (
-                        f"[Excerpts from my earlier chats]\n{self.recalled_context}\n[End of excerpts]\n\n{item['content']}"
-                    )
-                    break
-        return api_messages
+            extras["recall"] = self.recalled_context
+        messages = PromptBuilder(PromptBudget(32768, 2048)).build(self, extras).messages
+        # Keep this older convenience API suitable for strict chat templates.
+        # The app uses PromptBuilder directly so its sent prefix stays intact.
+        merged: list[dict[str, str]] = []
+        for item in messages:
+            if merged and merged[-1]["role"] == item["role"]:
+                merged[-1]["content"] += "\n\n" + item["content"]
+            else:
+                merged.append(item.copy())
+        return merged
 
     # ---- Saving and loading -----------------------------------------------
 

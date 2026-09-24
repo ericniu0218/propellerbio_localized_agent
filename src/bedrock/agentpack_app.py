@@ -39,8 +39,10 @@ from bedrock.agentpack.models import AgentCardState, AgentEvent
 from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub, SourceRef
-from bedrock.context import find_relevant_context, with_injected_context
+from bedrock.context import find_relevant_context
 from bedrock.inference.base import InferenceError
+from bedrock.models import Conversation
+from bedrock.prompting import PromptBudget, PromptBuilder
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt, approval_fingerprint
@@ -333,8 +335,6 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
             return
 
         await self.mount_message(UserMessage(attachments.display_text(text, attached)))
-        if notice := attachments.summary(attached):
-            await self.post_notice(notice)
         self._agents.clear()
         self.query_one("#agent-panel", AgentPanel).clear()
 
@@ -348,15 +348,23 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         # Read here, at send time, so a prompt that waited in the queue
         # follows `/digest auto off` typed while it waited. When off, the
         # store is not even searched.
+        passage_limit = self.settings.profile.auto_inject_passages
         injected = (
-            find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
+            await asyncio.to_thread(find_relevant_context, text, self.context_store, limit=passage_limit)
+            if self.auto_context.enabled and passage_limit > 0 else None
         )
-        outgoing_text = with_injected_context(text, injected)
         if injected is not None:
             await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
-        # Attached files follow the typed question, after any stored context.
-        outgoing_text = attachments.with_attachments(outgoing_text, attached)
+        # The server owns session history, but the same builder owns placement
+        # and budgeting of this turn's context in both app modes.
+        turn = Conversation()
+        turn.add_user(text, attached)
+        extras = {"passages": injected.prompt_block} if injected is not None else {}
+        prompt = PromptBuilder(PromptBudget.from_profile(self.settings.profile)).build(turn, extras)
+        outgoing_text = prompt.messages[-1]["content"]
+        for notice in prompt.notices:
+            await self.post_notice(notice)
         try:
             task_id = await self.client.send_message(self.session_id, outgoing_text)
         except InferenceError as exc:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from bedrock.config import load_settings
+from bedrock.config import PROFILES, load_settings
 from bedrock.config.settings import DEFAULT_API_BASE
 
 
@@ -145,3 +145,52 @@ def test_an_unreadable_automatic_context_value_has_a_clear_error(tmp_path: Path,
     config.write_text(config_text)
     with pytest.raises(ValueError, match=name):
         load_settings(config_path=config, env=env)
+
+
+def test_the_laptop_profile_is_the_default(tmp_path: Path):
+    """Decision D4: the default endpoint is Ollama on this machine, so assume a laptop."""
+    settings = load_settings(config_path=tmp_path / "missing.toml", env={})
+    assert settings.profile == PROFILES["laptop"]
+    assert settings.profile.context_window == 8192
+    assert settings.profile.max_parallel == 1
+    assert settings.profile.background == "idle"
+
+
+def test_profile_follows_environment_file_default_precedence(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text('profile = "workstation"\n')
+    assert load_settings(config_path=config, env={}).profile.name == "workstation"
+    assert load_settings(config_path=config, env={"BEDROCK_PROFILE": "server"}).profile.name == "server"
+    assert "profile" not in load_settings(config_path=config, env={}).extra
+
+
+def test_context_window_overrides_only_the_window(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text('profile = "workstation"\ncontext_window = 16384\n')
+    profile = load_settings(config_path=config, env={}).profile
+    assert profile.context_window == 16384
+    assert profile.reply_limit == PROFILES["workstation"].reply_limit
+    assert profile.max_auto_model_bytes == PROFILES["workstation"].max_auto_model_bytes
+
+    from_env = load_settings(config_path=config, env={"BEDROCK_CONTEXT_WINDOW": "4096"}).profile
+    assert from_env.context_window == 4096
+    assert from_env.reply_limit == 1024  # a quarter of the window at most
+
+
+def test_a_smaller_window_also_shrinks_the_reply_limit(tmp_path: Path):
+    profile = load_settings(config_path=tmp_path / "none.toml", env={"BEDROCK_PROFILE": "server", "BEDROCK_CONTEXT_WINDOW": "4096"}).profile
+    assert profile.context_window == 4096
+    assert profile.reply_limit == 1024
+
+
+@pytest.mark.parametrize("env", [{"BEDROCK_PROFILE": "phone"}, {"BEDROCK_CONTEXT_WINDOW": "8k"}, {"BEDROCK_CONTEXT_WINDOW": "8"}])
+def test_bad_profile_settings_have_clear_errors(tmp_path: Path, env):
+    with pytest.raises(ValueError, match="profile|context_window"):
+        load_settings(config_path=tmp_path / "missing.toml", env=env)
+
+
+def test_every_profile_leaves_room_for_a_prompt():
+    for profile in PROFILES.values():
+        assert profile.reply_limit <= profile.context_window // 4
+        assert 0 < profile.attachment_share < 1
+        assert profile.max_parallel >= 1

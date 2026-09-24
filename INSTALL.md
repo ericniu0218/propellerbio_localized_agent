@@ -117,6 +117,31 @@ api_key = "the-key-your-team-gave-you"
 Restart `bedrock` after saving the file. The startup check goes away once
 this is in place.
 
+## Running on a laptop
+
+If the model runs on your own laptop (with Ollama) rather than on a company
+server, it needs most of the laptop's memory. Two things keep it usable on
+8 GB:
+
+1. Use a small model: a 3-4B model at 4-bit, for example
+   `ollama pull llama3.2:3b`. Bedrock won't pick anything bigger than 3.5 GB by
+   itself.
+2. Start Ollama with these settings (your team can put them in place for you):
+
+   ```
+   OLLAMA_CONTEXT_LENGTH=8192
+   OLLAMA_NUM_PARALLEL=1
+   OLLAMA_MAX_LOADED_MODELS=1
+   OLLAMA_FLASH_ATTENTION=1
+   OLLAMA_KV_CACHE_TYPE=q8_0
+   ```
+
+   If it's still slow, use `4096` instead of `8192`, and add
+   `context_window = 4096` to your `config.toml` so Bedrock knows.
+
+On a bigger machine, add `profile = "workstation"` to `config.toml`; on a shared
+company server, IT uses `profile = "server"`.
+
 ## Updating to a newer version later
 
 Run the same `uv tool install ...` command from step 4 again — it

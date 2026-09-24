@@ -17,9 +17,12 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from dataclasses import replace
+
 from bedrock.biotech.errors import ToolIntegrationError
+from bedrock.config import load_settings
+from bedrock.inference import Scheduler, choose_default_model, create_backend
 from bedrock.inference.base import InferenceError
-from bedrock.inference.openai_compatible import OpenAICompatibleBackend
 from bedrock.meetings.summarize import summarize_meeting
 from bedrock.meetings.transcribe import (
     WhisperConfig,
@@ -85,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list", action="store_true", help="list recordings and exit")
     parser.add_argument("--notes", type=Path, help="rough notes you typed during the call")
     parser.add_argument("--terms", help="comma-separated names and jargon to expect")
-    parser.add_argument("--model", default=os.environ.get("BEDROCK_MODEL", "qwen2.5:7b"))
+    parser.add_argument("--model", default=None, help="model to summarise with (default: your configured model)")
     parser.add_argument(
         "--speech-model",
         default=os.environ.get("BEDROCK_SPEECH_MODEL", SPEECH_MODEL),
@@ -93,7 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--api-base",
-        default=os.environ.get("BEDROCK_API_BASE", "http://localhost:11434/v1"),
+        default=None,
+        help="model server address (default: your configured api_base)",
     )
     parser.add_argument(
         "--transcript-only",
@@ -206,20 +210,40 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     notes = args.notes.read_text() if args.notes else None
-    backend = OpenAICompatibleBackend(args.api_base, timeout=600.0)
+    # The same settings, backend and profile as the chat app, so the meeting
+    # prompts are sized for the same window. A long meeting takes a while on
+    # a laptop, so the timeout is generous.
+    try:
+        settings = load_settings()
+    except (ValueError, TypeError, OSError) as exc:
+        print(f"\nConfiguration error: {exc}", file=sys.stderr)
+        return 2
+    settings = replace(settings, api_base=(args.api_base or settings.api_base).rstrip("/"), request_timeout=600.0)
+    model = args.model or settings.model
+    backend = create_backend(settings)
+    scheduler = Scheduler(backend, settings.profile)
     try:
         if not await backend.check_connection():
             print(
-                f"\nNo model server at {args.api_base}, so the transcript above is all you get.\n"
+                f"\nNo model server at {settings.api_base}, so the transcript above is all you get.\n"
                 "Start one with `ollama serve`, then re-run.",
                 file=sys.stderr,
             )
             return 1
-        print(f"Summarising with {args.model}…")
+        if not model:
+            # Same rule as the chat app: the largest model that fits the profile.
+            profile = settings.profile
+            choice = choose_default_model(await backend.list_models(), profile.max_auto_model_bytes, profile.name)
+            if choice is None:
+                print("\nThe model server has no models. Pull one first, e.g. `ollama pull llama3.2:3b`.", file=sys.stderr)
+                return 1
+            model = choice.model.id
+            print(choice.reason.replace("`", ""))
+        print(f"Summarising with {model}…")
         summary = await summarize_meeting(
             result.cues,
-            backend=backend,
-            model=args.model,
+            scheduler=scheduler,
+            model=model,
             title=meeting_title(folder),
             meeting_date=meeting_date(folder),
             notes=notes,

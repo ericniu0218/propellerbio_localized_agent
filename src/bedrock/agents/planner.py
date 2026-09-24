@@ -4,6 +4,15 @@ The model may choose among the capabilities in one roster entry, but it does
 not get to choose risk, wording, or invent tools.  Those come from the loaded
 Capability objects.  Any malformed or unavailable answer becomes a blocked
 Plan rather than executable partial output.
+
+The request is a job the employee asked for, so it goes through the
+``Scheduler`` as ``Priority.USER_JOB``, with the machine profile's reply limit.
+It also sends the plan's shape as a JSON Schema (``plan_schema``), which
+servers that support structured output use to constrain the reply to it.
+``json_reply`` still parses the answer and ``_build_plan`` still checks every
+field, exactly as strictly as before: a server may ignore the schema.
+Thinking is left to the server's default, because working out a plan is where
+a reasoning model's thinking helps.
 """
 
 from __future__ import annotations
@@ -15,6 +24,8 @@ from typing import Any
 
 from bedrock.agents.contract import Ask, Plan, Step
 from bedrock.agents.protocol import Capability
+from bedrock.config.profile import DEFAULT_PROFILE, PROFILES
+from bedrock.inference import Priority, RequestOptions, Scheduler
 from bedrock.inference.base import InferenceBackend
 from bedrock.json_reply import decode_json_reply
 
@@ -33,17 +44,21 @@ class Planner:
 
     def __init__(
         self,
-        backend: InferenceBackend,
+        scheduler: Scheduler | InferenceBackend,
         model: str,
         capabilities: Mapping[str, Capability],
         *,
         max_steps: int = 8,
     ) -> None:
+        """``scheduler`` is the app's ``Scheduler``; a plain backend is given
+        a scheduler of its own with the default profile."""
         if not model:
             raise ValueError("Planner needs a model name.")
         if type(max_steps) is not int or max_steps < 1:
             raise ValueError("Planner max_steps must be a positive integer.")
-        self.backend = backend
+        if not isinstance(scheduler, Scheduler):
+            scheduler = Scheduler(scheduler, PROFILES[DEFAULT_PROFILE])
+        self.scheduler = scheduler
         self.model = model
         self.capabilities = dict(capabilities)
         self.max_steps = max_steps
@@ -65,11 +80,15 @@ class Planner:
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
+        options = RequestOptions(
+            max_tokens=self.scheduler.profile.reply_limit,
+            json_schema=plan_schema(sorted(self.capabilities), self.max_steps),
+        )
         try:
-            fragments: list[str] = []
-            async for fragment in self.backend.stream_chat(self.model, messages):
-                fragments.append(fragment)
-            reply = _decode_reply("".join(fragments))
+            text = await self.scheduler.complete(
+                self.model, messages, priority=Priority.USER_JOB, options=options
+            )
+            reply = _decode_reply(text)
             return self._build_plan(ask, reply)
         except Exception as exc:
             return Plan(ask=ask, blocked_reason=f"Planner could not produce a valid plan: {exc}")
@@ -119,6 +138,31 @@ class Planner:
         if not steps:
             return Plan(ask=ask, blocked_reason="The planner proposed no executable steps.")
         return Plan(ask=ask, steps=tuple(steps))
+
+
+def plan_schema(tools: list[str], max_steps: int) -> dict[str, Any]:
+    """The JSON Schema of a planner reply: the same shape ``_build_plan`` checks."""
+    return {
+        "type": "object",
+        "properties": {
+            "steps": {
+                "type": "array",
+                "maxItems": max_steps,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "tool": {"type": "string", "enum": list(tools)},
+                        "arguments": {"type": "object", "additionalProperties": {"type": "string"}},
+                    },
+                    "required": ["tool", "arguments"],
+                    "additionalProperties": False,
+                },
+            },
+            "blocked_reason": {"type": ["string", "null"]},
+        },
+        "required": ["steps", "blocked_reason"],
+        "additionalProperties": False,
+    }
 
 
 def _decode_reply(text: str) -> dict[str, Any]:

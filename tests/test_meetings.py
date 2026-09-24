@@ -52,9 +52,11 @@ class FakeBackend:
         self._replies = list(replies or [])
         self._error = error
         self.prompts: list[str] = []
+        self.options: list = []
 
-    async def stream_chat(self, model, messages):
+    async def stream_chat(self, model, messages, options=None, on_usage=None):
         self.prompts.append(messages[0]["content"])
+        self.options.append(options)
         if self._error:
             raise self._error
         reply = self._replies.pop(0) if self._replies else ""
@@ -655,7 +657,11 @@ async def test_the_written_notes_file_carries_only_verified_citations(tmp_path, 
     monkeypatch.setattr(cli, "WhisperTranscriber", FakeTranscriber)
     monkeypatch.setattr(cli, "transcribe_recording", fake_transcribe)
     monkeypatch.setattr(cli, "discover_participant_tracks", lambda folder: {})
-    monkeypatch.setattr(cli, "OpenAICompatibleBackend", lambda *a, **kw: backend)
+    built = []
+    monkeypatch.setattr(cli, "create_backend", lambda settings: built.append(settings) or backend)
+    from bedrock.config import load_settings
+
+    monkeypatch.setattr(cli, "load_settings", lambda: load_settings(config_path=tmp_path / "none.toml", env={"BEDROCK_MODEL": "fake"}))
 
     args = cli.build_parser().parse_args([str(folder), "--notes", str(rough)])
     assert await cli._run(args) == 0
@@ -669,6 +675,8 @@ async def test_the_written_notes_file_carries_only_verified_citations(tmp_path, 
     assert "Decided around, they said." in written
     # The user's own file is never rewritten.
     assert "[00:14:00]" in rough.read_text()
+    # The backend came from the shared factory, with the long meeting timeout.
+    assert built and built[0].request_timeout == 600.0
 
 
 # --- The model handing back its own JSON skeleton -----------------------------
@@ -815,3 +823,104 @@ def test_without_regions_the_speech_check_is_skipped():
     from bedrock.meetings.transcribe import _split_turns_at
 
     assert _split_turns_at([(0, 10000)], [5000]) == [(0, 5000), (5000, 10000)]
+
+
+# --- Fitting the model's context window ---------------------------------------
+
+
+def long_meeting(lines: int = 900, words: int = 18) -> list[Cue]:
+    """About an hour of talk: far more than a laptop's 8k-token window."""
+    return [
+        Cue(i * 4000, i * 4000 + 3500, "Alice Chen" if i % 2 else "Bob Ruiz",
+            f"line {i} " + " ".join(f"word{i}x{j}" for j in range(words)))
+        for i in range(lines)
+    ]
+
+
+def scheduler_with(backend, **profile_changes):
+    from dataclasses import replace
+
+    from bedrock.config import PROFILES
+    from bedrock.inference import Scheduler
+
+    return Scheduler(backend, replace(PROFILES["laptop"], **profile_changes))
+
+
+@pytest.mark.parametrize("window", [8192, 4096, 2048])
+async def test_no_prompt_is_larger_than_the_window_can_hold(window):
+    from bedrock.inference import estimate_tokens
+    from bedrock.meetings.summarize import EXTRACT_REPLY_TOKENS, OVERVIEW_REPLY_TOKENS
+
+    backend = FakeBackend()
+    scheduler = scheduler_with(backend, context_window=window, reply_limit=min(1024, window // 4))
+    summary = await summarize_meeting(long_meeting(), scheduler=scheduler, model="fake", title="Sync")
+
+    assert summary.degraded_reason is None
+    assert len(backend.prompts) > 2  # the transcript was split into several chunks
+    for prompt, options in zip(backend.prompts, backend.options):
+        assert options.max_tokens in (EXTRACT_REPLY_TOKENS, OVERVIEW_REPLY_TOKENS)
+        assert options.reasoning is False
+        assert estimate_tokens(prompt) + options.max_tokens <= window
+    assert any("lines from the middle were left out" in notice for notice in summary.notices)
+
+
+async def test_every_meeting_call_is_a_user_job_on_the_scheduler():
+    from bedrock.inference import Priority
+
+    backend = FakeBackend()
+    scheduler = scheduler_with(backend)
+    seen = []
+    original = scheduler.stream
+
+    def recording(model, messages, *, priority, options=None):
+        seen.append(priority)
+        return original(model, messages, priority=priority, options=options)
+
+    scheduler.stream = recording
+    await summarize_meeting(parse_vtt(VTT), scheduler=scheduler, model="fake", title="Sync")
+    assert seen and set(seen) == {Priority.USER_JOB}
+
+
+async def test_notes_citations_are_checked_only_against_the_lines_sent():
+    """A long meeting sends the notes pass only its start and end. A quote from
+    the unsent middle is real speech, but that model call never read it, so
+    its citation cannot stand."""
+    cues = long_meeting()
+    middle = cues[len(cues) // 2]
+    first = cues[0]
+    from bedrock.inference import estimate_tokens
+    from bedrock.meetings.summarize import _EXTRACT_PROMPT, EXTRACT_REPLY_TOKENS, prompt_budget
+
+    room = prompt_budget(8192, EXTRACT_REPLY_TOKENS) - estimate_tokens(_EXTRACT_PROMPT.format(transcript=""))
+    extraction_calls = len(chunk_cues(cues, max_tokens=room))
+    backend = FakeBackend([extraction() for _ in range(extraction_calls)] + [
+        notes_reply(
+            "## Notes\n- From the start. [[cite:a]]\n- From the middle. [[cite:b]]\n",
+            [
+                {"id": "a", "quote": first.text, "timestamp": first.timestamp},
+                {"id": "b", "quote": middle.text, "timestamp": middle.timestamp},
+            ],
+        )
+    ])
+    scheduler = scheduler_with(backend)
+
+    summary = await summarize_meeting(cues, scheduler=scheduler, model="fake", title="Sync", notes="## Notes\n- stuff")
+
+    notes_prompt = backend.prompts[-1]
+    assert first.text in notes_prompt and middle.text not in notes_prompt
+    assert f"[{first.timestamp}]" in summary.enhanced_notes
+    assert f"[{middle.timestamp}]" not in summary.enhanced_notes
+    assert "From the middle." in summary.enhanced_notes  # the words stay, the citation goes
+
+
+async def test_notes_too_long_for_the_window_are_refused_plainly():
+    backend = FakeBackend([extraction()])
+    scheduler = scheduler_with(backend, context_window=2048, reply_limit=512)
+    rough = "## My notes\n" + "- a very long note about everything " * 400
+
+    summary = await summarize_meeting(parse_vtt(VTT), scheduler=scheduler, model="fake", title="Sync", notes=rough)
+
+    assert summary.enhanced_notes == rough.strip()
+    assert any("too long to rewrite" in notice for notice in summary.notices)
+    assert len(backend.prompts) == 1  # only the extraction pass was sent
+    assert "too long to rewrite" in summary.render()

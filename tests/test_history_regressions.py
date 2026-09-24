@@ -150,7 +150,11 @@ async def test_reasoning_in_both_streamed_requests_is_hidden():
     conversation = Conversation()
     conversation.add_user("bees")
     conversation.add_assistant("insects")
-    assert await generate_title(Reasoner(), "reasoner", conversation) == "Bee Pollination"
+    from bedrock.config import PROFILES
+    from bedrock.inference import Scheduler
+
+    scheduler = Scheduler(Reasoner(), PROFILES["laptop"])
+    assert await generate_title(scheduler, "reasoner", conversation) == "Bee Pollination"
     assert clean_title("<think>unfinished reasoning") is None
 
 
@@ -224,6 +228,12 @@ async def test_unopened_history_is_never_loaded_for_titles(store, monkeypatch):
     backend = FakeBackend()
     app = BedrockApp(Settings(model="test-model"), backend, store)
     async with app.run_test() as pilot:
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert loaded == [app.conversation.id]
+        # Titles wait for a chat reply, so no model is loaded just to name one.
+        assert backend.title_requests == []
+        await pilot.press(*"one more question", "enter")
         await wait_for_app_workers(app)
         await pilot.pause()
         assert loaded == [app.conversation.id]

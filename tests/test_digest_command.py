@@ -160,13 +160,25 @@ def sent_system_text(backend: FakeBackend, index: int = -1) -> str:
     return "\n".join(m["content"] for m in messages if m["role"] == "system")
 
 
+def sent_question(backend: FakeBackend, index: int = -1) -> str:
+    """The newest user message, where this turn's passages go (decision D3)."""
+    _, messages = backend.requests[index]
+    return messages[-1]["content"]
+
+
+def passages_sent(backend: FakeBackend, index: int = -1) -> bool:
+    """Passages were added to the question, and never to the system message."""
+    assert "Relevant stored context" not in sent_system_text(backend, index)
+    return "Relevant stored context" in sent_question(backend, index)
+
+
 async def test_injection_notice_says_how_to_stop_it(tmp_path, fake_backend: FakeBackend):
     app = make_app(tmp_path, fake_backend)
     async with app.run_test() as pilot:
         await stored_assay(app, pilot, tmp_path)
         await submit(app, pilot, QUESTION)
 
-        assert "Relevant stored context" in sent_system_text(fake_backend)
+        assert passages_sent(fake_backend)
         added = [n for n in notices(app).split("\n\n") if "Added stored context from" in n]
         assert added and "`/digest auto off`" in added[0]
 
@@ -183,7 +195,8 @@ async def test_auto_context_setting_off_sends_nothing_extra(tmp_path, fake_backe
         await submit(app, pilot, QUESTION)
 
         _, messages = fake_backend.requests[-1]
-        assert messages == [{"role": "user", "content": QUESTION}]
+        assert messages[-1] == {"role": "user", "content": QUESTION}
+        assert all("Relevant stored context" not in m["content"] for m in messages)
         assert "Added stored context" not in notices(app)
         # Off means the store is not consulted at all.
         assert searched == []
@@ -200,12 +213,12 @@ async def test_digest_auto_off_then_on_changes_what_this_window_sends(tmp_path, 
         assert "now **off**" in last and "BEDROCK_AUTO_CONTEXT=0" in last
 
         await submit(app, pilot, QUESTION)
-        assert "Relevant stored context" not in sent_system_text(fake_backend)
+        assert not passages_sent(fake_backend)
 
         await submit(app, pilot, "/digest auto on")
         assert app.auto_context.enabled is True
         await submit(app, pilot, QUESTION)
-        assert "Relevant stored context" in sent_system_text(fake_backend)
+        assert passages_sent(fake_backend)
 
         # Neither the switch nor the context was ever read as a file or saved.
         assert len(app.context_store.list()) == 1
@@ -236,10 +249,10 @@ async def test_digest_auto_off_typed_while_a_prompt_waits_applies_to_that_prompt
         await settle(app, pilot)
 
         assert len(backend.requests) == 2
-        assert "Relevant stored context" in sent_system_text(backend, 0)
+        assert passages_sent(backend, 0)
         _, messages = backend.requests[1]
         assert messages[-1] == {"role": "user", "content": second}
-        assert "Relevant stored context" not in sent_system_text(backend, 1)
+        assert not passages_sent(backend, 1)
 
 
 async def test_digest_auto_reports_the_setting_and_refuses_other_words(tmp_path, fake_backend: FakeBackend):
@@ -267,3 +280,21 @@ async def test_help_texts_offer_the_switch_in_this_mode(tmp_path, fake_backend: 
 
         await submit(app, pilot, "/digest help")
         assert "`/digest auto off` stops it for this window" in str(app.query(SystemNotice)[-1].source)
+
+
+async def test_digest_search_runs_off_the_ui_thread(tmp_path, fake_backend: FakeBackend, monkeypatch):
+    import threading
+
+    app = make_app(tmp_path, fake_backend)
+    async with app.run_test() as pilot:
+        threads = []
+        real_search = app.context_store.search
+
+        def search(*args, **kwargs):
+            threads.append(threading.current_thread())
+            return real_search(*args, **kwargs)
+
+        monkeypatch.setattr(app.context_store, "search", search)
+        await submit(app, pilot, "/digest search stability")
+
+        assert threads and threads[0] is not threading.main_thread()

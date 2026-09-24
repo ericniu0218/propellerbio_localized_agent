@@ -233,7 +233,10 @@ async def run_digest_command(
         if not rest:
             await notify("Give me something to search for: `/digest search <words>`.", "error")
             return
-        await notify(format_hits(rest, store.search(rest, limit=5)), "info")
+        # Off the UI thread: the search reads the on-disk index, and the
+        # screen must keep drawing while it does.
+        hits = await asyncio.to_thread(store.search, rest, limit=5)
+        await notify(format_hits(rest, hits), "info")
         return
 
     if verb == "show":

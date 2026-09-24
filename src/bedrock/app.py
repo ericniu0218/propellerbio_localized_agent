@@ -195,8 +195,18 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     @work(exclusive=True, group="connection")
     async def check_connection(self) -> None:
+        """Refresh the connection light and the context counter, on a timer.
+
+        The counter is the last chat prompt's size as the server reported it
+        (``scheduler.last_usage``), against the profile's window. It is read
+        from memory; checking it sends nothing anywhere.
+        """
         connected = await self.backend.check_connection()
-        self.query_one(StatusBar).connected = connected
+        status = self.query_one(StatusBar)
+        status.connected = connected
+        usage = self.scheduler.last_usage
+        status.context_window = self.settings.profile.context_window
+        status.context_used = usage.prompt_tokens if usage is not None else None
 
     @work(group="models")
     async def pick_default_model(self) -> None:

@@ -25,8 +25,18 @@ exception buried inside it.
 An untitled conversation is looked at again after its next reply, when a topic
 may have appeared - never before, so the same messages are not re-sent.
 
+When titles run: they are background work (``Priority.BACKGROUND``). The
+``Scheduler`` starts them only once the app is idle, cancels them the moment
+the employee sends a message, and sends them to the model that last answered
+a chat - the one already in the server's memory - so a title never makes a
+laptop load a second model. Both requests carry a tiny reply limit and ask
+the server to skip "thinking": the answer is one word or a few. A title that
+was cancelled, or whose whole reply limit went on thinking, raises
+``Preempted``; the app tries again after the next reply. That is not a
+failure.
+
 Privacy: the request goes to the *same* configured inference server as the
-chat itself, through the same ``InferenceBackend``. No other service is ever
+chat itself, through the same ``Scheduler``. No other service is ever
 involved, and the model only sees text from the conversation being titled.
 
 Small local models do not always follow instructions, so everything the model
@@ -39,7 +49,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from bedrock.inference import InferenceBackend
+from bedrock.inference import Preempted, Priority, RequestOptions, Scheduler
 from bedrock.models import Conversation, Role
 
 NO_TOPIC = "NONE"
@@ -70,8 +80,16 @@ TOPIC_CHECK_INSTRUCTION = (
 """Sent as the system message of the YES/NO request. Only the user's messages
 are shown with it, so an assistant reply like "How can I help?" cannot sway it."""
 
+TOPIC_CHECK_REPLY_TOKENS = 16
+"""The reply limit sent with the YES/NO request: room for "YES", "**YES.**" and the like."""
+
+TITLE_REPLY_TOKENS = 32
+"""The reply limit sent with the title request: two to five words, plus room
+for the "Here is a title:" preamble small models like to add."""
+
 MAX_TOPIC_CHECK_CHARACTERS = 2000
-"""YES or NO needs very little; stop reading beyond this."""
+"""YES or NO needs very little; stop reading beyond this. A second guard
+behind ``TOPIC_CHECK_REPLY_TOKENS``, for servers that ignore the limit."""
 
 OPENING_MESSAGES = 2
 RECENT_MESSAGES = 4
@@ -83,7 +101,11 @@ CHARACTERS_PER_MESSAGE = 600
 """Long pasted documents are trimmed so the title request stays small and fast."""
 
 MAX_REPLY_CHARACTERS = 200
-"""Stop reading if the model ignores the instructions and writes an essay."""
+"""Stop reading if the model ignores the instructions and writes an essay.
+A second guard behind ``TITLE_REPLY_TOKENS``."""
+
+MAX_RAW_CHARACTERS = 32000
+"""Stop reading after this much, visible or not (a model "thinking" at length)."""
 
 MAX_TITLE_CHARACTERS = 40
 MAX_TITLE_WORDS = 7
@@ -233,37 +255,54 @@ def clean_title(raw: str) -> str | None:
     return candidate
 
 
-async def generate_title(backend: InferenceBackend, model: str, conversation: Conversation) -> str | None:
+async def generate_title(scheduler: Scheduler, model: str | None, conversation: Conversation) -> str | None:
     """Name the conversation, or return None if it has no concrete topic yet.
 
     Goes through the three gates described at the top of this module.
+    ``model=None`` means "whichever model last answered a chat" (see
+    ``Scheduler``), which is how the app calls it.
 
-    Raises ``InferenceError`` if the server cannot be reached, so the caller
-    can tell "try again later" apart from "there is nothing to name yet".
+    Raises ``Preempted`` when the model could not answer this time - the
+    request was cancelled for the chat, no chat has loaded a model yet, or the
+    whole reply went on unfinished thinking - and ``InferenceError`` if the
+    server cannot be reached, so the caller can tell "try again later" apart
+    from "there is nothing to name yet".
     """
     if not user_wrote_words(conversation):
         return None
-    answer = await _ask(backend, model, topic_check_request(conversation), MAX_TOPIC_CHECK_CHARACTERS)
+    answer = await _ask(scheduler, model, topic_check_request(conversation), TOPIC_CHECK_REPLY_TOKENS, MAX_TOPIC_CHECK_CHARACTERS)
     if not means_yes(answer):
         return None
-    return clean_title(await _ask(backend, model, title_request(conversation), MAX_REPLY_CHARACTERS))
+    return clean_title(await _ask(scheduler, model, title_request(conversation), TITLE_REPLY_TOKENS, MAX_REPLY_CHARACTERS))
 
 
-async def _ask(backend: InferenceBackend, model: str, messages: list[dict[str, str]], limit: int) -> str:
-    """Send one request and collect the reply, stopping after ``limit`` characters."""
-    stream = backend.stream_chat(model, messages)
+async def _ask(scheduler: Scheduler, model: str | None, messages: list[dict[str, str]], max_tokens: int, limit: int) -> str:
+    """Send one background request and collect the visible reply.
+
+    Stops reading after ``limit`` visible characters, as a second guard behind
+    the server's own ``max_tokens`` limit.
+    """
+    options = RequestOptions(max_tokens=max_tokens, reasoning=False)
+    stream = scheduler.stream(model, messages, priority=Priority.BACKGROUND, options=options)
     reply = ""
     try:
         async for fragment in stream:
             reply += fragment
-            if len(visible_reply(reply)) >= limit or len(reply) >= 32000:
+            if len(visible_reply(reply)) >= limit or len(reply) >= MAX_RAW_CHARACTERS:
                 break
     finally:
         # Stopping early must close the HTTP stream, not leave it dangling.
-        close = getattr(stream, "aclose", None)
-        if close is not None:
-            await close()
-    return visible_reply(reply)
+        await stream.aclose()
+    visible = visible_reply(reply)
+    if not visible.strip() and _unfinished_thinking(reply):
+        raise Preempted("The model used its whole reply thinking; will try again later.")
+    return visible
+
+
+def _unfinished_thinking(reply: str) -> bool:
+    """True when the reply opens a reasoning block and never closes it."""
+    lowered = reply.lower()
+    return "<think" in lowered and lowered.rfind("<think") > lowered.rfind("</think>")
 
 
 def visible_reply(reply: str) -> str:

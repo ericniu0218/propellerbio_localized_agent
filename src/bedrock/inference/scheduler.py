@@ -69,6 +69,9 @@ class Preempted(InferenceError):
 _END = object()
 """Put on a call's queue when the backend's reply is complete."""
 
+QUEUE_FRAGMENTS = 64
+"""How many fragments the pump may read ahead of the caller."""
+
 
 @dataclass(eq=False)
 class _Ticket:
@@ -147,7 +150,7 @@ class Scheduler:
                 model = self._loaded_model
             characters = sum(len(str(message.get("content") or "")) for message in messages)
             usage: list[Usage] = []
-            ticket.queue = asyncio.Queue()
+            ticket.queue = asyncio.Queue(maxsize=QUEUE_FRAGMENTS)
             ticket.pump = asyncio.create_task(self._pump(ticket.queue, model, messages, options, usage.append))
             while True:
                 item = await ticket.queue.get()
@@ -217,6 +220,10 @@ class Scheduler:
         if ticket.pump is not None:
             ticket.pump.cancel()
         if ticket.queue is not None:
+            # Whatever the cancelled call had produced is thrown away: the
+            # caller is only told that it was stopped.
+            while not ticket.queue.empty():
+                ticket.queue.get_nowait()
             ticket.queue.put_nowait(Preempted())
 
     def _dispatch(self) -> None:
@@ -260,12 +267,15 @@ class Scheduler:
         stream = self._open(model, messages, options, on_usage)
         try:
             async for fragment in stream:
-                queue.put_nowait(fragment)
-            queue.put_nowait(_END)
+                # ``await put`` waits while the queue is full, so a server
+                # (or test double) that sends faster than the caller reads
+                # cannot pile up the whole reply in memory.
+                await queue.put(fragment)
+            await queue.put(_END)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # handed to the caller, who raises it
-            queue.put_nowait(exc)
+            await queue.put(exc)
         finally:
             await _close(stream)
 

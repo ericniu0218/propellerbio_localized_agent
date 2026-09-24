@@ -150,7 +150,11 @@ async def test_reasoning_in_both_streamed_requests_is_hidden():
     conversation = Conversation()
     conversation.add_user("bees")
     conversation.add_assistant("insects")
-    assert await generate_title(Reasoner(), "reasoner", conversation) == "Bee Pollination"
+    from bedrock.config import PROFILES
+    from bedrock.inference import Scheduler
+
+    scheduler = Scheduler(Reasoner(), PROFILES["laptop"])
+    assert await generate_title(scheduler, "reasoner", conversation) == "Bee Pollination"
     assert clean_title("<think>unfinished reasoning") is None
 
 

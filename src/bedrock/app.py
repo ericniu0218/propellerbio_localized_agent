@@ -730,7 +730,14 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     @work(group="titles")
     async def write_missing_titles(self) -> None:
-        """Title only the open conversation. Never load history for backfill."""
+        """Title only the open conversation. Never load history for backfill.
+
+        Titles are background work: the scheduler starts them once the app is
+        idle and cancels them when the employee sends a message (decision D2
+        in docs/roadmaps/LAPTOP_MEMORY.md), so there is no waiting here for a
+        reply to finish. A cancelled title (``Preempted``) is tried again
+        after the next reply; it is not a failure.
+        """
         if self.store is None:
             return
         if self._title_worker_running:
@@ -748,13 +755,16 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                         continue
                     return
                 attempted.add(conversation.id)
-                while self._streaming:
-                    await asyncio.sleep(0.2)
-                if conversation is not self.conversation:
-                    continue
                 checked_at = len(conversation.messages)
+                # The model already in the server's memory (None tells the
+                # scheduler to use it). Only before any chat has gone through
+                # the scheduler is there none, and then the selected model is
+                # the one the next chat will load anyway.
+                model = None if self.scheduler.loaded_model else self.model_name
                 try:
-                    title = await generate_title(self.backend, self.model_name, conversation)
+                    title = await generate_title(self.scheduler, model, conversation)
+                except Preempted:
+                    continue  # stopped for the chat: try again after the next reply
                 except InferenceError as exc:
                     if exc.unavailable:
                         return

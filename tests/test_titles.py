@@ -28,6 +28,14 @@ def test_title_control_characters_are_removed():
 
 from tests.conftest import FakeBackend
 
+from bedrock.config import PROFILES
+from bedrock.inference import Preempted, Priority, RequestOptions, Scheduler
+
+
+def via(backend) -> Scheduler:
+    """Title requests go through a scheduler, never straight to the backend."""
+    return Scheduler(backend, PROFILES["laptop"])
+
 
 def chat(*turns: str, system_prompt: str | None = None) -> Conversation:
     conversation = Conversation(system_prompt=system_prompt)
@@ -170,7 +178,7 @@ def test_after_finding_no_topic_the_model_is_only_asked_again_once_there_is_more
 
 async def test_generate_title_asks_the_backend_and_cleans_the_answer():
     backend = FakeBackend(title_reply='"Bee Facts."')
-    title = await generate_title(backend, "test-model", chat("bees", "Bees are insects."))
+    title = await generate_title(via(backend), "test-model", chat("bees", "Bees are insects."))
 
     assert title == "Bee Facts"
     assert backend.title_requests[0][0] == "test-model"
@@ -188,7 +196,7 @@ async def test_generate_title_stops_reading_a_rambling_model():
             finally:
                 closed.set()
 
-    title = await generate_title(Rambler(), "m", chat("q", "a"))
+    title = await generate_title(via(Rambler()), "m", chat("q", "a"))
     assert title is None  # an essay is not a title
     assert closed.is_set()  # and the stream was closed, not abandoned
 
@@ -197,7 +205,7 @@ async def test_generate_title_lets_server_errors_through():
     backend = FakeBackend()
     backend.fail_titles = True
     with pytest.raises(InferenceError):
-        await generate_title(backend, "test-model", chat("q", "a"))
+        await generate_title(via(backend), "test-model", chat("q", "a"))
 
 
 # ---- Stored with the conversation ------------------------------------------
@@ -270,7 +278,7 @@ def test_any_letters_in_any_script_count_as_words(text):
 
 async def test_the_model_is_not_asked_about_a_conversation_with_no_words():
     backend = FakeBackend()
-    assert await generate_title(backend, "test-model", chat("1", "What can I do for you?")) is None
+    assert await generate_title(via(backend), "test-model", chat("1", "What can I do for you?")) is None
     assert backend.topic_checks == [] and backend.title_requests == []
 
 
@@ -301,11 +309,63 @@ def test_anything_not_clearly_yes_counts_as_no(reply, expected):
 
 async def test_a_no_from_the_topic_check_means_no_title_request():
     backend = FakeBackend(topic_reply="NO")
-    assert await generate_title(backend, "test-model", chat("hey how are you", "Good, thanks!")) is None
+    assert await generate_title(via(backend), "test-model", chat("hey how are you", "Good, thanks!")) is None
     assert len(backend.topic_checks) == 1
     assert backend.title_requests == []
 
 
 async def test_a_yes_still_has_to_produce_a_real_title():
     backend = FakeBackend(topic_reply="YES", title_reply="Getting Started")
-    assert await generate_title(backend, "test-model", chat("can you help me", "Sure")) is None
+    assert await generate_title(via(backend), "test-model", chat("can you help me", "Sure")) is None
+
+
+# ---- Titles as background work on the scheduler ---------------------------
+
+
+async def test_both_title_requests_carry_a_small_reply_limit_and_reasoning_off():
+    backend = FakeBackend(title_reply="Bee Facts")
+    await generate_title(via(backend), "test-model", chat("bees", "Bees are insects."))
+    from bedrock.titles import TITLE_REPLY_TOKENS, TOPIC_CHECK_REPLY_TOKENS
+
+    assert backend.background_options == [
+        RequestOptions(max_tokens=TOPIC_CHECK_REPLY_TOKENS, reasoning=False),
+        RequestOptions(max_tokens=TITLE_REPLY_TOKENS, reasoning=False),
+    ]
+    assert TOPIC_CHECK_REPLY_TOKENS <= 16 and TITLE_REPLY_TOKENS <= 32
+
+
+async def test_without_a_model_titles_use_the_one_that_last_answered_a_chat():
+    backend = FakeBackend(title_reply="Bee Facts")
+    scheduler = via(backend)
+    await scheduler.complete("other-model", [{"role": "user", "content": "hi"}], priority=Priority.CHAT)
+
+    assert await generate_title(scheduler, None, chat("bees", "Bees are insects.")) == "Bee Facts"
+    assert [model for model, _ in backend.topic_checks + backend.title_requests] == ["other-model", "other-model"]
+
+
+async def test_before_any_chat_a_title_is_not_asked_at_all():
+    backend = FakeBackend()
+    with pytest.raises(Preempted):
+        await generate_title(via(backend), None, chat("bees", "Bees are insects."))
+    assert backend.topic_checks == []
+
+
+async def test_a_reply_that_is_only_cut_off_thinking_is_no_answer_yet():
+    class Thinker:
+        async def stream_chat(self, model, messages, options=None, on_usage=None):
+            yield "<think>Let me consider whether the user"  # max_tokens ran out here
+
+    with pytest.raises(Preempted):
+        await generate_title(via(Thinker()), "m", chat("bees", "Bees are insects."))
+
+
+async def test_finished_thinking_followed_by_an_answer_still_counts():
+    class Thinker:
+        calls = 0
+
+        async def stream_chat(self, model, messages, options=None, on_usage=None):
+            self.calls += 1
+            yield "<think>short</think>"
+            yield "YES" if self.calls == 1 else "Bee Facts"
+
+    assert await generate_title(via(Thinker()), "m", chat("bees", "Bees are insects.")) == "Bee Facts"

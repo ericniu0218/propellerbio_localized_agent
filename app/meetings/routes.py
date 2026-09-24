@@ -33,9 +33,16 @@ from app.meetings.config import (
     readiness_issues,
 )
 from app.meetings.delivery import deliver_recording
+from app.meetings.enrollment import (
+    ENROLLMENT_AVAILABLE,
+    ENROLLMENT_MISSING,
+    VoicePrintStore,
+    enroll_from_wav,
+)
 from app.meetings.governance import capture_consent, consent_required
 from app.meetings.jobs import RecordingJob, RecordingJobs, process
 from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
+from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
 from app.workspace.routes import identity, require_object, store
 from app.workspace.store import uid
 
@@ -168,11 +175,97 @@ async def create_recording(
             deliver=deliver_recording,
             expected_speakers=expectedSpeakers,
             consent=consent,
+            voice_prints=prints,
         )
+
+    prints = voice_store().vectors(user["id"]) if ENROLLMENT_AVAILABLE else []
 
     _jobs.start(job, runner)
     workspace.audit(user["id"], "recorded meeting", job_id)
     return job.public()
+
+
+def voice_store() -> VoicePrintStore:
+    return VoicePrintStore(config().storage_dir / "voice-prints.sqlite")
+
+
+@router.get("/voices")
+def list_voices(user=Depends(identity)):
+    """Everyone this workspace can recognise by voice."""
+    if not ENROLLMENT_AVAILABLE:
+        return {"available": False, "reason": ENROLLMENT_MISSING, "voices": []}
+    return {"available": True, "voices": [v.public() for v in voice_store().list(user["id"])]}
+
+
+@router.post("/voices")
+async def enroll_voice(
+    audio: UploadFile = File(...),
+    name: str = Form(...),
+    user=Depends(identity),
+):
+    """Save a voice print from a short sample, and keep only the vector.
+
+    The audio is written to a temporary file because the embedding model reads
+    a file, and deleted as soon as the vector exists. A voice print cannot be
+    played back — it is 192 numbers — which is the only reason it is reasonable
+    to keep one at all.
+    """
+    if not ENROLLMENT_AVAILABLE:
+        raise HTTPException(503, ENROLLMENT_MISSING)
+    person = (name or "").strip()
+    if not person:
+        raise HTTPException(422, "Give the person a name.")
+
+    recording_config = config()
+    if not recording_config.embedding_model.exists():
+        raise HTTPException(503, f"No speaker-embedding model at {recording_config.embedding_model}.")
+
+    suffix = Path(audio.filename or "sample.webm").suffix.lower() or ".webm"
+    if suffix not in ALLOWED_SUFFIXES:
+        raise HTTPException(415, f"{suffix} is not an audio format we can read.")
+
+    scratch = recording_config.storage_dir / user["id"] / "enroll"
+    scratch.mkdir(parents=True, exist_ok=True)
+    person_id = uid()
+    raw = scratch / f"{person_id}{suffix}"
+    wav = scratch / f"{person_id}.wav"
+    try:
+        written = 0
+        with raw.open("wb") as handle:
+            while chunk := await audio.read(1024 * 1024):
+                written += len(chunk)
+                if written > 50 * 1024 * 1024:
+                    raise HTTPException(413, "That sample is too large.")
+                handle.write(chunk)
+        if not written:
+            raise HTTPException(422, "The sample was empty. Nothing was captured.")
+
+        transcriber_config = RecordingConfig.from_env()
+        await WhisperTranscriber(
+            WhisperConfig(model=transcriber_config.speech_model, vad_model=transcriber_config.vad_model)
+        ).to_wav(raw, scratch)
+        converted = scratch / f"{raw.stem}.16k.wav"
+        try:
+            vector, seconds = enroll_from_wav(converted, recording_config.embedding_model)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        saved = voice_store().save(user["id"], person_id, person, vector, seconds)
+    finally:
+        # The sample itself is never kept. Only the vector is.
+        for path in (raw, wav, scratch / f"{raw.stem}.16k.wav"):
+            path.unlink(missing_ok=True)
+
+    store().audit(user["id"], f"saved a voice print for {person}", person_id)
+    return saved.public()
+
+
+@router.delete("/voices/{person_id}")
+def delete_voice(person_id: str, user=Depends(identity)):
+    if not voice_store().delete(user["id"], person_id):
+        raise HTTPException(404, "That voice print is unavailable.")
+    store().audit(user["id"], "deleted a voice print", person_id)
+    return {"ok": True}
 
 
 class SpeakerNames(BaseModel):

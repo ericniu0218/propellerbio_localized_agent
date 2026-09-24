@@ -750,6 +750,7 @@
     }
     pane.appendChild(el("p", { class: "pane-intro" }, "Record a meeting on this device, or import a transcript. Decisions and action items are pulled out automatically, and the assistant can answer questions about any meeting here."));
     pane.appendChild(renderRecordBar());
+    pane.appendChild(renderVoicesBar());
     recordingJobs.forEach((job) => pane.appendChild(renderJobRow(job)));
 
     if (!state.meetings.length) {
@@ -864,6 +865,93 @@
     bar.appendChild(stopBtn);
     recordingUI = { clock, meterFill, silence, stopBtn };
     return bar;
+  }
+
+  // Diarisation tells voices apart but has no idea whose they are. One ten-
+  // second sample each, once, and meetings name people by themselves.
+  let voices = null;
+  async function loadVoices() {
+    try { voices = await api("/meetings/voices"); } catch { voices = { available: false, voices: [] }; }
+    return voices;
+  }
+
+  function renderVoicesBar() {
+    const bar = el("div", { class: "voices-bar" });
+    if (!voices) { loadVoices().then(() => { if (view === "meetings") renderCenter(true); }); return bar; }
+    if (!voices.available) return bar;
+
+    const names = (voices.voices || []).map((v) =>
+      el("span", { class: "voice-chip" }, [
+        el("span", {}, v.name),
+        el("button", { class: "link-btn small", title: "Forget this voice", onclick: async () => {
+          await api(`/meetings/voices/${v.id}`, { method: "DELETE" });
+          await loadVoices(); renderCenter(true);
+        } }, "×"),
+      ]));
+
+    bar.appendChild(el("div", { class: "voices-label" }, [
+      el("span", { class: "section-title", style: "margin:0" }, "Recognised voices"),
+      el("span", { class: "muted small" },
+        names.length ? "Meetings label these people automatically."
+                     : "Nobody yet — meetings will say “Speaker 1” until somebody is saved."),
+    ]));
+    if (names.length) bar.appendChild(el("div", { class: "voices-list" }, names));
+    bar.appendChild(el("button", { class: "btn ghost small", onclick: () => openVoiceEnroll() }, "Add a voice"));
+    return bar;
+  }
+
+  async function openVoiceEnroll() {
+    const body = el("div", { class: "simple-form" });
+    const nameInput = el("input", { placeholder: "e.g. Priya Raman" });
+    const status = el("p", { class: "muted small" }, "Read the line below for about ten seconds.");
+    const line = el("p", { class: "enroll-line" },
+      "“This is my voice. I am saving it so meetings can label what I say, instead of calling me Speaker Two.”");
+    const meterFill = el("div", { class: "record-meter-fill" });
+    const error = el("p", { class: "form-error", hidden: true });
+    body.appendChild(field("Name", nameInput));
+    body.appendChild(line);
+    body.appendChild(el("div", { class: "record-meter" }, meterFill));
+    body.appendChild(status);
+    body.appendChild(el("p", { class: "muted small" },
+      "The recording is not kept — only a numeric voice print, which cannot be played back. It is not a password: it identifies who is speaking, never what anyone may read."));
+    body.appendChild(error);
+
+    let session = null;
+    const startBtn = el("button", { class: "btn primary" }, "Start");
+    const dialog = openModal({ title: "Save a voice", body, footer: startBtn });
+
+    startBtn.addEventListener("click", async () => {
+      error.hidden = true;
+      if (!nameInput.value.trim()) { error.textContent = "Give the person a name."; error.hidden = false; return; }
+      if (!session) {
+        try {
+          session = new Recorder.Session({
+            useMic: true, useSystem: false, roomMode: false, deviceId: null,
+            onLevel: (l) => { meterFill.style.width = Math.round(l * 100) + "%"; },
+            onTick: (s) => { status.textContent = `Recording — ${Recorder.formatClock(s)}. Ten seconds is plenty.`; },
+            onEnded: () => {}, onError: (m) => { error.textContent = m; error.hidden = false; },
+          });
+          await session.start();
+          startBtn.textContent = "Save";
+        } catch (err) { error.textContent = err.message; error.hidden = false; session = null; }
+        return;
+      }
+      startBtn.disabled = true; startBtn.textContent = "Saving…";
+      const result = await session.stop();
+      try {
+        const form = new FormData();
+        form.append("audio", result.blob, "sample.webm");
+        form.append("name", nameInput.value.trim());
+        const res = await fetch("/workspace/api/meetings/voices", { method: "POST", body: form, credentials: "same-origin" });
+        if (!res.ok) throw new Error((await res.json()).detail || "That sample could not be saved.");
+        await loadVoices();
+        dialog.close();
+        renderCenter(true);
+      } catch (err) {
+        error.textContent = err.message; error.hidden = false;
+        startBtn.disabled = false; startBtn.textContent = "Start"; session = null;
+      }
+    });
   }
 
   function renderJobRow(job) {

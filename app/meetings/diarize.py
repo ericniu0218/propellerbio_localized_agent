@@ -224,7 +224,9 @@ def speaker_change_points(result: DiarizationResult) -> list[int]:
     return changes
 
 
-def assign(cues: list, result: DiarizationResult) -> tuple[list, dict[int, int]]:
+def assign(
+    cues: list, result: DiarizationResult, names: dict[int, str] | None = None
+) -> tuple[list, dict[int, int]]:
     """Give every cue the speaker who holds most of it.
 
     Overlap rather than containment, because the two are segmented separately:
@@ -255,5 +257,5 @@ def assign(cues: list, result: DiarizationResult) -> tuple[list, dict[int, int]]
             continue
         speaker = max(totals, key=totals.get)
         counts[speaker] = counts.get(speaker, 0) + 1
-        relabelled.append(replace(cue, speaker=label_for(speaker)))
+        relabelled.append(replace(cue, speaker=(names or {}).get(speaker) or label_for(speaker)))
     return relabelled, counts

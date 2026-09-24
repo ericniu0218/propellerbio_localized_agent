@@ -32,6 +32,7 @@ from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
 from app.meetings.diarize import assign, diarize, speaker_change_points
+from app.meetings.enrollment import cluster_embeddings, identify
 from app.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ async def transcribe(
     work_dir: Path,
     on_progress=None,
     expected_speakers: int | None = None,
+    voice_prints: list | None = None,
 ) -> TranscriptionOutcome:
     """Turn one recorded audio file into timestamped cues and WEBVTT.
 
@@ -183,7 +185,20 @@ async def transcribe(
         for cue, text in zip(cues, repaired)
     ]
 
-    cues, speaker_note, speaker_count = _apply_speakers(cues, speakers)
+    # Enrolled voices turn "Speaker 2" into "Priya". A cluster matching nobody
+    # keeps its placeholder rather than being given the closest name.
+    names: dict[int, str] = {}
+    if voice_prints and speakers.ok:
+        try:
+            names = identify(
+                cluster_embeddings(wav, speakers.turns, config.embedding_model,
+                                   threads=min(config.threads, 4)),
+                voice_prints,
+            )
+        except Exception as exc:  # never lose a meeting over a name
+            logger.warning("Voice-print matching failed: %s", exc)
+
+    cues, speaker_note, speaker_count = _apply_speakers(cues, speakers, names)
 
     outcome = TranscriptionOutcome(
         vtt=to_vtt(cues),
@@ -204,7 +219,7 @@ async def transcribe(
     return outcome
 
 
-def _apply_speakers(cues, result):
+def _apply_speakers(cues, result, names=None):
     """Label the cues with who said them, or explain why nobody could be.
 
     Returns the cues, one plain-language note for the person who recorded, and
@@ -221,7 +236,7 @@ def _apply_speakers(cues, result):
             0,
         )
 
-    labelled, counts = assign(cues, result)
+    labelled, counts = assign(cues, result, names)
     found = len(counts)
     if result.estimated:
         note = (
@@ -231,10 +246,17 @@ def _apply_speakers(cues, result):
             "several — say how many were there when you record, and re-record "
             "if these look wrong."
         )
+    elif names:
+        recognised = sum(1 for speaker in counts if speaker in names)
+        note = (
+            f"{found} speakers were identified, {recognised} of them matched to a "
+            "saved voice. Any still labelled 'Speaker N' can be renamed here."
+        )
     else:
         note = (
             f"{found} speakers were identified. Labels are provisional — rename "
-            "them on this page so the notes carry real names."
+            "them on this page, or save a voice sample so they are named "
+            "automatically next time."
         )
     return labelled, note, found
 

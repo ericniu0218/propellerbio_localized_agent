@@ -162,6 +162,7 @@ async def process(
     expected_speakers: int | None = None,
     consent: dict | None = None,
     access_groups: list[str] | None = None,
+    voice_prints: list | None = None,
 ) -> None:
     """The whole path from a file on disk to a meeting somebody can ask about."""
 
@@ -174,6 +175,7 @@ async def process(
         job.work_dir,
         on_progress=progress,
         expected_speakers=expected_speakers,
+        voice_prints=voice_prints,
     )
     outcome = await summarise(
         outcome,

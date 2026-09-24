@@ -1,4 +1,4 @@
-"""The on-disk store: small manifests, compressed chunks, fast lookup.
+"""The on-disk store: JSON source files, compressed chunks, and a disk search index.
 
 Layout, one directory per artifact::
 
@@ -9,10 +9,9 @@ Layout, one directory per artifact::
 
 Three decisions worth explaining, because they are what make this fast:
 
-*Why the manifest stays uncompressed.* Listing and searching the store must
-not require decompressing anything. The manifest holds each chunk's byte
-offset and its word counts, so ranking happens entirely against small JSON and
-only the handful of winning chunks are ever decompressed.
+*Why the manifest stays uncompressed.* It is the source of truth for rebuilding
+the SQLite FTS5 index. Search normally reads only matching index rows and the
+winning compressed chunks, so the whole store does not remain in memory.
 
 *Why one compressed frame per chunk instead of one stream per file.* A single
 stream would compress a few percent better, but reading chunk 400 would mean
@@ -29,13 +28,15 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sqlite3
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from bedrock.context import codec
 from bedrock.context.adapters.base import Source
-from bedrock.context.search import INDEX_VERSION, ScoredDoc, bm25, fold_terms, term_frequencies
+from bedrock.context.search import INDEX_VERSION, ScoredDoc, bm25, fold_terms, term_frequencies, tokenize
 from bedrock.context.types import (
     ArtifactStats,
     Chunk,
@@ -90,7 +91,79 @@ class Artifact:
 class ContextStore:
     def __init__(self, root: Path | str | None = None) -> None:
         self.root = Path(root).expanduser() if root else DEFAULT_CONTEXT_DIR
-        self._manifest_cache: dict[str, dict] = {}
+        self._index_ready = False
+        self._fts_available = True
+        self._root_seen_mtime = 0
+
+    @property
+    def _index_path(self) -> Path:
+        return self.root / "search.sqlite3"
+
+    def _ensure_index(self) -> bool:
+        """Build from source files on first use or after an external store edit.
+
+        Every operation opens its own SQLite connection. A ContextStore can
+        therefore be used by worker threads without sharing a connection.
+        """
+        if not self._fts_available:
+            return False
+        if self._index_ready and self._index_path.is_file() and self.root.stat().st_mtime_ns == self._root_seen_mtime:
+            return True
+        existed = self._index_path.is_file()
+        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            with sqlite3.connect(self._index_path, timeout=10) as db:
+                db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunk_terms USING fts5(terms, tokenize='unicode61 tokenchars ''_''')")
+                db.execute("CREATE TABLE IF NOT EXISTS chunks (rowid INTEGER PRIMARY KEY, artifact_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, name TEXT NOT NULL, label TEXT, codec TEXT NOT NULL, offset INTEGER NOT NULL, length INTEGER NOT NULL)")
+                db.execute("CREATE INDEX IF NOT EXISTS chunks_artifact ON chunks(artifact_id)")
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                manifests = list(self.root.glob("*/manifest.json"))
+                stale = (not existed or version != INDEX_VERSION or
+                         any(path.stat().st_mtime_ns > self._index_path.stat().st_mtime_ns for path in manifests) or
+                         (self.root.stat().st_mtime_ns > self._index_path.stat().st_mtime_ns))
+                if stale:
+                    db.execute("DELETE FROM chunk_terms")
+                    db.execute("DELETE FROM chunks")
+                    for path in manifests:
+                        manifest = _read_json(path)
+                        if manifest:
+                            self._index_manifest(db, manifest)
+                    db.execute(f"PRAGMA user_version = {INDEX_VERSION}")
+            self._index_ready = True
+            self._root_seen_mtime = self.root.stat().st_mtime_ns
+            return True
+        except sqlite3.OperationalError as exc:
+            self._fts_available = False
+            print(f"/digest: FTS5 unavailable ({exc}); using the slower manifest scan.", file=sys.stderr)
+            return False
+
+    @staticmethod
+    def _index_manifest(db: sqlite3.Connection, manifest: dict) -> None:
+        for entry in manifest["chunks"]:
+            terms = entry["terms"]
+            if manifest.get("index_version", 1) < INDEX_VERSION:
+                terms = fold_terms(terms)
+            # Repetition preserves term frequency for SQLite's BM25 ranker.
+            words = " ".join(word for word, count in terms.items() for _ in range(count))
+            cursor = db.execute(
+                "INSERT INTO chunks(artifact_id, chunk_index, name, label, codec, offset, length) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (manifest["id"], entry["index"], manifest["name"], entry.get("label"),
+                 manifest.get("codec", codec.LZMA), entry["offset"], entry["length"]),
+            )
+            db.execute("INSERT INTO chunk_terms(rowid, terms) VALUES (?, ?)", (cursor.lastrowid, words))
+
+    def _replace_index_artifact(self, artifact_id: str, manifest: dict | None) -> None:
+        if not self._index_ready and not self._ensure_index():
+            return
+        if not self._fts_available:
+            return
+        with sqlite3.connect(self._index_path, timeout=10) as db:
+            rows = db.execute("SELECT rowid FROM chunks WHERE artifact_id = ?", (artifact_id,)).fetchall()
+            db.executemany("DELETE FROM chunk_terms WHERE rowid = ?", rows)
+            db.execute("DELETE FROM chunks WHERE artifact_id = ?", (artifact_id,))
+            if manifest is not None:
+                self._index_manifest(db, manifest)
+        self._root_seen_mtime = self.root.stat().st_mtime_ns
 
     # ---- Writing -----------------------------------------------------------
 
@@ -109,6 +182,7 @@ class ContextStore:
         """
         artifact_id = content_id(source.text)
         directory = self.root / artifact_id
+        self._ensure_index()
         if (directory / "manifest.json").exists():
             existing = self.get(artifact_id)
             if existing is not None:
@@ -159,7 +233,7 @@ class ContextStore:
         }
         _write_json(directory / "manifest.json", manifest)
         _write_json(directory / "digest.json", digest.to_dict())
-        self._manifest_cache[artifact_id] = manifest
+        self._replace_index_artifact(artifact_id, manifest)
         return self._artifact(manifest, digest)
 
     def update_digest(self, artifact_id: str, digest: Digest) -> Artifact | None:
@@ -170,18 +244,20 @@ class ContextStore:
         manifest = self._manifest(artifact_id)
         if manifest is None:
             return None
+        self._ensure_index()
         manifest["stats"]["digest_tokens"] = digest.tokens
         _write_json(directory / "manifest.json", manifest)
         _write_json(directory / "digest.json", digest.to_dict())
-        self._manifest_cache[artifact_id] = manifest
+        self._replace_index_artifact(artifact_id, manifest)
         return self._artifact(manifest, digest)
 
     def delete(self, artifact_id: str) -> bool:
         directory = self.root / artifact_id
         if not directory.is_dir():
             return False
+        self._ensure_index()
         shutil.rmtree(directory)
-        self._manifest_cache.pop(artifact_id, None)
+        self._replace_index_artifact(artifact_id, None)
         return True
 
     # ---- Reading -----------------------------------------------------------
@@ -235,7 +311,43 @@ class ContextStore:
     def search(
         self, query: str, *, limit: int = 5, artifact_id: str | None = None
     ) -> list[SearchHit]:
-        """Rank chunks against ``query`` and decompress only the winners."""
+        """Rank matching folded terms in SQLite and decompress only winners."""
+        terms = tokenize(query)
+        if not terms or limit <= 0:
+            return []
+        if self._ensure_index():
+            expression = " OR ".join('"' + word.replace('"', '""') + '"' for word in dict.fromkeys(terms))
+            sql = (
+                "SELECT chunks.artifact_id, chunks.chunk_index, chunks.name, chunks.label, "
+                "chunks.codec, chunks.offset, chunks.length, -bm25(chunk_terms) "
+                "FROM chunk_terms JOIN chunks ON chunks.rowid = chunk_terms.rowid "
+                "WHERE chunk_terms MATCH ?"
+            )
+            params: list[object] = [expression]
+            if artifact_id is not None:
+                sql += " AND chunks.artifact_id = ?"
+                params.append(artifact_id)
+            sql += " ORDER BY bm25(chunk_terms), chunks.rowid LIMIT ?"
+            params.append(limit)
+            with sqlite3.connect(self._index_path, timeout=10) as db:
+                rows = db.execute(sql, params).fetchall()
+            return [
+                SearchHit(
+                    artifact_id=row[0], artifact_name=row[2], chunk_index=row[1],
+                    score=row[7], text=self._read_indexed_chunk(row[0], row[4], row[5], row[6]),
+                    label=row[3],
+                )
+                for row in rows
+            ]
+        return self._scan_search(query, limit=limit, artifact_id=artifact_id)
+
+    def _read_indexed_chunk(self, artifact_id: str, compression: str, offset: int, length: int) -> str:
+        with (self.root / artifact_id / "chunks.bin").open("rb") as handle:
+            handle.seek(offset)
+            return codec.decompress(handle.read(length), compression).decode("utf-8")
+
+    def _scan_search(self, query: str, *, limit: int, artifact_id: str | None) -> list[SearchHit]:
+        """The existing manifest scan, used only when SQLite lacks FTS5."""
         manifests = (
             [m for m in [self._manifest(artifact_id)] if m is not None]
             if artifact_id
@@ -287,13 +399,7 @@ class ContextStore:
     # ---- Internals ---------------------------------------------------------
 
     def _manifest(self, artifact_id: str) -> dict | None:
-        cached = self._manifest_cache.get(artifact_id)
-        if cached is not None:
-            return cached
-        manifest = _read_json(self.root / artifact_id / "manifest.json")
-        if manifest is not None:
-            self._manifest_cache[artifact_id] = manifest
-        return manifest
+        return _read_json(self.root / artifact_id / "manifest.json")
 
     def _artifact(self, manifest: dict, digest: Digest) -> Artifact:
         return Artifact(

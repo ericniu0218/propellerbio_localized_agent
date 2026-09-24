@@ -14,10 +14,14 @@ conversation, and scored against the question. Only the best windows travel on
 to the agent, because a month of meetings is far larger than any context
 budget — the same reason rag_search returns top-k chunks instead of documents.
 
-Scoring is deterministic token overlap, matching KeywordOverlapIndex in
-rag_search.py. That is not semantic search; it is the same honest placeholder,
-and it swaps for embeddings behind the same interface when the RAG ingest
-pipeline exists.
+Scoring is hybrid: keyword overlap plus semantic similarity from a small
+static embedding model (see app/meetings/semantic.py). Keyword alone missed
+every meeting that used a different word for the same thing — "recruitment"
+scored zero against "enrollment" — and meaning alone would blur "G12C" into
+"G12D", which in a biotech company is the worse mistake. Added together, the
+exact term and the synonym each find their own case. Without an embedding
+model installed this falls back to keyword overlap, which is what it always
+did.
 
 **Access control.** Every meeting carries access groups, and this tool returns
 only the ones the asking user may read. The groups travel on the datacenter
@@ -36,6 +40,7 @@ docs/MEETINGS.md.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -47,6 +52,12 @@ from app.config import load_budgets_config
 from app.tools.base import Tool, ToolResult
 from app.compliance.rbac import RBACFilter, get_rbac_filter
 from app.meetings.governance import GENERAL as GENERAL_GROUP
+from app.meetings.semantic import (
+    MIN_SEMANTIC_MATCH,
+    SEMANTIC_WEIGHT,
+    load as load_semantic_model,
+    similarities,
+)
 from app.tools.datacenter_client import (
     DatacenterError,
     DatacenterNotConfigured,
@@ -71,6 +82,8 @@ READER_MISSING = (
     "bedrock-private-ai is not installed. Install requirements.txt, which "
     "pins it, to enable this tool."
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 30
 
@@ -105,7 +118,7 @@ class MeetingTranscriptsArgs(BaseModel):
 class Excerpt:
     meeting: MeetingTranscript
     cues: list[Cue]
-    score: int
+    score: float
 
     @property
     def citation(self) -> str:
@@ -150,14 +163,51 @@ def rank_excerpts(
     agent never presents a fallback as if it were a hit.
     """
     query_tokens = _tokens(query)
-    scored: list[Excerpt] = []
 
+    # Every window, scored two ways. Keyword overlap alone missed any meeting
+    # that used a different word for the same thing — "recruitment" scored zero
+    # against "enrollment", which a clinical team says interchangeably. Meaning
+    # alone would blur "G12C" into "G12D", which in a biotech company is worse.
+    # So both, added: the exact term and the synonym each find their own case.
+    candidates: list[tuple[MeetingTranscript, list[Cue], float, str]] = []
     for meeting in meetings:
         cues = parse_vtt(meeting.transcript)
         for window in _windows(cues):
-            overlap = query_tokens & _tokens(" ".join(cue.text for cue in window))
-            if overlap:
-                scored.append(Excerpt(meeting=meeting, cues=window, score=len(overlap)))
+            text = " ".join(cue.text for cue in window)
+            candidates.append(
+                (meeting, window, float(len(query_tokens & _tokens(text))), text)
+            )
+
+    # A question made only of stopwords — "what did we do about it" — says
+    # nothing specific, but embeds to a perfectly ordinary vector and will sit
+    # somewhere near any passage of English. Keyword overlap rejects it by
+    # construction; semantic scoring has to be told, or every contentless
+    # question comes back with a confident answer to something else.
+    model = load_semantic_model() if query_tokens else None
+    if model is not None and candidates:
+        try:
+            scores = similarities(model, query, [text for _m, _w, _s, text in candidates])
+            # A passage counts as an answer if it shares a word with the
+            # question, or if it is *clearly* about the same thing. Anything
+            # weaker scores zero and falls through to the "nothing matched"
+            # path, which is what keeps the fallback honest.
+            candidates = [
+                (
+                    meeting,
+                    window,
+                    keyword + (similarity * SEMANTIC_WEIGHT if similarity >= MIN_SEMANTIC_MATCH else 0.0),
+                    text,
+                )
+                for (meeting, window, keyword, text), similarity in zip(candidates, scores)
+            ]
+        except Exception:  # never lose a search to the ranker
+            logger.warning("Semantic ranking failed; using keyword overlap", exc_info=True)
+
+    scored = [
+        Excerpt(meeting=meeting, cues=window, score=score)
+        for meeting, window, score, _text in candidates
+        if score > 0
+    ]
 
     if scored:
         scored.sort(key=lambda e: (-e.score, e.meeting.start_time, e.cues[0].start_ms))

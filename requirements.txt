@@ -34,6 +34,14 @@ python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app
 sherpa-onnx>=1.13   # segmentation + speaker embedding + clustering, all local
 soundfile>=0.12     # reads the 16 kHz WAV the diariser is handed
 
+# Semantic meeting search (app/meetings/semantic.py). model2vec distils a
+# sentence transformer into a fixed table of token vectors, so inference is
+# numpy over a lookup: no PyTorch, no GPU, ~30 MB. That matters more than the
+# last few points of quality, because this runs on the same air-gapped box as
+# everything else and a 2 GB deep-learning stack would not be deployed.
+# Guarded: without it, ranking falls back to keyword overlap.
+model2vec>=0.9
+
 # Optional biotech tool dependencies — imports are guarded so the app still
 # runs without them (stub results instead); install for real tool behavior.
 biopython>=1.83

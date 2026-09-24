@@ -198,13 +198,21 @@ async def run_digest_command(
     history: Any | None = None,
     actor_id: str | None = None,
     auto_context: AutoContext | None = None,
+    scheduler=None,
 ) -> None:
     """Handle one ``/digest ...`` invocation.
 
     ``history`` and ``actor_id`` are optional so this function stays usable on
     its own; both production apps always supply them, and their
     ``auto_context`` switch as well.
+
+    The optional model summary goes through ``scheduler`` (the app's
+    ``Scheduler``), so it waits for a chat reply to finish instead of
+    competing with it. ``backend`` is still accepted for callers without an
+    app; it then gets a scheduler of its own (see ``context.digest.summarize``).
     """
+    if scheduler is not None:
+        backend = scheduler
     args = args.strip()
     verb, _, rest = args.partition(" ")
     verb, rest = verb.lower(), rest.strip()

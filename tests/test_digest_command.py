@@ -119,6 +119,11 @@ async def test_prose_gets_the_model_summary_on_top_of_the_computed_one(tmp_path)
         assert "How to handle samples before an assay." in notices(app)
         stored = app.context_store.list()[0]
         assert stored.digest.generated_by == "test-model"
+        # Sent through the app's scheduler with the digest's limits.
+        from bedrock.context.digest import DIGEST_REPLY_TOKENS
+        from bedrock.inference import RequestOptions
+
+        assert backend.request_options == [RequestOptions(max_tokens=DIGEST_REPLY_TOKENS, reasoning=False)]
 
 
 async def test_structured_data_never_calls_the_model(tmp_path):

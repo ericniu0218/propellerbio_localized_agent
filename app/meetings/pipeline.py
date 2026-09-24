@@ -11,13 +11,15 @@ What this module adds is the part that was missing — a recording that did not
 come from Zoom. Browser audio arrives as WebM/Opus, gets normalised to the
 16 kHz mono PCM whisper wants, and comes back as WEBVTT plus notes.
 
-**One speaker track, so no speaker names.** Zoom's local recordings can write a
+**Speakers are worked out, not known.** Zoom's local recordings can write a
 separate file per participant, which is where bedrock-private-ai's perfect
 speaker labels come from — every word in Bob's file was said by Bob, by
-construction. A microphone in a meeting room is one mixed track and offers no
-such thing, and guessing with a diarisation model would put confident names on
-the wrong sentences. So these transcripts are honestly unattributed, and
-`TranscriptionOutcome.attributed` says so to whoever displays them.
+construction. A microphone in a room has no such thing to offer, so the voices
+have to be told apart from the audio itself, in `diarize.py`. That is a good
+deal better than nothing and a good deal worse than Zoom's per-participant
+tracks, so the labels are provisional, renameable, and the meeting page says
+how they were arrived at. Without the diarisation models installed a recording
+transcribes exactly as before and is reported as unattributed.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from datetime import date
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
+from app.meetings.diarize import assign, diarize
 from app.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
@@ -68,9 +71,9 @@ class TranscriptionOutcome:
     duration_ms: int
     summary: "MeetingSummary | None" = None
     attributed: bool = False
-    """False whenever the audio was one mixed track, which is every recording
-    this module makes. Kept as a field rather than hardcoded so a future
-    per-participant capture path does not have to change every caller."""
+    """True once speakers have been told apart. One mixed track carries no
+    attribution of its own, so this is whether diarisation succeeded."""
+    speaker_count: int = 0
     vocabulary: VocabularyReport = field(default_factory=VocabularyReport)
     """Which mis-heard words were repaired against the configured terms."""
     notes: list[str] = field(default_factory=list)
@@ -96,6 +99,7 @@ async def transcribe(
     config: RecordingConfig,
     work_dir: Path,
     on_progress=None,
+    expected_speakers: int | None = None,
 ) -> TranscriptionOutcome:
     """Turn one recorded audio file into timestamped cues and WEBVTT.
 
@@ -129,10 +133,28 @@ async def transcribe(
 
     duration_ms = await transcriber.duration_ms(wav)
 
+    # Speakers are worked out *before* transcription, not after, because the
+    # cue is the unit a speaker label attaches to. Whisper cuts on silence, so
+    # two people talking without a gap land in one cue, and labelling that cue
+    # afterwards can only pick a winner — on a real recording it produced one
+    # nineteen-second cue holding both sides of "What's your name? My name's
+    # Luke". Handing the voice-change offsets to the slicer instead means each
+    # cue holds one person to begin with.
+    if on_progress:
+        on_progress("Identifying speakers")
+    speakers = diarize(
+        wav,
+        config.segmentation_model,
+        config.embedding_model,
+        expected_speakers=expected_speakers,
+        threads=min(config.threads, 4),
+    )
+    boundaries = sorted({t.start_ms for t in speakers.turns} | {t.end_ms for t in speakers.turns})
+
     if on_progress:
         on_progress("Transcribing speech")
     try:
-        cues = await transcriber.transcribe_track(wav, work_dir)
+        cues = await transcriber.transcribe_track(wav, work_dir, split_at_ms=boundaries)
     except Exception as exc:
         # An empty recording is a real, ordinary outcome — somebody pressed
         # Record on a muted microphone. It is reported as an empty transcript
@@ -161,16 +183,16 @@ async def transcribe(
         for cue, text in zip(cues, repaired)
     ]
 
+    cues, speaker_note, speaker_count = _apply_speakers(cues, speakers)
+
     outcome = TranscriptionOutcome(
         vtt=to_vtt(cues),
         cues=cues,
         duration_ms=duration_ms,
-        attributed=False,
+        attributed=speaker_count > 0,
+        speaker_count=speaker_count,
         vocabulary=vocabulary_report,
-        notes=[
-            "Speakers are not identified. This was recorded as a single mixed "
-            "audio track, so the transcript records what was said, not who said it."
-        ],
+        notes=[speaker_note],
     )
     if vocabulary_report.total:
         outcome.notes.append(
@@ -180,6 +202,41 @@ async def transcribe(
     if not cues:
         outcome.notes.append("No speech was found in this recording.")
     return outcome
+
+
+def _apply_speakers(cues, result):
+    """Label the cues with who said them, or explain why nobody could be.
+
+    Returns the cues, one plain-language note for the person who recorded, and
+    how many speakers were found. Never raises: a meeting whose voices could
+    not be told apart is still worth keeping, and the transcript is the part
+    that cannot be recreated.
+    """
+    if not result.ok:
+        return (
+            cues,
+            "Speakers are not identified. "
+            + (result.note or "This was recorded as a single mixed audio track.")
+            + " The transcript records what was said, not who said it.",
+            0,
+        )
+
+    labelled, counts = assign(cues, result)
+    found = len(counts)
+    if result.estimated:
+        note = (
+            f"{found} speakers were identified, but nobody said how many people "
+            "were in the meeting, so that number was guessed. On a recording "
+            "where people talk over each other the guess splits one person into "
+            "several — say how many were there when you record, and re-record "
+            "if these look wrong."
+        )
+    else:
+        note = (
+            f"{found} speakers were identified. Labels are provisional — rename "
+            "them on this page so the notes carry real names."
+        )
+    return labelled, note, found
 
 
 async def summarise(

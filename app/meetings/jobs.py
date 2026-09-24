@@ -158,6 +158,7 @@ async def process(
     typed_notes: str | None,
     started_at: datetime,
     deliver,
+    expected_speakers: int | None = None,
 ) -> None:
     """The whole path from a file on disk to a meeting somebody can ask about."""
 
@@ -165,7 +166,11 @@ async def process(
         jobs.advance(job, stage)
 
     outcome: TranscriptionOutcome = await transcribe(
-        job.audio_path, config, job.work_dir, on_progress=progress
+        job.audio_path,
+        config,
+        job.work_dir,
+        on_progress=progress,
+        expected_speakers=expected_speakers,
     )
     outcome = await summarise(
         outcome,
@@ -190,6 +195,7 @@ async def process(
             "durationMs": outcome.duration_ms,
             "source": "recording",
             "attributed": outcome.attributed,
+            "speakerCount": outcome.speaker_count,
             "caveats": outcome.notes,
             "demo": False,
             **fields,

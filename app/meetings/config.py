@@ -21,6 +21,11 @@ from pathlib import Path
 DEFAULT_MODEL_DIR = Path.home() / ".cache" / "whisper-models"
 DEFAULT_SPEECH_MODEL = "ggml-small.en.bin"
 DEFAULT_VAD_MODEL = "ggml-silero-v5.1.2.bin"
+# Speaker identification. Optional: without these a recording still
+# transcribes, and is reported as unattributed exactly as before.
+DEFAULT_DIARIZATION_DIR = "diarization"
+DEFAULT_SEGMENTATION_MODEL = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+DEFAULT_EMBEDDING_MODEL = "nemo_en_titanet_large.onnx"
 
 # Whisper is CPU-bound and scales nearly linearly until it runs out of
 # performance cores. The upstream default of 4 left most of this machine idle
@@ -48,6 +53,8 @@ class RecordingConfig:
 
     speech_model: Path
     vad_model: Path
+    segmentation_model: Path
+    embedding_model: Path
     threads: int
     vocabulary: str | None
     language: str
@@ -64,6 +71,18 @@ class RecordingConfig:
             ).expanduser(),
             vad_model=Path(
                 os.environ.get("MEETING_VAD_MODEL", str(model_dir / DEFAULT_VAD_MODEL))
+            ).expanduser(),
+            segmentation_model=Path(
+                os.environ.get(
+                    "MEETING_SEGMENTATION_MODEL",
+                    str(model_dir / DEFAULT_DIARIZATION_DIR / DEFAULT_SEGMENTATION_MODEL),
+                )
+            ).expanduser(),
+            embedding_model=Path(
+                os.environ.get(
+                    "MEETING_EMBEDDING_MODEL",
+                    str(model_dir / DEFAULT_DIARIZATION_DIR / DEFAULT_EMBEDDING_MODEL),
+                )
             ).expanduser(),
             threads=int(os.environ.get("MEETING_WHISPER_THREADS", _default_threads())),
             vocabulary=os.environ.get("MEETING_VOCABULARY") or None,

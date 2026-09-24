@@ -61,6 +61,8 @@ def test_readiness_names_every_missing_piece_at_once(tmp_path):
     config = RecordingConfig(
         speech_model=tmp_path / "absent.bin",
         vad_model=tmp_path / "also-absent.bin",
+        segmentation_model=tmp_path / "no-segmentation.onnx",
+        embedding_model=tmp_path / "no-embedding.onnx",
         threads=4,
         vocabulary=None,
         language="en",

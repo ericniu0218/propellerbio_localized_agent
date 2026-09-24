@@ -141,6 +141,41 @@ def _is_inflection(token: str, term: str) -> bool:
     return any(lowered == base + suffix for suffix in _INFLECTIONS)
 
 
+# Words that are never a mis-hearing of anything, however close they look.
+#
+# This list is the difference between a useful repair and a corrupted record.
+# "Luke" is one edit and 75% similar to "like", and on a real recording the
+# repair turned three spoken "like"s into "Luke" — in a meeting that actually
+# had somebody called Luke in it, so the result read as plausible and was
+# wrong. Common speech is dense with short words that sit one edit from a
+# name: like/Luke, well/Will, man/Max, rain/Ravi, the/Thea, sam/same.
+#
+# Frequency is the right test — a word this common in speech is far more
+# likely to be itself than to be a fumbled proper noun — and a fixed list is
+# enough, because the failure mode is confined to very common short words.
+_COMMON_WORDS = frozenset(
+    """
+    the be to of and a in that have i it for not on with he as you do at this
+    but his by from they we say her she or an will my one all would there their
+    what so up out if about who get which go me when make can like time no just
+    him know take people into year your good some could them see other than then
+    now look only come its over think also back after use two how our work first
+    well way even new want because any these give day most us is are was were
+    been has had did does said says going got went come came thing things
+    something anything nothing everyone someone yeah yes okay ok right sure
+    maybe really very much many more less lest here there where why while
+    before during again still every each both few own same such through
+    between under above down off out over again once
+    man men woman women boy girl kid guy name names call called
+    rain sun cold warm class exam test paper note notes
+    """.split()
+)
+
+
+def is_common_word(token: str) -> bool:
+    return token.casefold().strip("'s") in _COMMON_WORDS
+
+
 def looks_like_a_name(token: str, sentence_initial: bool) -> bool:
     """Whether the token is shaped like a proper noun rather than a word.
 
@@ -164,6 +199,11 @@ def looks_like_a_name(token: str, sentence_initial: bool) -> bool:
 def _match(token: str, terms: list[str], sentence_initial: bool = True) -> str | None:
     """The term this token is a misspelling of, or None to leave it alone."""
     if len(token) < MIN_TOKEN_LENGTH:
+        return None
+    # An ordinary word spelled in lower case is itself. Capitals still qualify,
+    # because whisper writes an unfamiliar name as capitals and "LUKE" in the
+    # middle of a sentence is not the adverb.
+    if not looks_like_a_name(token, sentence_initial) and is_common_word(token):
         return None
     lowered = token.casefold()
     # A name-shaped token is allowed a looser similarity, because the shape is

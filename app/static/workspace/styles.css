@@ -391,3 +391,17 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
   .record-bar { gap: 10px; }
   .record-meter { flex-basis: 100%; }
 }
+
+/* Speaker names on a recorded meeting. */
+.speaker-panel {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; margin: 12px 0;
+}
+.speaker-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.speaker-row { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; min-width: 0; }
+.speaker-row input {
+  background: var(--panel-3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px; width: 100%;
+}
+.speaker-row input:focus { outline: none; border-color: var(--accent); }
+.speaker-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }

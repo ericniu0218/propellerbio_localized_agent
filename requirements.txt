@@ -23,9 +23,16 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # and an invented one was indistinguishable from a real one; and it predates
 # the summariser fix that stops llama3.1:8b handing its own JSON placeholders
 # back as content ("owner": "name or null" reaching a reader as an action item).
-bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@19708d24443728f1d63347d5a3449be6bd8c139d
+bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@df5a5c258ad6fc6e2081b1b57e662b5018c0960e
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
+
+# Speaker identification for recorded meetings (app/meetings/diarize.py). ONNX
+# only - no PyTorch - so it stays installable on the same box as everything
+# else. Imports are guarded: without these a recording still transcribes and is
+# reported as unattributed, exactly as it was before.
+sherpa-onnx>=1.13   # segmentation + speaker embedding + clustering, all local
+soundfile>=0.12     # reads the 16 kHz WAV the diariser is handed
 
 # Optional biotech tool dependencies — imports are guarded so the app still
 # runs without them (stub results instead); install for real tool behavior.

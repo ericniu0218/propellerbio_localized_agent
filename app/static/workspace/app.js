@@ -300,7 +300,7 @@
     if (view === "chats") return renderChatView(body, force);
     if (view === "projects") return renderProjectsView(body);
     if (view === "memory") return renderMemoryView(body);
-    if (view === "meetings") return renderMeetingsView(body);
+    if (view === "meetings") return renderMeetingsView(body, force);
     if (view === "settings") return renderSettingsView(body);
   }
 
@@ -688,12 +688,23 @@
   }
 
   // ==================== MEETINGS ====================
-  function renderMeetingsView(body) {
+  function renderMeetingsView(body, force) {
+    // The poll above re-renders every 1.8 seconds. Without this check the
+    // whole view is torn down and rebuilt each time, which throws away the
+    // transcript's scroll position — scroll into a long transcript and it
+    // snaps back to the top before you can read a line. Rebuild only when
+    // something actually changed, the way the chat view already does.
+    const sig = "meetings:" + currentMeetingId + "|" + (recording ? "rec" : "") + "|"
+      + recordingJobs.map((j) => j.id + j.status + j.stage).join(",") + "|"
+      + state.meetings.map((m) => m.id + (m.title || "") + (m.summary || "").length).join(",");
+    if (sig === lastRenderSig.center && !force) return;
+    lastRenderSig.center = sig;
+
     body.innerHTML = "";
     const pane = el("div", { class: "pane" });
     if (currentMeetingId) {
       const meeting = byId(state.meetings, currentMeetingId);
-      if (!meeting) { currentMeetingId = null; return renderMeetingsView(body); }
+      if (!meeting) { currentMeetingId = null; return renderMeetingsView(body, true); }
       pane.appendChild(el("a", { class: "back-link", onclick: () => { currentMeetingId = null; renderCenter(true); } }, [icon("chevronright", "rotate180"), "All meetings"]));
       const card = el("div", { class: "detail-card" });
       card.appendChild(el("h2", {}, meeting.title));
@@ -704,6 +715,8 @@
       if (facts.length) card.appendChild(el("div", { class: "row-sub" }, facts.join(" · ")));
       (meeting.caveats || []).forEach((note) =>
         card.appendChild(el("div", { class: "meeting-caveat" }, note)));
+      const speakerPanel = renderSpeakerNames(meeting);
+      if (speakerPanel) card.appendChild(speakerPanel);
       card.appendChild(el("p", { class: "detail-desc" }, meeting.summary || ""));
       // Only sections that have something in them. A recording never has
       // speaker names or extracted deadlines, so printing "None extracted."
@@ -761,6 +774,46 @@
       });
     pane.appendChild(grid);
     body.appendChild(pane);
+  }
+
+  // Diarisation can tell voices apart but has no idea whose they are, so it
+  // hands back "Speaker 1" and somebody has to say who that is. Without this
+  // the labels are nearly useless: an action item owned by "Speaker 2" is no
+  // more use than one owned by nobody.
+  function renderSpeakerNames(meeting) {
+    const labels = [...new Set((meeting.transcript || "").match(/^Speaker \d+(?=:)/gm) || [])]
+      .sort((a, b) => parseInt(a.slice(8), 10) - parseInt(b.slice(8), 10));
+    if (!labels.length) return null;
+
+    const panel = el("div", { class: "speaker-panel" });
+    panel.appendChild(el("div", { class: "section-title", style: "margin:0 0 8px" }, "Who was speaking"));
+    panel.appendChild(el("p", { class: "muted small", style: "margin:0 0 10px" },
+      "Type a name to replace the label everywhere in this meeting — transcript, decisions and action items."));
+    const inputs = labels.map((label) => {
+      const input = el("input", { placeholder: label, "data-label": label });
+      return el("label", { class: "speaker-row" }, [el("span", { class: "muted small" }, label), input]);
+    });
+    panel.appendChild(el("div", { class: "speaker-grid" }, inputs));
+
+    const status = el("span", { class: "muted small" });
+    const save = el("button", { class: "btn small", onclick: async () => {
+      const names = {};
+      $$(".speaker-row input", panel).forEach((i) => {
+        if (i.value.trim()) names[i.dataset.label] = i.value.trim();
+      });
+      if (!Object.keys(names).length) { status.textContent = "Type at least one name."; return; }
+      save.disabled = true; status.textContent = "Saving…";
+      try {
+        await api(`/meetings/${meeting.id}/speakers`, { method: "POST", body: { names } });
+        await refresh();
+        renderCenter(true);
+      } catch (err) {
+        status.textContent = err.message;
+        save.disabled = false;
+      }
+    } }, "Rename");
+    panel.appendChild(el("div", { class: "speaker-actions" }, [save, status]));
+    return panel;
   }
 
   // ==================== RECORDING ====================
@@ -881,9 +934,15 @@
       control, el("div", {}, [el("div", {}, label), hint ? el("div", { class: "muted small" }, hint) : null]),
     ]);
 
+    const speakerInput = el("input", { type: "number", min: "1", max: "20", placeholder: "e.g. 4" });
     body.appendChild(field("Meeting name", titleInput));
     body.appendChild(field("Project", projSelect));
+    body.appendChild(field("How many people will be speaking?", speakerInput,
+      "Worth filling in. Left to guess from the audio alone it over-counts badly when people talk over each other — on a real three-person call it found twenty-four. Given the number, it is reliable. You can rename the speakers afterwards."));
+    const roomMode = el("input", { type: "checkbox", checked: true });
     body.appendChild(check(useMic, "This device's microphone", "For a meeting in a room, and for your own voice on a call."));
+    body.appendChild(check(roomMode, "Several people in the room",
+      "Turns off the noise suppression and echo cancellation a laptop applies by default. Both are tuned for one person close to the microphone and treat a voice across the room as noise to remove — which is the voice you want. Turn this off if you are recording only yourself."));
     body.appendChild(check(useSystem, "Audio from an online meeting",
       "Captures a browser tab. Chrome will ask which to share — pick the meeting tab and tick “Also share tab audio”. On macOS whole-screen audio is not available, so join the call in a browser tab, or select a loopback device above."));
     body.appendChild(field("Microphone", micSelect));
@@ -907,7 +966,9 @@
           notes: notesInput.value.trim() || null,
           useMic: useMic.checked,
           useSystem: useSystem.checked,
+          roomMode: roomMode.checked,
           deviceId: micSelect.value || null,
+          expectedSpeakers: parseInt(speakerInput.value, 10) || null,
         });
         dialog.close();
       } catch (err) {
@@ -926,6 +987,7 @@
     const session = new Recorder.Session({
       useMic: opts.useMic,
       useSystem: opts.useSystem,
+      roomMode: opts.roomMode,
       deviceId: opts.deviceId,
       onLevel: (level) => {
         if (!recordingUI) return;
@@ -992,6 +1054,7 @@
         title: session.meetingTitle,
         projectId: session.options.projectId,
         notes: session.options.notes,
+        expectedSpeakers: session.options.expectedSpeakers,
         durationSeconds,
         onProgress: (fraction) => {
           pending.stage = "Uploading " + Math.round(fraction * 100) + "%";

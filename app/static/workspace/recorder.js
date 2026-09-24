@@ -60,8 +60,9 @@
    * leaked microphone track leaves the browser's recording indicator lit, which
    * is alarming and looks like the app is still listening. */
   class Session {
-    constructor({ useMic, useSystem, deviceId, onLevel, onTick, onEnded, onError }) {
+    constructor({ useMic, useSystem, deviceId, roomMode, onLevel, onTick, onEnded, onError }) {
       this.useMic = useMic;
+      this.roomMode = !!roomMode;
       this.useSystem = useSystem;
       this.deviceId = deviceId;
       this.onLevel = onLevel;
@@ -122,11 +123,23 @@
 
       if (this.useMic) {
         let mic;
+        // A laptop microphone defaults to settings tuned for one person
+        // talking into it from two feet away on a call: echo cancellation and
+        // noise suppression both treat a second voice across the room as noise
+        // and duck it, and that is exactly the voice a meeting recording
+        // exists to capture. Room mode turns both off and leans on automatic
+        // gain instead, which lifts the quiet far-side speakers rather than
+        // removing them.
+        const shaping = this.roomMode
+          ? { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+          : {};
         try {
           mic = await navigator.mediaDevices.getUserMedia({
-            audio: this.deviceId
-              ? { deviceId: { exact: this.deviceId }, channelCount: 1 }
-              : { channelCount: 1 },
+            audio: Object.assign(
+              { channelCount: 1 },
+              shaping,
+              this.deviceId ? { deviceId: { exact: this.deviceId } } : {}
+            ),
           });
         } catch (err) {
           await this.release();
@@ -209,7 +222,7 @@
     }
   }
 
-  function upload({ blob, startedAt, mime, title, projectId, notes, durationSeconds, onProgress }) {
+  function upload({ blob, startedAt, mime, title, projectId, notes, expectedSpeakers, durationSeconds, onProgress }) {
     const form = new FormData();
     form.append("audio", blob, "recording" + extensionFor(mime));
     form.append("title", title || "");
@@ -217,6 +230,7 @@
     form.append("durationSeconds", String(Math.round(durationSeconds)));
     if (projectId) form.append("projectId", projectId);
     if (notes) form.append("notes", notes);
+    if (expectedSpeakers) form.append("expectedSpeakers", String(expectedSpeakers));
 
     // XHR rather than fetch: an hour of audio is a real upload and the person
     // deserves a progress bar, which fetch cannot report.

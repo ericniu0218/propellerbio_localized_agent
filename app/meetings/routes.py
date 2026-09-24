@@ -19,10 +19,12 @@ existing `/uploads` cap of 28 MB of base64 would refuse a long meeting.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from app.meetings.config import (
     MAX_RECORDING_BYTES,
@@ -70,6 +72,7 @@ async def create_recording(
     notes: str | None = Form(None),
     startedAt: str | None = Form(None),
     durationSeconds: float | None = Form(None),
+    expectedSpeakers: int | None = Form(None),
     user=Depends(identity),
 ):
     """Accept a recording and start turning it into a meeting."""
@@ -147,11 +150,63 @@ async def create_recording(
             typed_notes=notes,
             started_at=started_at,
             deliver=deliver_recording,
+            expected_speakers=expectedSpeakers,
         )
 
     _jobs.start(job, runner)
     workspace.audit(user["id"], "recorded meeting", job_id)
     return job.public()
+
+
+class SpeakerNames(BaseModel):
+    names: dict[str, str]
+
+
+@router.post("/{meeting_id}/speakers")
+def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity)):
+    """Replace "Speaker 2" with a real name everywhere in one meeting.
+
+    Diarisation can tell voices apart but has no idea whose they are, so the
+    labels it produces are placeholders and somebody has to say who is who.
+    The rename happens on the server, in one pass over every field, because the
+    label appears in the transcript, in each decision and action item, and in
+    the people list — renaming in only some of those leaves a meeting that
+    contradicts itself.
+
+    Whole-label matches only. Substituting "Speaker 1" inside a longer string
+    would corrupt "Speaker 10" on a meeting with a dozen people in it.
+    """
+    workspace = store()
+    meeting = require_object(workspace, user["id"], meeting_id, "meetings")
+
+    renames = {
+        old.strip(): new.strip()
+        for old, new in body.names.items()
+        if old.strip() and new.strip() and old.strip() != new.strip()
+    }
+    if not renames:
+        return meeting
+
+    pattern = re.compile(
+        r"\b(" + "|".join(re.escape(old) for old in sorted(renames, key=len, reverse=True)) + r")\b"
+    )
+
+    def swap(value):
+        if isinstance(value, str):
+            return pattern.sub(lambda m: renames[m.group(1)], value)
+        if isinstance(value, list):
+            return [swap(item) for item in value]
+        return value
+
+    for field in ("transcript", "summary", "enhancedNotes", "decisions", "actions",
+                  "findings", "deadlines", "questions", "people"):
+        if field in meeting:
+            meeting[field] = swap(meeting[field])
+
+    meeting["speakerNames"] = {**meeting.get("speakerNames", {}), **renames}
+    saved = workspace.put(user["id"], "meetings", meeting)
+    workspace.audit(user["id"], "renamed meeting speakers", meeting_id)
+    return saved
 
 
 @router.get("/recordings/{job_id}")

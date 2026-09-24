@@ -129,7 +129,17 @@ brew install whisper-cpp ffmpeg
 mkdir -p ~/.cache/whisper-models && cd ~/.cache/whisper-models
 curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 curl -LO https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+
+# Speaker identification. Optional — without these a recording still
+# transcribes and is reported as unattributed.
+mkdir -p diarization && cd diarization
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+tar xjf sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx
 ```
+
+The embedding model's release tag is spelled `speaker-recongition-models`
+upstream — that typo is in the URL and is not a mistake here.
 
 The VAD model is in a *different* Hugging Face repo from the speech model, and
 it is not optional: without it, timestamps on a track containing silence drift
@@ -151,6 +161,8 @@ the meeting is already gone.
 | `MEETING_SUMMARY_MODEL` | `llama3.1:8b` | the local model that writes the notes |
 | `MEETING_SUMMARY_ENDPOINT` | `http://localhost:11434/v1` | vLLM/SGLang in production |
 | `MEETING_RECORDING_DIR` | `data/recordings` | where audio is kept |
+| `MEETING_SEGMENTATION_MODEL` | `<dir>/diarization/sherpa-onnx-pyannote-segmentation-3-0/model.onnx` | speaker segmentation |
+| `MEETING_EMBEDDING_MODEL` | `<dir>/diarization/nemo_en_titanet_large.onnx` | speaker embedding |
 
 **`MEETING_VOCABULARY` is the highest-value setting here.** Whisper spells
 words it does not know phonetically: across test runs of the same audio it
@@ -189,14 +201,51 @@ why uploading returns a job id and the browser polls rather than waiting. Jobs
 live in memory: a server restart mid-transcription loses the job but not the
 audio, which stays under `MEETING_RECORDING_DIR` and can be re-submitted.
 
-### Speakers are not identified
+### Speakers
 
 Zoom's local recordings can write one audio file per participant, which is
 where bedrock-private-ai's perfect speaker labels come from — every word in
-Bob's file was said by Bob, by construction. A microphone in a room is one
-mixed track and offers nothing equivalent, and a diarisation model would put
-confident names on the wrong sentences. So these transcripts record what was
-said, not who said it, and the meeting page says so where somebody will read it.
+Bob's file was said by Bob, by construction. A microphone in a room offers
+nothing equivalent, so the voices are told apart from the audio itself
+(`app/meetings/diarize.py`): a segmentation model finds the voice changes, an
+embedding model turns each stretch into a vector, and the vectors are
+clustered. All ONNX, all local.
+
+**Say how many people are in the meeting.** The Record dialog asks, and it
+matters more than it looks. Left to work the number out for itself the
+clustering over-splits badly on real meeting audio — on a genuine three-person
+call it found 46 speakers at the default setting and still 24 at the most
+conservative one, because people talked over each other and a half-second of
+two voices at once embeds like neither of them. Given the number it is
+reliable. Without one, diarisation still runs and the meeting page says the
+count was guessed.
+
+Two details worth knowing before changing any of this:
+
+- **Diarisation runs before transcription, not after.** The cue is the unit a
+  speaker label attaches to, and whisper cuts on silence — so two people
+  talking without a gap land in one cue, and labelling it afterwards can only
+  pick a winner. On a real recording that produced a single nineteen-second cue
+  holding both sides of *"What's your name?" / "My name's Luke."* The voice-change
+  offsets are handed to the slicer (`transcribe_track(..., split_at_ms=...)`)
+  so each cue holds one person to begin with.
+- **Overlapping turns are resolved shortest-first.** The diariser reports
+  simultaneous speech as overlapping turns. Resolving those longest-first
+  deletes every interjection sitting inside a longer turn, which collapsed a
+  two-person recording onto one speaker. See `flatten()`.
+
+Labels are provisional. `POST /workspace/api/meetings/{id}/speakers` replaces
+`Speaker 2` with a real name across the transcript, decisions, action items and
+people list in one pass — the Meetings page has the form. An action item owned
+by "Speaker 2" is no more use than one owned by nobody.
+
+### Recording a room full of people
+
+The Record dialog's "Several people in the room" box turns off the echo
+cancellation and noise suppression a laptop applies by default. Both are tuned
+for one person close to the microphone and treat a voice from across the room
+as noise to remove — which is exactly the voice worth capturing. Automatic gain
+stays on, to lift the quiet far-side speakers instead.
 
 ### Capturing an online meeting
 

@@ -148,3 +148,34 @@ def test_the_looser_rate_still_will_not_reach_a_distant_term():
     """Latitude on similarity, never on edit distance."""
     texts, _ = correct_texts(["BOSTON is the site"], "Priya, KRAS, sotorasib")
     assert "BOSTON" in texts[0]
+
+
+# --- Common words are never a mis-hearing -------------------------------------
+
+
+def test_a_common_word_is_never_repaired_into_a_name():
+    """The one that got through and corrupted a real transcript: "Luke" is a
+    single edit and 75% similar to "like", and three spoken "like"s became
+    "Luke" — in a meeting that really did have a Luke in it, so the result read
+    as plausible and was wrong."""
+    texts, report = correct_texts(["I was like, let's do a fake meeting"], "Luke, KRAS")
+    assert texts == ["I was like, let's do a fake meeting"]
+    assert report.total == 0
+
+
+def test_the_name_itself_still_survives_untouched():
+    texts, _ = correct_texts(["Hey Luke, come here"], "Luke")
+    assert "Luke" in texts[0]
+
+
+def test_capitals_beat_the_common_word_guard():
+    """Whisper writes an unfamiliar name in capitals, and "LUKE" mid-sentence
+    is not the adverb."""
+    texts, _ = correct_texts(["and then LUKI said no"], "Luke")
+    assert "Luke said no" in texts[0]
+
+
+def test_other_common_short_words_near_names_are_safe():
+    for word, term in [("well", "Will"), ("man", "Max"), ("name", "Dane"), ("class", "Clara")]:
+        texts, _ = correct_texts([f"the {word} was there"], term)
+        assert word in texts[0], f"{word} was corrupted into {term}"

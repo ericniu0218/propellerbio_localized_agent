@@ -81,7 +81,7 @@ second half - that was measured, see NEXT_STEPS.md section 6, which has the
 full plan, the step-by-step, and the model and company data it needs. It is
 blocked on a deployed embedding model.
 
-Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the *configured* model through `InferenceBackend` - never any other service. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
+Conversation sidebar: a clickable list on the left (`ConversationList` in `ui/widgets.py`, toggled with Ctrl+B) showing short summary titles. Titles come from `src/bedrock/titles.py`, which asks the configured server through the `Scheduler` as background work - never any other service - once the app is idle, using the model that last answered. A conversation stays "Untitled" until it has a concrete topic: a code check for real words, a YES/NO topic request, then the title request, whose result is rejected if it is NONE or only generic words (`VAGUE_WORDS`). The module docstring explains why the YES/NO step exists (tested against llama3.2). `FakeBackend` answers these separately (`topic_checks`, `title_requests`), so `requests` in tests holds only chat turns.
 
 Also built: local compliance and provenance. `bedrock.provenance` keeps an
 append-only SQLite action journal (`BEDROCK_HISTORY_DIR`) and a read-only
@@ -136,6 +136,21 @@ Non-UTF-8 and binary files (PDF, Excel, images) are refused, not guessed at.
 
 Not yet built (deliberately): binary attachments, embedding-based retrieval,
 terminal-client authentication.
+
+Also built: the laptop model runtime (`docs/roadmaps/LAPTOP_MEMORY.md`).
+`config/profile.py` holds the machine profiles (`laptop` by default,
+`workstation`, `server`; `BEDROCK_PROFILE`, `context_window` override): context
+window, reply limit, parallel calls, background policy, the largest model the
+app auto-picks. `InferenceBackend.stream_chat` takes `RequestOptions` (reply
+limit, stop words, JSON schema, reasoning off) and reports `Usage`.
+`inference/scheduler.py` runs calls by `Priority` - `CHAT`, then `USER_JOB`
+(`/digest` summary, meeting notes, planner), then `BACKGROUND` (titles) - one
+at a time on a laptop; a chat cancels running background work (`Preempted`,
+retried later, never a failure), background waits until idle and uses the
+model that last answered. `inference/tokens.py` estimates tokens and learns
+from reported counts. The status bar's `context` counter shows the last prompt
+against the window, locally only. The first-run check prints matching Ollama
+settings. New features read limits from the profile, not constants of their own.
 
 ## Development Philosophy
 

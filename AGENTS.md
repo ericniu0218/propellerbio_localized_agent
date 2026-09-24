@@ -113,6 +113,21 @@ authentication remains genuinely not built, per the line above; the
 agent-pack backend's `docs/WORKFLOW.md`/`docs/DEPLOYMENT.md` describe the
 intended Keycloak/OIDC login this client would eventually use instead.
 
+Also built: the laptop model runtime (`docs/roadmaps/LAPTOP_MEMORY.md`).
+`config/profile.py` holds the machine profiles (`laptop` by default,
+`workstation`, `server`; `BEDROCK_PROFILE`, `context_window` override): context
+window, reply limit, parallel calls, background policy, the largest model the
+app auto-picks. `InferenceBackend.stream_chat` takes `RequestOptions` (reply
+limit, stop words, JSON schema, reasoning off) and reports `Usage`.
+`inference/scheduler.py` runs calls by `Priority` - `CHAT`, then `USER_JOB`
+(`/digest` summary, meeting notes, planner), then `BACKGROUND` (titles) - one
+at a time on a laptop; a chat cancels running background work (`Preempted`,
+retried later, never a failure), background waits until idle and uses the
+model that last answered. `inference/tokens.py` estimates tokens and learns
+from reported counts. The status bar's `context` counter shows the last prompt
+against the window, locally only. The first-run check prints matching Ollama
+settings. New features read limits from the profile, not constants of their own.
+
 ## Development Philosophy
 
 Build the smallest working vertical slice first. Prioritise understandable, maintainable Python over abstraction. Explain important architectural decisions in plain English in docstrings, because some contributors are learning software development.

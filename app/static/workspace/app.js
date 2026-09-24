@@ -820,6 +820,17 @@
     return panel;
   }
 
+  // Shared by every dialog. These used to be local to the record dialog, and
+  // the voice-enrolment dialog called `field` — which threw "field is not
+  // defined" and stopped that modal opening at all.
+  const field = (label, control, hint) => el("div", { class: "field" }, [
+    el("label", {}, label), control,
+    hint ? el("div", { class: "muted small" }, hint) : null,
+  ]);
+  const check = (control, label, hint) => el("label", { class: "check-row" }, [
+    control, el("div", {}, [el("div", {}, label), hint ? el("div", { class: "muted small" }, hint) : null]),
+  ]);
+
   // ==================== RECORDING ====================
   const Recorder = window.BedrockRecorder;
   let recordingUI = null;     // live DOM nodes the timer/meter write into
@@ -906,7 +917,7 @@
   async function openVoiceEnroll() {
     const body = el("div", { class: "simple-form" });
     const nameInput = el("input", { placeholder: "e.g. Priya Raman" });
-    const status = el("p", { class: "muted small" }, "Read the line below for about ten seconds.");
+    const status = el("p", { class: "muted small" }, "Read the line above for about ten seconds.");
     const line = el("p", { class: "enroll-line" },
       "“This is my voice. I am saving it so meetings can label what I say, instead of calling me Speaker Two.”");
     const meterFill = el("div", { class: "record-meter-fill" });
@@ -1033,13 +1044,6 @@
       });
     } catch (_) {}
 
-    const field = (label, control, hint) => el("div", { class: "field" }, [
-      el("label", {}, label), control,
-      hint ? el("div", { class: "muted small" }, hint) : null,
-    ]);
-    const check = (control, label, hint) => el("label", { class: "check-row" }, [
-      control, el("div", {}, [el("div", {}, label), hint ? el("div", { class: "muted small" }, hint) : null]),
-    ]);
 
     const speakerInput = el("input", { type: "number", min: "1", max: "20", placeholder: "e.g. 4" });
     body.appendChild(field("Meeting name", titleInput));

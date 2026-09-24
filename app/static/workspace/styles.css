@@ -249,7 +249,19 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .modal h2 { margin: 0 0 4px; font-size: 17px; }
 .modal .modal-sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
 .modal-close { position: absolute; top: 16px; right: 16px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+/* Sticky, because a dialog taller than the window would otherwise hide its own
+   primary action below the fold. The Record dialog grew past the viewport when
+   the speaker count and consent fields were added, and "Start recording" ended
+   up 140px off-screen — reachable only by scrolling inside the modal, which
+   nobody thinks to do. The negative margins let it span the modal's padding so
+   the content scrolls cleanly underneath it. */
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  position: sticky; bottom: -24px; z-index: 1;
+  margin: 18px -24px -24px; padding: 16px 24px;
+  background: var(--panel); border-top: 1px solid var(--border);
+  border-radius: 0 0 18px 18px;
+}
 
 /* agent picker cards */
 .agent-cards { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
@@ -415,6 +427,11 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
   background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 999px; padding: 4px 6px 4px 12px;
 }
+/* In the record bar the meter is a flex item in a row; in a dialog it sits in
+   .simple-form, which is a flex *column*, so its flex-basis applied to height
+   and stretched the 8px bar into a 140px slab. */
+.simple-form > .record-meter { flex: none; height: 8px; width: 100%; }
+
 .enroll-line {
   font-size: 14px; line-height: 1.6; color: var(--text-secondary);
   background: var(--panel-2); border-left: 2px solid var(--accent);

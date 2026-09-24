@@ -104,3 +104,32 @@ def test_a_zero_vector_cannot_match_anything():
 def test_the_threshold_is_what_decides():
     assert identify({0: [0.7, 0.7, 0.0]}, [("Priya", ALICE)], minimum=0.9) == {}
     assert identify({0: [0.7, 0.7, 0.0]}, [("Priya", ALICE)], minimum=0.5) == {0: "Priya"}
+
+
+# --- Re-scoring individual cues ----------------------------------------------
+
+
+class FakeCue:
+    def __init__(self, start_ms, end_ms, speaker):
+        self.start_ms, self.end_ms, self.speaker = start_ms, end_ms, speaker
+
+
+def test_nothing_is_rescored_without_enrolled_voices(tmp_path):
+    from app.meetings.enrollment import rescore_cues
+
+    assert rescore_cues(tmp_path / "x.wav", [FakeCue(0, 5000, "Priya")], [], tmp_path / "m.onnx") == {}
+
+
+def test_nothing_is_rescored_without_cues(tmp_path):
+    from app.meetings.enrollment import rescore_cues
+
+    assert rescore_cues(tmp_path / "x.wav", [], [("Priya", ALICE)], tmp_path / "m.onnx") == {}
+
+
+def test_a_missing_file_is_not_an_error(tmp_path):
+    """A meeting is not worth losing because the working copy was cleaned up."""
+    from app.meetings.enrollment import rescore_cues
+
+    assert rescore_cues(
+        tmp_path / "gone.wav", [FakeCue(0, 5000, "Priya")], [("Priya", ALICE)], tmp_path / "m.onnx"
+    ) == {}

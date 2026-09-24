@@ -217,6 +217,73 @@ def cluster_embeddings(wav: Path, turns, model: Path, threads: int = 2) -> dict[
     return vectors
 
 
+def rescore_cues(
+    wav: Path,
+    cues: list,
+    enrolled: list[tuple[str, list[float]]],
+    model: Path,
+    threads: int = 2,
+    margin: float = 0.08,
+) -> dict[int, str]:
+    """Second opinion on individual cues, from their own audio.
+
+    Clustering assigns a whole stretch of speech to one speaker, so a cue that
+    sits near a handover inherits whichever cluster won the overlap — which is
+    where most misattribution comes from. A cue long enough to embed on its own
+    can be checked directly against the enrolled voices.
+
+    Returns only the cues to *change*, keyed by index, and only where the new
+    name beats the current one by `margin`. Requiring a margin rather than a
+    bare win matters: the two scores are computed from different amounts of
+    audio, so near-ties are noise, and flipping on noise would trade a
+    systematic error for a random one — which is harder to reason about and no
+    more accurate.
+    """
+    if not ENROLLMENT_AVAILABLE or not enrolled or not cues:
+        return {}
+    try:
+        audio, sample_rate = soundfile.read(str(wav), dtype="float32", always_2d=True)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Could not reopen %s to re-score cues: %s", wav, exc)
+        return {}
+
+    channel = audio[:, 0]
+    extractor = _extractor(model, threads)
+    references = {
+        name: numpy.array(vector, dtype=numpy.float32) for name, vector in enrolled
+    }
+
+    changes: dict[int, str] = {}
+    for index, cue in enumerate(cues):
+        # Below about a second and a half the vector is mostly the start of a
+        # word, and scoring it against anything is guesswork.
+        if cue.end_ms - cue.start_ms < 1500:
+            continue
+        piece = channel[
+            int(cue.start_ms / 1000 * sample_rate) : int(cue.end_ms / 1000 * sample_rate)
+        ]
+        if len(piece) < sample_rate:
+            continue
+        try:
+            vector = embed_samples(extractor, piece, sample_rate)
+        except Exception:  # pragma: no cover
+            continue
+
+        scores = {}
+        for name, reference in references.items():
+            denominator = numpy.linalg.norm(vector) * numpy.linalg.norm(reference)
+            if denominator:
+                scores[name] = float(numpy.dot(vector, reference) / denominator)
+        if not scores:
+            continue
+
+        best = max(scores, key=scores.get)
+        current = scores.get(cue.speaker, 0.0)
+        if best != cue.speaker and scores[best] >= threshold() and scores[best] - current >= margin:
+            changes[index] = best
+    return changes
+
+
 def identify(
     cluster_vectors: dict[int, list[float]],
     enrolled: list[tuple[str, list[float]]],

@@ -32,7 +32,7 @@ from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
 from app.meetings.diarize import assign, diarize, speaker_change_points
-from app.meetings.enrollment import cluster_embeddings, identify
+from app.meetings.enrollment import cluster_embeddings, identify, rescore_cues
 from app.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
@@ -199,6 +199,20 @@ async def transcribe(
             logger.warning("Voice-print matching failed: %s", exc)
 
     cues, speaker_note, speaker_count = _apply_speakers(cues, speakers, names)
+
+    # A cue near a handover inherits whichever cluster won the overlap, which
+    # is where most misattribution comes from. Cues long enough to embed on
+    # their own get a second opinion from their own audio.
+    if names and voice_prints:
+        try:
+            changes = rescore_cues(wav, cues, voice_prints, config.embedding_model,
+                                   threads=min(config.threads, 4))
+            for index, name in changes.items():
+                cues[index] = replace(cues[index], speaker=name)
+            if changes:
+                speaker_note += f" {len(changes)} line(s) were reassigned on a closer listen."
+        except Exception as exc:
+            logger.warning("Cue re-scoring failed: %s", exc)
 
     outcome = TranscriptionOutcome(
         vtt=to_vtt(cues),

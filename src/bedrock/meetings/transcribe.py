@@ -315,7 +315,7 @@ class WhisperTranscriber:
 
         turns = _group_regions(regions, self.config.turn_gap_ms)
         if split_at_ms:
-            turns = _split_turns_at(turns, split_at_ms)
+            turns = _split_turns_at(turns, split_at_ms, regions)
         slice_dir = work_dir / f"{wav.stem}.slices"
         slice_dir.mkdir(parents=True, exist_ok=True)
 
@@ -404,25 +404,50 @@ class WhisperTranscriber:
 # worse than leaving the two speakers in one cue.
 _MIN_SPLIT_PIECE_MS = 700
 
+# And each half has to contain this much actual speech. This is the guard that
+# matters, and it was learned the hard way: cutting a turn wherever a speaker
+# boundary falls produced slices that were mostly silence, and whisper does not
+# return nothing for near-silence - it invents. On a twelve-turn test recording,
+# splitting without this check turned 12 cues into 21, of which 8 were
+# hallucinated filler ("and", "and summer.", "and year-end.") sitting in the
+# gaps between turns. Speaker boundaries and speech boundaries are found by two
+# different models and do not agree, so a boundary regularly lands mid-silence.
+_MIN_SPLIT_SPEECH_MS = 400
 
-def _split_turns_at(turns: list[tuple[int, int]], points: list[int]) -> list[tuple[int, int]]:
+
+def _speech_within(regions: list[tuple[int, int]], start: int, end: int) -> int:
+    """How many milliseconds of detected speech fall inside a span."""
+    return sum(
+        max(0, min(end, region_end) - max(start, region_start))
+        for region_start, region_end in regions
+    )
+
+
+def _split_turns_at(
+    turns: list[tuple[int, int]],
+    points: list[int],
+    regions: list[tuple[int, int]] | None = None,
+) -> list[tuple[int, int]]:
     """Cut every turn at each offset that falls inside it.
 
-    Used to make cues speaker-homogeneous: see ``transcribe_track``. A cut that
-    would leave a fragment too short to transcribe is skipped, so a speaker
-    boundary landing a tenth of a second inside a turn does not produce a cue
-    holding half a syllable.
+    Used to make cues speaker-homogeneous: see ``transcribe_track``. A cut is
+    refused when either side would be too short to transcribe, or - given
+    ``regions``, the speech the VAD found - when either side would be mostly
+    silence. Both guards exist to stop whisper being handed a slice with no
+    words in it, because what comes back is not silence but invention.
     """
     ordered = sorted(set(points))
     result: list[tuple[int, int]] = []
     for start, end in turns:
-        cuts = [
-            point
-            for point in ordered
-            if start + _MIN_SPLIT_PIECE_MS <= point <= end - _MIN_SPLIT_PIECE_MS
-        ]
         previous = start
-        for point in cuts:
+        for point in ordered:
+            if not (previous + _MIN_SPLIT_PIECE_MS <= point <= end - _MIN_SPLIT_PIECE_MS):
+                continue
+            if regions is not None and (
+                _speech_within(regions, previous, point) < _MIN_SPLIT_SPEECH_MS
+                or _speech_within(regions, point, end) < _MIN_SPLIT_SPEECH_MS
+            ):
+                continue
             result.append((previous, point))
             previous = point
         result.append((previous, end))

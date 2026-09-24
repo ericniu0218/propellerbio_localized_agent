@@ -578,3 +578,29 @@ def test_several_cuts_in_one_turn_all_apply():
     from bedrock.meetings.transcribe import _split_turns_at
 
     assert _split_turns_at([(0, 12000)], [4000, 8000]) == [(0, 4000), (4000, 8000), (8000, 12000)]
+
+
+def test_a_cut_into_near_silence_is_refused():
+    """Speaker boundaries and speech boundaries come from two different models
+    and do not agree, so a boundary regularly lands mid-silence. Cutting there
+    hands whisper a slice with no words in it, and what comes back is not
+    silence but invention — on a twelve-turn recording this turned 12 cues into
+    21, of which 8 were hallucinated filler."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    # Speech on both sides of the cut: a legitimate speaker change, so cut.
+    regions = [(0, 4000), (9000, 13000)]
+    assert _split_turns_at([(0, 13000)], [6500], regions) == [(0, 6500), (6500, 13000)]
+
+    # Now a turn whose first side holds almost no speech. Cutting there hands
+    # whisper a slice of silence, and it fills it in rather than returning
+    # nothing, so the cut is refused and both speakers stay in one cue.
+    sparse = [(0, 200), (9000, 13000)]
+    assert _split_turns_at([(0, 13000)], [6500], sparse) == [(0, 13000)]
+
+
+def test_without_regions_the_speech_check_is_skipped():
+    """Callers that have no VAD data still get the length guard."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 10000)], [5000]) == [(0, 5000), (5000, 10000)]

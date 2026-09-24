@@ -285,11 +285,12 @@ async def test_plain_english_recall_with_no_match_tells_the_model_once(store):
         await pilot.pause()
         await send(app, pilot, "/new")
         await send(app, pilot, "do you remember when we discussed quantum knitting?")
-        assert NOTHING_FOUND in system_text(backend)
-        await send(app, pilot, "ok, explain it from scratch")
+        assert NOTHING_FOUND in backend.requests[-1][1][-1]["content"]
         assert NOTHING_FOUND not in system_text(backend)
+        await send(app, pilot, "ok, explain it from scratch")
+        assert NOTHING_FOUND not in backend.requests[-1][1][-1]["content"]
         await send(app, pilot, "do you remember what we talked about?")
-        assert NO_TOPIC in system_text(backend)
+        assert NO_TOPIC in backend.requests[-1][1][-1]["content"]
 
 
 async def test_excerpts_survive_switching_away_and_back_but_not_new(store):

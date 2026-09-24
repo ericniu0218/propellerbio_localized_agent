@@ -14,6 +14,8 @@ def make_app(backend: FakeBackend, model: str | None = None) -> BedrockApp:
 
 
 async def test_send_message_streams_reply(fake_backend: FakeBackend):
+    from bedrock.models.conversation import RECALL_INTRO
+
     app = make_app(fake_backend)
     async with app.run_test() as pilot:
         await pilot.pause()  # let on_mount workers pick the default model
@@ -32,7 +34,10 @@ async def test_send_message_streams_reply(fake_backend: FakeBackend):
         assert app.conversation.messages[1].content.strip() == "Hello from the fake model."
         # Backend received exactly what the conversation model produced.
         assert fake_backend.requests[0][0] == "test-model"
-        assert fake_backend.requests[0][1] == [{"role": "user", "content": "hi there"}]
+        assert fake_backend.requests[0][1] == [
+            {"role": "system", "content": RECALL_INTRO},
+            {"role": "user", "content": "hi there"},
+        ]
 
 
 async def test_relevant_stored_context_is_added_to_the_outgoing_message(fake_backend: FakeBackend, tmp_path):
@@ -58,12 +63,13 @@ async def test_relevant_stored_context_is_added_to_the_outgoing_message(fake_bac
 
         model_name, api_messages = fake_backend.requests[-1]
         system_text = "\n".join(m["content"] for m in api_messages if m["role"] == "system")
-        assert "Relevant stored context" in system_text
-        assert "assay.csv" in system_text
+        assert "Relevant stored context" not in system_text
+        assert "Relevant stored context" in api_messages[-1]["content"]
+        assert "assay.csv" in api_messages[-1]["content"]
 
         # The user's own bubble and the saved conversation both stay exactly
         # what was typed - the injected context lives only in the one-turn
-        # note, never in what's shown or saved.
+        # message, never in what's shown or saved.
         assert str(app.query_one(UserMessage).content) == "what was the ph in the assay results?"
         assert app.conversation.messages[0].content == "what was the ph in the assay results?"
         notices = [n.source for n in app.query(SystemNotice)]
@@ -71,6 +77,8 @@ async def test_relevant_stored_context_is_added_to_the_outgoing_message(fake_bac
 
 
 async def test_unrelated_message_has_no_injected_context(fake_backend: FakeBackend, tmp_path):
+    from bedrock.models.conversation import RECALL_INTRO
+
     app = BedrockApp(
         settings=Settings(model="test-model", context_dir=str(tmp_path / "context")),
         backend=fake_backend,
@@ -82,7 +90,10 @@ async def test_unrelated_message_has_no_injected_context(fake_backend: FakeBacke
         await pilot.pause()
 
         model_name, api_messages = fake_backend.requests[-1]
-        assert api_messages == [{"role": "user", "content": "good morning"}]
+        assert api_messages == [
+            {"role": "system", "content": RECALL_INTRO},
+            {"role": "user", "content": "good morning"},
+        ]
 
 
 async def test_model_command_lists_and_switches(fake_backend: FakeBackend):

@@ -52,6 +52,7 @@ from bedrock.inference import (
 )
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
+from bedrock.prompting import PromptBudget, PromptBuilder
 from bedrock.storage import ConversationDeleted, ConversationStore, ConversationSummary, StorageConflict, StorageError, create_store
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
@@ -476,6 +477,10 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if argument.casefold() in {"clear", "off", "none"}:
             conversation.recalled_context = None
             conversation.recalled_from = []
+            # Earlier sent prompts may hold excerpts in the in-memory prefix.
+            # Clearing recall must remove those copies too.
+            conversation._prompt_sent = {}
+            conversation._prompt_forced_trim = True
             self._recalled.pop(conversation.id, None)
             await self.post_notice("Removed the excerpts from past chats. Your next messages are sent without them.")
             return
@@ -507,6 +512,8 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if result.hits:
             conversation.recalled_context = build_context(result.hits)
             conversation.recalled_from = [f"{hit.title} ({format_when(hit.updated_at)})" for hit in result.hits]
+            conversation._prompt_sent = {}
+            conversation._prompt_forced_trim = True
             self._recalled[conversation.id] = (conversation.recalled_context, conversation.recalled_from)
         return result
 
@@ -1198,8 +1205,6 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 return
             self._prepared_questions[item.id] = question.timestamp
             await self.mount_message(UserMessage(attachments.display_text(text, attached)))
-            if notice := attachments.summary(attached):
-                await self.post_notice(notice)
 
         conversation, note = self.conversation, None
         if self.store is not None and wants_recall(text):
@@ -1229,22 +1234,31 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 return
 
         # Anything compressed earlier with /digest that matches this
-        # question, folded into `note` the same one-turn, never-saved way
-        # recall's NO_TOPIC/NOTHING_FOUND are - see
-        # bedrock.context.auto_inject for what this can and can't do.
+        # question becomes a bounded extra in the newest user message. It is
+        # never saved as part of what the employee typed; see
+        # bedrock.context.auto_inject for what keyword matching can and can't do.
         # Without this, /digest did nothing for the next question you
         # asked unless you remembered to search it yourself; that gap was
         # closed for AgentPackApp first and is closed here the same way.
         # The switch is read here, when the prompt actually starts, so one
         # that waited in the queue follows `/digest auto off` typed meanwhile.
-        injected = find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
+        passage_limit = self.settings.profile.auto_inject_passages
+        injected = (
+            await asyncio.to_thread(find_relevant_context, text, self.context_store, limit=passage_limit)
+            if self.auto_context.enabled and passage_limit > 0 else None
+        )
+        extras: dict[str, object] = {}
+        if note:
+            extras["note"] = note
+        if conversation.recalled_context:
+            extras["recall"] = conversation.recalled_context
         if injected is not None:
-            note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block
+            extras["passages"] = injected.prompt_block
             await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
         reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)
-        self.stream_reply(reply_widget, conversation, model_name, note, item)
+        self.stream_reply(reply_widget, conversation, model_name, extras, item)
 
     @work(exclusive=True, group="chat")
     async def stream_reply(
@@ -1252,7 +1266,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         widget: AssistantMessage,
         conversation: Conversation,
         model_name: str,
-        note: str | None = None,
+        extras: dict[str, object] | None = None,
         item: PromptItem | None = None,
     ) -> None:
         """Background worker: pull fragments from the backend into the widget.
@@ -1266,12 +1280,26 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         prompt_box.placeholder = "Responding… (Esc to stop)"
         # Serialise the history *before* adding the empty reply placeholder,
         # otherwise the model would see a blank assistant turn at the end.
-        api_messages = conversation.to_api(note)
+        try:
+            prompt = PromptBuilder(PromptBudget.from_profile(self.settings.profile)).build(conversation, extras)
+        except ValueError as exc:
+            self._streaming = False
+            prompt_box.placeholder = "Type a message, or /help for commands"
+            await self.post_notice(f"Could not fit this prompt in the model window: {exc}", kind="error")
+            if item is not None:
+                self.finish_prompt(item, ok=False)
+            return
+        api_messages = prompt.messages
+        for notice in prompt.notices:
+            await self.post_notice(notice)
         reply = conversation.add_assistant()
         stream = widget.begin_stream()
         answered = False
         try:
-            async for fragment in self.backend.stream_chat(model_name, api_messages):
+            async for fragment in self.scheduler.stream(
+                model_name, api_messages, priority=Priority.CHAT,
+                options=RequestOptions(max_tokens=self.settings.profile.reply_limit),
+            ):
                 reply.content += fragment
                 await stream.write(fragment)
                 self.scroll_chat_to_end()

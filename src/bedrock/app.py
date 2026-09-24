@@ -200,7 +200,12 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     @work(group="models")
     async def pick_default_model(self) -> None:
-        """If no model was configured, use the first one the server offers.
+        """If no model was configured, pick one that fits this machine.
+
+        That is the largest model the server lists whose size fits the
+        profile's ``max_auto_model_bytes``; when the server reports no sizes,
+        the first model it lists (see ``bedrock.inference.model_choice``). A
+        short notice says which model was picked and why.
 
         Then start filling in missing conversation titles, which needs a model
         to ask - so it has to wait until this point.
@@ -210,10 +215,15 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 models = await self.backend.list_models()
             except InferenceError:
                 return  # Connection indicator already tells the story; try again on /model.
-            if not models:
+            profile = self.settings.profile
+            choice = choose_default_model(models, profile.max_auto_model_bytes, profile.name)
+            if choice is None:
                 return
-            self.model_name = models[0].id
+            self.model_name = choice.model.id
             self._refresh_status()
+            # A toast rather than a chat notice: it explains a choice, it is
+            # not part of any conversation.
+            self.notify(choice.reason, title="Model", timeout=8)
         self.write_missing_titles()
 
     # ---- Input handling ---------------------------------------------------
@@ -281,10 +291,19 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if not models:
             await self.post_notice("The server reports no models. Pull one first, e.g. `ollama pull llama3.2`.", kind="error")
             return
+        profile = self.settings.profile
         lines = ["**Available models** (use `/model <name>` to switch)", ""]
         for model in models:
             marker = "→" if model.id == self.model_name else " "
-            lines.append(f"- {marker} `{model.id}`")
+            details = []
+            if model.size_bytes is not None:
+                details.append(format_size(model.size_bytes))
+            if fits(model, profile.max_auto_model_bytes) is False:
+                details.append(f"too large for the {profile.name} profile")
+            suffix = f" ({', '.join(details)})" if details else ""
+            lines.append(f"- {marker} `{model.id}`{suffix}")
+        if any(fits(model, profile.max_auto_model_bytes) is False for model in models):
+            lines += ["", f"Models marked too large may not fit in memory with a {profile.context_window:,}-token window. You can still choose one."]
         await self.post_notice("\n".join(lines))
 
     # ---- Structure prediction and viewing ---------------------------------

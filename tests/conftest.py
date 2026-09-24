@@ -52,8 +52,10 @@ class FakeBackend:
         connected: bool = True,
         title_reply: str | None = None,
         topic_reply: str = "YES",
+        model_sizes: dict[str, int] | None = None,
     ) -> None:
         self.models = models if models is not None else ["test-model", "other-model"]
+        self.model_sizes = model_sizes or {}
         self.reply = reply
         self.connected = connected
         self.title_reply = title_reply
@@ -73,7 +75,7 @@ class FakeBackend:
         return self.connected
 
     async def list_models(self) -> list[ModelInfo]:
-        return [ModelInfo(id=m) for m in self.models]
+        return [ModelInfo(id=m, size_bytes=self.model_sizes.get(m)) for m in self.models]
 
     async def stream_chat(
         self,

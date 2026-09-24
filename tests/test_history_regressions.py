@@ -231,6 +231,12 @@ async def test_unopened_history_is_never_loaded_for_titles(store, monkeypatch):
         await wait_for_app_workers(app)
         await pilot.pause()
         assert loaded == [app.conversation.id]
+        # Titles wait for a chat reply, so no model is loaded just to name one.
+        assert backend.title_requests == []
+        await pilot.press(*"one more question", "enter")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert loaded == [app.conversation.id]
         assert len(backend.title_requests) == 1
         assert len(store.list()) == 1000
 

@@ -109,14 +109,16 @@ async def test_a_title_is_only_requested_after_the_reply_finishes(fake_backend, 
         assert ConversationStore(store.directory).latest().generated_title == "Re slow question"
 
 
-async def test_only_open_conversation_gets_a_title_at_startup(store):
-    """Unopened transcripts are never loaded for title backfill."""
+async def test_only_open_conversation_gets_a_title_once_a_chat_has_loaded_a_model(store):
+    """Unopened transcripts are never loaded for title backfill, and nothing
+    makes the server load a model just for a title: the open conversation is
+    titled after the first reply of this session, by the model that gave it."""
     for question in ["first old question", "second old question"]:
         conversation = Conversation(model="test-model")
         conversation.add_user(question)
         conversation.add_assistant("an answer")
         store.save(conversation)
-    before = [(s.id, s.updated_at) for s in store.list()]
+    older, newer = sorted(store.list(), key=lambda summary: summary.updated_at)
 
     backend = FakeBackend()
     app = make_app(backend, store)
@@ -124,10 +126,14 @@ async def test_only_open_conversation_gets_a_title_at_startup(store):
         await pilot.pause()
         await wait_for_app_workers(app)
         await pilot.pause()
+        assert backend.topic_checks == [] and backend.title_requests == []
+        assert rows(app) == ["Untitled", "Untitled"]
+
+        await chat(pilot, app, "and one more thing")
         assert rows(app) == ["Re second old question", "Untitled"]
 
-    after = ConversationStore(store.directory).list()
-    assert [(s.id, s.updated_at) for s in after] == before  # same order, same "last used"
+    after = {summary.id: summary for summary in ConversationStore(store.directory).list()}
+    assert after[older.id].updated_at == older.updated_at  # the unopened one was never touched
     assert len(backend.title_requests) == 1
 
 
@@ -160,6 +166,8 @@ async def test_without_a_server_conversations_stay_untitled_and_are_retried_late
         await pilot.pause()
         await wait_for_app_workers(second)
         await pilot.pause()
+        assert rows(second) == ["Untitled"]  # no model is loaded just for a title
+        await chat(pilot, second, "and for contractors?")
         assert rows(second) == ["Re what is our VPN policy"]
 
 

@@ -773,15 +773,14 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                     return
                 attempted.add(conversation.id)
                 checked_at = len(conversation.messages)
-                # The model already in the server's memory (None tells the
-                # scheduler to use it). Only before any chat has gone through
-                # the scheduler is there none, and then the selected model is
-                # the one the next chat will load anyway.
-                model = None if self.scheduler.loaded_model else self.model_name
                 try:
-                    title = await generate_title(self.scheduler, model, conversation)
+                    # None: ask the model already in the server's memory, the
+                    # one that last answered a chat. Before any chat this
+                    # session there is none, and a title is not worth making
+                    # the server load one; it waits for the first reply.
+                    title = await generate_title(self.scheduler, None, conversation)
                 except Preempted:
-                    continue  # stopped for the chat: try again after the next reply
+                    continue  # no answer this time: try again after the next reply
                 except InferenceError as exc:
                     if exc.unavailable:
                         return

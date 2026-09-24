@@ -19,7 +19,9 @@ existing `/uploads` cap of 28 MB of base64 would refuse a long meeting.
 from __future__ import annotations
 
 import logging
+import os
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +46,7 @@ from app.meetings.job_store import PersistedJob, RecordingJobStore
 from app.meetings.jobs import RecordingJob, RecordingJobs, process
 from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
 from app.meetings.retention import audio_retention_days, sweep, transcript_retention_days
+from app.meetings.vocabulary_source import auto_enabled, suggest
 from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
 from app.workspace.routes import identity, require_object, store
 from app.workspace.store import uid
@@ -94,6 +97,12 @@ async def create_recording(
         raise HTTPException(503, PIPELINE_MISSING)
 
     recording_config = config()
+    if auto_enabled():
+        # Harvested terms go after the configured ones: whisper weights the
+        # start of its prompt most heavily, and somebody typed those on purpose.
+        harvested = suggest(store().list(user["id"], "meetings"))
+        if harvested:
+            recording_config = replace(recording_config, vocabulary=", ".join(harvested))
     issues = readiness_issues(recording_config)
     if issues:
         raise HTTPException(503, "This server cannot transcribe recordings: " + "; ".join(issues))
@@ -315,6 +324,30 @@ def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity))
     saved = workspace.put(user["id"], "meetings", meeting)
     workspace.audit(user["id"], "renamed meeting speakers", meeting_id)
     return saved
+
+
+@router.get("/vocabulary")
+def vocabulary(user=Depends(identity)):
+    """What whisper is being seeded with, and what else is worth adding.
+
+    Suggestions are harvested from this workspace's own transcripts and
+    documents, because the gene and compound names are already in the building
+    and hand-maintaining the list means it is wrong within a month.
+    """
+    workspace = store()
+    meetings = workspace.list(user["id"], "meetings")
+    configured = [
+        term.strip()
+        for term in re.split(r"[,;\n]", os.environ.get("MEETING_VOCABULARY", ""))
+        if term.strip()
+    ]
+    everything = suggest(meetings)
+    return {
+        "configured": configured,
+        "suggested": [term for term in everything if term not in configured],
+        "auto": auto_enabled(),
+        "inUse": everything if auto_enabled() else configured,
+    }
 
 
 @router.get("/retention")

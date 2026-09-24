@@ -105,6 +105,38 @@ def test_fts_index_rebuilds_and_survives_deletion(store: ContextStore, monkeypat
     assert {hit.artifact_id for hit in rebuilt.search("protocol")} == {second.id}
 
 
+def test_fts_keeps_underscore_terms_and_has_a_scan_fallback(store: ContextStore, monkeypatch, capsys):
+    artifact = ingest(Source.from_text("sample_id is the source key", name="schema.md"), store=store)
+    assert store.search("sample_id")[0].artifact_id == artifact.id
+    fallback = ContextStore(store.root)
+    monkeypatch.setattr("bedrock.context.store.sqlite3.connect", lambda *args, **kwargs: (_ for _ in ()).throw(
+        __import__("sqlite3").OperationalError("no such module: fts5")))
+    assert fallback.search("sample_id")[0].artifact_id == artifact.id
+    assert "FTS5 unavailable" in capsys.readouterr().err
+
+
+def test_index_rebuilds_after_an_external_manifest_edit(store: ContextStore):
+    import json
+
+    artifact = ingest(Source.from_text("alpha protocol", name="one.md"), store=store)
+    assert store.search("alpha")
+    path = store.root / artifact.id / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["chunks"][0]["terms"] = {"newword": 1}
+    manifest["chunks"][0]["term_count"] = 1
+    path.write_text(json.dumps(manifest))
+    assert store.search("newword")
+    assert store.search("alpha") == []
+
+
+def test_updating_digest_keeps_search_index_in_step(store: ContextStore):
+    artifact = ingest(Source.from_text("alpha protocol", name="one.md"), store=store)
+    replacement = Digest("updated gist", "updated overview")
+    assert store.update_digest(artifact.id, replacement).digest_text() == replacement.to_text()
+    assert store.search("alpha")[0].artifact_id == artifact.id
+    assert ContextStore(store.root).search("alpha")[0].artifact_id == artifact.id
+
+
 def test_large_fts_search_is_bounded_and_keeps_no_manifest_cache(store: ContextStore):
     chunks = [Chunk(i, f"sample {i} regular observation") for i in range(14_000)]
     chunks[-1] = Chunk(13_999, "sample 13999 uniquezebra observation")

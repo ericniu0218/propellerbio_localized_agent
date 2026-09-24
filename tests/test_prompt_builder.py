@@ -1,8 +1,15 @@
 """The small-window prompt contract, without a model server or Textual app."""
 
 from bedrock.attachments import Attachment, DATA_NOT_INSTRUCTIONS
+from bedrock.config.profile import PROFILES
 from bedrock.models.conversation import Conversation
 from bedrock.prompting import PromptBudget, PromptBuilder
+from bedrock.inference.tokens import estimate_tokens
+
+
+def test_budget_comes_from_laptop_profile():
+    budget = PromptBudget.from_profile(PROFILES["laptop"])
+    assert (budget.context_window, budget.reply_reserve, budget.attachment_share) == (8192, 1024, 0.35)
 
 
 def test_fifty_turns_with_files_never_exceed_laptop_window():
@@ -16,7 +23,7 @@ def test_fifty_turns_with_files_never_exceed_laptop_window():
         conversation.add_user(f"Question {turn}: " + "sample " * 85, files)
         result = builder.build(conversation)
         assert result.estimated_tokens + 1024 <= 8192
-        assert result.estimated_tokens == sum((len(item["content"]) + 3) // 4 + 4 for item in result.messages)
+        assert result.estimated_tokens == sum(estimate_tokens(item["content"]) + 4 for item in result.messages)
         conversation.add_assistant("Answer: " + "measurement " * 60)
 
 
@@ -73,6 +80,17 @@ def test_attachment_is_whole_once_then_fenced_digest():
     assert second.trimmed
 
 
+def test_attachment_share_downgrades_large_file_with_existing_notice():
+    conversation = Conversation(system_prompt="Be helpful.")
+    file = Attachment("assay.txt", "/assay.txt", 20_000, "whole", "row\n" * 5_000, "assay digest")
+    conversation.add_user("Read @assay.txt", [file])
+    result = PromptBuilder(PromptBudget(8192, 1024, attachment_share=0.10)).build(conversation)
+    assert "assay digest" in result.messages[-1]["content"]
+    assert "row\nrow" not in result.messages[-1]["content"]
+    assert DATA_NOT_INSTRUCTIONS in result.messages[-1]["content"]
+    assert any("sent as a compressed digest" in notice for notice in result.notices)
+
+
 def test_notice_counts_earlier_messages_left_out():
     conversation = Conversation(system_prompt="Be brief.")
     builder = PromptBuilder(PromptBudget(1024, 128))
@@ -82,3 +100,25 @@ def test_notice_counts_earlier_messages_left_out():
         conversation.add_assistant("answer " * 15)
     assert result.left_out > 0
     assert f"Left out {result.left_out} earlier messages" in result.notices[0]
+
+
+def test_oversized_newest_turn_is_shortened_without_crossing_window():
+    conversation = Conversation(system_prompt="Be brief.")
+    conversation.add_user("x" * 30_000)
+    result = PromptBuilder(PromptBudget(8192, 1024)).build(conversation)
+    assert result.estimated_tokens <= 7168
+    assert result.messages[-1]["content"].endswith("…")
+    assert any("message was shortened" in notice for notice in result.notices)
+
+
+def test_adjacent_user_turns_are_combined_and_then_stay_in_history():
+    conversation = Conversation()
+    builder = PromptBuilder(PromptBudget(8192, 1024))
+    conversation.add_user("first question")
+    conversation.add_user("second question")
+    first = builder.build(conversation)
+    assert first.messages[-1] == {"role": "user", "content": "first question\n\nsecond question"}
+    conversation.add_assistant("answer")
+    conversation.add_user("follow-up")
+    second = builder.build(conversation)
+    assert second.messages[:len(first.messages)] == first.messages

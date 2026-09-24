@@ -108,7 +108,9 @@ class ContextStore:
         if not self._fts_available:
             return False
         if self._index_ready and self._index_path.is_file() and self.root.stat().st_mtime_ns == self._root_seen_mtime:
-            return True
+            index_time = self._index_path.stat().st_mtime_ns
+            if not any(path.stat().st_mtime_ns > index_time for path in self.root.glob("*/manifest.json")):
+                return True
         existed = self._index_path.is_file()
         self.root.mkdir(parents=True, exist_ok=True)
         try:

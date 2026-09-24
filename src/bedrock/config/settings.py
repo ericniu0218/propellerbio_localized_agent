@@ -3,7 +3,8 @@
 Where settings come from, in order of priority (highest wins):
 
 1. Environment variables (``BEDROCK_API_BASE``, ``BEDROCK_MODEL``, ``BEDROCK_API_KEY``,
-   ``BEDROCK_HISTORY_DIR``, ``BEDROCK_SAVE_HISTORY``, ``BEDROCK_AUTO_CONTEXT``)
+   ``BEDROCK_HISTORY_DIR``, ``BEDROCK_SAVE_HISTORY``, ``BEDROCK_AUTO_CONTEXT``,
+   ``BEDROCK_PROFILE``, ``BEDROCK_CONTEXT_WINDOW``)
 2. A config file at ``~/.config/bedrock/config.toml``
 3. Built-in defaults, which point at a local Ollama server.
 
@@ -19,8 +20,10 @@ import getpass
 import os
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from bedrock.config.profile import DEFAULT_PROFILE, PROFILES, MachineProfile
 
 DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
@@ -141,6 +144,13 @@ class Settings:
     ``auto_context = false`` in the config file, starts every window with it
     off. ``/digest auto on|off`` changes it for one window."""
 
+    profile: MachineProfile = field(default_factory=lambda: PROFILES[DEFAULT_PROFILE])
+    """Limits sized to the machine running the model: context window, reply
+    limit, how many calls at once, the largest model to pick by itself. See
+    ``bedrock.config.profile``. ``profile = "laptop"`` in the config file or
+    ``BEDROCK_PROFILE``; ``context_window = N`` or ``BEDROCK_CONTEXT_WINDOW``
+    overrides just the window."""
+
     agent_pack_api_base: str = DEFAULT_AGENT_PACK_API_BASE
     user_id: str = field(default_factory=getpass.getuser)
     display_name: str | None = None
@@ -207,6 +217,33 @@ def _boolean(value: object, setting: str) -> bool:
     raise ValueError(f"{setting} must be true or false, not {value!r}")
 
 
+MIN_CONTEXT_WINDOW = 1024
+"""Below this there is no room for a conversation at all, so a smaller value
+is almost certainly a typo (``8`` for ``8192``) and is refused."""
+
+
+def _profile(env: dict[str, str], file_values: dict) -> MachineProfile:
+    """The configured machine profile, with any ``context_window`` override applied."""
+    name = env.get("BEDROCK_PROFILE") or file_values.get("profile") or DEFAULT_PROFILE
+    if not isinstance(name, str) or name.strip().lower() not in PROFILES:
+        choices = ", ".join(sorted(PROFILES))
+        raise ValueError(f"profile must be one of {choices}, not {name!r}")
+    profile = PROFILES[name.strip().lower()]
+
+    window = env.get("BEDROCK_CONTEXT_WINDOW") or file_values.get("context_window")
+    if window is None or window == "":
+        return profile
+    try:
+        tokens = int(window)
+    except (TypeError, ValueError):
+        raise ValueError(f"context_window must be a whole number of tokens, not {window!r}") from None
+    if isinstance(window, bool) or tokens < MIN_CONTEXT_WINDOW:
+        raise ValueError(f"context_window must be at least {MIN_CONTEXT_WINDOW} tokens, not {window!r}")
+    # A smaller window than the profile expects also needs a smaller reply
+    # limit, or the reply alone could fill the prompt's room.
+    return replace(profile, context_window=tokens, reply_limit=min(profile.reply_limit, tokens // 4))
+
+
 def load_settings(config_path: Path | None = None, env: dict[str, str] | None = None) -> Settings:
     """Build a :class:`Settings` from defaults, config file, then environment.
 
@@ -234,7 +271,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "alphafold_database_version", "alphafold_model_preset",
         "alphafold_db_preset", "alphafold_gpu_devices",
         "alphafold_models_to_relax", "biotech_max_sequence_length",
-        "pymol_executable", "connectors", "agents",
+        "pymol_executable", "connectors", "agents", "profile", "context_window",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -284,6 +321,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     # file - a connector names the environment variable that holds its token.
     connectors = file_values.get("connectors") or {}
     agents = _agent_settings(file_values.get("agents"))
+    profile = _profile(env, file_values)
 
     return Settings(
         backend=backend,
@@ -295,6 +333,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         history_dir=history_dir,
         save_history=save_history,
         auto_context=auto_context,
+        profile=profile,
         action_history_dir=action_history_dir,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,

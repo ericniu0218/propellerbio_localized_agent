@@ -16,14 +16,14 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import pytest
 
 from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.biotech.confidence import ConfidenceReport, PaeOverview
 from bedrock.config import Settings
-from bedrock.inference import InferenceError, ModelInfo
+from bedrock.inference import InferenceError, ModelInfo, RequestOptions, Usage, tokens
 from bedrock.provenance import HistoryStore, RunCatalog, RunError
 from bedrock.storage import ConversationStore
 from bedrock.titles import is_title_request, is_topic_check
@@ -38,6 +38,11 @@ class FakeBackend:
     so assertions about chat turns stay exact. By default every conversation has
     a topic (``topic_reply="YES"``) and, like a real model, gets its own title -
     "Re <first question>" - unless a fixed ``title_reply`` is supplied.
+
+    The options each call carried are recorded the same way:
+    ``request_options[i]`` belongs to ``requests[i]``, and title and topic
+    requests' options go in ``background_options``. Set ``usage`` to have every
+    chat turn report those token counts, as a real server does after a reply.
     """
 
     def __init__(
@@ -60,6 +65,9 @@ class FakeBackend:
         self.closed = False
         self.fragment_delay = 0.0
         self.hold_reply: asyncio.Event | None = None
+        self.request_options: list[RequestOptions | None] = []
+        self.background_options: list[RequestOptions | None] = []
+        self.usage: Usage | None = None
 
     async def check_connection(self) -> bool:
         return self.connected
@@ -67,26 +75,37 @@ class FakeBackend:
     async def list_models(self) -> list[ModelInfo]:
         return [ModelInfo(id=m) for m in self.models]
 
-    async def stream_chat(self, model: str, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream_chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: RequestOptions | None = None,
+        on_usage: Callable[[Usage], None] | None = None,
+    ) -> AsyncIterator[str]:
         if is_topic_check(messages):
             self.topic_checks.append((model, list(messages)))
+            self.background_options.append(options)
             if self.fail_titles:
                 raise InferenceError("Request failed: connection refused.")
             yield self.topic_reply
             return
         if is_title_request(messages):
             self.title_requests.append((model, list(messages)))
+            self.background_options.append(options)
             if self.fail_titles:
                 raise InferenceError("Request failed: connection refused.")
             yield self.title_reply if self.title_reply is not None else _title_for(messages)
             return
         self.requests.append((model, list(messages)))
+        self.request_options.append(options)
         if self.hold_reply is not None:
             await self.hold_reply.wait()
         for word in self.reply.split(" "):
             if self.fragment_delay:
                 await asyncio.sleep(self.fragment_delay)
             yield word + " "
+        if on_usage is not None and self.usage is not None:
+            on_usage(self.usage)
 
     async def close(self) -> None:
         self.closed = True
@@ -146,6 +165,14 @@ def fake_backend() -> FakeBackend:
 # ---------------------------------------------------------------------------
 # Private directories
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def fresh_token_estimate():
+    """Forget any characters-per-token ratio a previous test taught ``tokens``."""
+    tokens.reset()
+    yield
+    tokens.reset()
 
 
 @pytest.fixture(autouse=True)

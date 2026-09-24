@@ -38,7 +38,18 @@ from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import find_relevant_context
-from bedrock.inference import InferenceBackend, InferenceError, create_backend
+from bedrock.inference import (
+    InferenceBackend,
+    InferenceError,
+    Preempted,
+    Priority,
+    RequestOptions,
+    Scheduler,
+    choose_default_model,
+    create_backend,
+    fits,
+    format_size,
+)
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
 from bedrock.storage import ConversationDeleted, ConversationStore, ConversationSummary, StorageConflict, StorageError, create_store
@@ -115,6 +126,10 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # Tests pass a fake backend and a temporary store; real runs build both
         # from settings. ``store`` stays None when saving is switched off.
         self.backend: InferenceBackend = backend or create_backend(self.settings)
+        # Every model call goes through the scheduler, which decides when it
+        # may run (see bedrock.inference.scheduler). ``self.backend`` stays the
+        # raw connection, used only to check it, list models and close it.
+        self.scheduler = Scheduler(self.backend, self.settings.profile)
         self.store: ConversationStore | None = store if store is not None else create_store(self.settings)
         self.conversation = Conversation(system_prompt=self.settings.system_prompt)
         self.model_name: str | None = self.settings.model

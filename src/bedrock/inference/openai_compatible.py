@@ -18,11 +18,11 @@ OpenAI; the base URL is whatever the company configures.
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import httpx
 
-from bedrock.inference.base import InferenceError, ModelInfo
+from bedrock.inference.base import InferenceError, ModelInfo, RequestOptions, Usage
 
 
 class OpenAICompatibleBackend:
@@ -72,7 +72,13 @@ class OpenAICompatibleBackend:
             raise InferenceError("Server returned an unexpected /models response.")
         return [ModelInfo(id=str(item["id"])) for item in data if isinstance(item, dict) and "id" in item]
 
-    async def stream_chat(self, model: str, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream_chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: RequestOptions | None = None,
+        on_usage: Callable[[Usage], None] | None = None,
+    ) -> AsyncIterator[str]:
         payload = {"model": model, "messages": messages, "stream": True}
         try:
             async with self._client.stream("POST", "/chat/completions", json=payload) as response:

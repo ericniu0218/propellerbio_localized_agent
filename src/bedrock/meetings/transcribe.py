@@ -57,7 +57,31 @@ _NON_SPEECH = re.compile(r"^\[?(BLANK_AUDIO|SILENCE|INAUDIBLE|NO_SPEECH|MUSIC|SO
 
 
 def is_speech(text: str) -> bool:
-    return bool(text.strip()) and not _NON_SPEECH.match(text.strip())
+    """Whether a cue holds words, rather than whisper's way of saying nothing.
+
+    Two shapes get through. The marker tokens above are the documented ones.
+    The other is punctuation on its own: given a stretch of room noise,
+    whisper emits a cue whose entire text is "," or ".". Seen twice in one
+    real two-minute recording, where they appeared as cues spanning
+    eighteen and four seconds and read, to somebody looking at the
+    transcript, like the recorder had simply broken. A cue has to contain at
+    least one letter or digit to be something a person said.
+    """
+    stripped = text.strip()
+    if not stripped or _NON_SPEECH.match(stripped):
+        return False
+    return any(character.isalnum() for character in stripped)
+
+
+def clean_cue_text(text: str) -> str:
+    """Tidy the edges of one cue without touching what was said.
+
+    Slicing the audio on a speech boundary regularly leaves whisper starting a
+    cue with the punctuation that ended the previous one, so a transcript line
+    reads ", and I'm also going to...". It is only ever leading punctuation and
+    whitespace; the words are untouched.
+    """
+    return text.strip().lstrip(",.;:-–— ").strip()
 
 
 # Whisper processes audio in 30-second windows, so a slice longer than that
@@ -259,7 +283,9 @@ class WhisperTranscriber:
                 regions.append((int(float(match.group("start")) * 10), int(float(match.group("end")) * 10)))
         return regions
 
-    async def transcribe_track(self, audio: Path, work_dir: Path) -> list[Cue]:
+    async def transcribe_track(
+        self, audio: Path, work_dir: Path, split_at_ms: list[int] | None = None
+    ) -> list[Cue]:
         """One audio file to cues, each timestamped where it was actually said.
 
         Whisper is run over one slice per turn rather than over the whole file.
@@ -271,6 +297,14 @@ class WhisperTranscriber:
 
         All slices go to one whisper invocation, so the model is loaded once
         per track no matter how many turns there are.
+
+        ``split_at_ms`` forces an extra cut at each of those offsets. VAD alone
+        splits on silence, and two people talking without a gap between them is
+        one region - on a real recording that produced a single nineteen-second
+        cue holding both halves of "What's your name? My name's Luke", which no
+        amount of speaker labelling afterwards can separate, because the cue is
+        the unit a label attaches to. A caller that knows where the voice
+        changes passes those offsets here so each cue holds one speaker.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
         wav = audio if audio.suffix == ".wav" else await self.to_wav(audio, work_dir)
@@ -280,6 +314,8 @@ class WhisperTranscriber:
             return []
 
         turns = _group_regions(regions, self.config.turn_gap_ms)
+        if split_at_ms:
+            turns = _split_turns_at(turns, split_at_ms)
         slice_dir = work_dir / f"{wav.stem}.slices"
         slice_dir.mkdir(parents=True, exist_ok=True)
 
@@ -333,6 +369,9 @@ class WhisperTranscriber:
             for cue in parse_vtt(vtt.read_text(errors="replace")):
                 if not is_speech(cue.text):
                     continue
+                text = clean_cue_text(cue.text)
+                if not is_speech(text):
+                    continue
                 # Whisper reports a cue's end at its 30-second window edge even
                 # when the slice is shorter, which makes a 5-second remark look
                 # half a minute long and inflates the meeting's duration. The
@@ -343,7 +382,7 @@ class WhisperTranscriber:
                         start_ms=start_ms,
                         end_ms=min(cue.end_ms + offset_ms, slice_end_ms),
                         speaker=None,
-                        text=cue.text,
+                        text=text,
                     )
                 )
 
@@ -358,6 +397,36 @@ class WhisperTranscriber:
             )
         cues.sort(key=lambda cue: cue.start_ms)
         return cues
+
+
+# A cut is only worth making if both halves are long enough to transcribe.
+# Below this, whisper is being handed a fragment of a word, and the result is
+# worse than leaving the two speakers in one cue.
+_MIN_SPLIT_PIECE_MS = 700
+
+
+def _split_turns_at(turns: list[tuple[int, int]], points: list[int]) -> list[tuple[int, int]]:
+    """Cut every turn at each offset that falls inside it.
+
+    Used to make cues speaker-homogeneous: see ``transcribe_track``. A cut that
+    would leave a fragment too short to transcribe is skipped, so a speaker
+    boundary landing a tenth of a second inside a turn does not produce a cue
+    holding half a syllable.
+    """
+    ordered = sorted(set(points))
+    result: list[tuple[int, int]] = []
+    for start, end in turns:
+        cuts = [
+            point
+            for point in ordered
+            if start + _MIN_SPLIT_PIECE_MS <= point <= end - _MIN_SPLIT_PIECE_MS
+        ]
+        previous = start
+        for point in cuts:
+            result.append((previous, point))
+            previous = point
+        result.append((previous, end))
+    return result
 
 
 def _audio_files(folder: Path) -> list[Path]:

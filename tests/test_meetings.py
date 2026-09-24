@@ -518,3 +518,63 @@ def test_a_first_person_owner_becomes_no_owner():
         with_owner=True,
     )
     assert points[0].owner is None
+
+
+# --- Cue hygiene and speaker-aware slicing ------------------------------------
+
+
+def test_a_cue_of_pure_punctuation_is_not_speech():
+    """Given room noise whisper emits a cue whose whole text is ",". Two of
+    them appeared in one real recording, spanning eighteen and four seconds,
+    and read like the recorder had broken."""
+    from bedrock.meetings.transcribe import is_speech
+
+    assert not is_speech(",")
+    assert not is_speech(" . ")
+    assert not is_speech("[BLANK_AUDIO]")
+    assert is_speech("Good morning.")
+
+
+def test_leading_punctuation_is_trimmed_from_a_cue():
+    """Slicing on a speech boundary leaves whisper starting a cue with the
+    punctuation that ended the previous one."""
+    from bedrock.meetings.transcribe import clean_cue_text
+
+    assert clean_cue_text(", and I'm also going to start the project") == (
+        "and I'm also going to start the project"
+    )
+    assert clean_cue_text("  Good morning.  ") == "Good morning."
+
+
+def test_words_inside_a_cue_are_never_touched():
+    from bedrock.meetings.transcribe import clean_cue_text
+
+    assert clean_cue_text("148 of 200, and rising") == "148 of 200, and rising"
+
+
+def test_a_turn_is_cut_where_the_voice_changes():
+    """Two people talking without a gap are one VAD region, so a caller that
+    knows where the speaker changes has to be able to force the cut."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 10000)], [4000]) == [(0, 4000), (4000, 10000)]
+
+
+def test_a_cut_that_would_leave_a_fragment_is_skipped():
+    """A boundary a tenth of a second inside a turn would hand whisper half a
+    syllable, which transcribes worse than leaving both speakers together."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 10000)], [100, 9950]) == [(0, 10000)]
+
+
+def test_a_boundary_outside_a_turn_changes_nothing():
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 5000)], [8000]) == [(0, 5000)]
+
+
+def test_several_cuts_in_one_turn_all_apply():
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 12000)], [4000, 8000]) == [(0, 4000), (4000, 8000), (8000, 12000)]

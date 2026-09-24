@@ -947,8 +947,12 @@
       "Captures a browser tab. Chrome will ask which to share — pick the meeting tab and tick “Also share tab audio”. On macOS whole-screen audio is not available, so join the call in a browser tab, or select a loopback device above."));
     body.appendChild(field("Microphone", micSelect));
     body.appendChild(field("Your notes during the meeting", notesInput));
-    body.appendChild(el("p", { class: "muted small" },
-      "Everyone present should know they are being recorded — in some states that is the law, not a courtesy."));
+    const consent = el("input", { type: "checkbox" });
+    const whoElse = el("input", { placeholder: "e.g. Luke, Priya, Ravi" });
+    body.appendChild(check(consent, "Everyone present knows they are being recorded",
+      "In several US states every party has to agree. This records that you said so, with your name and the time — it is your statement, not proof."));
+    body.appendChild(field("Who else is here", whoElse,
+      "Optional. Stored with the meeting so there is a record of who was in the room."));
 
     const startBtn = el("button", { class: "btn primary" }, "Start recording");
     const error = el("p", { class: "form-error", hidden: true });
@@ -969,6 +973,8 @@
           roomMode: roomMode.checked,
           deviceId: micSelect.value || null,
           expectedSpeakers: parseInt(speakerInput.value, 10) || null,
+          consentConfirmed: consent.checked,
+          participants: whoElse.value.trim() || null,
         });
         dialog.close();
       } catch (err) {
@@ -1055,6 +1061,8 @@
         projectId: session.options.projectId,
         notes: session.options.notes,
         expectedSpeakers: session.options.expectedSpeakers,
+        consentConfirmed: session.options.consentConfirmed,
+        participants: session.options.participants,
         durationSeconds,
         onProgress: (fraction) => {
           pending.stage = "Uploading " + Math.round(fraction * 100) + "%";

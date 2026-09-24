@@ -36,6 +36,17 @@ class RBACFilter:
     def __init__(self, source: PermissionSource) -> None:
         self._source = source
 
+    def groups_for(self, user_id: str) -> set[str]:
+        """The groups this user belongs to.
+
+        Exposed because not every caller has documents shaped like RAG hits.
+        `meeting_transcripts` filters `MeetingTranscript` objects that come off
+        the datacenter contract, and has to send the groups to the connector as
+        part of the signed request, so it needs the set itself rather than a
+        filtered list.
+        """
+        return self._source.groups_for_user(user_id)
+
     def filter_documents(self, user_id: str, documents: list[dict]) -> list[dict]:
         """`documents` are RAG search hits, each expected to carry an
         `access_groups` field (list[str]); a doc with no `access_groups`

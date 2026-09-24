@@ -19,15 +19,19 @@ rag_search.py. That is not semantic search; it is the same honest placeholder,
 and it swaps for embeddings behind the same interface when the RAG ingest
 pipeline exists.
 
-**No per-user access control.** rag_search filters its hits through RBACFilter;
-this tool cannot, because the connector contract in zoom-transcript-vault has no
-notion of who may read which meeting — it takes a date range and returns
-everything in it. So any user who can reach this tool can read any recorded
-meeting, including ones they were not in. That is a contract-level gap, not
-something this tool can fix locally: the connector needs to accept an identity
-and filter server-side (or transcripts need per-meeting access groups at
-ingest). Until then, deploy this only where every user is entitled to every
-meeting, and see docs/MEETINGS.md.
+**Access control.** Every meeting carries access groups, and this tool returns
+only the ones the asking user may read. The groups travel on the datacenter
+contract as an additive field, so a connector that predates them keeps working
+and a meeting stored without them stays readable by everyone — which is what
+keeps meetings captured before this from vanishing.
+
+Filtering here is the second of two. A connector that hands over meetings the
+caller may not read has already leaked them into this process, so the reference
+connector in `contrib/` filters server-side on the identity in the signed
+request, and this filters again on what comes back. Meetings that Zoom captured
+through zoom-transcript-vault carry no groups yet: that relay has not been
+taught to set them, so they remain readable by everyone until it is. See
+docs/MEETINGS.md.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ from pydantic import BaseModel
 
 from app.config import load_budgets_config
 from app.tools.base import Tool, ToolResult
+from app.compliance.rbac import RBACFilter, get_rbac_filter
+from app.meetings.governance import GENERAL as GENERAL_GROUP
 from app.tools.datacenter_client import (
     DatacenterError,
     DatacenterNotConfigured,
@@ -85,6 +91,10 @@ _STOPWORDS = frozenset(
 
 class MeetingTranscriptsArgs(BaseModel):
     query: str
+    user_id: str | None = None
+    """Who is asking. Without it the tool can only return meetings that are
+    readable by everyone — refusing to guess is the safe direction, because the
+    alternative is handing somebody a meeting they were not in."""
     from_time: str | None = None  # ISO 8601; defaults to lookback_days ago
     to_time: str | None = None  # ISO 8601; defaults to now
     lookback_days: int = DEFAULT_LOOKBACK_DAYS
@@ -191,15 +201,45 @@ class MeetingTranscriptsTool(Tool):
     )
     args_model: ClassVar[type[BaseModel]] = MeetingTranscriptsArgs
 
-    def __init__(self, client: DatacenterTranscriptClient | None = None) -> None:
+    def __init__(
+        self,
+        client: DatacenterTranscriptClient | None = None,
+        rbac: "RBACFilter | None" = None,
+    ) -> None:
         # Constructed lazily: the registry builds every tool at import time, and
         # a deployment with no transcript connector must not fail to start.
         self._client = client
+        self._rbac = rbac or get_rbac_filter()
 
     def _get_client(self) -> DatacenterTranscriptClient:
         if self._client is None:
             self._client = DatacenterTranscriptClient()
         return self._client
+
+    def _visible_to(
+        self, user_id: str | None, meetings: list[MeetingTranscript]
+    ) -> list[MeetingTranscript]:
+        """The meetings this user may read.
+
+        A meeting carrying no access groups is readable by everyone. That is
+        deliberate and it is the compatibility seam: every meeting recorded
+        before access control existed has no groups, and making them all
+        invisible overnight would look exactly like data loss. A deployment
+        that wants the strict reading sets MEETING_ACCESS_GROUPS and backfills
+        the meetings it already holds.
+
+        With no `user_id`, only ungrouped meetings come back. Callers that know
+        who is asking should say so; a caller that does not must not be handed
+        a restricted meeting on the grounds that it forgot to mention itself.
+        """
+        groups = self._rbac.groups_for(user_id) if user_id else set()
+        return [
+            meeting
+            for meeting in meetings
+            if not meeting.access_groups
+            or GENERAL_GROUP in meeting.access_groups
+            or (groups & set(meeting.access_groups))
+        ]
 
     async def run(self, args: MeetingTranscriptsArgs) -> ToolResult:
         # Checked before fetching: there is no point pulling transcripts
@@ -213,7 +253,8 @@ class MeetingTranscriptsTool(Tool):
         top_k = args.top_k or load_budgets_config().rag["top_k_chunks"]
 
         try:
-            meetings = await self._get_client().fetch_range(from_iso, to_iso)
+            groups = sorted(self._rbac.groups_for(args.user_id)) if args.user_id else None
+            meetings = await self._get_client().fetch_range(from_iso, to_iso, groups)
         except DatacenterNotConfigured as exc:
             return ToolResult(summary=str(exc), content="", citations=[])
         except DatacenterError as exc:
@@ -223,7 +264,26 @@ class MeetingTranscriptsTool(Tool):
                 citations=[],
             )
 
+        # Filtered here, after fetching and before ranking. The connector
+        # contract takes a date range and returns everything in it, so this is
+        # the first point that knows who is asking. Filtering client-side alone
+        # is not a security boundary — a connector that hands over meetings the
+        # caller may not read has already leaked them to this process — so the
+        # reference connector filters too, and this is the second of the two.
+        visible = self._visible_to(args.user_id, meetings)
+        withheld = len(meetings) - len(visible)
+        meetings = visible
+
         if not meetings:
+            if withheld:
+                return ToolResult(
+                    summary=(
+                        f"{withheld} meeting(s) in this window are not readable by "
+                        "you. Ask whoever ran the meeting to share it."
+                    ),
+                    content="",
+                    citations=[],
+                )
             return ToolResult(
                 summary=f"No meetings were recorded between {from_iso} and {to_iso}.",
                 content="",

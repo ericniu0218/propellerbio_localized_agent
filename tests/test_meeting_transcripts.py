@@ -185,7 +185,7 @@ class _StubClient:
     def __init__(self, meetings):
         self._meetings = meetings
 
-    async def fetch_range(self, from_iso, to_iso):
+    async def fetch_range(self, from_iso, to_iso, groups=None):
         return self._meetings
 
 
@@ -274,7 +274,7 @@ async def test_connector_rejects_a_bad_signature(tmp_path, monkeypatch):
 
 async def test_tool_reports_a_missing_reader_without_fetching(monkeypatch):
     class _MustNotFetch:
-        async def fetch_range(self, from_iso, to_iso):
+        async def fetch_range(self, from_iso, to_iso, groups=None):
             raise AssertionError("transcripts were fetched with no reader to parse them")
 
     monkeypatch.setattr(meeting_transcripts, "_READER_AVAILABLE", False)

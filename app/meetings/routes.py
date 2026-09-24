@@ -33,6 +33,7 @@ from app.meetings.config import (
     readiness_issues,
 )
 from app.meetings.delivery import deliver_recording
+from app.meetings.governance import capture_consent, consent_required
 from app.meetings.jobs import RecordingJob, RecordingJobs, process
 from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
 from app.workspace.routes import identity, require_object, store
@@ -73,6 +74,8 @@ async def create_recording(
     startedAt: str | None = Form(None),
     durationSeconds: float | None = Form(None),
     expectedSpeakers: int | None = Form(None),
+    consentConfirmed: bool = Form(False),
+    participants: str | None = Form(None),
     user=Depends(identity),
 ):
     """Accept a recording and start turning it into a meeting."""
@@ -87,6 +90,19 @@ async def create_recording(
     workspace = store()
     if projectId:
         require_object(workspace, user["id"], projectId, "projects")
+
+    # A deployment can require that somebody states the room was told. Off by
+    # default: a hard block that surprises somebody mid-meeting is worse than a
+    # warning, and that is a policy decision, not a default.
+    if consent_required() and not consentConfirmed:
+        raise HTTPException(
+            422,
+            "This deployment requires confirming that everyone present knows "
+            "they are being recorded before a recording can be saved.",
+        )
+    consent = capture_consent(
+        user, consentConfirmed, (participants or "").split(",") if participants else []
+    ).to_record()
 
     if durationSeconds is not None and durationSeconds > MAX_RECORDING_SECONDS:
         raise HTTPException(
@@ -151,6 +167,7 @@ async def create_recording(
             started_at=started_at,
             deliver=deliver_recording,
             expected_speakers=expectedSpeakers,
+            consent=consent,
         )
 
     _jobs.start(job, runner)

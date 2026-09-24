@@ -31,7 +31,7 @@ import hmac
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -60,6 +60,11 @@ class MeetingTranscript:
     end_time: int  # unix ms
     transcript: str
     format: str = "vtt"
+    access_groups: list[str] = field(default_factory=list)
+    """Who may read this meeting. An additive extension to the contract in
+    zoom-transcript-vault's README: a connector that does not know the field
+    ignores it, and a reader that gets no field treats the meeting as readable
+    by everyone, which is how every meeting stored before this behaved."""
 
 
 def sign_request(secret: str, timestamp_ms: int, method: str, path_with_query: str, body: str) -> str:
@@ -78,13 +83,21 @@ def signed_headers(secret: str, method: str, path_with_query: str, body: str) ->
     }
 
 
-def transcripts_path(from_iso: str, to_iso: str) -> str:
+def transcripts_path(from_iso: str, to_iso: str, groups: list[str] | None = None) -> str:
     """The exact path+query that gets both signed and sent.
 
     Values are percent-encoded the way the Worker's `encodeURIComponent` does,
     so an ISO timestamp's colons arrive as `%3A` — see the module docstring.
+
+    `groups` names what the caller may read, and is appended only when present
+    so a request without it signs byte-for-byte as it always did. It is inside
+    the signed path on purpose: an access claim that could be edited in flight
+    would be no access control at all.
     """
-    return f"/transcripts?from={quote(from_iso, safe='')}&to={quote(to_iso, safe='')}"
+    path = f"/transcripts?from={quote(from_iso, safe='')}&to={quote(to_iso, safe='')}"
+    if groups:
+        path += f"&groups={quote(','.join(sorted(groups)), safe='')}"
+    return path
 
 
 # Hosts that mean someone has pointed this at the public relay instead of the
@@ -152,9 +165,12 @@ class DatacenterTranscriptClient:
         # connector while still exercising real URL handling and real headers.
         self._transport = transport
 
-    async def fetch_range(self, from_iso: str, to_iso: str) -> list[MeetingTranscript]:
-        """Every transcript whose meeting overlaps [from_iso, to_iso]."""
-        path = transcripts_path(from_iso, to_iso)
+    async def fetch_range(
+        self, from_iso: str, to_iso: str, groups: list[str] | None = None
+    ) -> list[MeetingTranscript]:
+        """Every transcript whose meeting overlaps [from_iso, to_iso] that the
+        caller's `groups` allow it to read."""
+        path = transcripts_path(from_iso, to_iso, groups)
         headers = signed_headers(self._config.signing_secret, "GET", path, "")
 
         try:
@@ -213,6 +229,7 @@ class DatacenterTranscriptClient:
                 "endTime": transcript.end_time,
                 "transcript": transcript.transcript,
                 "format": transcript.format,
+                "accessGroups": transcript.access_groups,
             },
             separators=(",", ":"),
         )
@@ -255,4 +272,5 @@ def _to_transcript(record: dict) -> MeetingTranscript:
         end_time=int(record.get("endTime") or 0),
         transcript=str(record.get("transcript") or ""),
         format=str(record.get("format") or "vtt"),
+        access_groups=[str(g) for g in (record.get("accessGroups") or [])],
     )

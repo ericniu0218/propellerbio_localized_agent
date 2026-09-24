@@ -59,8 +59,13 @@ async def deliver_recording(
         host_email=owner,
         start_time=start_ms,
         end_time=start_ms + max(outcome.duration_ms, 0),
-        transcript=outcome.vtt,
+        # The stored transcript, not `outcome.vtt` — the stored one has been
+        # through redaction. Sending the raw one would put the identifiers back
+        # into the datacenter that were just taken out of the workspace, which
+        # is the failure that makes redaction theatre rather than a control.
+        transcript=record.get("transcript") or outcome.vtt,
         format="vtt",
+        access_groups=list(record.get("accessGroups") or []),
     )
 
     try:

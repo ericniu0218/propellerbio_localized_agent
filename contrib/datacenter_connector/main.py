@@ -151,16 +151,36 @@ async def search_transcripts(request: Request) -> JSONResponse:
     except ValueError:
         raise HTTPException(400, "Invalid ISO 8601 date range.") from None
 
+    # Who is asking, and what they may read. The caller states its identity and
+    # groups in the signed request, so they cannot be altered in flight without
+    # invalidating the signature. This is the server-side half of access
+    # control: a connector that returns meetings the caller may not read has
+    # already leaked them, whatever the caller does with them afterwards.
+    groups = {
+        group.strip()
+        for group in (request.query_params.get("groups") or "").split(",")
+        if group.strip()
+    }
+
     # "Every transcript whose meeting *overlaps* the range" — a meeting that
     # started before the window but ran into it still counts.
     matches = []
+    withheld = 0
     for path in sorted(_storage_dir().glob("*.json")):
         record = json.loads(path.read_text())
-        if record.get("startTime", 0) <= end and record.get("endTime", 0) >= start:
-            matches.append(record)
+        if not (record.get("startTime", 0) <= end and record.get("endTime", 0) >= start):
+            continue
+        # A meeting with no access groups is readable by everyone: that is how
+        # every meeting stored before access control existed behaves, and
+        # hiding those would look exactly like data loss.
+        allowed = record.get("accessGroups") or []
+        if allowed and "general" not in allowed and not (groups & set(allowed)):
+            withheld += 1
+            continue
+        matches.append(record)
 
     matches.sort(key=lambda record: record.get("startTime", 0))
-    return JSONResponse({"transcripts": matches})
+    return JSONResponse({"transcripts": matches, "withheld": withheld})
 
 
 def _parse_iso_ms(value: str) -> int:

@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig
+from app.meetings.governance import groups_for, redact_record
 from app.meetings.pipeline import (
     RecordingError,
     TranscriptionOutcome,
@@ -159,6 +160,8 @@ async def process(
     started_at: datetime,
     deliver,
     expected_speakers: int | None = None,
+    consent: dict | None = None,
+    access_groups: list[str] | None = None,
 ) -> None:
     """The whole path from a file on disk to a meeting somebody can ask about."""
 
@@ -183,20 +186,29 @@ async def process(
 
     jobs.advance(job, "Saving")
     fields = to_record_fields(outcome)
+
+    # Redaction happens before anything is stored or delivered, and covers the
+    # transcript and everything derived from it together — a patient name taken
+    # out of the transcript but left in an action item has not been taken out.
+    fields["transcript"] = outcome.vtt[:100_000]
+    fields, redaction = redact_record(fields)
+
     record = store.put(
         job.owner,
         "meetings",
         {
             "title": job.title,
             "projectId": project_id,
-            "transcript": outcome.vtt[:100_000],
             "transcriptTruncated": len(outcome.vtt) > 100_000,
             "recordedAt": started_at.isoformat(),
             "durationMs": outcome.duration_ms,
             "source": "recording",
             "attributed": outcome.attributed,
             "speakerCount": outcome.speaker_count,
-            "caveats": outcome.notes,
+            "caveats": outcome.notes + ([f"PHI {redaction.describe()}."] if redaction.applied else []),
+            "redaction": {"applied": redaction.applied, "findings": sorted(set(redaction.findings))},
+            "consent": consent,
+            "accessGroups": groups_for(project_id, access_groups),
             "demo": False,
             **fields,
         },

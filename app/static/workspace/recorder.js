@@ -222,7 +222,7 @@
     }
   }
 
-  function upload({ blob, startedAt, mime, title, projectId, notes, expectedSpeakers, durationSeconds, onProgress }) {
+  function upload({ blob, startedAt, mime, title, projectId, notes, expectedSpeakers, consentConfirmed, participants, durationSeconds, onProgress }) {
     const form = new FormData();
     form.append("audio", blob, "recording" + extensionFor(mime));
     form.append("title", title || "");
@@ -231,6 +231,8 @@
     if (projectId) form.append("projectId", projectId);
     if (notes) form.append("notes", notes);
     if (expectedSpeakers) form.append("expectedSpeakers", String(expectedSpeakers));
+    form.append("consentConfirmed", consentConfirmed ? "true" : "false");
+    if (participants) form.append("participants", participants);
 
     // XHR rather than fetch: an hour of audio is a real upload and the person
     // deserves a progress bar, which fetch cannot report.

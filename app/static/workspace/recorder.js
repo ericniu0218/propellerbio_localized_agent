@@ -166,6 +166,9 @@
       this.analyser = analyser;
       this.meterData = new Uint8Array(analyser.fftSize);
 
+      // Kept so the preview recorder can tap the same mixed audio.
+      this.previewSource = destination.stream;
+
       this.recorder = new MediaRecorder(destination.stream, mime ? { mimeType: mime } : undefined);
       this.mime = this.recorder.mimeType || mime;
       this.recorder.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
@@ -177,6 +180,33 @@
 
       this._loop();
       return this;
+    }
+
+    /* A second recorder over the same mixed audio, restarted every few
+     * seconds. Each restart produces a small, complete, independently
+     * decodable file — which is the only shape the server can transcribe,
+     * because a mid-stream WebM chunk has no header and ffmpeg refuses it.
+     * The continuous recorder above is untouched and still produces the
+     * authoritative recording. */
+    startPreview(onClip, seconds = 12) {
+      if (!this.context || this.stopped) return;
+      const mime = pickMimeType();
+      const cut = () => {
+        if (this.stopped) return;
+        const chunks = [];
+        let recorder;
+        try {
+          recorder = new MediaRecorder(this.previewSource, mime ? { mimeType: mime } : undefined);
+        } catch (_) { return; }
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        recorder.onstop = () => {
+          if (chunks.length) onClip(new Blob(chunks, { type: recorder.mimeType }));
+          if (!this.stopped) this.previewTimer = setTimeout(cut, 0);
+        };
+        recorder.start();
+        setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, seconds * 1000);
+      };
+      cut();
     }
 
     _loop() {
@@ -200,6 +230,7 @@
       if (this.stopped) return null;
       this.stopped = true;
       if (this.raf) cancelAnimationFrame(this.raf);
+      if (this.previewTimer) clearTimeout(this.previewTimer);
       const blob = await new Promise((resolve) => {
         if (!this.recorder || this.recorder.state === "inactive") {
           resolve(new Blob(this.chunks, { type: this.mime || "audio/webm" }));
@@ -260,7 +291,18 @@
     return devices.filter((d) => d.kind === "audioinput");
   }
 
+  async function sendClip(sessionId, blob) {
+    const form = new FormData();
+    form.append("audio", blob, "clip" + extensionFor(blob.type));
+    const res = await fetch(`/workspace/api/meetings/live/${sessionId}/clip`, {
+      method: "POST", body: form, credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("preview clip refused");
+    return res.json();
+  }
+
   window.BedrockRecorder = {
+    sendClip,
     Session,
     upload,
     listMicrophones,

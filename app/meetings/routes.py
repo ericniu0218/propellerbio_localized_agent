@@ -44,6 +44,7 @@ from app.meetings.enrollment import (
 from app.meetings.governance import capture_consent, consent_required
 from app.meetings.job_store import PersistedJob, RecordingJobStore
 from app.meetings.jobs import RecordingJob, RecordingJobs, process
+from app.meetings.live import LiveSessions, transcribe_clip
 from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
 from app.meetings.retention import audio_retention_days, sweep, transcript_retention_days
 from app.meetings.vocabulary_source import auto_enabled, suggest
@@ -59,6 +60,10 @@ router = APIRouter(prefix="/workspace/api/meetings", tags=["meetings"])
 # picked up after a restart rather than silently lost.
 _job_store = RecordingJobStore(RecordingConfig.from_env().storage_dir / "jobs.sqlite")
 _jobs = RecordingJobs(_job_store)
+
+# Live previews: in memory, because a preview has no value once the real
+# transcript replaces it.
+_live = LiveSessions()
 
 # Browsers hand us whatever MediaRecorder produced. ffmpeg reads all of these;
 # the list exists to reject an obviously wrong upload early rather than to be a
@@ -324,6 +329,78 @@ def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity))
     saved = workspace.put(user["id"], "meetings", meeting)
     workspace.audit(user["id"], "renamed meeting speakers", meeting_id)
     return saved
+
+
+@router.post("/live")
+def open_live(user=Depends(identity)):
+    """Start a preview session for a meeting about to be recorded."""
+    if not PIPELINE_AVAILABLE:
+        raise HTTPException(503, PIPELINE_MISSING)
+    return _live.open(uid(), user["id"]).public()
+
+
+@router.post("/live/{session_id}/clip")
+async def live_clip(
+    session_id: str,
+    audio: UploadFile = File(...),
+    user=Depends(identity),
+):
+    """One short, self-contained clip: transcribe it and append the words.
+
+    Clips are independent files, not fragments of a stream — a mid-stream WebM
+    chunk cannot be decoded on its own — so each is handed to whisper as-is.
+    """
+    session = _live.get(user["id"], session_id)
+    if session is None:
+        raise HTTPException(404, "That preview session is unavailable or has expired.")
+
+    recording_config = config()
+    scratch = recording_config.storage_dir / user["id"] / "live" / session_id
+    scratch.mkdir(parents=True, exist_ok=True)
+    suffix = Path(audio.filename or "clip.webm").suffix.lower() or ".webm"
+    clip = scratch / f"{session.clips:05d}{suffix}"
+
+    written = 0
+    try:
+        with clip.open("wb") as handle:
+            while chunk := await audio.read(1024 * 256):
+                written += len(chunk)
+                if written > 20 * 1024 * 1024:
+                    raise HTTPException(413, "That preview clip is too large.")
+                handle.write(chunk)
+        if not written:
+            _live.note_failure(session)
+            return session.public()
+        text = await transcribe_clip(clip, recording_config, scratch / "work")
+        if text:
+            _live.append(session, text)
+        else:
+            _live.note_failure(session)
+            session.clips += 1
+    finally:
+        # The preview keeps no audio: the continuous recorder already holds the
+        # only copy that matters, and a second one would double what retention
+        # has to reason about.
+        clip.unlink(missing_ok=True)
+    return session.public()
+
+
+@router.get("/live/{session_id}")
+def live_preview(session_id: str, user=Depends(identity)):
+    session = _live.get(user["id"], session_id)
+    if session is None:
+        raise HTTPException(404, "That preview session is unavailable or has expired.")
+    return session.public()
+
+
+@router.delete("/live/{session_id}")
+def close_live(session_id: str, user=Depends(identity)):
+    """Discard a preview. Called when the recording is saved or abandoned."""
+    _live.close(user["id"], session_id)
+    import shutil
+
+    shutil.rmtree(config().storage_dir / user["id"] / "live" / session_id, ignore_errors=True)
+    return {"ok": True}
 
 
 @router.get("/vocabulary")

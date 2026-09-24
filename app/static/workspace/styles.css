@@ -420,3 +420,15 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
   background: var(--panel-2); border-left: 2px solid var(--accent);
   border-radius: 0 8px 8px 0; padding: 12px 14px; margin: 0;
 }
+
+/* Live preview while a meeting is being recorded. */
+.live-preview {
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 2px solid var(--accent); border-radius: 0 10px 10px 0;
+  padding: 12px 14px; margin-bottom: 18px;
+}
+.live-preview-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.live-preview-text {
+  font-size: 13px; line-height: 1.6; max-height: 160px; overflow-y: auto;
+  white-space: pre-wrap;
+}

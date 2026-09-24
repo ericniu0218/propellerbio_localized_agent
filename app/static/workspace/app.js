@@ -15,6 +15,8 @@
   // business only — nothing about a half-finished recording belongs on the
   // server until the audio is uploaded.
   let recording = null;          // the active BedrockRecorder.Session
+  let liveSessionId = null;      // preview session on the server, if any
+  let livePreviewText = "";
   let recordingJobs = [];        // uploads being transcribed, newest first
   let recordingJobPoll = null;
 
@@ -750,6 +752,7 @@
     }
     pane.appendChild(el("p", { class: "pane-intro" }, "Record a meeting on this device, or import a transcript. Decisions and action items are pulled out automatically, and the assistant can answer questions about any meeting here."));
     pane.appendChild(renderRecordBar());
+    if (recording) pane.appendChild(renderLivePreview());
     pane.appendChild(renderVoicesBar());
     recordingJobs.forEach((job) => pane.appendChild(renderJobRow(job)));
 
@@ -863,7 +866,7 @@
     ]));
     bar.appendChild(el("div", { class: "record-meter" }, meterFill));
     bar.appendChild(stopBtn);
-    recordingUI = { clock, meterFill, silence, stopBtn };
+    recordingUI = { clock, meterFill, silence, stopBtn, preview: null };
     return bar;
   }
 
@@ -952,6 +955,22 @@
         startBtn.disabled = false; startBtn.textContent = "Start"; session = null;
       }
     });
+  }
+
+  // Words while the meeting is still happening. Explicitly provisional: no
+  // speaker names, nothing corrected, and replaced entirely by the real
+  // transcript when the recording is saved.
+  function renderLivePreview() {
+    const box = el("div", { class: "live-preview" });
+    box.appendChild(el("div", { class: "live-preview-head" }, [
+      el("span", { class: "section-title", style: "margin:0" }, "Live preview"),
+      el("span", { class: "muted small" },
+        "Rough, and without speaker names. The full transcript is made when you stop."),
+    ]));
+    const text = el("div", { class: "live-preview-text muted" }, livePreviewText || "Listening…");
+    box.appendChild(text);
+    if (recordingUI) recordingUI.preview = text;
+    return box;
   }
 
   function renderJobRow(job) {
@@ -1100,6 +1119,25 @@
     });
 
     await session.start();
+
+    // Preview is best-effort: a meeting must never fail to record because the
+    // words could not be shown while it happened.
+    livePreviewText = "";
+    liveSessionId = null;
+    try {
+      liveSessionId = (await api("/meetings/live", { method: "POST", body: {} })).id;
+      session.startPreview(async (clip) => {
+        if (!liveSessionId) return;
+        try {
+          const state = await Recorder.sendClip(liveSessionId, clip);
+          livePreviewText = state.text;
+          if (recordingUI && recordingUI.preview) {
+            recordingUI.preview.textContent = livePreviewText || "Listening…";
+          }
+        } catch (_) { /* a dropped clip costs nothing; the recording is intact */ }
+      });
+    } catch (_) { liveSessionId = null; }
+
     session.meetingTitle = opts.title || "Untitled meeting";
     session.sourceLabel = opts.useMic && opts.useSystem ? "microphone + meeting audio"
       : opts.useSystem ? "meeting audio" : "microphone";
@@ -1123,6 +1161,12 @@
     window.removeEventListener("beforeunload", warnWhileRecording);
 
     const result = await session.stop();
+    if (liveSessionId) {
+      const finished = liveSessionId;
+      liveSessionId = null;
+      api(`/meetings/live/${finished}`, { method: "DELETE" }).catch(() => {});
+    }
+    livePreviewText = "";
     renderCenter(true);
     if (!result || !result.blob.size) {
       alert(reason || "Nothing was recorded.");

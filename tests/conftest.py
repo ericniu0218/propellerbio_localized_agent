@@ -12,6 +12,7 @@ home directory, and a later test would cheerfully resume them.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import re
@@ -22,7 +23,7 @@ import pytest
 
 from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.biotech.confidence import ConfidenceReport, PaeOverview
-from bedrock.config import Settings
+from bedrock.config import PROFILES, Settings
 from bedrock.inference import InferenceError, ModelInfo, RequestOptions, Usage, tokens
 from bedrock.provenance import HistoryStore, RunCatalog, RunError
 from bedrock.storage import ConversationStore
@@ -167,6 +168,19 @@ def fake_backend() -> FakeBackend:
 # ---------------------------------------------------------------------------
 # Private directories
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def no_idle_wait(monkeypatch):
+    """Let background work (titles) start as soon as the app is idle.
+
+    The real profiles wait ``idle_seconds`` after a chat reply before a title
+    may start. App tests would each sit through that wait for nothing, so it
+    is zero here; ``test_scheduler.py`` tests the wait itself with explicit
+    profiles.
+    """
+    for name, profile in list(PROFILES.items()):
+        monkeypatch.setitem(PROFILES, name, dataclasses.replace(profile, idle_seconds=0.0))
 
 
 @pytest.fixture(autouse=True)

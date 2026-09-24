@@ -82,6 +82,12 @@ class MachineProfile:
     """The largest model the app picks by itself when none is configured.
     ``None`` means no limit. An employee can still choose a bigger one."""
 
+    idle_seconds: float = 2.0
+    """With ``background="idle"``: how long after a chat reply finishes before
+    background work may start. The employee often types the next message
+    within a few seconds; a title started in that gap would only be cancelled
+    again, after making the server set aside its saved work on the chat."""
+
 
 PROFILES: dict[str, MachineProfile] = {
     # 8 GB laptop. An 8k window costs ~0.9 GB of cache next to ~2 GB of
@@ -127,5 +133,6 @@ PROFILES: dict[str, MachineProfile] = {
         background="concurrent",
         max_parallel=4,
         max_auto_model_bytes=None,
+        idle_seconds=0.0,
     ),
 }

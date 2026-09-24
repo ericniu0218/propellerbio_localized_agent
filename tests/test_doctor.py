@@ -76,3 +76,28 @@ def test_print_first_run_banner_prints_every_issue(capsys):
     assert "issue one" in out
     assert "issue two" in out
     assert str(doctor.DEFAULT_CONFIG_PATH) in out
+
+
+def test_openai_first_run_prints_ollama_settings_matching_the_profile(tmp_path, monkeypatch):
+    from bedrock.config import PROFILES
+
+    monkeypatch.setattr(doctor, "DEFAULT_CONFIG_PATH", tmp_path / "does-not-exist.toml")
+    monkeypatch.setattr(doctor, "_reachable", _always_reachable)
+
+    issues = doctor.run_first_run_check(Settings(backend="openai"))
+    [note] = [issue for issue in issues if "OLLAMA_CONTEXT_LENGTH" in issue]
+    assert "OLLAMA_CONTEXT_LENGTH=8192" in note  # the laptop default (D4)
+    assert "OLLAMA_NUM_PARALLEL=1" in note
+    assert "3-4B model at 4-bit" in note
+
+    workstation = doctor.run_first_run_check(Settings(backend="openai", profile=PROFILES["workstation"]))
+    assert any("OLLAMA_CONTEXT_LENGTH=32768" in issue for issue in workstation)
+
+
+def test_ollama_settings_follow_a_context_window_override():
+    from dataclasses import replace
+
+    from bedrock.config import PROFILES
+
+    lines = doctor.ollama_settings(replace(PROFILES["laptop"], context_window=4096))
+    assert lines[0] == "OLLAMA_CONTEXT_LENGTH=4096"

@@ -89,7 +89,9 @@ class LocalCommandsMixin:
     async def command_digest(self, args: str) -> None:
         model_options = {}
         if self.LOCAL_DIGEST_USES_MODEL:
-            model_options = {"backend": self.backend, "model": self.model_name}
+            # Through the scheduler, as a job the employee asked for: it waits
+            # for a streaming reply rather than competing with it.
+            model_options = {"scheduler": self.scheduler, "model": self.model_name}
         await run_digest_command(
             args,
             store=self.context_store,

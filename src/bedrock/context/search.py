@@ -1,11 +1,9 @@
-"""Keyword ranking (BM25) over stored chunks.
+"""Fold stored words and queries for keyword ranking over stored chunks.
 
-Why BM25 rather than embeddings: it needs no model, no GPU and no extra
-service, it is a few dozen lines you can read in one sitting, and for the kind
-of lookup this store exists for - "which chunk mentions pH?" - it is genuinely
-good. BM25 is the standard bag-of-words ranking function: a chunk scores
-higher when it uses a rare query word often, and the score is damped so that a
-very long chunk does not win just by being long.
+The store indexes these folded terms in SQLite FTS5, where BM25 ranks matching
+chunks. The Python BM25 implementation remains as a fallback if FTS5 is not
+available. Moving ranking to disk fixes search speed and memory, not meaning:
+"acidity" still will not find "pH". See NEXT_STEPS.md section 6 for embeddings.
 
 The trade-off is honest and worth knowing: it matches *words*, not *meaning*.
 A search for "acidity" will not find a chunk that only ever says "pH". If that

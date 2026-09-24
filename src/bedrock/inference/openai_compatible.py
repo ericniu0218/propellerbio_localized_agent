@@ -7,9 +7,34 @@ That covers all of the servers we care about:
 * SGLang       - ``http://<host>:30000/v1``
 * llama.cpp    - ``http://<host>:8080/v1``
 
-We only use two endpoints: ``GET /models`` and ``POST /chat/completions`` with
-``stream: true``. The streaming format is Server-Sent Events: each line looks
-like ``data: {json}`` and the stream ends with ``data: [DONE]``.
+We use ``GET /models`` and ``POST /chat/completions`` with ``stream: true``.
+The streaming format is Server-Sent Events: each line looks like
+``data: {json}`` and the stream ends with ``data: [DONE]``. On Ollama we also
+read ``GET /api/tags`` (outside ``/v1``), because that is the only place it
+says how big each model is.
+
+How ``RequestOptions`` reach the server, field by field:
+
+* ``max_tokens``, ``temperature``, ``stop``: the standard fields; every server
+  above reads them.
+* ``json_schema``: sent as ``response_format = {"type": "json_schema", ...}``.
+  Ollama (0.5+), vLLM and SGLang then constrain the reply to the schema.
+* ``reasoning=False`` (skip the hidden "thinking"): no single field works
+  everywhere, so two are sent:
+
+  - ``reasoning_effort: "none"`` - **Ollama** reads this on ``/v1`` and turns
+    thinking off. Current vLLM also accepts it.
+  - ``chat_template_kwargs: {"enable_thinking": false}`` - **vLLM** and
+    **SGLang** hand this to the model's chat template; Qwen3-style templates
+    use it to switch thinking off. Ollama ignores the field.
+
+  Older vLLM releases reject ``reasoning_effort: "none"`` with a 400. When a
+  server does that, the request is sent once more without it, and it is not
+  sent to that server again.
+
+* Token counts: ``stream_options = {"include_usage": true}`` asks the server
+  to end the stream with a chunk carrying ``usage``, including
+  ``prompt_tokens_details.cached_tokens`` where the server reports reuse.
 
 Note: "OpenAI-compatible" is only the *wire format*. Nothing here ever contacts
 OpenAI; the base URL is whatever the company configures.
@@ -18,11 +43,11 @@ OpenAI; the base URL is whatever the company configures.
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import httpx
 
-from bedrock.inference.base import InferenceError, ModelInfo
+from bedrock.inference.base import InferenceError, ModelInfo, RequestOptions, Usage
 
 
 class OpenAICompatibleBackend:
@@ -37,12 +62,15 @@ class OpenAICompatibleBackend:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        self._base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
+            base_url=self._base_url,
             headers=headers,
             timeout=httpx.Timeout(timeout, connect=5.0),
             transport=transport,
         )
+        # Set once the server has refused ``reasoning_effort``; see the module docstring.
+        self._skip_reasoning_effort = False
 
     async def check_connection(self) -> bool:
         try:
@@ -70,24 +98,105 @@ class OpenAICompatibleBackend:
             return []
         if not isinstance(data, list):
             raise InferenceError("Server returned an unexpected /models response.")
-        return [ModelInfo(id=str(item["id"])) for item in data if isinstance(item, dict) and "id" in item]
+        entries = [item for item in data if isinstance(item, dict) and "id" in item]
+        if not entries:
+            return []
+        sizes = await self._ollama_sizes()
+        return [
+            ModelInfo(
+                id=str(item["id"]),
+                size_bytes=_positive_int(item.get("size")) or sizes.get(str(item["id"])),
+                # vLLM reports the window it was started with as ``max_model_len``.
+                context_length=_positive_int(item.get("max_model_len")),
+            )
+            for item in entries
+        ]
 
-    async def stream_chat(self, model: str, messages: list[dict[str, str]]) -> AsyncIterator[str]:
-        payload = {"model": model, "messages": messages, "stream": True}
+    async def _ollama_sizes(self) -> dict[str, int]:
+        """Model sizes from Ollama's ``/api/tags``; empty for any other server.
+
+        Only ever the configured server. Any failure (a 404 from vLLM, a
+        timeout, an odd body) just means "sizes unknown".
+        """
+        root = self._base_url[: -len("/v1")] if self._base_url.endswith("/v1") else self._base_url
         try:
-            async with self._client.stream("POST", "/chat/completions", json=payload) as response:
-                if response.status_code >= 400:
-                    body = (await response.aread()).decode(errors="replace")
-                    raise InferenceError(_http_error_message(response.status_code, body))
+            response = await self._client.get(f"{root}/api/tags", timeout=5.0)
+            if response.status_code != 200:
+                return {}
+            models = response.json().get("models") or []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return {}
+        sizes: dict[str, int] = {}
+        for entry in models if isinstance(models, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            size = _positive_int(entry.get("size"))
+            for key in ("model", "name"):
+                name = entry.get(key)
+                if size and isinstance(name, str):
+                    sizes[name] = size
+        return sizes
 
-                async for line in response.aiter_lines():
-                    fragment = _parse_sse_line(line)
-                    if fragment is None:
-                        break
-                    if fragment:
-                        yield fragment
+    async def stream_chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: RequestOptions | None = None,
+        on_usage: Callable[[Usage], None] | None = None,
+    ) -> AsyncIterator[str]:
+        payload = self._payload(model, messages, options)
+        try:
+            for attempt in (1, 2):
+                async with self._client.stream("POST", "/chat/completions", json=payload) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode(errors="replace")
+                        if attempt == 1 and _rejects_reasoning_effort(response.status_code, body, payload):
+                            self._skip_reasoning_effort = True
+                            payload = self._payload(model, messages, options)
+                            continue
+                        raise InferenceError(_http_error_message(response.status_code, body))
+
+                    usage: Usage | None = None
+                    async for line in response.aiter_lines():
+                        fragment, reported = _parse_sse_chunk(line)
+                        if reported is not None:
+                            usage = reported
+                        if fragment is None:
+                            break
+                        if fragment:
+                            yield fragment
+                    if usage is not None and on_usage is not None:
+                        on_usage(usage)
+                    return
         except httpx.HTTPError as exc:
             raise InferenceError(f"Request failed: {_describe(exc)}", unavailable=True) from exc
+
+    def _payload(self, model: str, messages: list[dict[str, str]], options: RequestOptions | None) -> dict:
+        """The request body, with each option in the field the servers read (module docstring)."""
+        payload: dict = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if options is None:
+            return payload
+        if options.max_tokens is not None:
+            payload["max_tokens"] = options.max_tokens
+        if options.temperature is not None:
+            payload["temperature"] = options.temperature
+        if options.stop:
+            payload["stop"] = list(options.stop)
+        if options.json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "reply", "schema": options.json_schema},
+            }
+        if options.reasoning is False:
+            if not self._skip_reasoning_effort:
+                payload["reasoning_effort"] = "none"
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        return payload
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -99,21 +208,61 @@ def _parse_sse_line(line: str) -> str | None:
     Returns ``""`` for lines that carry no text (keep-alives, role markers),
     and ``None`` when the server signals the end of the stream.
     """
+    return _parse_sse_chunk(line)[0]
+
+
+def _parse_sse_chunk(line: str) -> tuple[str | None, Usage | None]:
+    """One SSE line as (text fragment, token counts if this chunk carried them).
+
+    The fragment follows ``_parse_sse_line``: ``""`` for no text, ``None`` at
+    the end. Servers send the counts in a last chunk whose ``choices`` is empty.
+    """
     line = line.strip()
     if not line or not line.startswith("data:"):
-        return ""
+        return "", None
     data = line[len("data:"):].strip()
     if data == "[DONE]":
-        return None
+        return None, None
     try:
         chunk = json.loads(data)
     except json.JSONDecodeError:
-        return ""
+        return "", None
+    if not isinstance(chunk, dict):
+        return "", None
+    usage = _usage(chunk.get("usage"))
     choices = chunk.get("choices") or []
-    if not choices:
-        return ""
-    delta = choices[0].get("delta") or {}
-    return delta.get("content") or ""
+    if not choices or not isinstance(choices[0], dict):
+        return "", usage
+    delta = choices[0].get("delta")
+    if not isinstance(delta, dict):
+        return "", usage
+    return delta.get("content") or "", usage
+
+
+def _usage(value: object) -> Usage | None:
+    if not isinstance(value, dict):
+        return None
+    details = value.get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    usage = Usage(
+        prompt_tokens=_count(value.get("prompt_tokens")),
+        completion_tokens=_count(value.get("completion_tokens")),
+        cached_prompt_tokens=_count(cached),
+    )
+    return usage if usage != Usage() else None
+
+
+def _count(value: object) -> int | None:
+    """A token count as the server sent it; 0 is a real count, so only >= 0 is kept."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _positive_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _rejects_reasoning_effort(status: int, body: str, payload: dict) -> bool:
+    return status in (400, 422) and "reasoning_effort" in payload and "reasoning_effort" in body
 
 
 def _http_error_message(status: int, body: str) -> str:

@@ -4,6 +4,7 @@ import json
 from uuid import UUID
 
 from bedrock.models import Conversation, Message, Role, new_conversation_id
+from bedrock.models.conversation import RECALL_INTRO
 
 
 def test_to_api_sends_only_role_and_content():
@@ -12,7 +13,7 @@ def test_to_api_sends_only_role_and_content():
     conversation.add_assistant("hi")
 
     assert conversation.to_api() == [
-        {"role": "system", "content": "Be brief."},
+        {"role": "system", "content": f"Be brief.\n\n{RECALL_INTRO}"},
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
     ]
@@ -51,7 +52,7 @@ def test_system_prompt_is_not_saved_but_comes_from_config_on_load():
 
     restored = Conversation.from_dict(conversation.to_dict(), system_prompt="New prompt.")
     assert restored.system_prompt == "New prompt."
-    assert restored.to_api()[0] == {"role": "system", "content": "New prompt."}
+    assert restored.to_api()[0] == {"role": "system", "content": f"New prompt.\n\n{RECALL_INTRO}"}
 
 
 def test_a_conversation_is_untitled_until_the_model_names_it():
@@ -115,4 +116,7 @@ def test_to_api_merges_consecutive_roles_for_strict_chat_templates():
     conversation = Conversation()
     conversation.add_user("first")
     conversation.add_user("second")
-    assert conversation.to_api() == [{"role": "user", "content": "first\n\nsecond"}]
+    assert conversation.to_api() == [
+        {"role": "system", "content": RECALL_INTRO},
+        {"role": "user", "content": "first\n\nsecond"},
+    ]

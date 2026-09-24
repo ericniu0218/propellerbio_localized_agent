@@ -15,15 +15,27 @@ still succeeds. A summariser that fails completely when inference is unavailable
 is worse than one that degrades.
 
 *Map-reduce, not one giant prompt.* An hour of speech is roughly 11,000 tokens,
-and a server's context window is not ours to assume - Ollama defaults to 4096.
-So the transcript is cut into chunks that comfortably fit anywhere, each is read
-on its own, and the findings are merged. This costs more calls and works on
-every backend, including the small ones.
+far more than a laptop's context window (``MachineProfile.context_window``,
+8192 tokens on the laptop profile). So the transcript is cut into chunks, each
+read on its own, and the findings are merged. Every prompt is sized in tokens
+against the window, leaving room for the reply: an extraction chunk is split
+until it fits, and the single-prompt overview and notes passes keep as many
+lines from the start and end of the meeting as fit. A prompt the window cannot
+hold is never sent - a server would silently cut it (Ollama) or refuse it
+(vLLM). If even the employee's own notes leave no room, the notes pass is
+refused with a plain message instead.
+
+*A job the employee asked for.* Every call goes through the ``Scheduler`` as
+``Priority.USER_JOB`` with a reply limit and thinking switched off: a
+reasoning model left to think would spend the whole limit before writing any
+JSON.
 
 *Never cite a timestamp that was not said.* Models invent citations. Every
 timestamp the model returns is checked against the real cue list; one that does
 not exist is re-derived by finding the quoted text, and dropped if that fails
 too. A note with no timestamp is honest. A note with a fabricated one is not.
+The check uses only the lines that model call was actually sent, which are
+exactly the lines that fitted the window.
 """
 
 from __future__ import annotations
@@ -33,6 +45,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from bedrock.config.profile import DEFAULT_PROFILE, PROFILES
+from bedrock.inference import Priority, RequestOptions, Scheduler, estimate_tokens
 from bedrock.inference.base import InferenceBackend, InferenceError
 from bedrock.json_reply import decode_json_reply
 from bedrock.meetings.citations import (
@@ -42,10 +56,26 @@ from bedrock.meetings.citations import (
 )
 from bedrock.meetings.transcript import Cue, speakers, word_count
 
-# Chunks are sized for the smallest context window we expect to meet (Ollama's
-# 4096-token default), leaving room for the instructions and the reply.
+# A chunk is at most this many words (about 1,500 tokens), and in any case no
+# more than fits the window with the instructions and the reply.
 WORDS_PER_CHUNK = 1100
 MAX_POINTS_PER_KIND = 25
+
+EXTRACT_REPLY_TOKENS = 768
+"""Reply limit for one chunk's JSON: room for a dozen items with quotes."""
+
+OVERVIEW_REPLY_TOKENS = 512
+"""Reply limit for the overview: one full paragraph."""
+
+PROMPT_SAFETY = 0.9
+"""Token counts are estimated here, not measured, and the server wraps each
+message in a few tokens of its own. Prompts are kept to 90% of the room left
+after the reply, so an estimate that runs a little low still fits."""
+
+
+def prompt_budget(context_window: int, reply_tokens: int) -> int:
+    """How many tokens one prompt may use, leaving ``reply_tokens`` for the answer."""
+    return max(0, int((context_window - reply_tokens) * PROMPT_SAFETY))
 
 
 @dataclass(frozen=True)
@@ -80,6 +110,9 @@ class MeetingFacts:
 @dataclass
 class MeetingSummary:
     facts: MeetingFacts
+    notices: list[str] = field(default_factory=list)
+    """Plain sentences about what could not be done in full - lines left out
+    to fit the window, or notes too long to rewrite. Shown under the title."""
     overview: str = ""
     decisions: list[Point] = field(default_factory=list)
     actions: list[Point] = field(default_factory=list)
@@ -105,6 +138,8 @@ class MeetingSummary:
         if self.degraded_reason:
             lines += ["", f"> Summary unavailable: {self.degraded_reason}"]
             return "\n".join(lines)
+        for notice in self.notices:
+            lines += ["", f"> {notice}"]
 
         if self.enhanced_notes:
             lines += ["", self.enhanced_notes]
@@ -136,21 +171,37 @@ def compute_facts(cues: list[Cue], title: str, meeting_date: date | None = None)
     )
 
 
-def chunk_cues(cues: list[Cue], words_per_chunk: int = WORDS_PER_CHUNK) -> list[list[Cue]]:
-    """Split on cue boundaries so no utterance is ever cut in half."""
+def chunk_cues(
+    cues: list[Cue], words_per_chunk: int = WORDS_PER_CHUNK, max_tokens: int | None = None
+) -> list[list[Cue]]:
+    """Split on cue boundaries so no utterance is ever cut in half.
+
+    A chunk ends before it would pass ``words_per_chunk`` words or, when given,
+    ``max_tokens`` tokens of rendered transcript. A single line longer than
+    ``max_tokens`` still becomes a chunk of its own; the caller refuses to
+    send it.
+    """
     chunks: list[list[Cue]] = []
     current: list[Cue] = []
-    running = 0
+    words = tokens = 0
     for cue in cues:
         length = len(cue.text.split())
-        if current and running + length > words_per_chunk:
+        cost = _line_tokens(cue)
+        too_long = words + length > words_per_chunk or (max_tokens is not None and tokens + cost > max_tokens)
+        if current and too_long:
             chunks.append(current)
-            current, running = [], 0
+            current, words, tokens = [], 0, 0
         current.append(cue)
-        running += length
+        words += length
+        tokens += cost
     if current:
         chunks.append(current)
     return chunks
+
+
+def _line_tokens(cue: Cue) -> int:
+    """Tokens one cue takes in a prompt, including its line break."""
+    return estimate_tokens(cue.render()) + 1
 
 
 _EXTRACT_PROMPT = """\
@@ -239,48 +290,89 @@ def _render(cues: list[Cue]) -> str:
     return "\n".join(cue.render() for cue in cues)
 
 
-def _shown_cues(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES) -> list[Cue]:
-    """The cues a single-prompt pass is actually given, in order.
+@dataclass(frozen=True)
+class _Excerpt:
+    """The lines a single-prompt pass is given: the start and the end of the meeting."""
 
-    Returned as cues rather than text because the citation check has to run
-    against exactly this list. Checking a quote against the whole meeting would
-    let a citation point at a passage that model call never read.
-    """
-    if len(cues) <= limit:
-        return list(cues)
-    head, tail = limit // 2, limit - limit // 2
-    return list(cues[:head]) + list(cues[-tail:])
+    head: list[Cue]
+    tail: list[Cue]
+    skipped: int
+
+    @property
+    def cues(self) -> list[Cue]:
+        """Exactly the cues sent, in order - what the citation check must use."""
+        return self.head + self.tail
+
+    def render(self) -> str:
+        if not self.skipped:
+            return _render(self.cues)
+        return (
+            _render(self.head)
+            + f"\n\n[... {self.skipped} lines omitted from the middle of the meeting ...]\n\n"
+            + _render(self.tail)
+        )
 
 
-def _for_one_prompt(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES) -> str:
+_OMISSION_TOKENS = 20
+"""Room for the "[... N lines omitted ...]" marker."""
+
+
+def _excerpt(cues: list[Cue], budget_tokens: int, limit: int = MAX_OVERVIEW_CUES) -> _Excerpt:
     """Trim a long meeting for a single-prompt pass, keeping both ends.
 
     Taking the first N cues loses the entire back half of a long meeting —
     including the wrap-up, which is where decisions and owners usually land.
     The opening states the agenda and the close states the outcome, so when a
-    meeting is too long to send whole, those are the parts to keep.
+    meeting is too long to send whole, those are the parts to keep. Lines are
+    taken from the start and the end in turn until ``budget_tokens`` or
+    ``limit`` lines are used up.
+
+    Returned as cues rather than text because the citation check has to run
+    against exactly this list. Checking a quote against the whole meeting would
+    let a citation point at a passage that model call never read.
     """
-    if len(cues) <= limit:
-        return _render(cues)
-    head, tail = limit // 2, limit - limit // 2
-    skipped = len(cues) - limit
-    return (
-        _render(cues[:head])
-        + f"\n\n[... {skipped} lines omitted from the middle of the meeting ...]\n\n"
-        + _render(cues[-tail:])
+    if len(cues) <= limit and sum(_line_tokens(cue) for cue in cues) <= budget_tokens:
+        return _Excerpt(list(cues), [], 0)
+    head: list[Cue] = []
+    tail: list[Cue] = []
+    used = _OMISSION_TOKENS
+    first, last = 0, len(cues) - 1
+    from_start = True
+    while first <= last and len(head) + len(tail) < limit:
+        cue = cues[first] if from_start else cues[last]
+        cost = _line_tokens(cue)
+        if used + cost > budget_tokens:
+            break
+        used += cost
+        if from_start:
+            head.append(cue)
+            first += 1
+        else:
+            tail.insert(0, cue)
+            last -= 1
+        from_start = not from_start
+    return _Excerpt(head, tail, len(cues) - len(head) - len(tail))
+
+
+def _shown_cues(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES, budget_tokens: int | None = None) -> list[Cue]:
+    """The cues a single-prompt pass is actually given, in order."""
+    budget = budget_tokens if budget_tokens is not None else 10**9
+    return _excerpt(cues, budget, limit).cues
+
+
+def _for_one_prompt(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES, budget_tokens: int | None = None) -> str:
+    """The text a single-prompt pass is given; see ``_excerpt``."""
+    budget = budget_tokens if budget_tokens is not None else 10**9
+    return _excerpt(cues, budget, limit).render()
+
+
+async def _complete(scheduler: Scheduler, model: str, prompt: str, reply_tokens: int) -> str:
+    """One call as a job the employee asked for, with its reply limit."""
+    options = RequestOptions(max_tokens=reply_tokens, reasoning=False)
+    reply = await scheduler.complete(
+        model, [{"role": "user", "content": prompt}], priority=Priority.USER_JOB, options=options
     )
-
-
-async def _complete(backend: InferenceBackend, model: str, prompt: str) -> str:
-    """One non-streaming call, assembled from the streaming seam.
-
-    The backend protocol is deliberately streaming-only; collecting the
-    fragments here keeps that contract untouched.
-    """
-    parts: list[str] = []
-    async for fragment in backend.stream_chat(model, [{"role": "user", "content": prompt}]):
-        parts.append(fragment)
-    return "".join(parts).strip()
+    return reply.strip()
 
 
 def _repair_timestamp(value: object, evidence: object, cues: list[Cue]) -> str | None:
@@ -427,8 +519,9 @@ def _verified_notes(reply: str, cues: list[Cue], rough: str) -> str:
 async def summarize_meeting(
     cues: list[Cue],
     *,
-    backend: InferenceBackend,
     model: str,
+    scheduler: Scheduler | None = None,
+    backend: InferenceBackend | None = None,
     title: str = "Meeting",
     meeting_date: date | None = None,
     notes: str | None = None,
@@ -440,23 +533,37 @@ async def summarize_meeting(
     becomes the skeleton of the output, which is the whole point: the result
     reads like their notes, finished, rather than a generic summary that ignores
     what they thought was worth writing down.
+
+    Calls go through ``scheduler``, whose profile sets the window every prompt
+    is sized against. A plain ``backend`` also works; it is given a scheduler
+    of its own with the default profile.
     """
+    if scheduler is None:
+        if backend is None:
+            raise ValueError("summarize_meeting needs a scheduler or a backend")
+        scheduler = Scheduler(backend, PROFILES[DEFAULT_PROFILE])
+    profile = scheduler.profile
     facts = compute_facts(cues, title=title, meeting_date=meeting_date)
     summary = MeetingSummary(facts=facts)
     if not cues:
         summary.degraded_reason = "the transcript was empty"
         return summary
 
-    chunks = chunk_cues(cues, words_per_chunk=words_per_chunk)
+    extract_room = prompt_budget(profile.context_window, EXTRACT_REPLY_TOKENS)
+    extract_template = estimate_tokens(_EXTRACT_PROMPT.format(transcript=""))
+    chunks = chunk_cues(cues, words_per_chunk=words_per_chunk, max_tokens=extract_room - extract_template)
     decisions: list[Point] = []
     actions: list[Point] = []
     details: list[Point] = []
+    unsent_lines = 0
 
     try:
         for chunk in chunks:
-            reply = await _complete(
-                backend, model, _EXTRACT_PROMPT.format(transcript=_render(chunk))
-            )
+            prompt = _EXTRACT_PROMPT.format(transcript=_render(chunk))
+            if estimate_tokens(prompt) > extract_room:
+                unsent_lines += len(chunk)  # one line longer than the whole window
+                continue
+            reply = await _complete(scheduler, model, prompt, EXTRACT_REPLY_TOKENS)
             try:
                 data = decode_json_reply(reply, allow_surrounding_text=True)
             except (ValueError, json.JSONDecodeError):
@@ -465,20 +572,25 @@ async def summarize_meeting(
             decisions += _points(data.get("decisions"), chunk, with_owner=False)
             actions += _points(data.get("actions"), chunk, with_owner=True)
             details += _points(data.get("facts"), chunk, with_owner=False)
+        if unsent_lines:
+            summary.notices.append(
+                f"{unsent_lines} transcript line(s) were too long for the model's "
+                f"{profile.context_window:,}-token window and were not read for decisions and actions."
+            )
 
         # Both single-prompt passes are checked against the cues they were
         # shown, never the whole meeting.
-        shown = _shown_cues(cues)
         if notes and notes.strip():
-            reply = await _complete(
-                backend,
-                model,
-                _NOTES_PROMPT.format(notes=notes.strip(), transcript=_for_one_prompt(cues)),
-            )
-            summary.enhanced_notes = _verified_notes(reply, shown, notes)
+            await _rewrite_notes(summary, scheduler, model, cues, notes)
         else:
+            reply_tokens = OVERVIEW_REPLY_TOKENS
+            room = prompt_budget(profile.context_window, reply_tokens) - estimate_tokens(
+                _OVERVIEW_PROMPT.format(transcript="")
+            )
+            excerpt = _excerpt(cues, room)
+            _note_trimmed(summary, excerpt, "overview")
             overview = await _complete(
-                backend, model, _OVERVIEW_PROMPT.format(transcript=_for_one_prompt(cues))
+                scheduler, model, _OVERVIEW_PROMPT.format(transcript=excerpt.render()), reply_tokens
             )
             # The overview prompt does not ask for citations. One that appears
             # anyway is the model's own invention, so it goes without checking.
@@ -492,3 +604,37 @@ async def summarize_meeting(
     summary.details = _dedupe(details)
     summary.model_used = model
     return summary
+
+
+MIN_NOTES_TRANSCRIPT_TOKENS = 200
+"""Rewriting notes against less transcript than this would be guesswork."""
+
+
+async def _rewrite_notes(summary: MeetingSummary, scheduler: Scheduler, model: str, cues: list[Cue], notes: str) -> None:
+    """The notes pass: their notes, filled in from as much transcript as fits."""
+    profile = scheduler.profile
+    reply_tokens = profile.reply_limit
+    room = prompt_budget(profile.context_window, reply_tokens) - estimate_tokens(
+        _NOTES_PROMPT.format(notes=notes.strip(), transcript="")
+    )
+    if room < MIN_NOTES_TRANSCRIPT_TOKENS:
+        summary.notices.append(
+            f"Your notes are too long to rewrite within the model's {profile.context_window:,}-token "
+            "window, so they are left as you wrote them. Shorten them, or split them and run again."
+        )
+        summary.enhanced_notes = notes.strip()
+        return
+    excerpt = _excerpt(cues, room)
+    _note_trimmed(summary, excerpt, "notes")
+    reply = await _complete(
+        scheduler, model, _NOTES_PROMPT.format(notes=notes.strip(), transcript=excerpt.render()), reply_tokens
+    )
+    summary.enhanced_notes = _verified_notes(reply, excerpt.cues, notes)
+
+
+def _note_trimmed(summary: MeetingSummary, excerpt: _Excerpt, what: str) -> None:
+    if excerpt.skipped:
+        summary.notices.append(
+            f"The meeting is too long to send whole, so the {what} was written from its first "
+            f"and last parts; {excerpt.skipped} lines from the middle were left out."
+        )

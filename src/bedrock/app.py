@@ -38,9 +38,21 @@ from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import find_relevant_context
-from bedrock.inference import InferenceBackend, InferenceError, create_backend
+from bedrock.inference import (
+    InferenceBackend,
+    InferenceError,
+    Preempted,
+    Priority,
+    RequestOptions,
+    Scheduler,
+    choose_default_model,
+    create_backend,
+    fits,
+    format_size,
+)
 from bedrock.models import Conversation, Role
 from bedrock.models.conversation import SCHEMA_VERSION, new_conversation_id
+from bedrock.prompting import PromptBudget, PromptBuilder
 from bedrock.storage import ConversationDeleted, ConversationStore, ConversationSummary, StorageConflict, StorageError, create_store
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.recall import NO_TOPIC, NOTHING_FOUND, RecallResult, build_context, search_history, wants_recall
@@ -115,6 +127,10 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # Tests pass a fake backend and a temporary store; real runs build both
         # from settings. ``store`` stays None when saving is switched off.
         self.backend: InferenceBackend = backend or create_backend(self.settings)
+        # Every model call goes through the scheduler, which decides when it
+        # may run (see bedrock.inference.scheduler). ``self.backend`` stays the
+        # raw connection, used only to check it, list models and close it.
+        self.scheduler = Scheduler(self.backend, self.settings.profile)
         self.store: ConversationStore | None = store if store is not None else create_store(self.settings)
         self.conversation = Conversation(system_prompt=self.settings.system_prompt)
         self.model_name: str | None = self.settings.model
@@ -180,12 +196,27 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     @work(exclusive=True, group="connection")
     async def check_connection(self) -> None:
+        """Refresh the connection light and the context counter, on a timer.
+
+        The counter is the last chat prompt's size as the server reported it
+        (``scheduler.last_usage``), against the profile's window. It is read
+        from memory; checking it sends nothing anywhere.
+        """
         connected = await self.backend.check_connection()
-        self.query_one(StatusBar).connected = connected
+        status = self.query_one(StatusBar)
+        status.connected = connected
+        usage = self.scheduler.last_usage
+        status.context_window = self.settings.profile.context_window
+        status.context_used = usage.prompt_tokens if usage is not None else None
 
     @work(group="models")
     async def pick_default_model(self) -> None:
-        """If no model was configured, use the first one the server offers.
+        """If no model was configured, pick one that fits this machine.
+
+        That is the largest model the server lists whose size fits the
+        profile's ``max_auto_model_bytes``; when the server reports no sizes,
+        the first model it lists (see ``bedrock.inference.model_choice``). A
+        short notice says which model was picked and why.
 
         Then start filling in missing conversation titles, which needs a model
         to ask - so it has to wait until this point.
@@ -195,10 +226,15 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 models = await self.backend.list_models()
             except InferenceError:
                 return  # Connection indicator already tells the story; try again on /model.
-            if not models:
+            profile = self.settings.profile
+            choice = choose_default_model(models, profile.max_auto_model_bytes, profile.name)
+            if choice is None:
                 return
-            self.model_name = models[0].id
+            self.model_name = choice.model.id
             self._refresh_status()
+            # A toast rather than a chat notice: it explains a choice, it is
+            # not part of any conversation.
+            self.notify(choice.reason, title="Model", timeout=8)
         self.write_missing_titles()
 
     # ---- Input handling ---------------------------------------------------
@@ -266,10 +302,19 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if not models:
             await self.post_notice("The server reports no models. Pull one first, e.g. `ollama pull llama3.2`.", kind="error")
             return
+        profile = self.settings.profile
         lines = ["**Available models** (use `/model <name>` to switch)", ""]
         for model in models:
             marker = "→" if model.id == self.model_name else " "
-            lines.append(f"- {marker} `{model.id}`")
+            details = []
+            if model.size_bytes is not None:
+                details.append(format_size(model.size_bytes))
+            if fits(model, profile.max_auto_model_bytes) is False:
+                details.append(f"too large for the {profile.name} profile")
+            suffix = f" ({', '.join(details)})" if details else ""
+            lines.append(f"- {marker} `{model.id}`{suffix}")
+        if any(fits(model, profile.max_auto_model_bytes) is False for model in models):
+            lines += ["", f"Models marked too large may not fit in memory with a {profile.context_window:,}-token window. You can still choose one."]
         await self.post_notice("\n".join(lines))
 
     # ---- Structure prediction and viewing ---------------------------------
@@ -432,6 +477,10 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if argument.casefold() in {"clear", "off", "none"}:
             conversation.recalled_context = None
             conversation.recalled_from = []
+            # Earlier sent prompts may hold excerpts in the in-memory prefix.
+            # Clearing recall must remove those copies too.
+            conversation._prompt_sent = {}
+            conversation._prompt_forced_trim = True
             self._recalled.pop(conversation.id, None)
             await self.post_notice("Removed the excerpts from past chats. Your next messages are sent without them.")
             return
@@ -463,6 +512,8 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         if result.hits:
             conversation.recalled_context = build_context(result.hits)
             conversation.recalled_from = [f"{hit.title} ({format_when(hit.updated_at)})" for hit in result.hits]
+            conversation._prompt_sent = {}
+            conversation._prompt_forced_trim = True
             self._recalled[conversation.id] = (conversation.recalled_context, conversation.recalled_from)
         return result
 
@@ -696,7 +747,14 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     @work(group="titles")
     async def write_missing_titles(self) -> None:
-        """Title only the open conversation. Never load history for backfill."""
+        """Title only the open conversation. Never load history for backfill.
+
+        Titles are background work: the scheduler starts them once the app is
+        idle and cancels them when the employee sends a message (decision D2
+        in docs/roadmaps/LAPTOP_MEMORY.md), so there is no waiting here for a
+        reply to finish. A cancelled title (``Preempted``) is tried again
+        after the next reply; it is not a failure.
+        """
         if self.store is None:
             return
         if self._title_worker_running:
@@ -714,13 +772,15 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                         continue
                     return
                 attempted.add(conversation.id)
-                while self._streaming:
-                    await asyncio.sleep(0.2)
-                if conversation is not self.conversation:
-                    continue
                 checked_at = len(conversation.messages)
                 try:
-                    title = await generate_title(self.backend, self.model_name, conversation)
+                    # None: ask the model already in the server's memory, the
+                    # one that last answered a chat. Before any chat this
+                    # session there is none, and a title is not worth making
+                    # the server load one; it waits for the first reply.
+                    title = await generate_title(self.scheduler, None, conversation)
+                except Preempted:
+                    continue  # no answer this time: try again after the next reply
                 except InferenceError as exc:
                     if exc.unavailable:
                         return
@@ -1144,8 +1204,6 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 return
             self._prepared_questions[item.id] = question.timestamp
             await self.mount_message(UserMessage(attachments.display_text(text, attached)))
-            if notice := attachments.summary(attached):
-                await self.post_notice(notice)
 
         conversation, note = self.conversation, None
         if self.store is not None and wants_recall(text):
@@ -1175,22 +1233,31 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 return
 
         # Anything compressed earlier with /digest that matches this
-        # question, folded into `note` the same one-turn, never-saved way
-        # recall's NO_TOPIC/NOTHING_FOUND are - see
-        # bedrock.context.auto_inject for what this can and can't do.
+        # question becomes a bounded extra in the newest user message. It is
+        # never saved as part of what the employee typed; see
+        # bedrock.context.auto_inject for what keyword matching can and can't do.
         # Without this, /digest did nothing for the next question you
         # asked unless you remembered to search it yourself; that gap was
         # closed for AgentPackApp first and is closed here the same way.
         # The switch is read here, when the prompt actually starts, so one
         # that waited in the queue follows `/digest auto off` typed meanwhile.
-        injected = find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
+        passage_limit = self.settings.profile.auto_inject_passages
+        injected = (
+            await asyncio.to_thread(find_relevant_context, text, self.context_store, limit=passage_limit)
+            if self.auto_context.enabled and passage_limit > 0 else None
+        )
+        extras: dict[str, object] = {}
+        if note:
+            extras["note"] = note
+        if conversation.recalled_context:
+            extras["recall"] = conversation.recalled_context
         if injected is not None:
-            note = f"{note}\n\n{injected.prompt_block}" if note else injected.prompt_block
+            extras["passages"] = injected.prompt_block
             await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
         reply_widget = AssistantMessage(model_name)
         await self.mount_message(reply_widget)
-        self.stream_reply(reply_widget, conversation, model_name, note, item)
+        self.stream_reply(reply_widget, conversation, model_name, extras, item)
 
     @work(exclusive=True, group="chat")
     async def stream_reply(
@@ -1198,7 +1265,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         widget: AssistantMessage,
         conversation: Conversation,
         model_name: str,
-        note: str | None = None,
+        extras: dict[str, object] | None = None,
         item: PromptItem | None = None,
     ) -> None:
         """Background worker: pull fragments from the backend into the widget.
@@ -1212,12 +1279,26 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         prompt_box.placeholder = "Responding… (Esc to stop)"
         # Serialise the history *before* adding the empty reply placeholder,
         # otherwise the model would see a blank assistant turn at the end.
-        api_messages = conversation.to_api(note)
+        try:
+            prompt = PromptBuilder(PromptBudget.from_profile(self.settings.profile)).build(conversation, extras)
+        except ValueError as exc:
+            self._streaming = False
+            prompt_box.placeholder = "Type a message, or /help for commands"
+            await self.post_notice(f"Could not fit this prompt in the model window: {exc}", kind="error")
+            if item is not None:
+                self.finish_prompt(item, ok=False)
+            return
+        api_messages = prompt.messages
+        for notice in prompt.notices:
+            await self.post_notice(notice)
         reply = conversation.add_assistant()
         stream = widget.begin_stream()
         answered = False
         try:
-            async for fragment in self.backend.stream_chat(model_name, api_messages):
+            async for fragment in self.scheduler.stream(
+                model_name, api_messages, priority=Priority.CHAT,
+                options=RequestOptions(max_tokens=self.settings.profile.reply_limit),
+            ):
                 reply.content += fragment
                 await stream.write(fragment)
                 self.scroll_chat_to_end()

@@ -55,9 +55,11 @@ class ReplyBackend:
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.requests: list[tuple[str, list[dict[str, str]]]] = []
+        self.options: list = []
 
-    async def stream_chat(self, model: str, messages: list[dict[str, str]]):
+    async def stream_chat(self, model: str, messages: list[dict[str, str]], options=None, on_usage=None):
         self.requests.append((model, messages))
+        self.options.append(options)
         yield self.reply
 
 
@@ -135,6 +137,38 @@ async def test_planner_blocks_an_invented_capability_instead_of_returning_partia
 
     assert plan.steps == ()
     assert "not in this agent's roster" in plan.blocked_reason
+
+
+async def test_planner_is_a_user_job_with_a_reply_limit_and_the_plan_schema():
+    from bedrock.agents.planner import plan_schema
+    from bedrock.config import PROFILES
+    from bedrock.inference import Priority, Scheduler
+
+    backend = ReplyBackend('{"steps":[{"tool":"echo","arguments":{"message":"hi"}}],"blocked_reason":null}')
+    scheduler = Scheduler(backend, PROFILES["laptop"])
+    priorities = []
+    original = scheduler.stream
+
+    def recording(model, messages, *, priority, options=None):
+        priorities.append(priority)
+        return original(model, messages, priority=priority, options=options)
+
+    scheduler.stream = recording
+    plan = await Planner(scheduler, "private-model", {"echo": ECHO}, max_steps=3).plan(an_ask())
+
+    assert plan.blocked_reason is None
+    assert priorities == [Priority.USER_JOB]
+    [options] = backend.options
+    assert options.max_tokens == PROFILES["laptop"].reply_limit
+    assert options.json_schema == plan_schema(["echo"], 3)
+    assert options.json_schema["properties"]["steps"]["items"]["properties"]["tool"]["enum"] == ["echo"]
+
+
+async def test_planner_still_checks_a_reply_the_server_did_not_constrain():
+    """A server may ignore the schema; the parser is exactly as strict as before."""
+    backend = ReplyBackend('{"steps":[],"blocked_reason":null,"extra":"field"}')
+    plan = await Planner(backend, "private-model", {"echo": ECHO}).plan(an_ask())
+    assert "unexpected fields" in plan.blocked_reason
 
 
 def test_settings_contain_the_complete_agent_block(tmp_path: Path):

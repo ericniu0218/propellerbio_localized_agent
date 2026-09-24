@@ -109,14 +109,16 @@ async def test_a_title_is_only_requested_after_the_reply_finishes(fake_backend, 
         assert ConversationStore(store.directory).latest().generated_title == "Re slow question"
 
 
-async def test_only_open_conversation_gets_a_title_at_startup(store):
-    """Unopened transcripts are never loaded for title backfill."""
+async def test_only_open_conversation_gets_a_title_once_a_chat_has_loaded_a_model(store):
+    """Unopened transcripts are never loaded for title backfill, and nothing
+    makes the server load a model just for a title: the open conversation is
+    titled after the first reply of this session, by the model that gave it."""
     for question in ["first old question", "second old question"]:
         conversation = Conversation(model="test-model")
         conversation.add_user(question)
         conversation.add_assistant("an answer")
         store.save(conversation)
-    before = [(s.id, s.updated_at) for s in store.list()]
+    older, newer = sorted(store.list(), key=lambda summary: summary.updated_at)
 
     backend = FakeBackend()
     app = make_app(backend, store)
@@ -124,10 +126,14 @@ async def test_only_open_conversation_gets_a_title_at_startup(store):
         await pilot.pause()
         await wait_for_app_workers(app)
         await pilot.pause()
+        assert backend.topic_checks == [] and backend.title_requests == []
+        assert rows(app) == ["Untitled", "Untitled"]
+
+        await chat(pilot, app, "and one more thing")
         assert rows(app) == ["Re second old question", "Untitled"]
 
-    after = ConversationStore(store.directory).list()
-    assert [(s.id, s.updated_at) for s in after] == before  # same order, same "last used"
+    after = {summary.id: summary for summary in ConversationStore(store.directory).list()}
+    assert after[older.id].updated_at == older.updated_at  # the unopened one was never touched
     assert len(backend.title_requests) == 1
 
 
@@ -160,6 +166,8 @@ async def test_without_a_server_conversations_stay_untitled_and_are_retried_late
         await pilot.pause()
         await wait_for_app_workers(second)
         await pilot.pause()
+        assert rows(second) == ["Untitled"]  # no model is loaded just for a title
+        await chat(pilot, second, "and for contractors?")
         assert rows(second) == ["Re what is our VPN policy"]
 
 
@@ -288,3 +296,44 @@ async def test_small_talk_stays_untitled_until_a_topic_turns_up(store):
         await chat(pilot, app, "sea animals")
         assert rows(app) == ["Sea Animals"]
         assert len(backend.topic_checks) == 2
+
+
+async def test_a_title_stopped_for_the_chat_is_tried_again_after_the_next_reply(store):
+    """Preempted is "later", not "failed": the chat is not marked as un-titleable."""
+    import asyncio
+
+    from bedrock.inference import Priority
+
+    class SlowTopicCheck(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.release = asyncio.Event()
+            self.checking = asyncio.Event()
+
+        async def stream_chat(self, model, messages, options=None, on_usage=None):
+            from bedrock.titles import is_topic_check
+
+            if is_topic_check(messages) and not self.release.is_set():
+                self.topic_checks.append((model, list(messages)))
+                self.checking.set()
+                await self.release.wait()
+            async for fragment in super().stream_chat(model, messages, options, on_usage):
+                yield fragment
+
+    backend = SlowTopicCheck()
+    app = make_app(backend, store)
+    async with app.run_test() as pilot:
+        await pilot.press(*"bees please", "enter")
+        await asyncio.wait_for(backend.checking.wait(), 5)
+
+        # A chat call arriving now takes the server from the title.
+        await app.scheduler.complete("test-model", [{"role": "user", "content": "x"}], priority=Priority.CHAT)
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert app.conversation.generated_title is None
+        assert app.conversation.id not in app._title_failures
+        assert app.conversation.title_checked_at == 0  # nothing was learned about the topic
+
+        backend.release.set()
+        await chat(pilot, app, "tell me more about bees")
+        assert app.conversation.generated_title == "Re bees please"

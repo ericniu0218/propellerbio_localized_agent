@@ -45,6 +45,28 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup() -> None:
+        # Anything a restart interrupted. Transcription runs for tens of
+        # minutes, so a deploy in the middle of one used to lose it silently.
+        try:
+            resumed = routes_meetings.resume_interrupted()
+            if resumed:
+                logger.info("Resumed %d interrupted meeting recording(s)", len(resumed))
+        except Exception:
+            logger.exception("Could not resume interrupted recordings")
+
+        # Retention runs here rather than on a timer: a background thread that
+        # silently deletes company records should not start by importing a
+        # module. One pass per start is predictable and auditable.
+        try:
+            swept = routes_meetings.run_retention_sweep()
+            if swept["audioDeleted"]:
+                logger.info(
+                    "Retention: deleted %d recording(s), freed %d MB",
+                    swept["audioDeleted"], swept["bytesFreed"] // 1_000_000,
+                )
+        except Exception:
+            logger.exception("Retention sweep failed")
+
         settings = get_settings()
         if settings.airgap_check_enabled and settings.mode == "real":
             try:

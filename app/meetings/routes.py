@@ -40,8 +40,10 @@ from app.meetings.enrollment import (
     enroll_from_wav,
 )
 from app.meetings.governance import capture_consent, consent_required
+from app.meetings.job_store import PersistedJob, RecordingJobStore
 from app.meetings.jobs import RecordingJob, RecordingJobs, process
 from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
+from app.meetings.retention import audio_retention_days, sweep, transcript_retention_days
 from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
 from app.workspace.routes import identity, require_object, store
 from app.workspace.store import uid
@@ -50,8 +52,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workspace/api/meetings", tags=["meetings"])
 
-# One registry for the process, like the workspace's own `jobs` dict.
-_jobs = RecordingJobs()
+# One registry for the process, backed by a store so an interrupted job can be
+# picked up after a restart rather than silently lost.
+_job_store = RecordingJobStore(RecordingConfig.from_env().storage_dir / "jobs.sqlite")
+_jobs = RecordingJobs(_job_store)
 
 # Browsers hand us whatever MediaRecorder produced. ffmpeg reads all of these;
 # the list exists to reject an obviously wrong upload early rather than to be a
@@ -163,24 +167,18 @@ async def create_recording(
     )
     _jobs.register(job)
 
-    async def runner(running_job: RecordingJob) -> None:
-        await process(
-            running_job,
-            _jobs,
-            recording_config,
-            store=workspace,
-            project_id=projectId,
-            typed_notes=notes,
-            started_at=started_at,
-            deliver=deliver_recording,
-            expected_speakers=expectedSpeakers,
-            consent=consent,
-            voice_prints=prints,
+    _job_store.save(
+        PersistedJob(
+            id=job_id, owner=user["id"], title=job.title,
+            audio_path=str(audio_path), work_dir=str(job.work_dir),
+            status="queued", stage="Queued", started_at=started_at.isoformat(),
+            project_id=projectId, typed_notes=notes,
+            expected_speakers=expectedSpeakers, consent=consent,
+            access_groups=None,
         )
-
-    prints = voice_store().vectors(user["id"]) if ENROLLMENT_AVAILABLE else []
-
-    _jobs.start(job, runner)
+    )
+    _jobs.start(job, _runner_for(job, recording_config, workspace, projectId, notes,
+                                 started_at, expectedSpeakers, consent, user["id"]))
     workspace.audit(user["id"], "recorded meeting", job_id)
     return job.public()
 
@@ -317,6 +315,101 @@ def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity))
     saved = workspace.put(user["id"], "meetings", meeting)
     workspace.audit(user["id"], "renamed meeting speakers", meeting_id)
     return saved
+
+
+@router.get("/retention")
+def retention_policy(user=Depends(identity)):
+    """What this deployment keeps, and for how long."""
+    audio, transcripts = audio_retention_days(), transcript_retention_days()
+    return {
+        "audioDays": audio,
+        "transcriptDays": transcripts,
+        "describes": (
+            f"Recordings are deleted after {audio} days."
+            if audio > 0
+            else "Recordings are kept indefinitely."
+        )
+        + (
+            f" Meetings are deleted after {transcripts} days."
+            if transcripts > 0
+            else " Meetings and their transcripts are kept indefinitely."
+        ),
+    }
+
+
+def run_retention_sweep() -> dict:
+    """One pass of the retention clocks. Called on startup; safe to call again.
+
+    Audio only by default. Deleting a transcript is opt-in, because a
+    transcript is the institutional memory this product exists to build.
+    """
+    report = sweep(config().storage_dir)
+    return {
+        "audioDeleted": report.audio_deleted,
+        "bytesFreed": report.audio_bytes,
+        "errors": report.errors,
+    }
+
+
+def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
+                expected_speakers, consent, owner):
+    """One runner shape for both a fresh upload and a recovered job."""
+
+    async def runner(running_job: RecordingJob) -> None:
+        prints = voice_store().vectors(owner) if ENROLLMENT_AVAILABLE else []
+        await process(
+            running_job,
+            _jobs,
+            recording_config,
+            store=workspace,
+            project_id=project_id,
+            typed_notes=notes,
+            started_at=started_at,
+            deliver=deliver_recording,
+            expected_speakers=expected_speakers,
+            consent=consent,
+            voice_prints=prints,
+        )
+
+    return runner
+
+
+def resume_interrupted() -> list[str]:
+    """Pick up anything a restart interrupted. Called once, on startup.
+
+    A job whose audio has gone is dropped rather than retried for ever: there
+    is nothing left to transcribe, and leaving the row would make every startup
+    try again.
+    """
+    if not PIPELINE_AVAILABLE:
+        return []
+    resumed = []
+    workspace = store()
+    for stale in _job_store.unfinished():
+        audio = Path(stale.audio_path)
+        if not audio.exists():
+            logger.warning("Dropping recording job %s: its audio is gone", stale.id)
+            _job_store.forget(stale.id)
+            continue
+        claimed = _job_store.claim(stale.id)
+        if claimed is None:
+            logger.warning("Abandoning recording job %s after repeated failures", stale.id)
+            continue
+        job = RecordingJob(
+            id=claimed.id, owner=claimed.owner, title=claimed.title,
+            audio_path=audio, work_dir=Path(claimed.work_dir),
+        )
+        _jobs.register(job)
+        _jobs.advance(job, "Resuming after a restart")
+        _jobs.start(job, _runner_for(
+            job, config(), workspace, claimed.project_id, claimed.typed_notes,
+            _parse_started_at(claimed.started_at), claimed.expected_speakers,
+            claimed.consent, claimed.owner,
+        ))
+        resumed.append(claimed.id)
+    if resumed:
+        logger.info("Resumed %d interrupted recording job(s)", len(resumed))
+    return resumed
 
 
 @router.get("/recordings/{job_id}")

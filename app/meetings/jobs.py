@@ -30,6 +30,7 @@ from pathlib import Path
 
 from app.meetings.config import RecordingConfig
 from app.meetings.governance import groups_for, redact_record
+from app.meetings.job_store import RecordingJobStore
 from app.meetings.pipeline import (
     RecordingError,
     TranscriptionOutcome,
@@ -75,11 +76,17 @@ class RecordingJob:
 
 
 class RecordingJobs:
-    """In-process registry of recordings being transcribed."""
+    """In-process registry of recordings being transcribed.
 
-    def __init__(self) -> None:
+    Backed by `RecordingJobStore` when one is given, so an interrupted job can
+    be picked up after a restart. Without one the behaviour is exactly what it
+    was: fine for a test, and the reason the store is optional.
+    """
+
+    def __init__(self, store: RecordingJobStore | None = None) -> None:
         self._jobs: dict[str, RecordingJob] = {}
         self._tasks: set[asyncio.Task] = set()
+        self.store = store
 
     def get(self, owner: str, job_id: str) -> RecordingJob | None:
         job = self._jobs.get(job_id)
@@ -116,6 +123,8 @@ class RecordingJobs:
     def advance(self, job: RecordingJob, stage: str) -> None:
         job.status = "running"
         job.stage = stage
+        if self.store:
+            self.store.update_status(job.id, "running", stage)
 
     def finish(self, job: RecordingJob, meeting_id: str, notes: list[str]) -> None:
         job.status = "done"
@@ -123,6 +132,9 @@ class RecordingJobs:
         job.meeting_id = meeting_id
         job.notes = notes
         job.finished_at = time.monotonic()
+        # The meeting is the record now; the job has nothing left to say.
+        if self.store:
+            self.store.forget(job.id)
         self._cleanup(job)
 
     def fail(self, job: RecordingJob, error: str) -> None:
@@ -130,6 +142,10 @@ class RecordingJobs:
         job.stage = "Failed"
         job.error = error
         job.finished_at = time.monotonic()
+        # Kept, not forgotten: a failed job still holds the audio and the
+        # parameters, which is exactly what a retry needs.
+        if self.store:
+            self.store.update_status(job.id, "failed", "Failed")
         self._cleanup(job)
 
     def _cleanup(self, job: RecordingJob) -> None:

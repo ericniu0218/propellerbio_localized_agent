@@ -8,6 +8,12 @@ hard gate would be actively unhelpful for those. Only runs the network
 checks when there is no config file yet (see ``settings.py``): once
 someone has configured this once, repeating a multi-second reachability
 check on every single launch would be a real, ongoing cost for no benefit.
+
+In plain-model mode it also prints the Ollama server settings that match the
+machine profile (``bedrock.config.profile``). The client cannot change how the
+server was started, and the one setting that decides a laptop's memory - the
+context window - lives on the server, so the employee (or IT) has to set it
+there to match.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import asyncio
 
 import httpx
 
+from bedrock.config.profile import MachineProfile
 from bedrock.config.settings import (
     DEFAULT_AGENT_PACK_API_BASE,
     DEFAULT_API_BASE,
@@ -69,8 +76,43 @@ def run_first_run_check(settings: Settings) -> list[str]:
                 f'      api_base = "https://<the real address>"\n'
                 f'      api_key = "<if your team gave you one>"'
             )
+        issues.append(server_settings_note(settings.profile))
 
     return issues
+
+
+def ollama_settings(profile: MachineProfile) -> list[str]:
+    """The Ollama environment variables that match ``profile``, one per line.
+
+    ``OLLAMA_CONTEXT_LENGTH`` is the window the server reserves memory for, so
+    it must equal the profile's window. One parallel slot and one loaded
+    model, because each extra slot is another full KV cache. Flash attention
+    and an 8-bit cache roughly halve that cache's memory.
+    """
+    return [
+        f"OLLAMA_CONTEXT_LENGTH={profile.context_window}",
+        f"OLLAMA_NUM_PARALLEL={profile.max_parallel}",
+        "OLLAMA_MAX_LOADED_MODELS=1",
+        "OLLAMA_FLASH_ATTENTION=1",
+        "OLLAMA_KV_CACHE_TYPE=q8_0",
+    ]
+
+
+def server_settings_note(profile: MachineProfile) -> str:
+    """What to set on the model server so it matches the ``profile`` in use."""
+    lines = "\n".join(f"      {line}" for line in ollama_settings(profile))
+    advice = (
+        f"Using the {profile.name} profile ({profile.context_window:,}-token window). "
+        f"If Ollama runs on this computer, start it with these settings so its "
+        f"memory matches:\n{lines}"
+    )
+    if profile.name == "laptop":
+        advice += "\n    On an 8 GB laptop use a 3-4B model at 4-bit, e.g. `ollama pull llama3.2:3b`."
+    advice += (
+        f"\n    For vLLM, start it with --max-model-len {profile.context_window}. "
+        'Choose another profile with profile = "laptop" | "workstation" | "server" in the config file.'
+    )
+    return advice
 
 
 def _biotech_tool_notes(settings: Settings) -> list[str]:

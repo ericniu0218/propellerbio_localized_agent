@@ -115,7 +115,8 @@ class Settings:
     """Base URL of an OpenAI-compatible API, e.g. ``http://localhost:11434/v1``."""
 
     model: str | None = None
-    """Model to use at startup. ``None`` means "ask the server and pick the first"."""
+    """Model to use at startup. ``None`` means "ask the server and pick the largest
+    one that fits ``profile``" (see ``bedrock.inference.model_choice``)."""
 
     api_key: str | None = None
     """Optional bearer token. Ollama ignores it; vLLM/SGLang can require one."""

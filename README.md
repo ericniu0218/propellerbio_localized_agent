@@ -294,6 +294,33 @@ chats and about 6,000 characters of excerpts are sent. The excerpts go to your
 model with each message while that chat stays open, but are never saved into
 it, so `/forget` on the original chat still removes that text from the machine.
 
+## Running on a laptop
+
+On an 8 GB laptop the model server's memory is the whole problem, not the app
+(which uses about 44 MB). The server holds the model's weights (~2 GB for
+`llama3.2:3b` at 4-bit) plus a cache for the context window, which Ollama
+reserves in full as soon as the model loads: 0.9 GB at 8k tokens, 3.8 GB at
+32k. So the window is the memory setting.
+
+Use a 3-4B model at 4-bit (`ollama pull llama3.2:3b`) and start Ollama with:
+
+```
+OLLAMA_CONTEXT_LENGTH=8192   # the window; use 4096 if memory is still tight
+OLLAMA_NUM_PARALLEL=1        # each extra slot is another full cache
+OLLAMA_MAX_LOADED_MODELS=1
+OLLAMA_FLASH_ATTENTION=1
+OLLAMA_KV_CACHE_TYPE=q8_0    # roughly halves the cache
+```
+
+The client's `profile` setting says what kind of machine runs the model:
+`laptop` (the default: 8k window, one call at a time, titles only when idle,
+auto-picks models up to 3.5 GB), `workstation` (32k, up to 12 GB) or `server`
+(32k, four calls at once, no size limit). If you change
+`OLLAMA_CONTEXT_LENGTH`, set `context_window` to the same number. The first-run
+check prints the settings that match your profile. The status bar's `context`
+counter shows how full the last prompt was; it is worked out on this machine
+and never sent anywhere.
+
 ## Configuration
 
 Settings are read from, highest priority first:
@@ -305,9 +332,11 @@ Settings are read from, highest priority first:
 | Environment variable | Config key        | Default                      |
 |----------------------|-------------------|------------------------------|
 | `BEDROCK_API_BASE`   | `api_base`        | `http://localhost:11434/v1`  |
-| `BEDROCK_MODEL`      | `model`           | first model the server lists |
+| `BEDROCK_MODEL`      | `model`           | largest listed model that fits the profile |
 | `BEDROCK_API_KEY`    | `api_key`         | none                         |
 | `BEDROCK_TIMEOUT`    | `request_timeout` | `120` seconds                |
+| `BEDROCK_PROFILE`    | `profile`         | `laptop`                     |
+| `BEDROCK_CONTEXT_WINDOW` | `context_window` | the profile's window (8192 on `laptop`) |
 | `BEDROCK_HISTORY_DIR`| `history_dir`     | `~/.local/share/bedrock/conversations` |
 | `BEDROCK_SAVE_HISTORY` | `save_history`  | `true`                       |
 | `BEDROCK_AUTO_CONTEXT` | `auto_context`  | `true`                       |

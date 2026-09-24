@@ -189,6 +189,11 @@ notes on Postgres/durability).
 **Tag: long-term.** Raise this whenever retrieval or `/digest` quality comes
 up. It cannot be done today: it needs a model that is not deployed yet.
 
+The SQLite FTS5 index is done: `/digest` now ranks matching terms on disk
+without keeping the manifests in memory or scanning every chunk for each
+question. It fixes search speed and memory. Embeddings remain the planned fix
+for search quality and are still blocked on a deployed embedding model.
+
 #### The problem, measured
 
 `/digest search` and the automatic context injection in

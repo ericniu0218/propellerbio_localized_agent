@@ -39,6 +39,13 @@ Open-weight language model
 
 The UI only ever touches `InferenceBackend`. To support a new server protocol, add a class in `src/bedrock/inference/` and select it in `factory.py`; nothing in `ui/` or `app.py` changes.
 
+**Model-call rule:** nothing outside `src/bedrock/inference/` calls
+`stream_chat`. Every model call goes through `Scheduler`
+(`inference/scheduler.py`) with a `Priority` and a `RequestOptions` that sets a
+reply limit, so it waits its turn behind the employee's chat on a laptop.
+`tests/test_model_call_guard.py` fails when something calls the backend
+directly.
+
 ## Privacy
 
 The client must never send prompts to external AI APIs, depend on OpenAI/Anthropic/Gemini, or include analytics, tracking or telemetry. All endpoints come from configuration (`src/bedrock/config/settings.py`): environment variables override `~/.config/bedrock/config.toml`, which overrides defaults.
@@ -90,7 +97,7 @@ local SQLite and `BEDROCK_USER` is not authentication; preserve that explicit
 boundary until the workspace store moves behind verified company identity.
 
 Not yet built (deliberately): file attachments in chat, embedding-based
-retrieval (`/digest` search is keyword/BM25), authentication, conversation
+retrieval (`/digest` search is keyword ranking on SQLite FTS5), authentication, conversation
 persistence, packaging as a standalone executable.
 
 ## Agent-pack mode
@@ -112,6 +119,29 @@ Login is still a stand-in (a `BEDROCK_USER` env var, not real SSO) —
 authentication remains genuinely not built, per the line above; the
 agent-pack backend's `docs/WORKFLOW.md`/`docs/DEPLOYMENT.md` describe the
 intended Keycloak/OIDC login this client would eventually use instead.
+
+Also built: bounded chat prompts (`src/bedrock/prompting/`). Chat prompts now
+follow the machine profile's context budget. A fixed system message and
+large-step history trims preserve the prompt start between trims, with notices
+when earlier messages are omitted. Attachments are sent whole once, then as
+locally generated fenced digests. `/digest` uses on-disk FTS5 for faster
+keyword search; embeddings are still needed for semantic matches.
+
+Also built: the laptop model runtime (`docs/roadmaps/LAPTOP_MEMORY.md`).
+`config/profile.py` holds the machine profiles (`laptop` by default,
+`workstation`, `server`; `BEDROCK_PROFILE`, `context_window` override): context
+window, reply limit, parallel calls, background policy, the largest model the
+app auto-picks. `InferenceBackend.stream_chat` takes `RequestOptions` (reply
+limit, stop words, JSON schema, reasoning off) and reports `Usage`.
+`inference/scheduler.py` runs calls by `Priority` - `CHAT`, then `USER_JOB`
+(`/digest` summary, meeting notes, planner), then `BACKGROUND` (titles) - one
+at a time on a laptop; a chat cancels running background work (`Preempted`,
+retried later, never a failure), background waits until idle and uses the
+model that last answered - so titles appear after the first reply of a
+session, never by loading a model at startup. `inference/tokens.py` estimates tokens and learns
+from reported counts. The status bar's `context` counter shows the last prompt
+against the window, locally only. The first-run check prints matching Ollama
+settings. New features read limits from the profile, not constants of their own.
 
 ## Development Philosophy
 

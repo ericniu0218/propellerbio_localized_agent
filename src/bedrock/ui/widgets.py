@@ -28,9 +28,34 @@ NEW_CONVERSATION = "+new"
 
 
 class StatusBar(Horizontal):
-    """Top bar: app name on the left, current local context on the right."""
+    """Top bar: app name on the left, current local context on the right.
+
+    The ``context`` counter shows how much of the model's context window the
+    last chat prompt filled, as the server counted it: ``context 3.1k/8k``.
+    It is worked out from numbers the server already sends back with each
+    reply, and it only ever appears here - nothing is logged, saved or sent.
+    It stays blank until a reply has reported its size.
+    """
+
+    DEFAULT_CSS = """
+    StatusBar #status-context {
+        width: auto;
+        color: $text-muted;
+        margin-right: 3;
+    }
+    StatusBar #status-context.full {
+        color: $warning;
+    }
+    """
+
+    FULL_SHARE = 0.9
+    """At or above this share of the window the counter is highlighted: the
+    next turns will start leaving out the oldest messages."""
 
     model_name: reactive[str] = reactive("no model")
+    context_used: reactive[int | None] = reactive(None)
+    """Prompt tokens of the last chat reply; None until a server reports it."""
+    context_window: reactive[int | None] = reactive(None)
     workspace_name: reactive[str | None] = reactive(None)
     connected: reactive[bool | None] = reactive(None)  # None = not checked yet
     # Set true while AgentPackClient is between a dropped live-event
@@ -44,10 +69,27 @@ class StatusBar(Horizontal):
         yield Label("Bedrock Private AI", id="status-title")
         yield Label("", id="status-workspace")
         yield Label("", id="status-model")
+        yield Label("", id="status-context")
         yield Label("", id="status-connection")
 
     def watch_model_name(self, value: str) -> None:
         self.query_one("#status-model", Label).update(f"model: {value}")
+
+    def watch_context_used(self, _value: int | None) -> None:
+        self._render_context_label()
+
+    def watch_context_window(self, _value: int | None) -> None:
+        self._render_context_label()
+
+    def _render_context_label(self) -> None:
+        label = self.query_one("#status-context", Label)
+        used, window = self.context_used, self.context_window
+        if used is None or not window:
+            label.update("")
+            label.remove_class("full")
+            return
+        label.update(f"context {_tokens(used)}/{_tokens(window)}")
+        label.set_class(used >= window * self.FULL_SHARE, "full")
 
     def watch_workspace_name(self, value: str | None) -> None:
         self.query_one("#status-workspace", Label).update(
@@ -75,6 +117,13 @@ class StatusBar(Horizontal):
         else:
             label.update("● disconnected")
             label.add_class("bad")
+
+
+def _tokens(count: int) -> str:
+    """``3174`` as ``3.1k`` and ``8192`` as ``8k``: windows are powers of two, so k is 1024."""
+    if count < 1024:
+        return str(count)
+    return f"{count / 1024:.1f}".removesuffix(".0") + "k"
 
 
 class PromptInput(Input):

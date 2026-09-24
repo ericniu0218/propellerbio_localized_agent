@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+import sys
 from collections import Counter
 
 from bedrock.context.adapters.base import Source
@@ -28,6 +29,11 @@ _SNIFF_LINES = 20
 _NUMERIC = re.compile(r"^-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?")
 _BOOL = frozenset({"true", "false", "yes", "no", "y", "n", "0", "1"})
+
+# Python's CSV parser defaults to a roughly 128 KiB field limit. Scientific
+# exports commonly contain larger free-text or sequence fields, and the source
+# size limit already provides the memory boundary for this ingestion path.
+csv.field_size_limit(sys.maxsize)
 
 
 class TabularAdapter:

@@ -39,22 +39,16 @@ from bedrock.agentpack.models import AgentCardState, AgentEvent
 from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub, SourceRef
-from bedrock.context import ContextStore, find_relevant_context, with_injected_context
+from bedrock.context import find_relevant_context
 from bedrock.inference.base import InferenceError
+from bedrock.models import Conversation
+from bedrock.prompting import PromptBudget, PromptBuilder
 from bedrock.prompt_queue import PromptItem, PromptQueue, QueueChanged, QueueSnapshot, QueueFull
 from bedrock.ui.agent_panel import AgentPanel
 from bedrock.ui.approval import ApprovalPrompt, approval_fingerprint
 from bedrock.ui.argparsing import CommandUsageError
-from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
-from bedrock.ui.confidence_view import run_confidence_command
-from bedrock.ui.digest_command import (
-    AUTO_CONTEXT_OFF_HINT,
-    AutoContext,
-    auto_context_argument,
-    run_auto_context_command,
-    run_digest_command,
-)
+from bedrock.ui.digest_command import AUTO_CONTEXT_OFF_HINT
 from bedrock.ui.prompt_queue import PromptQueuePanel
 from bedrock.ui.fold_command import (
     parse_fold_request,
@@ -64,13 +58,10 @@ from bedrock.ui.fold_command import (
     tool_status_text,
 )
 from bedrock.ui.journal import JournalledAction
+from bedrock.ui.local_commands import LocalCommandsMixin
 from bedrock.ui.rendering import safe_line
-from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
-from bedrock.ui.source_command import run_sources_command
-from bedrock.ui.workspace_command import WorkspaceCommandSession
 from bedrock.ui.widgets import AssistantMessage, PromptInput, StatusBar, SystemNotice, UserMessage
-from bedrock.workspaces import WorkspaceStore
 
 CONNECTION_CHECK_SECONDS = 10
 
@@ -126,7 +117,7 @@ when the AI system is unreachable, and nothing they show is sent to a model.
 """
 
 
-class AgentPackApp(App[None]):
+class AgentPackApp(LocalCommandsMixin, App[None]):
     TITLE = "Bedrock Private AI"
     CSS_PATH = "ui/styles.tcss"
     BINDINGS = [
@@ -155,20 +146,12 @@ class AgentPackApp(App[None]):
         self._seen_events: list[str] = []  # event ids already acted on, newest last
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
-        self._context_store: ContextStore | None = None
-        # Whether matching /digest content goes out with each message. Starts
-        # from settings; `/digest auto on|off` changes it for this window only.
-        self.auto_context = AutoContext(enabled=self.settings.auto_context)
-        self._workspace_session: WorkspaceCommandSession | None = None
+        self._init_local_commands(sources=sources, services=services)
         self._scientific_job_running = False
-        # Run and action-journal browsing. Built on first use, injected by tests.
-        self.services = services or ComplianceServices(self.settings)
         # Pending approvals by request fingerprint, so a re-delivered event
         # reuses its prompt instead of asking the same question twice. In
         # memory only - nothing here belongs in durable history.
         self._pending_approvals: dict[str, ApprovalPrompt] = {}
-        # Tests pass a hub with fake connectors; real runs build one from settings.
-        self._sources = sources
         # Only announce a dropped live-event connection once per outage,
         # not on every retry attempt — see _handle_reconnecting.
         self._reconnect_notice_shown = False
@@ -254,6 +237,8 @@ class AgentPackApp(App[None]):
             await self.queue_prompt(text)
 
     async def run_command(self, command: Command) -> None:
+        if await self.run_local_command(command):
+            return
         match command.name:
             case "help":
                 await self.post_notice(AGENTPACK_HELP_TEXT)
@@ -261,26 +246,6 @@ class AgentPackApp(App[None]):
                 await self.action_clear_chat()
             case "exit" | "quit":
                 await self.action_quit()
-            case "digest":
-                choice = auto_context_argument(command.args)
-                if choice is not None:
-                    # Not in a worker: a message sent straight after this must
-                    # already follow the new setting.
-                    await run_auto_context_command(
-                        choice, auto_context=self.auto_context, notify=self.post_notice
-                    )
-                else:
-                    self.command_digest(command.args)
-            case "sources":
-                self.command_sources(command.args)
-            case "runs":
-                self.command_runs(command.args)
-            case "confidence":
-                self.command_confidence(command.args)
-            case "audit":
-                self.command_audit(command.args)
-            case "workspace" | "team":
-                self.command_workspace(command.args)
             case "tools":
                 await self.show_tool_status()
             case "fold":
@@ -370,8 +335,6 @@ class AgentPackApp(App[None]):
             return
 
         await self.mount_message(UserMessage(attachments.display_text(text, attached)))
-        if notice := attachments.summary(attached):
-            await self.post_notice(notice)
         self._agents.clear()
         self.query_one("#agent-panel", AgentPanel).clear()
 
@@ -385,15 +348,23 @@ class AgentPackApp(App[None]):
         # Read here, at send time, so a prompt that waited in the queue
         # follows `/digest auto off` typed while it waited. When off, the
         # store is not even searched.
+        passage_limit = self.settings.profile.auto_inject_passages
         injected = (
-            find_relevant_context(text, self.context_store) if self.auto_context.enabled else None
+            await asyncio.to_thread(find_relevant_context, text, self.context_store, limit=passage_limit)
+            if self.auto_context.enabled and passage_limit > 0 else None
         )
-        outgoing_text = with_injected_context(text, injected)
         if injected is not None:
             await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
-        # Attached files follow the typed question, after any stored context.
-        outgoing_text = attachments.with_attachments(outgoing_text, attached)
+        # The server owns session history, but the same builder owns placement
+        # and budgeting of this turn's context in both app modes.
+        turn = Conversation()
+        turn.add_user(text, attached)
+        extras = {"passages": injected.prompt_block} if injected is not None else {}
+        prompt = PromptBuilder(PromptBudget.from_profile(self.settings.profile)).build(turn, extras)
+        outgoing_text = prompt.messages[-1]["content"]
+        for notice in prompt.notices:
+            await self.post_notice(notice)
         try:
             task_id = await self.client.send_message(self.session_id, outgoing_text)
         except InferenceError as exc:
@@ -588,87 +559,6 @@ class AgentPackApp(App[None]):
         # can_skip is always False here (see queue_snapshot), so the button
         # is never enabled; this only guards a stale or forced message.
         pass
-
-    # ---- Stored context ---------------------------------------------------------
-
-    @work(group="digest")
-    async def command_digest(self, args: str) -> None:
-        """``/digest`` in agent-pack mode.
-
-        No ``backend`` is passed, so digests here are the computed ones only.
-        That is the right call rather than an omission: this app has no direct
-        model connection - it talks to the agent system over REST - and the
-        summarising a model would do belongs on that backend, next to the
-        agents, not in the client. The computed digest is the same either way.
-        """
-        await run_digest_command(
-            args,
-            store=self.context_store,
-            notify=self.post_notice,
-            sources=self.sources,
-            history=await self.services.optional_history(),
-            actor_id=self.settings.user_id,
-            auto_context=self.auto_context,
-        )
-
-    @property
-    def context_store(self) -> ContextStore:
-        if self._context_store is None:
-            self._context_store = ContextStore(self.settings.context_dir)
-        return self._context_store
-
-    @work(group="sources")
-    async def command_sources(self, args: str) -> None:
-        """``/sources``: list, search and fetch from company systems of record."""
-        await run_sources_command(args, hub=self.sources, notify=self.post_notice)
-
-    @property
-    def sources(self) -> SourceHub:
-        if self._sources is None:
-            self._sources = SourceHub.from_settings(self.settings)
-        return self._sources
-
-    # ---- Local history and run browsing -----------------------------------------
-    #
-    # Identical to the plain app's, deliberately: an employee who switches
-    # modes should not have to learn a second way to ask what this machine
-    # did. All three read local files, so they work with the AI system down.
-
-    @work(group="history")
-    async def command_runs(self, args: str) -> None:
-        await run_runs_command(args, services=self.services, notify=self.post_notice)
-
-    @work(group="history")
-    async def command_confidence(self, args: str) -> None:
-        await run_confidence_command(args, services=self.services, notify=self.post_notice)
-
-    @work(group="history")
-    async def command_audit(self, args: str) -> None:
-        await run_audit_command(args, services=self.services, notify=self.post_notice)
-
-    # ---- Shared workspaces ------------------------------------------------------
-
-    @work(group="workspace")
-    async def command_workspace(self, args: str) -> None:
-        await self.workspace_session.run(args, self.post_notice)
-
-    @property
-    def workspace_session(self) -> WorkspaceCommandSession:
-        if self._workspace_session is None:
-            store = WorkspaceStore.for_user(
-                self.settings.workspace_dir,
-                self.settings.user_id,
-                self.settings.display_name,
-            )
-            self._workspace_session = WorkspaceCommandSession(
-                store,
-                self.context_store,
-                selection_changed=self._set_workspace_name,
-            )
-        return self._workspace_session
-
-    def _set_workspace_name(self, name: str | None) -> None:
-        self.query_one(StatusBar).workspace_name = name
 
     # ---- Live events ------------------------------------------------------------
 

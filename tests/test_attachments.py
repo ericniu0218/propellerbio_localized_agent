@@ -161,14 +161,19 @@ def test_attachments_go_to_the_model_and_survive_a_save_and_reload(tmp_path):
     conversation = Conversation()
     conversation.add_user("what was the pH in @notes.txt?", attached)
 
-    [sent] = conversation.to_api()
+    sent = conversation.to_api()[-1]
     assert sent["content"].startswith("what was the pH in @notes.txt?")
     assert attachments.DATA_NOT_INSTRUCTIONS in sent["content"]
     assert "<<<FILE notes.txt>>>\nthe pH was 6.8\n<<<END FILE notes.txt>>>" in sent["content"]
 
     reloaded = Conversation.from_dict(conversation.to_dict())
     assert reloaded.messages[0].content == "what was the pH in @notes.txt?"
-    assert reloaded.to_api() == conversation.to_api()
+    # A resumed conversation has no in-memory first-turn state, so the saved
+    # local digest is what subsequent turns send.
+    assert "the pH was 6.8" in reloaded.messages[0].attachments[0].text
+    reloaded.add_assistant("I read it")
+    reloaded.add_user("and then?")
+    assert reloaded.messages[0].attachments[0].digest_text in reloaded.to_api()[1]["content"]
 
 
 def test_a_file_cannot_close_its_own_fence():
@@ -188,7 +193,7 @@ def test_a_damaged_saved_attachment_is_skipped_not_fatal():
     data = Conversation().to_dict() | {
         "messages": [{"role": "user", "content": "hi", "attachments": [{"name": 3}, "junk"]}]
     }
-    assert Conversation.from_dict(data).to_api() == [{"role": "user", "content": "hi"}]
+    assert Conversation.from_dict(data).to_api()[-1] == {"role": "user", "content": "hi"}
 
 
 def test_fold_accepts_an_at_path(tmp_path):

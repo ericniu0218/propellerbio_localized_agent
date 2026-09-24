@@ -5,7 +5,7 @@
 the file name is the part they need, and it was the part being cut off.
 """
 
-from bedrock.ui.rendering import as_code_path, elide_path, safe_line
+from bedrock.ui.rendering import as_code_path, elide_path, markdown_text, safe_line
 
 # The exact shape that found the bug: a pytest temporary directory under a long
 # user name. 164 characters, against a 160-character limit. The same path under
@@ -57,3 +57,7 @@ def test_control_characters_never_survive_a_path():
 
 def test_as_code_path_wraps_in_a_span_that_cannot_close_early():
     assert "`" not in as_code_path("/home/maya/we`ird.pdb")[1:-1]
+
+
+def test_markdown_text_strips_controls_and_escapes_markup():
+    assert markdown_text("[report](bad)\x1b\n*") == r"\[report\]\(bad\)\*"

@@ -1,271 +1,260 @@
-"""Checking that a meeting note's timestamp points at the moment it describes.
+"""Checking that a citation really points at the words it claims to quote.
 
-A citation can be wrong in two ways, and only one of them is obvious. A model
-that writes ``[00:47:00]`` for a six-minute meeting has invented a moment; that
-is easy to catch, because no line starts then. The quieter failure is a real
-timestamp on the wrong line: an action item citing the cue six seconds after
-the one where it was actually agreed. It looks verified - that moment exists -
-and sends the reader to the wrong place. Both were seen in testing.
+A meeting note that says *"we're not opening a new site [00:00:12]"* is making a
+checkable claim: that those words were said at that moment. Before this module
+existed the check was much weaker than it looked. A timestamp was accepted
+whenever it appeared *anywhere* in the transcript, so a real timestamp attached
+to the wrong sentence sailed through, and the fallback used loose word overlap,
+which will happily match two common words shared by unrelated lines.
 
-So a citation is checked against the line it points at, by the distinctive
-words the note and that line share:
+So the rule here is deliberately narrow, and it is worth being clear about what
+it does and does not prove.
 
-* **kept** when that line shares two or more, or shares one and no other line
-  shares more. Two is enough on its own because one note often draws on
-  several lines ("coordinator left, so no new site [00:00:06, 00:00:12]"), and
-  each line it cites only has to say its part;
-* **moved** otherwise, to the line that shares the most, if that is at least
-  two - one shared word is too weak to pick a different line out of a meeting;
-* **removed** when neither holds.
+**What a validated timestamp means.** The model supplied a verbatim excerpt, and
+that excerpt was found inside exactly one identifiable transcript cue, whose own
+timestamp is the one printed. That is a claim about *where the quote is*.
 
-A note with no timestamp is honest; a note with a wrong one is not.
+**What it does not mean.** It is not a proof that the paraphrased decision
+written next to the quote follows from it - a model can still summarise badly
+while quoting accurately. It is also not word-level audio alignment:
+``Cue.timestamp`` floors the cue's start to a whole second, so the citation
+points at the start of the utterance, not at the instant the quoted word was
+spoken.
 
-"Says the thing" is measured by shared words, not meaning. Numbers count at any
-length, because "148 of 200" is exactly what a fact is about; other words count
-from four letters, minus common function words, with regular plurals folded so
-"numbers" meets "number". The limit is the same one keyword search has: a note
-that paraphrases its line without sharing a single distinctive word with it
-cannot be verified, so its citation is removed rather than guessed at.
+**Why no model is involved.** A checker that asks a model whether the model was
+right is not a check. Everything below is plain string work: deterministic, fast,
+and it still runs with every server switched off.
 
-The same check runs on two shapes of output. Structured points (decisions,
-action items, facts) carry their timestamp in a field. Free-text notes and the
-overview carry ``[hh:mm:ss]`` (or ``(hh:mm:ss)``) inline, and
-:meth:`CitationGuard.clean_text` checks each one against the words of its own
-sentence.
+The matcher is strict on purpose. Losing a citation costs a reader a convenience;
+keeping a wrong one costs them the ability to trust any of them.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections import Counter
 
-from bedrock.context.search import stem
 from bedrock.meetings.transcript import Cue
 
-# Shared words that count as a line saying something. Enough to keep the
-# model's citation whatever other lines say, and needed before a citation is
-# moved to, or added at, a line the model did not choose. One shared word is
-# too weak to pick a line out of a whole meeting, though it confirms the line
-# the model chose when no other line does better.
-MIN_SHARED_WORDS = 2
+# Evidence shorter than this is not evidence. "Yes." appears in most meetings
+# several times over, so quoting it locates nothing; three lexical tokens is the
+# smallest span that usually identifies one utterance, and a shorter quote loses
+# the citation rather than guessing at which "yes" was meant.
+MIN_EVIDENCE_TOKENS = 3
 
-# Common words of four letters or more that say nothing about which line a note
-# came from. Kept short, like the search stopwords: every word added here is
-# one more that can never count as evidence.
-_FILLER = frozenset(
-    """
-    about after also back been before being could didn does doing done from going
-    have here into just know like make more much need only other really should
-    some that their them then there these they thing think this those very want
-    well were what when where which while will with would yeah your
-    """.split()
+# Word processors and models both produce curly quotes where the transcript has
+# straight ones. Folding them together is safe: it cannot merge two different
+# words, change a number, or flip a negation.
+_TYPOGRAPHIC = str.maketrans(
+    {
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+        "‛": "'",
+        "′": "'",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "″": '"',
+    }
 )
 
-_TOKEN = re.compile(r"[a-z0-9]+")
+_LEXICAL = re.compile(r"[^\W_]+", re.UNICODE)
 
-# One bracketed group on one line: ``[00:12:34]``, ``[12:34]``,
-# ``[00:12:34, 00:13:02]``, ``[00:12:34 - 00:12:50]`` or ``(00:12:34)``.
-# Whether its contents really are times is decided by _parse_times, so ``[x]``
-# and ``[TBD]`` pass through. Round brackets only count with hours in every
-# time, because "(10:30)" in a note is far more likely a time of day.
-_BRACKET = re.compile(r"\[([^\[\]\n]{1,80})\]|\(([^()\n]{1,80})\)")
-_TIME = re.compile(r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?:[.,]\d{1,3})?")
-_SEPARATOR = re.compile(r"\s*(?:,|;|-|–|—|\bto\b)\s*")
-# Where one sentence ends and the next begins, for finding what a citation
-# cites. Not ";": "samples moved to freezer five; QA assessing impact [..]"
-# cites the whole clause pair, and splitting there strips a correct citation.
-_SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
-_FENCE = re.compile(r"^\s*(```|~~~)")
+# The one bracketed-timestamp form this module recognises as a citation: square
+# brackets - one pair or two, since models produce both - containing nothing but
+# a clock time. "[00:12:34]" and "[12:34]" are citations; "we start at 10:30",
+# "(00:12:34)" and "[4]" are ordinary prose and are left alone. Keeping the
+# syntax this narrow is what lets the notes be scrubbed of unverified citations
+# without touching anything the user meant to write.
+_CLOCK = r"\s*\d{1,2}:\d{2}(?::\d{2})?\s*"
+RAW_TIMESTAMP_CITATION = re.compile(
+    rf"[ \t]*(?:\[\[{_CLOCK}\]\]|\[{_CLOCK}\])"
+)
 
 
-def content_words(text: str) -> set[str]:
-    """The words that tell one line of a meeting apart from another."""
-    words: set[str] = set()
-    for token in _TOKEN.findall(text.lower()):
-        if any(ch.isdigit() for ch in token):
-            words.add(token)
-        elif len(token) > 3 and token not in _FILLER:
-            words.add(stem(token))
-    return words
+def normalize(text: str) -> str:
+    """Case, whitespace and quote shape only.
 
-
-def normalise_timestamp(value: object) -> str | None:
-    """``hh:mm:ss``, the form cues use, or None if this is not a time.
-
-    Accepts ``0:12:34``, ``12:34`` (minutes and seconds) and a trailing
-    fraction, because models copy the format loosely.
+    Everything that carries meaning survives: word order, numbers, negation and
+    punctuation are all left exactly as they are, so "not opening" can never
+    match "opening" and "148" can never match "140".
     """
-    if not isinstance(value, str):
-        return None
-    match = _TIME.fullmatch(value.strip())
-    if match is None:
-        return None
-    hours, minutes, seconds = (int(part) if part else 0 for part in match.groups())
-    if minutes > 59 or seconds > 59:
-        return None
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return " ".join(text.translate(_TYPOGRAPHIC).casefold().split())
 
 
-@dataclass
-class CitationReport:
-    """What the guard did to the citations a model wrote.
+def _is_word_char(char: str) -> bool:
+    return bool(char) and (char.isalnum() or char == "_")
 
-    ``checked`` counts every timestamp the model supplied. Of those,
-    ``moved`` now point at a different line and ``removed`` were dropped. A
-    point the model left uncited, which the guard cited from its words, is not
-    counted: there was no model citation to check.
+
+def _boundary_ok(neighbour: str, edge: str) -> bool:
+    """A boundary is only required where two word characters would collide.
+
+    This is what ``\\b`` means in a regular expression, and it is why "site
+    four" does not match inside "offsite fourteen" while a quote that genuinely
+    begins with punctuation still matches.
     """
-
-    checked: int = 0
-    moved: int = 0
-    removed: int = 0
-
-    def record(self, supplied: bool, original: str | None, result: str | None) -> None:
-        if not supplied:
-            return
-        self.checked += 1
-        if result is None:
-            self.removed += 1
-        elif result != original:
-            self.moved += 1
-
-    def describe(self) -> str | None:
-        """One line for the person running the tool, or None if nothing was cited."""
-        if not self.checked:
-            return None
-        noun = "citation" if self.checked == 1 else "citations"
-        return (
-            f"Checked {self.checked} {noun} against the transcript: "
-            f"{self.moved} moved to the line that says it, "
-            f"{self.removed} removed because no line says it."
-        )
+    return not (_is_word_char(neighbour) and _is_word_char(edge))
 
 
-class CitationGuard:
-    """Checks citations against one set of cues.
+def contains(haystack: str, needle: str) -> bool:
+    """Is ``needle`` a contiguous, whole-word span of ``haystack``?
 
-    Built once per set of cues so each cue's words are worked out once, not
-    once per citation. Several guards can share one :class:`CitationReport`,
-    which is how a meeting read in chunks still reports a single total.
+    Both arguments must already be normalized.
     """
-
-    def __init__(self, cues: list[Cue], report: CitationReport | None = None) -> None:
-        self._cues = [(cue, content_words(cue.text)) for cue in cues]
-        self.report = report if report is not None else CitationReport()
-
-    def check(self, value: object, text: str) -> str | None:
-        """The timestamp ``text`` should cite, given the model's ``value``.
-
-        ``value`` is whatever the model put in the timestamp field, including
-        nothing. The result is the cited line's timestamp if that line says
-        the thing, else the timestamp of the line that says it best, else None.
-        """
-        supplied = value is not None and str(value).strip().lower() not in {"", "null", "none"}
-        original = normalise_timestamp(value)
-        result = self._resolve(original, content_words(text))
-        self.report.record(supplied, original, result)
-        return result
-
-    def _resolve(self, cited: str | None, needle: set[str]) -> str | None:
-        if not needle:
-            return None  # nothing distinctive to check it against
-        best: Cue | None = None
-        best_shared = 0
-        cited_shared = -1  # stays -1 when no cue starts at the cited time
-        for cue, words in self._cues:
-            shared = len(needle & words)
-            # Separate tracks can start two cues in the same second; the cited
-            # time is as good as the better of them.
-            if cited is not None and cue.timestamp == cited:
-                cited_shared = max(cited_shared, shared)
-            if shared > best_shared:  # strictly greater: the earliest line wins a tie
-                best, best_shared = cue, shared
-        if cited_shared >= MIN_SHARED_WORDS or (cited_shared >= 1 and cited_shared >= best_shared):
-            return cited
-        if best is not None and best_shared >= MIN_SHARED_WORDS:
-            return best.timestamp
-        return None
-
-    def clean_text(self, markdown: str, *, leave_alone: str = "") -> str:
-        """Check every ``[hh:mm:ss]`` and ``(hh:mm:ss)`` citation in free text.
-
-        Each citation is checked against its own sentence - the words between
-        the previous sentence break or citation and itself - or, for one that
-        leads its line (``- [00:12:34] Budget approved``), against the words
-        after it. Fenced code is left untouched.
-
-        ``leave_alone`` is the person's own rough notes. A bracketed time they
-        typed themselves (``[14:00] standup``) is theirs, not a citation, so an
-        identical bracket in the output is never changed.
-        """
-        theirs = {match.group(0) for match in _BRACKET.finditer(leave_alone)}
-        lines = markdown.split("\n")
-        in_fence = False
-        for index, line in enumerate(lines):
-            if _FENCE.match(line):
-                in_fence = not in_fence
-                continue
-            if not in_fence and ("[" in line or "(" in line):
-                lines[index] = self._clean_line(line, theirs)
-        return "\n".join(lines)
-
-    def _clean_line(self, line: str, theirs: set[str]) -> str:
-        groups = []
-        for match in _BRACKET.finditer(line):
-            square = match.group(1) is not None
-            times = _parse_times(match.group(1) if square else match.group(2), hours_required=not square)
-            if times and match.group(0) not in theirs:
-                groups.append((match, times, square))
-        if not groups:
-            return line
-
-        replacements: list[tuple[int, int, str]] = []
-        previous_end = 0
-        for position, (match, times, square) in enumerate(groups):
-            next_start = groups[position + 1][0].start() if position + 1 < len(groups) else len(line)
-            text = _cited_text(line[previous_end : match.start()], line[match.end() : next_start])
-            previous_end = match.end()
-
-            checked = [self.check(time, text) for time in times]
-            if checked == [normalise_timestamp(time) for time in times]:
-                continue  # every time stands as written, so leave the text alone
-            kept = list(dict.fromkeys(result for result in checked if result is not None))
-            opening, closing = ("[", "]") if square else ("(", ")")
-            replacement = f"{opening}{', '.join(kept)}{closing}" if kept else ""
-            replacements.append((match.start(), match.end(), replacement))
-
-        for start, end, new in reversed(replacements):
-            if not new:
-                # Take one neighbouring space with the citation, so neither
-                # "done [00:47:00]." nor "- [00:47:00] done" is left with a gap.
-                if start > 0 and line[start - 1] == " ":
-                    start -= 1
-                elif end < len(line) and line[end] == " ":
-                    end += 1
-            line = line[:start] + new + line[end:]
-        return line
+    if not needle:
+        return False
+    start = haystack.find(needle)
+    while start != -1:
+        before = haystack[start - 1] if start else ""
+        end = start + len(needle)
+        after = haystack[end] if end < len(haystack) else ""
+        if _boundary_ok(before, needle[0]) and _boundary_ok(after, needle[-1]):
+            return True
+        start = haystack.find(needle, start + 1)
+    return False
 
 
-def _parse_times(inside: str, *, hours_required: bool) -> list[str] | None:
-    """The times in one bracket, or None unless it holds times and nothing else."""
-    parts = [part for part in _SEPARATOR.split(inside.strip()) if part]
-    if not parts or not all(normalise_timestamp(part) for part in parts):
-        return None
-    if hours_required and not all(part.count(":") == 2 for part in parts):
-        return None
-    return parts
+def prepare_evidence(evidence: object) -> str | None:
+    """Normalize a supplied quote, or reject it as unusable as evidence.
 
-
-def _cited_text(before: str, after: str) -> str:
-    """The words a citation vouches for.
-
-    Normally the sentence it ends: the last sentence before it that has any
-    distinctive words, so "Enrollment is 148 of 200. Site four lost its
-    coordinator [00:00:06]" is checked against the second sentence only. A
-    citation with nothing before it (``- [00:00:06] Site four lost its
-    coordinator``) vouches for what follows instead.
+    Rejects anything that is not a string, is empty or whitespace-only, is made
+    of punctuation alone, or is too short to identify one utterance.
     """
-    for sentence in reversed(_SENTENCE_END.split(before)):
-        if content_words(sentence):
-            return sentence
-    return after
+    if not isinstance(evidence, str):
+        return None
+    needle = normalize(evidence)
+    if len(_LEXICAL.findall(needle)) < MIN_EVIDENCE_TOKENS:
+        return None
+    return needle
+
+
+def resolve_timestamp(evidence: object, suggested: object, cues: list[Cue]) -> str | None:
+    """The timestamp a quote earns, or ``None`` if it has not earned one.
+
+    ``evidence`` is the excerpt the model says it copied from the transcript,
+    ``suggested`` the timestamp it offered, and ``cues`` exactly the cues that
+    model call was shown - never a wider search, or the citation would point at
+    a passage nobody read.
+
+    The four outcomes:
+
+    - The quote is nowhere in these cues: no citation. An existing but unrelated
+      timestamp does not rescue it.
+    - The suggested timestamp belongs to a cue that really contains the quote:
+      keep it. This is also how a quote repeated later in the meeting gets
+      pinned to the occurrence the model meant.
+    - Every cue containing the quote shows the same timestamp: repair to it,
+      whichever wrong, missing or malformed value was suggested.
+    - The quote appears at two different times and nothing chooses between them:
+      no citation. Picking the earliest or the nearest would be a guess printed
+      as a fact.
+    """
+    needle = prepare_evidence(evidence)
+    if needle is None:
+        return None
+
+    # Every cue is tested, not one per displayed second: two speakers can both
+    # start inside the same second, and a mapping keyed by timestamp would throw
+    # one of them away.
+    matches = [cue for cue in cues if contains(normalize(cue.text), needle)]
+    if not matches:
+        return None
+
+    if isinstance(suggested, str):
+        wanted = suggested.strip()
+        if any(cue.timestamp == wanted for cue in matches):
+            return wanted
+
+    found = {cue.timestamp for cue in matches}
+    return found.pop() if len(found) == 1 else None
+
+
+def strip_raw_timestamp_citations(text: str) -> str:
+    """Remove bracketed timestamps a model wrote itself.
+
+    Nothing has verified these. They also arrive by a second route: the rough
+    notes someone typed during the call may contain "[00:14:00]", and the model
+    copies it into its rewrite, where it looks exactly like a generated
+    citation. The user's own file is never touched - only the generated output.
+    """
+    return _tidy(RAW_TIMESTAMP_CITATION.sub("", text))
+
+
+def _tidy(text: str) -> str:
+    """Drop the trailing whitespace that removing a citation leaves behind."""
+    return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+# The placeholder the notes prompt asks for. Narrow on purpose: an id is a short
+# run of non-space, non-bracket characters, so nothing in ordinary prose can be
+# mistaken for one. The single-bracket spelling is accepted too because small
+# models drop a bracket level often enough to be worth tolerating.
+_CITE_MARKER = re.compile(
+    r"[ \t]*\[\[cite:\s*(?P<double>[^\]\s]{1,64})\s*\]\]"
+    r"|[ \t]*\[cite:\s*(?P<single>[^\]\s]{1,64})\s*\]"
+)
+
+
+def _supported_ids(records: object, cues: list[Cue]) -> dict[str, str]:
+    """Map each citation id that survives checking to its verified timestamp.
+
+    An id used twice is dropped rather than resolved, because the two records
+    can disagree and there is no way to tell which one a placeholder meant.
+    """
+    rows = [record for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+
+    keys = [
+        record["id"].strip()
+        for record in rows
+        if isinstance(record.get("id"), str) and record["id"].strip()
+    ]
+    used_once = {key for key, count in Counter(keys).items() if count == 1}
+
+    supported: dict[str, str] = {}
+    for record in rows:
+        key = record.get("id")
+        key = key.strip() if isinstance(key, str) else ""
+        if key not in used_once:
+            continue
+        timestamp = resolve_timestamp(record.get("quote"), record.get("timestamp"), cues)
+        if timestamp is not None:
+            supported[key] = timestamp
+    return supported
+
+
+def apply_citations(markdown: str, records: object, cues: list[Cue]) -> str:
+    """Turn verified citation placeholders into timestamps; erase the rest.
+
+    Order matters. Any bracketed timestamp the model wrote directly is removed
+    *first*, so an unverified citation cannot survive by being written in the
+    output format instead of as a placeholder. Only then are the checked ones
+    written in.
+
+    A placeholder whose id is unknown, used twice, or backed by evidence that
+    does not appear in the transcript is deleted along with the space in front
+    of it. The sentence it was attached to stays: losing a citation must never
+    cost the reader the note.
+    """
+    cleaned = RAW_TIMESTAMP_CITATION.sub("", markdown)
+    supported = _supported_ids(records, cues)
+
+    def replace(match: re.Match[str]) -> str:
+        timestamp = supported.get(match.group("double") or match.group("single") or "")
+        if timestamp is None:
+            return ""
+        before = cleaned[: match.start()]
+        return f" [{timestamp}]" if before and not before.endswith("\n") else f"[{timestamp}]"
+
+    return _tidy(_CITE_MARKER.sub(replace, cleaned))
+
+
+def strip_citation_markup(text: str) -> str:
+    """Remove every citation form without verifying any of it.
+
+    Used where a response arrived in a shape we cannot check - plain Markdown
+    where an envelope was asked for, or an overview that was told not to cite
+    and did anyway. The prose survives; the unverifiable citations do not.
+    """
+    return _tidy(_CITE_MARKER.sub("", RAW_TIMESTAMP_CITATION.sub("", text)))

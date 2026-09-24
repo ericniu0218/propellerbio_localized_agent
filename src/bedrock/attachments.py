@@ -47,11 +47,9 @@ would change what the model reads without anyone noticing. Binary formats
 ``bedrock.context.adapters.base.Source`` gives: each needs its own parser.
 
 **Where it is kept.** The typed text stays the message's ``content``; each
-attachment is stored beside it in ``Message.extra`` and added back whenever the
-conversation is sent (``Message.to_api``). So the transcript on screen shows
-what was typed, follow-up questions still see the file even after a restart,
-and ``/forget`` removes the copy along with the chat. Nothing here touches the
-network.
+attachment is stored beside it in ``Message.extra``. The prompt builder sends
+the whole file in its own turn and its local digest on later turns. Both forms
+use the same safe fence. ``/forget`` removes the copy with the chat.
 """
 
 from __future__ import annotations
@@ -123,9 +121,10 @@ class Attachment:
     byte_size: int
     mode: str
     text: str
+    digest_text: str | None = None
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "path": self.path, "bytes": self.byte_size, "mode": self.mode, "text": self.text}
+        return {"name": self.name, "path": self.path, "bytes": self.byte_size, "mode": self.mode, "text": self.text, "digest_text": self.digest_text}
 
     @classmethod
     def from_dict(cls, data: object) -> Attachment | None:
@@ -142,7 +141,14 @@ class Attachment:
             byte_size=size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else 0,
             mode="digest" if data.get("mode") == "digest" else "whole",
             text=text,
+            digest_text=data.get("digest_text") if isinstance(data.get("digest_text"), str) else None,
         )
+
+    def as_digest(self) -> Attachment:
+        """The bounded version used after the attachment's first turn."""
+        if self.mode == "digest":
+            return self
+        return Attachment(self.name, self.path, self.byte_size, "digest", self.digest_text or self.text[:1200])
 
     @property
     def label(self) -> str:
@@ -322,7 +328,12 @@ def _load_one(path: Path, store: ContextStore, *, whole_budget: int) -> Attachme
         ) from exc
 
     if len(text) <= min(MAX_INLINE_CHARS, whole_budget):
-        return Attachment(name=path.name, path=str(path), byte_size=len(raw), mode="whole", text=text)
+        source = Source(name=path.name, text=text, suffix=path.suffix.lower(), byte_size=len(raw))
+        try:
+            digest_text = ingest(source, store=store).digest_text()
+        except Exception as exc:
+            raise AttachmentError(f"Could not prepare a digest for `{path.name}`: {exc}. Nothing was sent.") from exc
+        return Attachment(name=path.name, path=str(path), byte_size=len(raw), mode="whole", text=text, digest_text=digest_text)
     source = Source(name=path.name, text=text, suffix=path.suffix.lower(), byte_size=len(raw))
     try:
         artifact = ingest(source, store=store)

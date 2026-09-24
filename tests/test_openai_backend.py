@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from bedrock.inference import InferenceError
+from bedrock.inference import InferenceError, RequestOptions, Usage
 from bedrock.inference.openai_compatible import OpenAICompatibleBackend, _parse_sse_line
 
 
@@ -24,6 +24,8 @@ def make_backend(handler) -> OpenAICompatibleBackend:
 
 async def test_list_models():
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(404)  # not Ollama: sizes stay unknown
         assert request.url.path == "/v1/models"
         return httpx.Response(200, json={"data": [{"id": "llama3.2"}, {"id": "qwen2.5"}]})
 
@@ -68,6 +70,8 @@ async def test_stream_chat_yields_fragments_and_sends_messages():
     assert seen["body"]["model"] == "llama3.2"
     assert seen["body"]["messages"] == messages
     assert seen["body"]["stream"] is True
+    # With no options, nothing beyond the basics (and the usage request) is sent.
+    assert set(seen["body"]) == {"model", "messages", "stream", "stream_options"}
 
 
 async def test_http_error_becomes_inference_error():
@@ -96,3 +100,130 @@ def test_sse_line_parsing():
     assert _parse_sse_line("data: [DONE]") is None
     assert _parse_sse_line('data: {"choices":[{"delta":{"role":"assistant"}}]}') == ""
     assert _parse_sse_line('data: {"choices":[{"delta":{"content":"x"}}]}') == "x"
+
+
+def usage_chunk(prompt: int, completion: int, cached: int | None = None) -> str:
+    usage = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+    if cached is not None:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached}
+    return f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n"
+
+
+def streaming(text: str) -> httpx.Response:
+    return httpx.Response(200, text=text, headers={"content-type": "text/event-stream"})
+
+
+async def sent_body(options: RequestOptions) -> dict:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return streaming(sse(["ok"]))
+
+    backend = make_backend(handler)
+    assert [f async for f in backend.stream_chat("m", [], options=options)] == ["ok"]
+    return seen["body"]
+
+
+async def test_reply_limit_temperature_and_stop_words_are_sent():
+    body = await sent_body(RequestOptions(max_tokens=16, temperature=0.0, stop=("\n\n", "END")))
+    assert body["max_tokens"] == 16
+    assert body["temperature"] == 0.0
+    assert body["stop"] == ["\n\n", "END"]
+
+
+async def test_a_json_schema_is_sent_as_response_format():
+    schema = {"type": "object", "properties": {"steps": {"type": "array"}}, "required": ["steps"]}
+    body = await sent_body(RequestOptions(json_schema=schema))
+    assert body["response_format"] == {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}}
+
+
+async def test_reasoning_off_is_sent_the_ways_ollama_and_vllm_read_it():
+    body = await sent_body(RequestOptions(reasoning=False))
+    assert body["reasoning_effort"] == "none"  # Ollama
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}  # vLLM, SGLang
+
+
+async def test_reasoning_left_to_the_server_sends_nothing_about_it():
+    for options in (RequestOptions(), RequestOptions(reasoning=True)):
+        body = await sent_body(options)
+        assert "reasoning_effort" not in body and "chat_template_kwargs" not in body
+
+
+async def test_a_server_that_rejects_reasoning_effort_is_asked_again_without_it():
+    """Older vLLM only allows low/medium/high and answers 400 to "none"."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "reasoning_effort" in body:
+            return httpx.Response(400, json={"error": {"message": "reasoning_effort: Input should be 'low', 'medium' or 'high'"}})
+        return streaming(sse(["fine"]))
+
+    backend = make_backend(handler)
+    options = RequestOptions(reasoning=False, max_tokens=4)
+    assert [f async for f in backend.stream_chat("m", [], options=options)] == ["fine"]
+    assert [f async for f in backend.stream_chat("m", [], options=options)] == ["fine"]
+    assert ["reasoning_effort" in body for body in bodies] == [True, False, False]
+    assert all(body["chat_template_kwargs"] == {"enable_thinking": False} for body in bodies)
+
+
+async def test_usage_is_reported_once_with_cached_prompt_tokens():
+    reported: list[Usage] = []
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        text = sse(["Hi"]).replace("data: [DONE]", usage_chunk(120, 3, cached=100) + "data: [DONE]")
+        return streaming(text)
+
+    backend = make_backend(handler)
+    out = [f async for f in backend.stream_chat("m", [], on_usage=reported.append)]
+    assert out == ["Hi"]
+    assert seen["body"]["stream_options"] == {"include_usage": True}
+    assert reported == [Usage(prompt_tokens=120, completion_tokens=3, cached_prompt_tokens=100)]
+
+
+async def test_a_server_that_sends_no_usage_reports_nothing():
+    reported: list[Usage] = []
+    backend = make_backend(lambda request: streaming(sse(["Hi"])))
+    assert [f async for f in backend.stream_chat("m", [], on_usage=reported.append)] == ["Hi"]
+    assert reported == []
+
+
+async def test_ollama_model_sizes_come_from_api_tags():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [
+                {"name": "llama3.2:3b", "model": "llama3.2:3b", "size": 2019393189},
+                {"name": "llama3.1:8b", "model": "llama3.1:8b", "size": 4920753328},
+            ]})
+        return httpx.Response(200, json={"data": [{"id": "llama3.2:3b"}, {"id": "llama3.1:8b"}, {"id": "mystery"}]})
+
+    backend = OpenAICompatibleBackend("http://localhost:11434/v1", transport=httpx.MockTransport(handler))
+    models = {m.id: m for m in await backend.list_models()}
+    assert models["llama3.2:3b"].size_bytes == 2019393189
+    assert models["llama3.1:8b"].size_bytes == 4920753328
+    assert models["mystery"].size_bytes is None  # unknown stays unknown, never a guess
+    assert models["mystery"].context_length is None
+
+
+async def test_vllm_context_length_comes_from_max_model_len():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"data": [{"id": "Qwen/Qwen3-4B", "max_model_len": 32768}]})
+
+    [model] = await make_backend(handler).list_models()
+    assert model.context_length == 32768
+    assert model.size_bytes is None
+
+
+async def test_a_broken_tags_endpoint_does_not_break_listing_models():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            raise httpx.ConnectError("boom")
+        return httpx.Response(200, json={"data": [{"id": "m"}]})
+
+    assert [m.id for m in await make_backend(handler).list_models()] == ["m"]

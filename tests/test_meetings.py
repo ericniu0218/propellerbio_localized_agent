@@ -14,6 +14,7 @@ import json
 import pytest
 
 from bedrock.inference.base import InferenceError
+from bedrock.meetings.citations import resolve_timestamp
 from bedrock.meetings.summarize import (
     Point,
     _dedupe,
@@ -51,9 +52,11 @@ class FakeBackend:
         self._replies = list(replies or [])
         self._error = error
         self.prompts: list[str] = []
+        self.options: list = []
 
-    async def stream_chat(self, model, messages):
+    async def stream_chat(self, model, messages, options=None, on_usage=None):
         self.prompts.append(messages[0]["content"])
+        self.options.append(options)
         if self._error:
             raise self._error
         reply = self._replies.pop(0) if self._replies else ""
@@ -72,6 +75,11 @@ class FakeBackend:
 
 def extraction(decisions=(), actions=()) -> str:
     return json.dumps({"decisions": list(decisions), "actions": list(actions)})
+
+
+def notes_reply(markdown: str, citations=()) -> str:
+    """The JSON envelope the notes prompt asks for."""
+    return json.dumps({"markdown": markdown, "citations": list(citations)})
 
 
 # --- parsing -------------------------------------------------------------
@@ -109,7 +117,35 @@ def test_chunking_never_splits_an_utterance():
     assert all(chunk for chunk in chunks)  # nothing empty
 
 
-# --- the hallucination guard ---------------------------------------------
+# --- the citation guard ---------------------------------------------------
+#
+# A timestamp is a claim that particular words were said at a particular
+# moment. These tests hold the line that the claim is checked against the
+# words, not merely against the list of timestamps that exist.
+
+
+def test_a_real_timestamp_on_the_wrong_cue_is_repaired():
+    """The bug this guard exists for.
+
+    00:00:12 is a real moment in this meeting, and the loose check accepted it
+    for that reason alone. But the quote comes from the cue six seconds
+    earlier, so 00:00:06 is the honest citation.
+    """
+    cues = [
+        Cue(6000, 11000, "Bob", "Their coordinator left in August."),
+        Cue(12000, 18000, "Alice", "We are not opening a new site."),
+    ]
+    assert _repair_timestamp("00:00:12", "coordinator left in August", cues) == "00:00:06"
+
+
+def test_a_real_timestamp_is_kept_when_its_cue_holds_the_quote():
+    cues = parse_vtt(VTT)
+    assert _repair_timestamp("00:00:12", "not opening a new site", cues) == "00:00:12"
+
+
+def test_a_real_timestamp_alone_never_validates_a_citation():
+    cues = parse_vtt(VTT)
+    assert _repair_timestamp("00:00:12", "anything at all, unrelated", cues) is None
 
 
 def test_a_timestamp_that_was_never_said_is_not_cited():
@@ -118,117 +154,124 @@ def test_a_timestamp_that_was_never_said_is_not_cited():
     assert _repair_timestamp("00:47:00", "nothing resembling this transcript", cues) is None
 
 
-def test_an_invented_timestamp_is_repaired_from_the_quoted_text():
+@pytest.mark.parametrize("suggested", ["00:47:00", None, "", "later on", 12, {"at": 1}])
+def test_a_unique_quote_repairs_any_suggested_timestamp(suggested):
     cues = parse_vtt(VTT)
-    repaired = _repair_timestamp("00:47:00", "coordinator left in August", cues)
-    assert repaired == "00:00:06"
+    assert resolve_timestamp("coordinator left in August", suggested, cues) == "00:00:06"
 
 
-def test_a_real_timestamp_is_kept_when_that_line_says_it():
+def test_word_overlap_alone_is_not_evidence():
+    """"Site" and "coordinator" both appear in cue 2, but never as this
+    sentence. Loose overlap used to accept exactly this."""
     cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:12", "Not opening a new site", cues) == "00:00:12"
+    assert resolve_timestamp("the site coordinator agreed", None, cues) is None
 
 
-def test_a_real_timestamp_on_the_wrong_line_moves_to_the_line_that_says_it():
-    """The failure seen in testing: an action item citing the cue after the one
-    where it was agreed. 00:00:19 exists, so it used to pass as verified."""
+def test_contradictory_evidence_is_rejected():
     cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:19", "Send the enrollment numbers by Thursday", cues) == "00:00:12"
+    assert resolve_timestamp("coordinator never left in August", None, cues) is None
 
 
-def test_a_real_timestamp_that_nothing_supports_is_not_cited():
-    """This used to be kept, because the time exists. Existing is not enough."""
+@pytest.mark.parametrize(
+    "evidence",
+    [None, 12, ["coordinator", "left"], "", "   ", "...", " - , . ", "left in", "August"],
+)
+def test_evidence_that_cannot_locate_anything_is_rejected(evidence):
+    """Non-strings, blanks, punctuation, and quotes too short to identify one
+    utterance. Two words appear in too many meetings to pin a moment down."""
     cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:12", "anything", cues) is None
+    assert resolve_timestamp(evidence, "00:00:06", cues) is None
 
 
-def test_numbers_are_evidence_at_any_length():
-    """A fact is usually about a number, and "148" is shorter than four letters."""
+def test_three_tokens_is_enough():
     cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:01", "Enrollment is 148 of 200", cues) == "00:00:01"
-    assert _repair_timestamp("00:00:19", "Enrollment is 148 of 200", cues) == "00:00:01"
+    assert resolve_timestamp("left in August", None, cues) == "00:00:06"
 
 
-def test_plurals_and_case_still_match():
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "THEIR COORDINATOR LEFT IN AUGUST",
+        "their   coordinator\n left in August",
+        "  coordinator left in August  ",
+    ],
+)
+def test_case_and_whitespace_do_not_matter(evidence):
+    cues = [Cue(6000, 11000, "Bob", "Their coordinator left in August.")]
+    assert resolve_timestamp(evidence, None, cues) == "00:00:06"
+
+
+def test_typographic_quotes_are_folded():
+    cues = [Cue(6000, 11000, "Alice", "We’re not opening a new site.")]
+    assert resolve_timestamp("We're not opening a new site", None, cues) == "00:00:06"
+    assert resolve_timestamp("We’re not opening a new site", None, cues) == "00:00:06"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "We're at 140 of 200",          # a changed number
+        "We're not at 148 of 200",      # an inserted negation
+        "at 200 of 148 we're",          # reordered words
+    ],
+)
+def test_numbers_negation_and_word_order_stay_significant(evidence):
     cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:12", "BOB SENDS THE NUMBER THURSDAY", cues) == "00:00:12"
+    assert resolve_timestamp(evidence, None, cues) is None
 
 
-def test_a_paraphrase_sharing_one_word_with_its_own_line_keeps_its_citation():
-    """One shared word is enough to confirm the line the model chose, when no
-    other line shares more - so a light paraphrase is not stripped."""
-    cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:01", "Recruitment is behind schedule", cues) == "00:00:01"
+def test_a_quote_may_not_match_inside_a_larger_word():
+    cues = [Cue(3000, 8000, None, "The offsite fourteen-day window closed.")]
+    assert resolve_timestamp("site four", None, cues) is None
+    assert resolve_timestamp("offsite fourteen-day window", None, cues) == "00:00:03"
 
 
-def test_one_shared_word_is_not_enough_to_move_a_citation():
-    """Moving picks a line out of the whole meeting, which needs two words."""
-    cues = parse_vtt(VTT)
-    # "behind" is only on 00:00:01, and 00:00:19 shares nothing with this.
-    assert _repair_timestamp("00:00:19", "Recruitment is behind schedule", cues) is None
-
-
-def test_filler_words_are_not_evidence():
-    cues = parse_vtt(VTT)
-    # "have", "that" and "will" appear in the meeting but prove nothing.
-    assert _repair_timestamp("00:00:19", "that will have", cues) is None
-
-
-def test_a_tie_keeps_the_line_the_model_chose():
+def test_a_repeated_quote_is_pinned_by_a_supported_timestamp():
     cues = [
-        Cue(start_ms=1000, end_ms=2000, speaker="A", text="The budget review is Friday."),
-        Cue(start_ms=5000, end_ms=6000, speaker="B", text="Friday works for the budget review."),
+        Cue(5000, 9000, "Alice", "We are three weeks behind."),
+        Cue(65000, 69000, "Bob", "We are three weeks behind."),
     ]
-    assert _repair_timestamp("00:00:05", "Budget review on Friday", cues) == "00:00:05"
-    assert _repair_timestamp("00:00:01", "Budget review on Friday", cues) == "00:00:01"
+    assert resolve_timestamp("three weeks behind", "00:01:05", cues) == "00:01:05"
+    assert resolve_timestamp("three weeks behind", "00:00:05", cues) == "00:00:05"
 
 
-def test_two_cues_starting_in_the_same_second_are_both_considered():
-    """Separate participant tracks can start cues in the same second."""
+def test_a_repeated_quote_with_no_supported_timestamp_is_ambiguous():
+    """Choosing the earliest or the nearest would be a guess printed as a
+    fact, so the note keeps its words and loses its citation."""
     cues = [
-        Cue(start_ms=12000, end_ms=13000, speaker="A", text="Sounds good."),
-        Cue(start_ms=12400, end_ms=15000, speaker="B", text="We close the Boston site in March."),
+        Cue(5000, 9000, "Alice", "We are three weeks behind."),
+        Cue(65000, 69000, "Bob", "We are three weeks behind."),
     ]
-    assert _repair_timestamp("00:00:12", "Boston site closes in March", cues) == "00:00:12"
+    assert resolve_timestamp("three weeks behind", "00:47:00", cues) is None
+    assert resolve_timestamp("three weeks behind", None, cues) is None
 
 
-@pytest.mark.parametrize("written", ["0:00:12", "00:12", "00:00:12.500", " 00:00:12 "])
-def test_loosely_formatted_timestamps_are_read(written):
-    cues = parse_vtt(VTT)
-    assert _repair_timestamp(written, "Not opening a new site", cues) == "00:00:12"
+def test_two_cues_in_the_same_displayed_second_are_both_checked():
+    """Overlapping speakers share a whole-second label. A lookup keyed by
+    timestamp would drop one of them; every cue has to be tested."""
+    cues = [
+        Cue(12100, 15000, "Alice", "We are not opening a new site."),
+        Cue(12800, 16000, "Bob", "Send me the numbers by Thursday."),
+    ]
+    assert resolve_timestamp("numbers by Thursday", None, cues) == "00:00:12"
+    assert resolve_timestamp("not opening a new site", "00:00:12", cues) == "00:00:12"
 
 
-@pytest.mark.parametrize("written", ["soon", "99:99", "00:61:00", "", None, 12])
-def test_something_that_is_not_a_time_is_rederived_from_the_words(written):
-    cues = parse_vtt(VTT)
-    assert _repair_timestamp(written, "Send the enrollment numbers by Thursday", cues) == "00:00:12"
+def test_the_citation_is_the_cue_start_floored_to_a_second():
+    """Cue-level precision, not word-level alignment: 6.9s displays as 06."""
+    cues = [Cue(6900, 11000, "Bob", "Their coordinator left in August.")]
+    assert resolve_timestamp("coordinator left in August", None, cues) == "00:00:06"
+
+
+def test_evidence_split_across_two_cues_is_not_accepted():
+    cues = [
+        Cue(6000, 11000, "Bob", "Site four is the problem."),
+        Cue(12000, 18000, "Alice", "Their coordinator left in August."),
+    ]
+    assert resolve_timestamp("the problem. Their coordinator", None, cues) is None
 
 
 # --- summarising ---------------------------------------------------------
-
-
-async def test_structured_points_are_checked_and_counted():
-    backend = FakeBackend([
-        json.dumps({
-            "decisions": [{"text": "Not opening a new site", "timestamp": "00:00:12"}],
-            "actions": [
-                # Cited on Priya's line, six seconds after Alice said it.
-                {"text": "Send the enrollment numbers by Thursday", "owner": "Bob Ruiz", "timestamp": "00:00:19"},
-                # No line of this meeting says anything like it.
-                {"text": "Book the auditorium", "owner": "Priya Nair", "timestamp": "00:00:06"},
-                # Left uncited by the model; the guard cites it from its words.
-                {"text": "Redlined SAP ready by the end of next week", "owner": "Priya Nair", "timestamp": None},
-            ],
-        }),
-        "A short overview of the meeting.",
-    ])
-    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
-
-    assert summary.decisions[0].timestamp == "00:00:12"
-    assert [action.timestamp for action in summary.actions] == ["00:00:12", None, "00:00:19"]
-    # Three timestamps were supplied; the uncited one is not a model citation.
-    assert (summary.citations.checked, summary.citations.moved, summary.citations.removed) == (3, 1, 1)
-    assert "[00:00:19]" not in summary.render().split("Send the enrollment numbers")[1].split("\n")[0]
 
 
 async def test_extracts_decisions_and_actions():
@@ -297,39 +340,6 @@ async def test_notes_become_the_skeleton_of_the_output():
     assert "## Overview" not in summary.render()
 
 
-async def test_citations_in_rewritten_notes_are_checked():
-    """The notes mode was the one with no check at all: whatever the model
-    wrote in brackets went straight into notes.md."""
-    written = "\n".join([
-        "## enrollment",
-        "- At 148 of 200, three weeks behind [00:00:01]",
-        "- Site four lost its coordinator in August [00:00:19]",
-        "- Budget was approved [00:47:00].",
-        "- [00:00:12] Not opening a new site",
-    ])
-    backend = FakeBackend([extraction(), written])
-    summary = await summarize_meeting(
-        parse_vtt(VTT), backend=backend, model="fake", title="Sync",
-        notes="## enrollment\n- site 4?",
-    )
-
-    assert summary.enhanced_notes.split("\n") == [
-        "## enrollment",
-        "- At 148 of 200, three weeks behind [00:00:01]",  # right: untouched
-        "- Site four lost its coordinator in August [00:00:06]",  # wrong line: moved
-        "- Budget was approved.",  # said nowhere: removed, no stray space
-        "- [00:00:12] Not opening a new site",  # leads its line: checked against what follows
-    ]
-    assert (summary.citations.checked, summary.citations.moved, summary.citations.removed) == (4, 1, 1)
-
-
-async def test_overview_citations_are_checked_too():
-    backend = FakeBackend([extraction(), "Enrollment is 148 of 200 (00:00:12). Bob owes numbers by Thursday [00:47:00]."])
-    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
-
-    assert summary.overview == "Enrollment is 148 of 200 (00:00:01). Bob owes numbers by Thursday [00:00:12]."
-
-
 async def test_an_empty_transcript_says_so_rather_than_calling_the_model():
     backend = FakeBackend([])
     summary = await summarize_meeting([], backend=backend, model="fake", title="Sync")
@@ -346,114 +356,327 @@ def test_the_same_decision_from_two_chunks_is_reported_once():
     assert len(_dedupe(points)) == 2
 
 
-def test_a_long_meeting_keeps_both_ends_not_just_the_start():
-    """Trimming to the first N cues lost the wrap-up, which is where decisions
-    and owners actually get stated."""
-    from bedrock.meetings.summarize import _for_one_prompt
-
-    cues = [
-        Cue(start_ms=i * 1000, end_ms=i * 1000 + 900, speaker="A", text=f"line {i}")
-        for i in range(500)
-    ]
-    rendered = _for_one_prompt(cues, limit=100)
-
-    assert "line 0" in rendered
-    assert "line 499" in rendered  # the close survives
-    assert "line 250" not in rendered  # the middle is what gets dropped
-    assert "omitted from the middle" in rendered
+# --- citations through the real summariser --------------------------------
 
 
-def test_a_short_meeting_is_sent_whole():
-    from bedrock.meetings.summarize import _for_one_prompt
+@pytest.mark.parametrize("kind", ["decisions", "actions"])
+async def test_a_wrong_but_real_timestamp_is_repaired_end_to_end(kind):
+    """The six-second mismatch, through the path the product actually runs.
 
-    cues = [Cue(start_ms=0, end_ms=900, speaker="A", text="only line")]
-    assert "omitted" not in _for_one_prompt(cues, limit=100)
+    The model attaches cue 2's words to cue 3's timestamp. Both timestamps are
+    real, so timestamp existence cannot tell them apart; the quote can.
+    """
+    item = {
+        "text": "Site four lost its study coordinator",
+        "quote": "Their coordinator left in August.",
+        "timestamp": "00:00:12",
+    }
+    if kind == "actions":
+        item["owner"] = "Bob Ruiz"
+    backend = FakeBackend([extraction(**{kind: [item]}), "An overview."])
 
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
 
-# --- the free-text guard, piece by piece ---------------------------------
-
-
-def clean(text: str, notes: str = "") -> str:
-    from bedrock.meetings.citations import CitationGuard
-
-    return CitationGuard(parse_vtt(VTT)).clean_text(text, leave_alone=notes)
-
-
-def test_times_the_person_typed_in_their_own_notes_are_left_alone():
-    """"[14:00] standup" in their rough notes is a time of day, not a citation."""
-    notes = "- [14:00] standup with site four\n- follow up"
-    written = "- [14:00] standup with site four\n- Follow up with Bob [00:47:00]"
-    assert clean(written, notes) == "- [14:00] standup with site four\n- Follow up with Bob"
-
-
-def test_a_line_cited_only_in_round_brackets_is_still_checked():
-    assert clean("Site four lost its coordinator (00:00:19)") == "Site four lost its coordinator (00:00:06)"
-    assert clean("Budget was approved (00:47:00).") == "Budget was approved."
+    points = getattr(summary, kind)
+    assert points[0].timestamp == "00:00:06"
+    assert points[0].text == "Site four lost its study coordinator"
+    rendered = summary.render()
+    assert "[00:00:06]" in rendered
+    assert "00:00:12" not in rendered
 
 
-def test_brackets_that_are_not_times_are_left_alone():
-    text = "- [x] done\n- [TBD] owner\n- see [the SAP](https://intranet/sap)\n- dated [2026-09-14]\n- at (10:30) daily"
-    assert clean(text) == text
+@pytest.mark.parametrize("kind", ["decisions", "actions"])
+async def test_an_uncheckable_quote_costs_the_citation_not_the_point(kind):
+    item = {
+        "text": "Site four lost its study coordinator",
+        "quote": "the coordinator resigned over the summer",
+        "timestamp": "00:00:12",
+    }
+    backend = FakeBackend([extraction(**{kind: [item]}), "An overview."])
+
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+
+    points = getattr(summary, kind)
+    assert points[0].text == "Site four lost its study coordinator"
+    assert points[0].timestamp is None
+    assert "Site four lost its study coordinator" in summary.render()
+    assert "00:00:12" not in summary.render()
 
 
-def test_each_citation_on_a_line_is_checked_against_its_own_sentence():
-    text = "Enrollment is 148 of 200 [00:00:01]. Site four lost its coordinator [00:00:01]."
-    assert clean(text) == "Enrollment is 148 of 200 [00:00:01]. Site four lost its coordinator [00:00:06]."
+async def test_a_malformed_quote_does_not_fall_back_to_the_text():
+    """An empty or non-string quote is a broken claim, not a missing one, so it
+    gets no second chance at the paraphrase."""
+    backend = FakeBackend([
+        extraction(decisions=[
+            {"text": "Their coordinator left in August.", "quote": "", "timestamp": "00:00:06"},
+            {"text": "We're at 148 of 200. Three weeks behind.", "quote": 12, "timestamp": "00:00:01"},
+        ]),
+        "An overview.",
+    ])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert len(summary.decisions) == 2
+    assert all(point.timestamp is None for point in summary.decisions)
 
 
-def test_a_citation_after_the_full_stop_belongs_to_the_sentence_before_it():
-    text = "Enrollment is 148 of 200. Site four lost its coordinator. [00:00:01]"
-    assert clean(text) == "Enrollment is 148 of 200. Site four lost its coordinator. [00:00:06]"
+async def test_an_older_reply_without_a_quote_is_judged_on_its_text():
+    """Compatibility with the previous prompt: no "quote" field means the text
+    is tried as evidence, against the same strict matcher. A verbatim line
+    earns its citation; a paraphrase does not."""
+    backend = FakeBackend([
+        extraction(decisions=[
+            {"text": "Their coordinator left in August.", "timestamp": "00:47:00"},
+            {"text": "Site four lost its study coordinator", "timestamp": "00:00:12"},
+        ]),
+        "An overview.",
+    ])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+
+    verbatim, paraphrase = summary.decisions
+    assert verbatim.timestamp == "00:00:06"
+    assert paraphrase.timestamp is None
+    assert paraphrase.text == "Site four lost its study coordinator"
 
 
-def test_a_semicolon_does_not_cut_a_note_in_half():
-    """Found against a realistic meeting: splitting here left only "QA is
-    assessing impact", which shares no word with the line, and a correct
-    citation was removed."""
-    cues = [
-        Cue(start_ms=1000, end_ms=5000, speaker="M", text="Freezer three hit minus 62 on Saturday."),
-        Cue(start_ms=8000, end_ms=12000, speaker="M", text="Samples were moved to freezer five. QA is reviewing them."),
-    ]
-    from bedrock.meetings.citations import CitationGuard
-
-    text = "- Samples relocated to freezer five; QA assessing impact [00:00:08]"
-    assert CitationGuard(cues).clean_text(text) == text
-
-
-def test_several_times_in_one_bracket_are_each_checked():
-    assert clean("Site four lost its coordinator [00:00:06, 00:47:00]") == "Site four lost its coordinator [00:00:06]"
-    # Both endpoints of a range move to the one line that says it, once.
-    assert clean("Site four lost its coordinator [00:00:01 - 00:00:19]") == "Site four lost its coordinator [00:00:06]"
-    # A note drawing on two lines keeps both, as written, when each says its part.
-    assert clean("Coordinator left, not opening a new site [00:00:06 - 00:00:12]") == (
-        "Coordinator left, not opening a new site [00:00:06 - 00:00:12]"
-    )
-
-
-def test_a_line_that_says_part_of_a_note_keeps_its_citation():
-    """00:00:12 shares two words with this note; 00:00:06 shares three. Both
-    say part of it, so the model's choice is not second-guessed."""
+async def test_evidence_outside_the_chunk_the_model_saw_is_not_used():
+    """Each chunk is checked against its own cues. Rescuing a citation from a
+    passage that model call never read would cite something nobody quoted."""
     cues = parse_vtt(VTT)
-    assert _repair_timestamp("00:00:12", "Coordinator left, not opening a new site", cues) == "00:00:12"
+    chunks = chunk_cues(cues, words_per_chunk=8)
+    assert len(chunks) > 2
+    first = extraction(decisions=[{
+        "text": "Priya is redlining the SAP",
+        # Said in the last cue, which is not in the first chunk.
+        "quote": "I'll have the redlined SAP ready",
+        "timestamp": "00:00:19",
+    }])
+    backend = FakeBackend([first] + [extraction()] * (len(chunks) - 1) + ["An overview."])
 
-
-def test_a_correct_loosely_written_citation_keeps_its_spelling():
-    assert clean("Not opening a new site [0:12]") == "Not opening a new site [0:12]"
-
-
-def test_fenced_code_is_never_changed():
-    text = "```\nBudget [00:47:00]\n```\nBudget was approved [00:47:00]"
-    assert clean(text) == "```\nBudget [00:47:00]\n```\nBudget was approved"
-
-
-def test_the_report_line_is_plain_and_absent_when_nothing_was_cited():
-    from bedrock.meetings.citations import CitationReport
-
-    assert CitationReport().describe() is None
-    assert CitationReport(checked=1, moved=0, removed=1).describe() == (
-        "Checked 1 citation against the transcript: 0 moved to the line that says it, "
-        "1 removed because no line says it."
+    summary = await summarize_meeting(
+        cues, backend=backend, model="fake", title="Sync", words_per_chunk=8
     )
+    assert summary.decisions[0].text == "Priya is redlining the SAP"
+    assert summary.decisions[0].timestamp is None
+
+
+# --- citations in the prose halves ----------------------------------------
+
+
+NOTES = "## Enrollment\n- site 4?\n\n## Statistics\n- SAP timing\n"
+
+
+async def test_enhanced_notes_repair_the_same_six_second_mismatch():
+    backend = FakeBackend([
+        extraction(),
+        notes_reply(
+            "## Enrollment\n- The coordinator left in August. [[cite:c1]]",
+            [{
+                "id": "c1",
+                "quote": "Their coordinator left in August.",
+                "timestamp": "00:00:12",
+            }],
+        ),
+    ])
+    summary = await summarize_meeting(
+        parse_vtt(VTT), backend=backend, model="fake", title="Sync", notes=NOTES
+    )
+    assert "[00:00:06]" in summary.enhanced_notes
+    assert "00:00:12" not in summary.enhanced_notes
+    assert "cite:" not in summary.enhanced_notes
+
+
+async def test_unverifiable_note_citations_vanish_without_taking_the_note():
+    markdown = (
+        "## Enrollment\n"
+        "- Checked out. [[cite:c1]]\n"
+        "- Unknown id. [[cite:nope]]\n"
+        "- Claimed twice. [[cite:dup]]\n"
+        "- Evidence nobody said. [[cite:c9]]\n"
+        "- Written straight into the prose. [00:00:19]\n"
+    )
+    backend = FakeBackend([
+        extraction(),
+        notes_reply(markdown, [
+            {"id": "c1", "quote": "Their coordinator left in August.", "timestamp": "00:00:06"},
+            {"id": "dup", "quote": "Their coordinator left in August.", "timestamp": "00:00:06"},
+            {"id": "dup", "quote": "Site four is the problem.", "timestamp": "00:00:06"},
+            {"id": "c9", "quote": "nothing like this was ever said", "timestamp": "00:00:01"},
+        ]),
+    ])
+    summary = await summarize_meeting(
+        parse_vtt(VTT), backend=backend, model="fake", title="Sync", notes=NOTES
+    )
+
+    notes = summary.enhanced_notes
+    assert notes.count("[00:00:06]") == 1  # only the one that checked out
+    assert "00:00:19" not in notes
+    assert "cite:" not in notes
+    for line in ("Unknown id.", "Claimed twice.", "Evidence nobody said.",
+                 "Written straight into the prose."):
+        assert line in notes
+    assert notes.splitlines()[1] == "- Checked out. [00:00:06]"
+
+
+async def test_a_timestamp_copied_out_of_the_users_own_notes_is_not_a_citation():
+    """Someone typing "[00:14:00]" during a call has not verified anything, and
+    once the model echoes it into the rewrite it looks exactly like a generated
+    citation. Their own notes are never edited - only the generated output."""
+    rough = "## Enrollment\n- decision at [00:14:00]?\n"
+    backend = FakeBackend([
+        extraction(),
+        notes_reply("## Enrollment\n- They decided at [00:14:00].", []),
+    ])
+    summary = await summarize_meeting(
+        parse_vtt(VTT), backend=backend, model="fake", title="Sync", notes=rough
+    )
+    assert summary.enhanced_notes == "## Enrollment\n- They decided at."
+    assert "[00:14:00]" in rough  # the user's own text, untouched
+
+
+async def test_plain_markdown_notes_stay_readable_and_lose_their_citations():
+    backend = FakeBackend([
+        extraction(),
+        "## Enrollment\n- Site four lost its coordinator. [00:00:12]\n\n## Statistics\n- SAP next week.",
+    ])
+    summary = await summarize_meeting(
+        parse_vtt(VTT), backend=backend, model="fake", title="Sync", notes=NOTES
+    )
+    assert summary.enhanced_notes == (
+        "## Enrollment\n- Site four lost its coordinator.\n\n## Statistics\n- SAP next week."
+    )
+
+
+async def test_an_unusable_envelope_falls_back_to_the_rough_notes():
+    """Never render a JSON blob where someone's notes should be."""
+    backend = FakeBackend([extraction(), json.dumps({"citations": [], "markdown": None})])
+    summary = await summarize_meeting(
+        parse_vtt(VTT), backend=backend, model="fake", title="Sync", notes=NOTES
+    )
+    assert summary.enhanced_notes == NOTES.strip()
+    assert "markdown" not in summary.enhanced_notes
+
+
+async def test_headings_and_bullet_order_survive_verification():
+    markdown = (
+        "## Enrollment\n- 148 of 200, three weeks behind. [[cite:c1]]\n"
+        "\n## Statistics\n- Redlined SAP next week. [[cite:c2]]\n"
+    )
+    backend = FakeBackend([
+        extraction(),
+        notes_reply(markdown, [
+            {"id": "c1", "quote": "We're at 148 of 200.", "timestamp": "00:00:01"},
+            {"id": "c2", "quote": "redlined SAP ready by the end of next week", "timestamp": "00:00:19"},
+        ]),
+    ])
+    summary = await summarize_meeting(
+        parse_vtt(VTT), backend=backend, model="fake", title="Sync", notes=NOTES
+    )
+    headings = [line for line in summary.enhanced_notes.splitlines() if line.startswith("## ")]
+    assert headings == ["## Enrollment", "## Statistics"]
+    assert "[00:00:01]" in summary.enhanced_notes
+    assert "[00:00:19]" in summary.enhanced_notes
+
+
+@pytest.mark.parametrize(
+    "prose, expected",
+    [
+        ("Behind [00:00:01] today.", "Behind today."),
+        ("Behind [[00:00:01]] today.", "Behind today."),
+        ("Behind [12:34] today.", "Behind today."),
+        # Not the citation syntax, so not ours to remove.
+        ("We start at 10:30 tomorrow.", "We start at 10:30 tomorrow."),
+        ("See (00:00:01) for that.", "See (00:00:01) for that."),
+        ("Option [4] was chosen.", "Option [4] was chosen."),
+        ("Budget is [TBD] still.", "Budget is [TBD] still."),
+    ],
+)
+async def test_only_bracketed_clock_times_count_as_citation_syntax(prose, expected):
+    """Ordinary times and numbers in prose survive; the citation form does not."""
+    backend = FakeBackend([extraction(), prose])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == expected
+
+
+async def test_the_overview_never_carries_an_unverified_citation():
+    backend = FakeBackend([
+        extraction(),
+        "Enrollment is behind [00:00:01] and site four has no coordinator [00:00:06].",
+    ])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == "Enrollment is behind and site four has no coordinator."
+    assert "00:00:01" not in summary.render()
+
+
+# --- the whole command, end to end ----------------------------------------
+
+
+async def test_the_written_notes_file_carries_only_verified_citations(tmp_path, monkeypatch):
+    """Drive ``bedrock-meeting``'s real path and read the notes.md it writes.
+
+    Whisper, ffmpeg, audio hardware, a model server and the network are all
+    replaced at the seams the module already has, so this runs anywhere.
+    """
+    from bedrock.meetings import cli
+    from bedrock.meetings.transcribe import TranscriptionResult
+
+    folder = tmp_path / "2026-09-15 09.00.12 Phase II weekly sync"
+    folder.mkdir()
+    # A real Zoom folder to hand the command. Transcription itself is faked
+    # below, so the bytes never matter - but the command checks that a
+    # recording is there before it starts, and that check is worth keeping.
+    (folder / "audio_only.m4a").write_bytes(b"")
+    rough = tmp_path / "rough.md"
+    rough.write_text("## Enrollment\n- site 4? decided around [00:14:00]\n")
+
+    cues = parse_vtt(VTT)
+
+    class FakeTranscriber:
+        def __init__(self, config):
+            self.config = config
+
+        def readiness_issues(self):
+            return ()
+
+    async def fake_transcribe(folder, transcriber, work_dir=None):
+        return TranscriptionResult(cues=cues, speakers=speakers(cues))
+
+    backend = FakeBackend([
+        extraction(actions=[{
+            "text": "Send enrollment numbers",
+            "owner": "Bob Ruiz",
+            "quote": "Their coordinator left in August.",
+            "timestamp": "00:00:12",          # real, but six seconds off
+        }]),
+        notes_reply(
+            "## Enrollment\n"
+            "- The coordinator left in August. [[cite:c1]]\n"
+            "- Decided around [00:14:00], they said. [[cite:ghost]]\n",
+            [{"id": "c1", "quote": "Their coordinator left in August.", "timestamp": "00:00:12"}],
+        ),
+    ])
+
+    monkeypatch.setattr(cli, "WhisperTranscriber", FakeTranscriber)
+    monkeypatch.setattr(cli, "transcribe_recording", fake_transcribe)
+    monkeypatch.setattr(cli, "discover_participant_tracks", lambda folder: {})
+    built = []
+    monkeypatch.setattr(cli, "create_backend", lambda settings: built.append(settings) or backend)
+    from bedrock.config import load_settings
+
+    monkeypatch.setattr(cli, "load_settings", lambda: load_settings(config_path=tmp_path / "none.toml", env={"BEDROCK_MODEL": "fake"}))
+
+    args = cli.build_parser().parse_args([str(folder), "--notes", str(rough)])
+    assert await cli._run(args) == 0
+
+    written = (folder / "notes.md").read_text()
+    assert "[00:00:06]" in written          # the repaired citation reached the file
+    assert "00:00:12" not in written        # the wrong one did not
+    assert "00:14:00" not in written        # nor the timestamp echoed from the notes
+    assert "cite:" not in written
+    assert "Send enrollment numbers" in written
+    assert "Decided around, they said." in written
+    # The user's own file is never rewritten.
+    assert "[00:14:00]" in rough.read_text()
+    # The backend came from the shared factory, with the long meeting timeout.
+    assert built and built[0].request_timeout == 600.0
 
 
 # --- The model handing back its own JSON skeleton -----------------------------
@@ -463,11 +686,10 @@ def test_a_placeholder_owner_becomes_no_owner():
     """llama3.1:8b returned `"owner": "name or null"` verbatim. An action item
     assigned to "name or null" reads as a broken product; no owner is honest."""
     from bedrock.meetings.summarize import _points
-    from bedrock.meetings.citations import CitationGuard
 
     points = _points(
         [{"text": "Send the enrollment tracker tonight.", "owner": "name or null"}],
-        CitationGuard([]),
+        [],
         with_owner=True,
     )
     assert len(points) == 1
@@ -478,7 +700,6 @@ def test_a_placeholder_owner_becomes_no_owner():
 def test_a_point_that_is_only_a_placeholder_is_dropped():
     """The same run produced a "fact" whose entire text was the placeholder."""
     from bedrock.meetings.summarize import _points
-    from bedrock.meetings.citations import CitationGuard
 
     points = _points(
         [
@@ -487,7 +708,7 @@ def test_a_point_that_is_only_a_placeholder_is_dropped():
             {"text": "<the concrete detail>"},
             {"text": "148 of 200 patients"},
         ],
-        CitationGuard([]),
+        [],
         with_owner=False,
     )
     assert [p.text for p in points] == ["148 of 200 patients"]
@@ -496,11 +717,10 @@ def test_a_point_that_is_only_a_placeholder_is_dropped():
 def test_a_real_owner_still_survives():
     """The filter must not eat ordinary names."""
     from bedrock.meetings.summarize import _points
-    from bedrock.meetings.citations import CitationGuard
 
     points = _points(
         [{"text": "Update the protocol document.", "owner": "Priya"}],
-        CitationGuard([]),
+        [],
         with_owner=True,
     )
     assert points[0].owner == "Priya"
@@ -510,11 +730,10 @@ def test_a_first_person_owner_becomes_no_owner():
     """"I will send the tracker" names nobody, and an in-room recording has no
     speaker labels to resolve the pronoun against."""
     from bedrock.meetings.summarize import _points
-    from bedrock.meetings.citations import CitationGuard
 
     points = _points(
         [{"text": "Send the enrollment tracker tonight.", "owner": "I"}],
-        CitationGuard([]),
+        [],
         with_owner=True,
     )
     assert points[0].owner is None
@@ -604,3 +823,104 @@ def test_without_regions_the_speech_check_is_skipped():
     from bedrock.meetings.transcribe import _split_turns_at
 
     assert _split_turns_at([(0, 10000)], [5000]) == [(0, 5000), (5000, 10000)]
+
+
+# --- Fitting the model's context window ---------------------------------------
+
+
+def long_meeting(lines: int = 900, words: int = 18) -> list[Cue]:
+    """About an hour of talk: far more than a laptop's 8k-token window."""
+    return [
+        Cue(i * 4000, i * 4000 + 3500, "Alice Chen" if i % 2 else "Bob Ruiz",
+            f"line {i} " + " ".join(f"word{i}x{j}" for j in range(words)))
+        for i in range(lines)
+    ]
+
+
+def scheduler_with(backend, **profile_changes):
+    from dataclasses import replace
+
+    from bedrock.config import PROFILES
+    from bedrock.inference import Scheduler
+
+    return Scheduler(backend, replace(PROFILES["laptop"], **profile_changes))
+
+
+@pytest.mark.parametrize("window", [8192, 4096, 2048])
+async def test_no_prompt_is_larger_than_the_window_can_hold(window):
+    from bedrock.inference import estimate_tokens
+    from bedrock.meetings.summarize import EXTRACT_REPLY_TOKENS, OVERVIEW_REPLY_TOKENS
+
+    backend = FakeBackend()
+    scheduler = scheduler_with(backend, context_window=window, reply_limit=min(1024, window // 4))
+    summary = await summarize_meeting(long_meeting(), scheduler=scheduler, model="fake", title="Sync")
+
+    assert summary.degraded_reason is None
+    assert len(backend.prompts) > 2  # the transcript was split into several chunks
+    for prompt, options in zip(backend.prompts, backend.options):
+        assert options.max_tokens in (EXTRACT_REPLY_TOKENS, OVERVIEW_REPLY_TOKENS)
+        assert options.reasoning is False
+        assert estimate_tokens(prompt) + options.max_tokens <= window
+    assert any("lines from the middle were left out" in notice for notice in summary.notices)
+
+
+async def test_every_meeting_call_is_a_user_job_on_the_scheduler():
+    from bedrock.inference import Priority
+
+    backend = FakeBackend()
+    scheduler = scheduler_with(backend)
+    seen = []
+    original = scheduler.stream
+
+    def recording(model, messages, *, priority, options=None):
+        seen.append(priority)
+        return original(model, messages, priority=priority, options=options)
+
+    scheduler.stream = recording
+    await summarize_meeting(parse_vtt(VTT), scheduler=scheduler, model="fake", title="Sync")
+    assert seen and set(seen) == {Priority.USER_JOB}
+
+
+async def test_notes_citations_are_checked_only_against_the_lines_sent():
+    """A long meeting sends the notes pass only its start and end. A quote from
+    the unsent middle is real speech, but that model call never read it, so
+    its citation cannot stand."""
+    cues = long_meeting()
+    middle = cues[len(cues) // 2]
+    first = cues[0]
+    from bedrock.inference import estimate_tokens
+    from bedrock.meetings.summarize import _EXTRACT_PROMPT, EXTRACT_REPLY_TOKENS, prompt_budget
+
+    room = prompt_budget(8192, EXTRACT_REPLY_TOKENS) - estimate_tokens(_EXTRACT_PROMPT.format(transcript=""))
+    extraction_calls = len(chunk_cues(cues, max_tokens=room))
+    backend = FakeBackend([extraction() for _ in range(extraction_calls)] + [
+        notes_reply(
+            "## Notes\n- From the start. [[cite:a]]\n- From the middle. [[cite:b]]\n",
+            [
+                {"id": "a", "quote": first.text, "timestamp": first.timestamp},
+                {"id": "b", "quote": middle.text, "timestamp": middle.timestamp},
+            ],
+        )
+    ])
+    scheduler = scheduler_with(backend)
+
+    summary = await summarize_meeting(cues, scheduler=scheduler, model="fake", title="Sync", notes="## Notes\n- stuff")
+
+    notes_prompt = backend.prompts[-1]
+    assert first.text in notes_prompt and middle.text not in notes_prompt
+    assert f"[{first.timestamp}]" in summary.enhanced_notes
+    assert f"[{middle.timestamp}]" not in summary.enhanced_notes
+    assert "From the middle." in summary.enhanced_notes  # the words stay, the citation goes
+
+
+async def test_notes_too_long_for_the_window_are_refused_plainly():
+    backend = FakeBackend([extraction()])
+    scheduler = scheduler_with(backend, context_window=2048, reply_limit=512)
+    rough = "## My notes\n" + "- a very long note about everything " * 400
+
+    summary = await summarize_meeting(parse_vtt(VTT), scheduler=scheduler, model="fake", title="Sync", notes=rough)
+
+    assert summary.enhanced_notes == rough.strip()
+    assert any("too long to rewrite" in notice for notice in summary.notices)
+    assert len(backend.prompts) == 1  # only the extraction pass was sent
+    assert "too long to rewrite" in summary.render()

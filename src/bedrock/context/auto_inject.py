@@ -11,7 +11,7 @@ The fix is deliberately the cheap, honest kind: before a message goes to a
 model, search the store with the message's own words — the same BM25
 search `/digest search` already uses, see `bedrock.context.search`'s
 docstring for what that can and can't do — and if anything scores well,
-prepend the matching passages, clearly labeled, so the model sees them as
+add the matching passages to the newest user message, clearly labeled, so the model sees them as
 context and the transcript still shows exactly what happened. This is
 keyword matching, not comprehension: it will miss a paraphrase, and it
 will occasionally attach something that only shares a rare word with the
@@ -62,7 +62,7 @@ def find_relevant_context(
     fails, the same rule `bedrock.context.digest` follows for the optional
     model-summary pass.
     """
-    if len(message.split()) < MIN_QUERY_WORDS:
+    if limit <= 0 or len(message.split()) < MIN_QUERY_WORDS:
         return None
     try:
         hits = store.search(message, limit=limit)

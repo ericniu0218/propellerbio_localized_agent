@@ -729,3 +729,89 @@ def test_a_first_person_owner_becomes_no_owner():
         with_owner=True,
     )
     assert points[0].owner is None
+
+
+# --- Cue hygiene and speaker-aware slicing ------------------------------------
+
+
+def test_a_cue_of_pure_punctuation_is_not_speech():
+    """Given room noise whisper emits a cue whose whole text is ",". Two of
+    them appeared in one real recording, spanning eighteen and four seconds,
+    and read like the recorder had broken."""
+    from bedrock.meetings.transcribe import is_speech
+
+    assert not is_speech(",")
+    assert not is_speech(" . ")
+    assert not is_speech("[BLANK_AUDIO]")
+    assert is_speech("Good morning.")
+
+
+def test_leading_punctuation_is_trimmed_from_a_cue():
+    """Slicing on a speech boundary leaves whisper starting a cue with the
+    punctuation that ended the previous one."""
+    from bedrock.meetings.transcribe import clean_cue_text
+
+    assert clean_cue_text(", and I'm also going to start the project") == (
+        "and I'm also going to start the project"
+    )
+    assert clean_cue_text("  Good morning.  ") == "Good morning."
+
+
+def test_words_inside_a_cue_are_never_touched():
+    from bedrock.meetings.transcribe import clean_cue_text
+
+    assert clean_cue_text("148 of 200, and rising") == "148 of 200, and rising"
+
+
+def test_a_turn_is_cut_where_the_voice_changes():
+    """Two people talking without a gap are one VAD region, so a caller that
+    knows where the speaker changes has to be able to force the cut."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 10000)], [4000]) == [(0, 4000), (4000, 10000)]
+
+
+def test_a_cut_that_would_leave_a_fragment_is_skipped():
+    """A boundary a tenth of a second inside a turn would hand whisper half a
+    syllable, which transcribes worse than leaving both speakers together."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 10000)], [100, 9950]) == [(0, 10000)]
+
+
+def test_a_boundary_outside_a_turn_changes_nothing():
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 5000)], [8000]) == [(0, 5000)]
+
+
+def test_several_cuts_in_one_turn_all_apply():
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 12000)], [4000, 8000]) == [(0, 4000), (4000, 8000), (8000, 12000)]
+
+
+def test_a_cut_into_near_silence_is_refused():
+    """Speaker boundaries and speech boundaries come from two different models
+    and do not agree, so a boundary regularly lands mid-silence. Cutting there
+    hands whisper a slice with no words in it, and what comes back is not
+    silence but invention — on a twelve-turn recording this turned 12 cues into
+    21, of which 8 were hallucinated filler."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    # Speech on both sides of the cut: a legitimate speaker change, so cut.
+    regions = [(0, 4000), (9000, 13000)]
+    assert _split_turns_at([(0, 13000)], [6500], regions) == [(0, 6500), (6500, 13000)]
+
+    # Now a turn whose first side holds almost no speech. Cutting there hands
+    # whisper a slice of silence, and it fills it in rather than returning
+    # nothing, so the cut is refused and both speakers stay in one cue.
+    sparse = [(0, 200), (9000, 13000)]
+    assert _split_turns_at([(0, 13000)], [6500], sparse) == [(0, 13000)]
+
+
+def test_without_regions_the_speech_check_is_skipped():
+    """Callers that have no VAD data still get the length guard."""
+    from bedrock.meetings.transcribe import _split_turns_at
+
+    assert _split_turns_at([(0, 10000)], [5000]) == [(0, 5000), (5000, 10000)]

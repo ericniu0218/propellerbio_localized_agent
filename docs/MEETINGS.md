@@ -277,21 +277,38 @@ whole-screen audio is not available at all. In practice:
   Loopback) and pick it as the microphone. It appears in the device list
   automatically.
 
+## Configuration added since
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MEETING_REDACT_PHI` | `true` | Remove identifiers from transcripts and notes |
+| `MEETING_ACCESS_GROUPS` | unset | Groups a meeting gets when it has no project |
+| `MEETING_REQUIRE_CONSENT` | `false` | Refuse to save unless the room was told |
+| `MEETING_VOICE_THRESHOLD` | `0.55` | How sure a voice match has to be |
+| `MEETING_AUDIO_RETENTION_DAYS` | `30` | Delete recordings after this long |
+| `MEETING_TRANSCRIPT_RETENTION_DAYS` | `0` | Delete meetings after this long; 0 = never |
+| `MEETING_SEMANTIC` | `true` | Rank by meaning as well as keywords |
+| `MEETING_TEXT_MODEL` | `minishlab/potion-base-8M` | Text embedding model, or a local directory |
+| `MEETING_VOCABULARY_AUTO` | `false` | Feed harvested terms to the decoder unreviewed |
+
 ## Known gaps
 
-- **No per-user access control.** `rag_search` filters hits through
-  `RBACFilter`; this tool cannot, because the connector contract has no notion
-  of who may read which meeting — it takes a date range and returns everything
-  in it. Any user who can reach this tool can read any recorded meeting,
-  including ones they were not in. Fixing it needs a contract change: the
-  connector must accept an identity and filter server-side, or transcripts need
-  per-meeting access groups applied at ingest. Until then, deploy only where
-  every user is entitled to every meeting.
-- **No PHI redaction.** Meeting transcripts in a biotech company will discuss
-  patients. `app/compliance/phi_redaction.py` is not applied on this path — and
-  as of writing, is not applied on any path.
-- **Keyword, not semantic, ranking.** "What did we decide about recruitment?"
-  will not match a meeting that only ever says "enrollment."
+- **Zoom meetings carry no access groups.** Meetings recorded here do, and
+  both sides enforce them; meetings arriving through zoom-transcript-vault do
+  not, because that relay has not been taught to set them. They stay readable
+  by everyone until it is. This is the one remaining half of access control.
+- **Redaction is regex, not clinical NER.** It catches SSNs, MRNs, emails,
+  phone numbers and dates of birth. It does **not** catch a patient's name said
+  out loud, which is the likeliest identifier in a recorded meeting.
+  `phi_redaction.py` exposes `ner_hook` for a real model; until one is
+  deployed, a redacted transcript is not a clean one.
+- **A voice print is not authentication.** It can be fooled by an
+  impersonation and confused by a cold, and nothing proves the person who
+  enrolled is who they said. It saves typing names; it must never gate access.
+- **Semantic ranking is tuned to reject.** Static embeddings do not separate a
+  true synonym match (0.179 measured) from an unrelated question (0.124)
+  cleanly, so the threshold picks which error to make and picks the miss. A
+  better model raises the ceiling; a lower number does not.
 - **No retention policy.** Transcripts accumulate in the datacenter forever.
   Whoever owns that storage owns deciding how long meetings are kept. Recorded
   audio also accumulates under `MEETING_RECORDING_DIR` and nothing prunes it.

@@ -604,3 +604,49 @@ def test_without_regions_the_speech_check_is_skipped():
     from bedrock.meetings.transcribe import _split_turns_at
 
     assert _split_turns_at([(0, 10000)], [5000]) == [(0, 5000), (5000, 10000)]
+
+
+def test_only_the_result_lines_are_read_from_the_vad_log():
+    """The VAD binary logs its own workings on the way to the answer:
+
+        whisper_vad_segments_from_probs: VAD segment 654: start = 2334.47, ...
+        Speech segment 0: start = 109.00, end = 966.00
+
+    The first is a debug line in *seconds*, the second the result in
+    centiseconds. A pattern matching any "start = …, end = …" read both, so
+    every transcript was built from twice as many regions as existed, half at
+    the wrong time scale. Short recordings survived it; a forty-minute meeting
+    produced a turn ending before it started and ffmpeg aborted on it.
+    """
+    from bedrock.meetings.transcribe import _VAD_LINE
+
+    assert _VAD_LINE.search("Speech segment 0: start = 109.00, end = 966.00")
+    assert not _VAD_LINE.search(
+        "whisper_vad_segments_from_probs: VAD segment 654: start = 2334.47, end = 2335.61"
+    )
+
+
+def test_a_region_that_ends_before_it_starts_is_discarded(tmp_path, monkeypatch):
+    """Everything downstream assumes regions are sorted and forward-going, and
+    nothing downstream checks. One bad pair reached ffmpeg as
+    "-ss 20.005 -to 9.660" and took a whole meeting with it."""
+    import asyncio
+
+    from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
+
+    log_text = (
+        "Speech segment 0: start = 100.00, end = 200.00\n"
+        "Speech segment 1: start = 900.00, end = 500.00\n"   # backwards
+        "Speech segment 2: start = 300.00, end = 400.00\n"   # out of order
+    )
+
+    class Runner:
+        async def run(self, args, log_path, env=None):
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(log_text)
+
+    transcriber = WhisperTranscriber(
+        WhisperConfig(model=tmp_path / "m.bin", vad_model=tmp_path / "v.bin"), runner=Runner()
+    )
+    regions = asyncio.run(transcriber.detect_speech_regions(tmp_path / "a.wav", tmp_path))
+    assert regions == [(1000, 2000), (3000, 4000)]

@@ -46,7 +46,26 @@ AUDIO_SUFFIXES = (".m4a", ".mp4", ".wav", ".mp3", ".aac", ".aiff")
 UNCONVERTED_SUFFIX = ".zoom"
 
 # "Speech segment 3: start = 3322.00, end = 3558.00" — centiseconds.
-_VAD_LINE = re.compile(r"start\s*=\s*(?P<start>[\d.]+),\s*end\s*=\s*(?P<end>[\d.]+)")
+#
+# Anchored to that exact line, and it has to be. The VAD binary also logs its
+# own workings on the way there:
+#
+#     whisper_vad_segments_from_probs: VAD segment 654: start = 2334.47, ...
+#     Speech segment 0: start = 109.00, end = 966.00
+#
+# The first is a debug line in *seconds*; the second is the result in
+# centiseconds. A pattern that matched any "start = …, end = …" read both, so
+# every transcript was built from twice as many regions as existed, half of
+# them at the wrong time scale and running backwards through the meeting.
+#
+# Short recordings survived it — the bogus regions land early and whisper still
+# got roughly the right audio — which is why it went unnoticed through a whole
+# eval suite. A forty-minute meeting did not: the two scales diverge far enough
+# apart to produce a turn ending before it starts, and ffmpeg refuses that with
+# "-to value smaller than -ss".
+_VAD_LINE = re.compile(
+    r"^\s*Speech segment\s+\d+\s*:\s*start\s*=\s*(?P<start>[\d.]+),\s*end\s*=\s*(?P<end>[\d.]+)"
+)
 
 # VAD cuts tight enough to clip a leading consonant.
 _SLICE_PAD_MS = 150
@@ -280,7 +299,19 @@ class WhisperTranscriber:
             match = _VAD_LINE.search(line)
             if match:
                 # The tool reports centiseconds.
-                regions.append((int(float(match.group("start")) * 10), int(float(match.group("end")) * 10)))
+                start = int(float(match.group("start")) * 10)
+                end = int(float(match.group("end")) * 10)
+                # A region that ends before it starts is not a region. Nothing
+                # downstream checks, and everything downstream assumes these
+                # are sorted and forward-going: a single bad pair produced a
+                # turn with a negative span, which survived the turn grouping
+                # untouched (its span is below every cap) and reached ffmpeg as
+                # "-ss 20.005 -to 9.660", which aborts and takes the whole
+                # meeting with it. Cheap to check here, and this is the only
+                # place the numbers enter the pipeline.
+                if end > start >= 0:
+                    regions.append((start, end))
+        regions.sort()
         return regions
 
     async def transcribe_track(

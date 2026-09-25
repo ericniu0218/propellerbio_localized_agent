@@ -211,3 +211,25 @@ def test_consolidation_without_vectors_changes_nothing():
 def test_consolidation_of_a_failed_diarisation_changes_nothing():
     empty = DiarizationResult([], 0, False, "models missing")
     assert consolidate(empty, {0: A}) is empty
+
+
+def test_the_floor_on_being_a_speaker_scales_with_the_meeting():
+    """Two seconds is a sensible floor in a two-minute recording and nothing at
+    all in a forty-minute one. A real club meeting consolidated to 88
+    "speakers" — one cluster holding two thirds of the speech and eighty-seven
+    fragments around it — because one laptop microphone in a room gives the
+    same person very different embeddings depending on where they sat. With a
+    proportional floor the same recording gives 5."""
+    # One speaker talking for ten minutes, plus a three-second fragment that is
+    # comfortably over the absolute floor but a rounding error in the meeting.
+    turns = [SpeakerTurn(0, 600_000, 0), SpeakerTurn(600_000, 603_000, 1)]
+    result = DiarizationResult(turns, 2, estimated=True)
+    assert consolidate(result, {0: A, 1: B}, min_share=0.01).speaker_count == 1
+
+
+def test_a_short_meeting_is_judged_on_the_absolute_floor():
+    """The proportional floor must not swallow a real speaker in a short
+    recording: 1% of ninety seconds is under a second."""
+    turns = [SpeakerTurn(0, 60_000, 0), SpeakerTurn(60_000, 90_000, 1)]
+    result = DiarizationResult(turns, 2, estimated=True)
+    assert consolidate(result, {0: A, 1: B}, min_share=0.01).speaker_count == 2

@@ -217,6 +217,19 @@ MERGE_SIMILARITY = 0.60
 # door, a cough, or a half-second of two people at once — not a person.
 MIN_SPEAKER_SPEECH_S = 2.0
 
+# …and in a long meeting, two seconds is nothing. A real participant in half an
+# hour of conversation holds more than a sliver of it, so the floor also scales
+# with the meeting: whichever is larger applies.
+#
+# This is what a forty-minute club meeting exposed. It consolidated to 88
+# "speakers" — one cluster holding two thirds of the speech and eighty-seven
+# fragments around it — because one laptop microphone in a room gives the same
+# person very different embeddings depending on where they were sitting. A flat
+# two-second floor kept every fragment. A proportional one folds them into
+# whoever they sound most like, and a transcript labelled with a plausible
+# number of people is worth far more than one labelled with eighty-eight.
+MIN_SPEAKER_SHARE = 0.01
+
 
 def _centroid(vectors: list):
     import numpy
@@ -232,6 +245,7 @@ def consolidate(
     minimum_speakers: int | None = None,
     similarity: float = MERGE_SIMILARITY,
     min_speech_s: float = MIN_SPEAKER_SPEECH_S,
+    min_share: float = MIN_SPEAKER_SHARE,
 ) -> DiarizationResult:
     """Merge clusters that are the same voice, and drop the ones that are noise.
 
@@ -257,8 +271,10 @@ def consolidate(
 
     # Clusters too small to be a person are set aside, not deleted: their turns
     # still hold speech, and are folded into whichever surviving voice they are
-    # closest to further down.
-    real = [s for s in vectors if seconds.get(s, 0) >= min_speech_s]
+    # closest to further down. The floor is the larger of an absolute couple of
+    # seconds and a share of the meeting — see MIN_SPEAKER_SHARE.
+    floor_s = max(min_speech_s, sum(seconds.values()) * min_share)
+    real = [s for s in vectors if seconds.get(s, 0) >= floor_s]
     if not real:
         return result
 

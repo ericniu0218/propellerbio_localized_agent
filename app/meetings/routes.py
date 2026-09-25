@@ -581,6 +581,44 @@ def resume_interrupted() -> list[str]:
     return resumed
 
 
+@router.post("/recordings/{job_id}/retry")
+async def retry_recording(job_id: str, user=Depends(identity)):
+    """Run a failed recording again from its audio.
+
+    Async because starting the job schedules a task, and a sync endpoint runs
+    in a threadpool with no event loop to schedule it on.
+
+    A failed job keeps everything it needs — that is why `fail()` updates the
+    row rather than deleting it — so a forty-minute meeting that died on a bug
+    is one request away from being finished, not a re-record. The audio is the
+    part that cannot be recreated; everything after it can.
+    """
+    if not PIPELINE_AVAILABLE:
+        raise HTTPException(503, PIPELINE_MISSING)
+
+    stale = _job_store.claim(job_id, max_attempts=10)
+    if stale is None or stale.owner != user["id"]:
+        raise HTTPException(404, "That recording is unavailable, or has been retried too often.")
+    audio = Path(stale.audio_path)
+    if not audio.exists():
+        _job_store.forget(job_id)
+        raise HTTPException(410, "The audio for that recording is no longer on disk.")
+
+    job = RecordingJob(
+        id=stale.id, owner=stale.owner, title=stale.title,
+        audio_path=audio, work_dir=Path(stale.work_dir),
+    )
+    _jobs.register(job)
+    _jobs.advance(job, "Retrying")
+    _jobs.start(job, _runner_for(
+        job, config(), store(), stale.project_id, stale.typed_notes,
+        _parse_started_at(stale.started_at), stale.expected_speakers,
+        stale.consent, stale.owner, stale.expected_speakers, None,
+    ))
+    store().audit(user["id"], "retried a failed recording", job_id)
+    return job.public()
+
+
 @router.get("/recordings/{job_id}")
 def recording_status(job_id: str, user=Depends(identity)):
     job = _jobs.get(user["id"], job_id)

@@ -1008,6 +1008,16 @@
         renderCenter(true);
       } }, "Open"));
     }
+    if (failed) {
+      row.appendChild(el("button", { class: "btn small", onclick: async () => {
+        try {
+          const again = await api(`/meetings/recordings/${job.id}/retry`, { method: "POST", body: {} });
+          recordingJobs = recordingJobs.map((j) => (j.id === job.id ? again : j));
+          startJobPolling();
+          renderCenter(true);
+        } catch (err) { alert(err.message); }
+      } }, "Try again"));
+    }
     if (done || failed) {
       row.appendChild(el("button", { class: "icon-btn", title: "Dismiss", onclick: () => {
         recordingJobs = recordingJobs.filter((j) => j.id !== job.id);

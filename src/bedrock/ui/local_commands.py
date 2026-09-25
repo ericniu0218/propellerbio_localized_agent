@@ -14,6 +14,7 @@ from textual import work
 from bedrock.config import Settings
 from bedrock.connectors import SourceHub
 from bedrock.context import ContextStore
+from bedrock.litreview.config import load_settings as load_review_settings
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command
 from bedrock.ui.confidence_view import run_confidence_command
@@ -23,6 +24,7 @@ from bedrock.ui.digest_command import (
     run_auto_context_command,
     run_digest_command,
 )
+from bedrock.ui.review_command import run_reviews_command
 from bedrock.ui.runs_command import run_runs_command
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.source_command import run_sources_command
@@ -75,6 +77,8 @@ class LocalCommandsMixin:
                 self.command_sources(command.args)
             case "runs":
                 self.command_runs(command.args)
+            case "reviews":
+                self.command_reviews(command.args)
             case "confidence":
                 self.command_confidence(command.args)
             case "audit":
@@ -122,6 +126,16 @@ class LocalCommandsMixin:
     @work(group="history")
     async def command_runs(self, args: str) -> None:
         await run_runs_command(args, services=self.services, notify=self.post_notice)
+
+    @work(group="history")
+    async def command_reviews(self, args: str) -> None:
+        """Literature reviews already on this machine. Needs no model, so it
+        works in both app modes and with every server switched off."""
+        await run_reviews_command(
+            args,
+            settings_for=lambda: load_review_settings(self.settings, check_endpoint=False),
+            notify=self.post_notice,
+        )
 
     @work(group="history")
     async def command_confidence(self, args: str) -> None:

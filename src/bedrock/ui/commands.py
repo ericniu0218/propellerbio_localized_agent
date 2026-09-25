@@ -28,6 +28,10 @@ HELP_TEXT = """\
 | `/fold <fasta-path or source://id> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
 | `/pymol [structure-path or source://id]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
+| `/review <question> [--corpus FILE \\| --search]` | Write a cited literature review beside the chat |
+| `/review stop` | Stop the running review (it can be resumed) |
+| `/reviews` | Literature reviews recorded on this machine |
+| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
 | `/runs` | Prediction runs recorded on this machine |
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
@@ -49,11 +53,22 @@ HELP_TEXT = """\
   `/runs --project X --since 2026-07-01 --before 2026-10-01`
 - Export the action history: `/audit export "/approved/review/actions.jsonl"`
 
-`/runs`, `/confidence` and `/audit` read local files only. They work with the
-model server switched off, and nothing they show is sent to a model.
+`/runs`, `/confidence`, `/audit` and `/reviews` read local files only. They
+work with the model server switched off, and nothing they show is sent to a
+model.
 
-A `/fold` runs beside the chat: keep asking the model questions while it
-works. `Esc` stops a streaming reply, never a fold.
+A `/fold` or a `/review` runs beside the chat: keep asking the model questions
+while it works. `Esc` stops a streaming reply, never a fold or a review.
+
+**Literature review**
+
+`/review <question>` reads papers and writes a report where every sentence
+cites a verified quote from a paper. Give it papers with `--corpus <file>`, or
+`--search` to collect them from Europe PMC and NCBI - which is the only time
+anything leaves this machine, and only the search terms and paper identifiers
+do. `--no-model` runs the rules and code alone. `--models <set>` picks the
+models (`office`, `laptop`, `medgemma`), and `--resume <run-id>` picks up a run
+that stopped. The same reviews run from a shell as `bedrock-litreview`.
 
 **Attaching files**
 
@@ -102,6 +117,9 @@ KNOWN_COMMANDS = {
     "context",
     "fold",
     "pymol",
+    "review",
+    "litreview",
+    "reviews",
     "tools",
     "help",
     "exit",

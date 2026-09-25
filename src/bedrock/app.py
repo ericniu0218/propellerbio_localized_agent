@@ -12,6 +12,8 @@ Responsibilities of this file, and nothing more:
   short summary titles it shows
 * start ``/fold`` and ``/pymol`` jobs beside the chat (the work itself is
   ``bedrock.ui.fold_command``, shared with agent-pack mode)
+* start ``/review`` literature reviews beside the chat, whose model calls queue
+  behind the employee's own at ``USER_JOB`` (``bedrock.ui.review_command``)
 
 It talks to the model *only* through the ``InferenceBackend`` interface, and to
 the disk *only* through ``ConversationStore``.
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +41,8 @@ from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import find_relevant_context
+from bedrock.litreview.config import ConfigError as LitReviewConfigError
+from bedrock.litreview.config import load_settings as load_review_settings
 from bedrock.inference import (
     InferenceBackend,
     InferenceError,
@@ -69,6 +74,7 @@ from bedrock.ui.fold_command import (
 )
 from bedrock.ui.local_commands import LocalCommandsMixin
 from bedrock.ui.prompt_queue import PromptQueuePanel
+from bedrock.ui.review_command import parse_review_command, run_review_job
 from bedrock.ui.rendering import markdown_text
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.widgets import (
@@ -140,6 +146,11 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # on scientific tool settings; tests pass a fake.
         self._biotech_workflow = biotech_workflow
         self._scientific_job_running = False
+        # One literature review at a time, independent of a running fold: they
+        # use different machines. The event is how `/review stop` and quitting
+        # reach a run that is already inside the pipeline's worker thread.
+        self._review_running = False
+        self._review_cancel = threading.Event()
         self._title_worker_running = False
         self._titles_pending = False
         self._title_failures: set[str] = set()
@@ -271,6 +282,8 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 await self.command_forget()
             case "recall" | "context":
                 await self.command_recall(command.args)
+            case "review" | "litreview":
+                await self.start_review(command.args)
             case "fold":
                 await self.start_fold(command.args)
             case "pymol":
@@ -358,6 +371,69 @@ class BedrockApp(LocalCommandsMixin, App[None]):
     @work(exclusive=True, group="pymol-open")
     async def open_pymol(self, target: Path | SourceRef | None) -> None:
         await run_pymol(target, workflow=self.biotech_workflow, sources=self.sources, notify=self.post_notice)
+
+    # ---- Literature review -------------------------------------------------
+    #
+    # A review is hundreds of model calls to the same server the employee is
+    # chatting with, so every one of them goes in at ``USER_JOB``: behind the
+    # chat, ahead of background work. One review at a time, independent of a
+    # fold, and Esc leaves it alone - it stops a streaming reply, not a job.
+    # Its notices are not saved into any conversation; the run is recorded in
+    # litreview's own database, and ``/reviews`` finds it.
+
+    async def start_review(self, args: str) -> None:
+        """Validate the arguments here, so a typo never starts a long job."""
+        try:
+            command = parse_review_command(args)
+        except CommandUsageError as exc:
+            await self.post_notice(str(exc), kind="error")
+            return
+        if command.stop:
+            await self.stop_review()
+            return
+        if self._review_running:
+            await self.post_notice(
+                "A literature review is already running. `/review stop` stops it.", kind="error"
+            )
+            return
+        try:
+            settings = await asyncio.to_thread(self._review_settings, command.request.model_set)
+        except LitReviewConfigError as exc:
+            await self.post_notice(markdown_text(str(exc)), kind="error")
+            return
+        self._review_running = True
+        self._review_cancel = threading.Event()
+        self.literature_review(command.request, settings)
+
+    async def stop_review(self) -> None:
+        if not self._review_running:
+            await self.post_notice("No literature review is running.", kind="error")
+            return
+        self._review_cancel.set()
+        await self.post_notice(
+            "Stopping the literature review before its next model call. "
+            "It can be resumed with `/review --resume <run-id>`."
+        )
+
+    def _review_settings(self, model_set: str | None):
+        """litreview's settings, read off the UI thread (they touch disk)."""
+        return load_review_settings(self.settings, model_set=model_set)
+
+    # Not exclusive: the flag above is what keeps it to one review, and an
+    # exclusive worker would cancel a long run if that ever failed.
+    @work(group="litreview")
+    async def literature_review(self, request, settings) -> None:
+        try:
+            await run_review_job(
+                request,
+                settings=settings,
+                scheduler=self.scheduler,
+                cancel=self._review_cancel,
+                notify=self.post_notice,
+                progress=lambda message: self.call_from_thread(self.notify, message),
+            )
+        finally:
+            self._review_running = False
 
     @property
     def biotech_workflow(self) -> ProteinWorkflow:
@@ -1380,6 +1456,10 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         self.save_conversation()
         if self._workspace_session is not None:
             self._workspace_session.close()
+        # Before the backend closes: a review waiting on a model call should
+        # read the event and stop where it is, so the run stays resumable,
+        # rather than seeing the connection disappear underneath it.
+        self._review_cancel.set()
         await self.backend.close()
         self.exit()
 

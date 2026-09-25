@@ -42,15 +42,21 @@ def _default_threads() -> int:
     return max(2, min(10, (os.cpu_count() or 4) - 2))
 
 
-# An hour of meeting audio is roughly 14 MB as Opus. The cap is well above that
-# so a long meeting is never silently refused, and well below anything that
-# would exhaust memory when read into a single bytes object.
-MAX_RECORDING_BYTES = 200 * 1024 * 1024
+# An hour of meeting audio is roughly 14 MB as Opus, so eight hours is about
+# 115 MB. The cap sits well above that: a recording is streamed to disk in
+# chunks rather than held in memory, so the number is about refusing an
+# obviously wrong upload, not about what fits.
+MAX_RECORDING_BYTES = 512 * 1024 * 1024
 
 # Recording is the only workspace operation whose cost grows with wall-clock
-# time rather than with input size, so it gets its own ceiling. Above this the
-# upload is refused with an explanation rather than tying the box up for hours.
-MAX_RECORDING_SECONDS = 4 * 60 * 60
+# time rather than with input size, so it gets its own ceiling. Eight hours
+# covers an all-day workshop; above it the upload is refused with an
+# explanation rather than tying the box up overnight.
+#
+# The cost is real and worth knowing: at 0.30x real time, eight hours of audio
+# is about two and a half hours of processing, and the whole recording is held
+# as 32-bit samples while it runs — roughly 1.8 GB for eight hours.
+MAX_RECORDING_SECONDS = 8 * 60 * 60
 
 
 @dataclass(frozen=True)

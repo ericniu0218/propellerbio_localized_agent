@@ -164,3 +164,39 @@ def test_transcripts_are_kept_for_ever_by_default():
 
 def test_an_unparseable_date_is_left_alone():
     assert expired_meetings([{"id": "m1", "recordedAt": "whenever"}], days=1) == []
+
+
+# --- One at a time ------------------------------------------------------------
+
+
+async def test_a_second_recording_waits_rather_than_competing(tmp_path):
+    """Transcription is CPU-bound and holds the whole recording in memory.
+    Two forty-minute meetings running together on a laptop with its swap full
+    got slower than either alone and stopped making visible progress. The
+    second one now says it is waiting, which is both faster and honest."""
+    import asyncio
+
+    jobs = RecordingJobs()
+    started, release = [], asyncio.Event()
+
+    async def slow(job):
+        started.append(job.id)
+        await release.wait()
+
+    made = []
+    for name in ("a", "b"):
+        job = RecordingJob(id=name, owner="maya", title=name,
+                           audio_path=tmp_path / name, work_dir=tmp_path / f"{name}.w")
+        jobs.register(job)
+        jobs.start(job, slow)
+        made.append(job)
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert started == ["a"], "the second should not have begun"
+    assert "Waiting" in made[1].stage
+
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert started == ["a", "b"], "the second should run once the first is done"

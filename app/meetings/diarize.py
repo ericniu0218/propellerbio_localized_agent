@@ -103,8 +103,15 @@ def diarize(
     embedding: Path,
     expected_speakers: int | None = None,
     threads: int = 2,
+    samples=None,
 ) -> DiarizationResult:
     """Who spoke when, in one 16 kHz mono WAV.
+
+    `samples` is the already-decoded audio. Hours-long meetings are the reason
+    it exists: the recording used to be read from disk once here, again to
+    build the cluster vectors, and a third time to re-score cues — about
+    1.8 GB of float32 per pass for an eight-hour recording. The caller reads it
+    once and hands the same array to all three.
 
     Returns an empty result rather than raising: a meeting whose speakers could
     not be told apart is still a meeting worth keeping, and the transcript is
@@ -138,8 +145,10 @@ def diarize(
             min_duration_off=MIN_SILENCE_S,
         )
         engine = sherpa_onnx.OfflineSpeakerDiarization(config)
-        audio, _ = soundfile.read(str(wav), dtype="float32", always_2d=True)
-        segments = engine.process(audio[:, 0]).sort_by_start_time()
+        if samples is None:
+            audio, _ = soundfile.read(str(wav), dtype="float32", always_2d=True)
+            samples = audio[:, 0]
+        segments = engine.process(samples).sort_by_start_time()
     except Exception as exc:
         # Deliberately broad. Nothing here is worth losing a meeting over.
         logger.warning("Diarisation failed for %s: %s", wav.name, exc)

@@ -181,7 +181,9 @@ def enroll_from_wav(wav: Path, model: Path, threads: int = 2):
     return embed_samples(_extractor(model, threads), audio[:, 0], sample_rate), seconds
 
 
-def cluster_embeddings(wav: Path, turns, model: Path, threads: int = 2) -> dict[int, list[float]]:
+def cluster_embeddings(
+    wav: Path, turns, model: Path, threads: int = 2, samples=None, sample_rate: int = 16_000
+) -> dict[int, list[float]]:
     """One vector per diarised speaker, from the longest speech they have.
 
     The longest turns are used rather than all of them because a vector built
@@ -190,8 +192,10 @@ def cluster_embeddings(wav: Path, turns, model: Path, threads: int = 2) -> dict[
     """
     if not ENROLLMENT_AVAILABLE or not turns:
         return {}
-    audio, sample_rate = soundfile.read(str(wav), dtype="float32", always_2d=True)
-    channel = audio[:, 0]
+    if samples is None:
+        audio, sample_rate = soundfile.read(str(wav), dtype="float32", always_2d=True)
+        samples = audio[:, 0]
+    channel = samples
     extractor = _extractor(model, threads)
 
     by_speaker: dict[int, list] = {}
@@ -224,6 +228,8 @@ def rescore_cues(
     model: Path,
     threads: int = 2,
     margin: float = 0.08,
+    samples=None,
+    sample_rate: int = 16_000,
 ) -> dict[int, str]:
     """Second opinion on individual cues, from their own audio.
 
@@ -241,13 +247,15 @@ def rescore_cues(
     """
     if not ENROLLMENT_AVAILABLE or not enrolled or not cues:
         return {}
-    try:
-        audio, sample_rate = soundfile.read(str(wav), dtype="float32", always_2d=True)
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Could not reopen %s to re-score cues: %s", wav, exc)
-        return {}
+    if samples is None:
+        try:
+            audio, sample_rate = soundfile.read(str(wav), dtype="float32", always_2d=True)
+            samples = audio[:, 0]
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Could not reopen %s to re-score cues: %s", wav, exc)
+            return {}
 
-    channel = audio[:, 0]
+    channel = samples
     extractor = _extractor(model, threads)
     references = {
         name: numpy.array(vector, dtype=numpy.float32) for name, vector in enrolled

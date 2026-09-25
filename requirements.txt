@@ -23,7 +23,7 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # and an invented one was indistinguishable from a real one; and it predates
 # the summariser fix that stops llama3.1:8b handing its own JSON placeholders
 # back as content ("owner": "name or null" reaching a reader as an action item).
-bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@4bc696ab9899aec7b1d9dc1512ece956e3d543d2
+bedrock-private-ai @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@a6d261b0f73cac9d7cc0d7f47451447091400b36
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 

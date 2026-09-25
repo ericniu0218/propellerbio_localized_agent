@@ -24,6 +24,7 @@ transcribes exactly as before and is reported as unattributed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field, replace
@@ -137,6 +138,26 @@ async def transcribe(
 
     duration_ms = await transcriber.duration_ms(wav)
 
+    # Read once, here. Diarisation, the cluster vectors and the cue re-scoring
+    # each used to open the file for themselves — three full passes, and about
+    # 1.8 GB of float32 apiece for an eight-hour recording. They now share this.
+    # Every heavy step below runs in a worker thread. They are CPU-bound and
+    # synchronous — ONNX inference and a whole-file decode — and on the event
+    # loop they block the server outright: during a forty-minute meeting even
+    # signing in timed out, and an eight-hour one would be unreachable for
+    # minutes at a time while the person who recorded it watches a dead page.
+    samples = None
+    try:
+        import soundfile
+
+        def _read():
+            decoded, _rate = soundfile.read(str(wav), dtype="float32", always_2d=True)
+            return decoded[:, 0]
+
+        samples = await asyncio.to_thread(_read)
+    except Exception as exc:
+        logger.warning("Could not preload %s; each step will read it itself: %s", wav.name, exc)
+
     # Speakers are worked out *before* transcription, not after, because the
     # cue is the unit a speaker label attaches to. Whisper cuts on silence, so
     # two people talking without a gap land in one cue, and labelling that cue
@@ -160,12 +181,11 @@ async def transcribe(
     # together before anything else uses them.
     if expected_speakers is None and speakers.ok:
         try:
-            speakers = consolidate(
-                speakers,
-                cluster_embeddings(wav, speakers.turns, config.embedding_model,
-                                   threads=min(config.threads, 4)),
-                minimum_speakers=minimum_speakers,
+            vectors = await asyncio.to_thread(
+                cluster_embeddings, wav, speakers.turns, config.embedding_model,
+                min(config.threads, 4), samples,
             )
+            speakers = consolidate(speakers, vectors, minimum_speakers=minimum_speakers)
         except Exception as exc:
             logger.warning("Speaker consolidation failed, using raw clusters: %s", exc)
 
@@ -221,8 +241,10 @@ async def transcribe(
     if voice_prints and speakers.ok:
         try:
             from_voice = identify(
-                cluster_embeddings(wav, speakers.turns, config.embedding_model,
-                                   threads=min(config.threads, 4)),
+                await asyncio.to_thread(
+                    cluster_embeddings, wav, speakers.turns, config.embedding_model,
+                    min(config.threads, 4), samples,
+                ),
                 voice_prints,
             )
             taken = set(names.values())
@@ -261,8 +283,10 @@ async def transcribe(
     # their own get a second opinion from their own audio.
     if names and voice_prints:
         try:
-            changes = rescore_cues(wav, cues, voice_prints, config.embedding_model,
-                                   threads=min(config.threads, 4))
+            changes = await asyncio.to_thread(
+                rescore_cues, wav, cues, voice_prints, config.embedding_model,
+                min(config.threads, 4), 0.08, samples,
+            )
             for index, name in changes.items():
                 cues[index] = replace(cues[index], speaker=name)
             if changes:

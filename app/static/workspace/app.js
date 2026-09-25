@@ -697,7 +697,7 @@
     // transcript's scroll position — scroll into a long transcript and it
     // snaps back to the top before you can read a line. Rebuild only when
     // something actually changed, the way the chat view already does.
-    const sig = "meetings:" + currentMeetingId + "|" + (recording ? "rec" : "") + "|"
+    const sig = "meetings:" + currentMeetingId + "|" + (recording ? (recording.paused ? "paused" : "rec") : "") + "|"
       + recordingJobs.map((j) => j.id + j.status + j.stage).join(",") + "|"
       + state.meetings.map((m) => m.id + (m.title || "") + (m.summary || "").length).join(",");
     if (sig === lastRenderSig.center && !force) return;
@@ -871,12 +871,21 @@
     const meterFill = el("div", { class: "record-meter-fill" });
     const silence = el("span", { class: "record-silence", hidden: true }, "No sound detected");
     const stopBtn = el("button", { class: "btn danger", onclick: () => finishRecording() }, "Stop and save");
-    bar.appendChild(el("span", { class: "record-dot-live" }));
+    const pauseBtn = el("button", { class: "btn", onclick: () => {
+      if (recording.paused) { recording.resume(); } else { recording.pause(); }
+      renderCenter(true);
+    } }, recording.paused ? "Resume" : "Pause");
+    bar.appendChild(el("span", { class: recording.paused ? "record-dot-idle" : "record-dot-live" }));
     bar.appendChild(el("div", { class: "record-live-info" }, [
       el("div", { class: "record-live-title" }, recording.meetingTitle),
-      el("div", { class: "record-live-sub" }, [clock, el("span", {}, " · "), el("span", {}, recording.sourceLabel), silence]),
+      el("div", { class: "record-live-sub" }, [
+        clock, el("span", {}, " · "),
+        el("span", {}, recording.paused ? "paused — nothing is being recorded" : recording.sourceLabel),
+        silence,
+      ]),
     ]));
     bar.appendChild(el("div", { class: "record-meter" }, meterFill));
+    bar.appendChild(pauseBtn);
     bar.appendChild(stopBtn);
     recordingUI = { clock, meterFill, silence, stopBtn, preview: null };
     return bar;
@@ -1123,6 +1132,7 @@
       deviceId: opts.deviceId,
       onLevel: (level) => {
         if (!recordingUI) return;
+        if (session.paused) { recordingUI.meterFill.style.width = "0%"; quietSince = null; recordingUI.silence.hidden = true; return; }
         recordingUI.meterFill.style.width = Math.round(level * 100) + "%";
         // Ten seconds of near-silence is worth saying out loud. A muted
         // microphone is the one failure that cannot be recovered afterwards.

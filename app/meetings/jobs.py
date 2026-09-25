@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -45,6 +46,19 @@ logger = logging.getLogger(__name__)
 # then dropped. Long enough to survive somebody closing the laptop lid and
 # coming back; short enough that the dict cannot grow without bound.
 COMPLETED_JOB_TTL_S = 6 * 60 * 60
+
+# How many recordings may be transcribed at once.
+#
+# One, and that is not a placeholder. Transcription is CPU-bound and holds the
+# whole recording in memory as 32-bit samples — roughly 230 MB per hour of
+# audio, before the models. Two forty-minute meetings running together on a
+# laptop with its swap already full got slower than either alone and stopped
+# making visible progress. Queueing the second is both faster overall and
+# honest: the browser polls and sees "Waiting for another recording to finish"
+# instead of a stage that has not moved in ten minutes.
+#
+# A deployment with real hardware raises it.
+MAX_CONCURRENT_TRANSCRIPTIONS = int(os.environ.get("MEETING_MAX_CONCURRENT", "1"))
 
 
 @dataclass
@@ -86,6 +100,7 @@ class RecordingJobs:
     def __init__(self, store: RecordingJobStore | None = None) -> None:
         self._jobs: dict[str, RecordingJob] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._semaphore: asyncio.Semaphore | None = None
         self.store = store
 
     def get(self, owner: str, job_id: str) -> RecordingJob | None:
@@ -111,9 +126,20 @@ class RecordingJobs:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def _gate(self) -> asyncio.Semaphore:
+        # Created lazily: a Semaphore binds to the running loop, and this
+        # registry is built at import time when there is not one yet.
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRANSCRIPTIONS)
+        return self._semaphore
+
     async def _guard(self, job: RecordingJob, runner) -> None:
+        gate = self._gate()
+        if gate.locked():
+            self.advance(job, "Waiting for another recording to finish")
         try:
-            await runner(job)
+            async with gate:
+                await runner(job)
         except RecordingError as exc:
             self.fail(job, str(exc))
         except Exception as exc:  # pragma: no cover - unexpected only

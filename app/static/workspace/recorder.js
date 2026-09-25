@@ -73,6 +73,9 @@
       this.chunks = [];
       this.startedAt = null;
       this.stopped = false;
+      this.paused = false;
+      this.pausedMs = 0;          // total time spent paused, excluded from the clock
+      this._pausedAt = null;
       this.systemHasAudio = false;
     }
 
@@ -195,8 +198,9 @@
     startPreview(onClip, seconds = 12) {
       if (!this.context || this.stopped) return;
       const mime = pickMimeType();
+      this._restartPreview = () => { if (!this.stopped && !this.paused) cut(); };
       const cut = () => {
-        if (this.stopped) return;
+        if (this.stopped || this.paused) return;
         const chunks = [];
         let recorder;
         try {
@@ -205,7 +209,7 @@
         recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
         recorder.onstop = () => {
           if (chunks.length) onClip(new Blob(chunks, { type: recorder.mimeType }));
-          if (!this.stopped) this.previewTimer = setTimeout(cut, 0);
+          if (!this.stopped && !this.paused) this.previewTimer = setTimeout(cut, 0);
         };
         recorder.start();
         setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, seconds * 1000);
@@ -224,7 +228,7 @@
           }
           this.onLevel(Math.min(1, peak / 100));
         }
-        this.onTick((Date.now() - this.startedAt.getTime()) / 1000);
+        this.onTick(this.elapsedSeconds());
         this.raf = requestAnimationFrame(tick);
       };
       this.raf = requestAnimationFrame(tick);
@@ -240,8 +244,11 @@
       video.srcObject = new MediaStream([track]);
       video.muted = true;
       const canvas = document.createElement("canvas");
+      this._restartScreen = () => {
+        if (!this.stopped && !this.paused) this.screenTimer = setTimeout(tick, 500);
+      };
       const tick = async () => {
-        if (this.stopped) return;
+        if (this.stopped || this.paused) return;
         try {
           if (video.videoWidth) {
             // Downscaled: OCR reads a 1280-wide frame as well as a 4K one and
@@ -251,13 +258,43 @@
             canvas.height = Math.round(video.videoHeight * scale);
             canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
             const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.7));
-            if (blob) await onFrame(blob, Date.now() - this.startedAt.getTime());
+            if (blob) await onFrame(blob, this.elapsedSeconds() * 1000);
           }
         } catch (_) { /* a dropped frame costs a name, never the recording */ }
-        if (!this.stopped) this.screenTimer = setTimeout(tick, seconds * 1000);
+        if (!this.stopped && !this.paused) this.screenTimer = setTimeout(tick, seconds * 1000);
       };
       video.play().then(() => { this.screenTimer = setTimeout(tick, 1500); }).catch(() => {});
       this.screenVideo = video;
+    }
+
+    elapsedSeconds() {
+      const paused = this.pausedMs + (this._pausedAt ? Date.now() - this._pausedAt : 0);
+      return (Date.now() - this.startedAt.getTime() - paused) / 1000;
+    }
+
+    /* Pause writes nothing while paused, so the audio simply has no gap — the
+     * timestamps stay continuous and the transcript never contains a silent
+     * twenty minutes somebody has to scroll past. The preview and the screen
+     * reader stop too: transcribing a paused meeting would produce whatever
+     * the room says while people think it is not recording, which is the one
+     * thing a pause button is there to prevent. */
+    pause() {
+      if (this.stopped || this.paused) return;
+      this.paused = true;
+      this._pausedAt = Date.now();
+      try { if (this.recorder && this.recorder.state === "recording") this.recorder.pause(); } catch (_) {}
+      if (this.previewTimer) { clearTimeout(this.previewTimer); this.previewTimer = null; }
+      if (this.screenTimer) { clearTimeout(this.screenTimer); this.screenTimer = null; }
+      if (this.onLevel) this.onLevel(0);
+    }
+
+    resume() {
+      if (this.stopped || !this.paused) return;
+      this.paused = false;
+      if (this._pausedAt) { this.pausedMs += Date.now() - this._pausedAt; this._pausedAt = null; }
+      try { if (this.recorder && this.recorder.state === "paused") this.recorder.resume(); } catch (_) {}
+      if (this._restartPreview) this._restartPreview();
+      if (this._restartScreen) this._restartScreen();
     }
 
     async stop() {

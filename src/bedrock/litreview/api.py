@@ -69,6 +69,13 @@ def ask(
     approved_terms: dict[str, list[str]] | None = None,
     **kwargs: Any,
 ) -> RunResult:
+    """Run the pipeline in this thread, on a client the caller supplies.
+
+    A model-using review needs `client=` (there is no longer a client this can
+    build for itself: the only route to a model is bedrock's scheduler, which
+    lives on an event loop). Use `service.run_review` instead unless you are
+    passing a fake, or running with `use_model=False`.
+    """
     return answer_question(
         question,
         papers=papers,

@@ -1,9 +1,17 @@
 """The seam between this pipeline and whatever is serving the models.
 
 Nothing outside this package may import a concrete client. Stages depend on the
-`LLMClient` protocol only, and get a client from `litreview.llm.make_client`,
-so swapping vLLM for Ollama — or for the fake, in tests — is a configuration
-change rather than a code change.
+`LLMClient` protocol only, and get a client from
+`bedrock.litreview.llm.make_client`, so the fake used in tests and the real
+thing are interchangeable.
+
+The one live client is `SchedulerClient` (`llm/scheduled.py`), which reaches
+the model server through bedrock's `Scheduler`. This module holds the protocol
+it implements, the fake that stands in for it, and the two pieces of reply
+handling every client shares: `strip_thinking` and `parse_json_reply`. There is
+no HTTP here - the source's own vLLM and Ollama clients were dropped in the
+move, because a second route to the server would be a route around the
+scheduler, and the employee's chat would end up queued behind a review.
 
 Two things here are not negotiable:
 
@@ -22,8 +30,6 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Callable, Protocol, runtime_checkable
-
-import httpx
 
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 2048
@@ -74,158 +80,6 @@ class LLMClient(Protocol):
         """Pinned identifier, recorded on every Run so a report can always say
         which model produced it."""
         ...
-
-
-class OpenAICompatibleClient:
-    """Talks to a local vLLM server over its OpenAI-compatible endpoint.
-
-    `structured_output` picks how the schema is sent: `response_format` (the
-    OpenAI-style json_schema field current vLLM accepts) or `guided_json`
-    (older vLLM releases). Confirm against the deployed version.
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        *,
-        model_options: dict[str, dict[str, Any]] | None = None,
-        structured_output: str = "response_format",
-        seed: int = 0,
-        timeout: float = 600.0,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model_options = model_options or {}
-        self.structured_output = structured_output
-        self.seed = seed
-        self._http = httpx.Client(timeout=timeout)
-        self._last_model = ""
-
-    def complete(self, prompt: str, *, model: str, schema=None, temperature=DEFAULT_TEMPERATURE, max_tokens=DEFAULT_MAX_TOKENS) -> str:
-        self._last_model = model
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "seed": self.seed,
-        }
-        if not self.model_options.get(model, {}).get("thinking", False):
-            # Qwen3 hybrid models think out loud unless told not to. The
-            # thinking is not part of the answer and costs most of the tokens.
-            body["chat_template_kwargs"] = {"enable_thinking": False}
-        if schema is not None:
-            if self.structured_output == "guided_json":
-                body["guided_json"] = schema
-            else:
-                body["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {"name": schema.get("title", "output"), "schema": schema, "strict": True},
-                }
-        try:
-            resp = self._http.post(f"{self.base_url}/chat/completions", json=body)
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise LLMError(f"model server error: {exc}") from exc
-        choice = resp.json()["choices"][0]
-        content = strip_thinking(choice["message"]["content"] or "")
-        if choice.get("finish_reason") == "length":
-            if schema is not None or not content:
-                raise LLMError(f"reply cut off at max_tokens={max_tokens}")
-            # Free text cut short is still an answer, as a chatbot's would be.
-            log.warning("free-text reply cut off at max_tokens=%d; keeping the partial answer", max_tokens)
-        return content
-
-    @property
-    def model_version(self) -> str:
-        return self._last_model or "openai-compatible"
-
-
-class OllamaClient:
-    """Talks to a local Ollama server over its native API.
-
-    The native API rather than Ollama's OpenAI shim, because only the native
-    one lets us set the context window per request — Ollama's default is a
-    few thousand tokens, and a results section plus its methods context does
-    not fit in that. It also takes a JSON schema directly in `format`.
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        *,
-        model_options: dict[str, dict[str, Any]] | None = None,
-        seed: int = 0,
-        timeout: float = 900.0,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model_options = model_options or {}
-        self.seed = seed
-        self._http = httpx.Client(timeout=timeout)
-        self._digests: dict[str, str] = {}
-        self._last_model = ""
-        self.stats = {"calls": 0, "prompt_tokens": 0, "output_tokens": 0, "seconds": 0.0}
-
-    def _digest(self, model: str) -> str:
-        """Pin the exact weights: a re-pulled tag with new weights is a new model."""
-        if model not in self._digests:
-            try:
-                tags = self._http.get(f"{self.base_url}/api/tags").json().get("models", [])
-                for tag in tags:
-                    if tag.get("name") == model or tag.get("model") == model:
-                        self._digests[model] = str(tag.get("digest", ""))[:12]
-            except (httpx.HTTPError, ValueError):
-                pass
-            self._digests.setdefault(model, "")
-        return self._digests[model]
-
-    def complete(self, prompt: str, *, model: str, schema=None, temperature=DEFAULT_TEMPERATURE, max_tokens=DEFAULT_MAX_TOKENS) -> str:
-        self._last_model = model
-        opts = self.model_options.get(model, {})
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "seed": self.seed,
-                "num_predict": max_tokens,
-                "num_ctx": int(opts.get("num_ctx", 8192)),
-            },
-        }
-        if "thinking" in opts:
-            # Only for models that have a thinking mode (Qwen3). Sent to a
-            # model without one, some Ollama versions refuse the request.
-            body["think"] = bool(opts["thinking"])
-        if schema is not None:
-            body["format"] = schema
-        try:
-            resp = self._http.post(f"{self.base_url}/api/chat", json=body)
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise LLMError(f"ollama error: {exc}") from exc
-        data = resp.json()
-        self.stats["calls"] += 1
-        self.stats["prompt_tokens"] += int(data.get("prompt_eval_count", 0) or 0)
-        self.stats["output_tokens"] += int(data.get("eval_count", 0) or 0)
-        self.stats["seconds"] += float(data.get("total_duration", 0) or 0) / 1e9
-        content = strip_thinking((data.get("message") or {}).get("content", "") or "")
-        if data.get("done_reason") == "length":
-            if schema is not None or not content:
-                raise LLMError(f"reply cut off at max_tokens={max_tokens}")
-            # Free text cut short is still an answer, as a chatbot's would be.
-            log.warning("free-text reply cut off at max_tokens=%d; keeping the partial answer", max_tokens)
-        return content
-
-    @property
-    def model_version(self) -> str:
-        if not self._last_model:
-            return "ollama"
-        digest = self._digest(self._last_model)
-        return f"{self._last_model}@{digest}" if digest else self._last_model
-
-    def version_of(self, model: str) -> str:
-        digest = self._digest(model)
-        return f"{model}@{digest}" if digest else model
 
 
 Responder = Callable[[str, dict[str, Any] | None], str]

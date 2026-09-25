@@ -1,5 +1,10 @@
 """The model layer. Everything outside this package talks to models through
-`make_client` and `ask_json`, never through a concrete client class."""
+`make_client` and `ask_json`, never through a concrete client class.
+
+There is exactly one live client now, `SchedulerClient`, which goes through
+bedrock's `Scheduler`. Building one needs the scheduler and the event loop it
+runs on, which only `service.run_review` knows, so `make_client` refuses rather
+than guessing when it is not given them."""
 
 from __future__ import annotations
 
@@ -11,17 +16,25 @@ from bedrock.litreview.llm.client import (
     FakeLLMClient,
     LLMClient,
     LLMError,
-    OllamaClient,
-    OpenAICompatibleClient,
     parse_json_reply,
 )
 from bedrock.litreview.llm.prompts import Prompt, load_prompt
+from bedrock.litreview.llm.scheduled import (
+    ModelServerUnavailable,
+    ReviewCancelled,
+    ReviewInterrupted,
+    SchedulerClient,
+)
 
 __all__ = [
     "FakeLLMClient",
     "LLMClient",
     "LLMError",
+    "ModelServerUnavailable",
     "Prompt",
+    "ReviewCancelled",
+    "ReviewInterrupted",
+    "SchedulerClient",
     "ask_json",
     "load_prompt",
     "make_client",
@@ -30,22 +43,37 @@ __all__ = [
 ]
 
 
-def make_client(settings, *, cache: bool = True, read_cache: bool = True, fake: LLMClient | None = None) -> LLMClient:
-    """Build the client the settings describe, wrapped in the call cache."""
-    options = {spec.name: spec.options for spec in settings.models.values()}
-    if fake is not None or settings.backend == "fake":
-        inner: Any = fake or FakeLLMClient()
-    elif settings.backend == "ollama":
-        inner = OllamaClient(settings.base_url, model_options=options, seed=settings.seed)
-    elif settings.backend == "openai":
-        inner = OpenAICompatibleClient(
-            settings.base_url,
-            model_options=options,
-            structured_output=settings.structured_output,
+def make_client(
+    settings,
+    *,
+    scheduler=None,
+    loop=None,
+    cancel=None,
+    fake: LLMClient | None = None,
+    cache: bool = True,
+    read_cache: bool = True,
+) -> LLMClient:
+    """The client a run uses, wrapped in the call cache.
+
+    `fake` is what tests pass. Otherwise this needs bedrock's `Scheduler` and
+    the event loop it runs on, because that is the only route to a model.
+    """
+    if fake is not None:
+        inner: Any = fake
+    elif scheduler is not None and loop is not None:
+        inner = SchedulerClient(
+            scheduler,
+            loop,
+            model_options={spec.name: spec.options for spec in settings.models.values()},
             seed=settings.seed,
+            context_window=settings.context_window,
+            cancel=cancel,
         )
     else:
-        raise ValueError(f"unknown backend {settings.backend!r}")
+        raise ValueError(
+            "a model client needs bedrock's scheduler and its event loop; "
+            "start a review with service.run_review, or pass fake= in tests"
+        )
     if not cache:
         return inner
     return CachedClient(inner, CallCache(settings.cache_dir), read=read_cache)

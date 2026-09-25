@@ -457,19 +457,14 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
             "method": "local transcription; no notes written" + repair_suffix,
         }
 
-    citations = getattr(summary, "citations", None)
     method = "whisper.cpp transcription on this machine; notes written by "
     method += summary.model_used or "no model"
-    if citations is not None:
-        # Present only when bedrock-private-ai is new enough to verify
-        # timestamps. Saying so is the point: an unverified timestamp looks
-        # exactly like a verified one to a reader.
-        method += (
-            f"; {citations.checked} timestamps checked, "
-            f"{citations.moved} corrected, {citations.removed} removed"
-        )
-    else:
-        method += "; timestamps NOT verified (update the bedrock-private-ai pin)"
+    # Every timestamp is checked against the line it quotes and dropped if it
+    # cannot be resolved, so a point that still carries one has been verified.
+    # This used to report a count from a `citations` field that no longer
+    # exists upstream — verification moved inline — and the fallback branch
+    # then told every reader to "update the pin" on a pin that was current.
+    method += "; timestamps verified against the quoted line, unverifiable ones dropped"
     method += repair_suffix
 
     # `summarize_meeting` fills in *either* the overview or the rewritten

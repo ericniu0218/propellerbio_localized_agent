@@ -74,7 +74,7 @@ env DEMO_MODE=true AGENT_PACK_MODE=mock AIRGAP_CHECK=false \
   MEETING_RECORDING_DIR="$DATA_DIR/recordings" \
   MEETING_SUMMARY_ENDPOINT="$OLLAMA_URL" \
   MEETING_SUMMARY_MODEL="$SUMMARY_MODEL" \
-  MEETING_VOCABULARY="${MEETING_VOCABULARY:-KRAS, EGFR, G12D, Priya, Maya, Alex, interim analysis, enrollment, protocol, assay, cohort}" \
+  MEETING_VOCABULARY="${MEETING_VOCABULARY-}" \
   DATACENTER_BASE_URL="http://127.0.0.1:$CONNECTOR_PORT" \
   DATACENTER_SIGNING_SECRET="$SECRET" \
   PYTHONPATH="$PWD" "$PYTHON" -m uvicorn app.main:app --port "$PORT" --log-level warning &
@@ -102,7 +102,9 @@ Ready. Sign in as the demo user, open Meetings, and press Record.
   Names and jargon: whisper spells what it does not know phonetically, and
   writes "PREA" for "Priya". Put the words your team actually says into
   MEETING_VOCABULARY before a real meeting — it is the single highest-value
-  setting here:
+  setting here. It is empty by default on purpose: this script used to seed a
+  list of gene names, and they turned up inside a recording of a club meeting
+  that had never mentioned one. A wrong vocabulary is worse than none.
 
     MEETING_VOCABULARY="Priya, Ravi, KRAS, G12C, sotorasib" ./scripts/demo-recorder.sh
 

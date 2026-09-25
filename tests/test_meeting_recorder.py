@@ -108,22 +108,20 @@ def test_untitled_recordings_get_a_dated_name():
 # --- Turning a summary into a meeting record ----------------------------------
 
 
-def test_record_fields_say_so_when_timestamps_were_not_verified():
-    """The old bedrock-private-ai pin had no citation checking. An unverified
-    timestamp looks exactly like a verified one, so the record must say which."""
+def test_the_record_says_how_its_timestamps_were_checked():
+    """Every timestamp is checked against the line it quotes and dropped if it
+    cannot be resolved, so a point that still carries one has been verified.
+
+    This used to report a count from a `citations` field on MeetingSummary.
+    Upstream moved verification inline and removed the field, and the fallback
+    branch then told every reader to "update the pin" on a pin that was
+    current — a false warning on every meeting."""
     outcome = _outcome()
     outcome.summary = _FakeSummary(citations=None)
-    fields = to_record_fields(outcome)
-    assert "NOT verified" in fields["method"]
-
-
-def test_record_fields_report_the_citation_audit_when_present():
-    outcome = _outcome()
-    outcome.summary = _FakeSummary(citations=_FakeCitations(checked=5, moved=1, removed=2))
-    fields = to_record_fields(outcome)
-    assert "5 timestamps checked" in fields["method"]
-    assert "1 corrected" in fields["method"]
-    assert "2 removed" in fields["method"]
+    method = to_record_fields(outcome)["method"]
+    assert "verified against the quoted line" in method
+    assert "NOT verified" not in method
+    assert "update the" not in method
 
 
 def test_record_fields_survive_a_summary_that_never_happened():

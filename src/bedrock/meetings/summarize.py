@@ -85,14 +85,30 @@ class Point:
     text: str
     timestamp: str | None = None
     owner: str | None = None
+    speaker: str | None = None
+    """Who said the line, as opposed to ``owner``, who will do the work.
+
+    They differ constantly - "Bob, send me the numbers" is owned by Bob and
+    spoken by whoever asked - so an action shows its owner and everything else
+    shows its speaker. Read off the transcript at the verified timestamp, never
+    asked of the model: the cue already carries whichever name diarisation,
+    enrolment or the meeting window gave it, so a point cannot be attributed to
+    somebody who never spoke.
+    """
 
     def render(self) -> str:
         parts = [self.text]
-        if self.owner:
-            parts.append(f"— {self.owner}")
+        attribution = self.owner or self.speaker
+        if attribution:
+            parts.append(f"— {attribution}")
         if self.timestamp:
             parts.append(f"[{self.timestamp}]")
         return " ".join(parts)
+
+
+# "Speaker 1", "Speaker 12" - the label diarisation gives a voice it cannot put
+# a name to. Real enough to sort a transcript by, useless as a participant list.
+_PLACEHOLDER_SPEAKER = re.compile(r"^\s*speaker\s*\d+\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -140,6 +156,15 @@ class MeetingSummary:
             return "\n".join(lines)
         for notice in self.notices:
             lines += ["", f"> {notice}"]
+
+        # Named people, listed once. The subtitle already carries them, but on
+        # a long meeting the subtitle scrolls away and "who was in this?" is
+        # the first question somebody catching up asks. Only shown when the
+        # names are real: a list of "Speaker 1, Speaker 2" answers nothing.
+        named = [name for name in self.facts.speakers if not _PLACEHOLDER_SPEAKER.match(name)]
+        if named:
+            lines += ["", "## Participants", ""]
+            lines += [f"- {name}" for name in named]
 
         if self.enhanced_notes:
             lines += ["", self.enhanced_notes]
@@ -669,16 +694,44 @@ def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]
         # A dropped owner costs the reader a name. A placeholder owner tells
         # them the wrong thing, so an unusable one becomes no owner at all.
         owner = str(owner).strip() if owner and not _is_unusable_owner(owner) else None
+        timestamp = _repair_timestamp(item.get("timestamp"), _evidence_for(item, text), cues)
         points.append(
             Point(
                 text=text,
-                timestamp=_repair_timestamp(
-                    item.get("timestamp"), _evidence_for(item, text), cues
-                ),
+                timestamp=timestamp,
                 owner=owner,
+                speaker=_speaker_at(timestamp, text, cues),
             )
         )
     return points
+
+
+def _speaker_at(timestamp: str | None, text: str, cues: list[Cue]) -> str | None:
+    """Who was speaking at a verified timestamp.
+
+    Read off the transcript rather than asked of the model, which is the whole
+    reason it can be trusted: the cue already carries whichever name came from
+    the participant track, the voice print or the meeting window, so there is
+    no way to attribute a line to somebody who never said it. A point with no
+    timestamp gets no speaker - the same rule the citation itself follows.
+
+    Several cues can share a second, so the one whose words overlap the point
+    most wins: that is the line the point was drawn from.
+    """
+    if not timestamp:
+        return None
+    candidates = [cue for cue in cues if cue.timestamp == timestamp and cue.speaker]
+    if not candidates:
+        return None
+    needle = {word.casefold() for word in re.findall(r"[A-Za-z0-9']+", text) if len(word) > 3}
+    if not needle:
+        return candidates[0].speaker
+
+    def overlap(cue: Cue) -> int:
+        words = {w.casefold() for w in re.findall(r"[A-Za-z0-9']+", cue.text)}
+        return len(needle & words)
+
+    return max(candidates, key=overlap).speaker
 
 
 def _dedupe(points: list[Point]) -> list[Point]:

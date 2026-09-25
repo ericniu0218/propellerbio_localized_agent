@@ -773,6 +773,81 @@ async def test_asterisk_bullets_become_ordinary_ones():
     assert summary.overview == "- Site four has no coordinator.\n- The assay repeats."
 
 
+# --- Who said it, as opposed to who will do it --------------------------------
+#
+# Taken from the transcript at the verified timestamp, never from the model.
+# The cue already carries whichever name came from the Zoom participant track,
+# the voice print or the meeting window, so a point cannot be attributed to
+# somebody who never spoke.
+
+
+async def test_a_decision_is_credited_to_whoever_said_it():
+    backend = FakeBackend([
+        extraction(decisions=[{
+            "text": "No new site is being opened.",
+            "quote": "Then we're not opening a new site",
+            "timestamp": "00:00:12",
+        }]),
+        "A short brief.",
+    ])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.decisions[0].speaker == "Alice Chen"
+    assert "— Alice Chen" in summary.decisions[0].render()
+
+
+async def test_the_owner_of_an_action_beats_the_speaker_who_assigned_it():
+    """"Bob, send me the numbers" is spoken by Alice and owned by Bob. Showing
+    Alice would credit the work to the person who asked for it."""
+    backend = FakeBackend([
+        extraction(actions=[{
+            "text": "Send the enrollment numbers by Thursday.",
+            "owner": "Bob",
+            "quote": "Bob, send me the numbers by Thursday",
+            "timestamp": "00:00:12",
+        }]),
+        "A short brief.",
+    ])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    action = summary.actions[0]
+    assert action.speaker == "Alice Chen" and action.owner == "Bob"
+    assert "— Bob" in action.render() and "Alice" not in action.render()
+
+
+async def test_a_point_with_no_verified_timestamp_is_credited_to_nobody():
+    """The same honesty rule the citation follows: no timestamp, no claim."""
+    backend = FakeBackend([
+        extraction(decisions=[{"text": "Something was settled.", "quote": "nowhere in the transcript"}]),
+        "A short brief.",
+    ])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.decisions[0].timestamp is None
+    assert summary.decisions[0].speaker is None
+    assert "—" not in summary.decisions[0].render()
+
+
+async def test_the_participants_are_listed_when_they_have_real_names():
+    backend = FakeBackend([extraction(), "A short brief."])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    rendered = summary.render()
+    assert "## Participants" in rendered
+    for name in ("Alice Chen", "Bob Ruiz", "Priya Nair"):
+        assert f"- {name}" in rendered
+
+
+async def test_a_list_of_speaker_1_and_speaker_2_is_not_a_participant_list():
+    """Diarisation without names produces placeholders. Listing them under a
+    heading that promises people is worse than leaving the heading out."""
+    anonymous = parse_vtt(
+        "WEBVTT\n\n1\n00:00:01.000 --> 00:00:06.000\n"
+        "Speaker 1: We're at 148 of 200 and three weeks behind schedule.\n\n"
+        "2\n00:00:06.500 --> 00:00:12.000\n"
+        "Speaker 2: Site four is the problem since their coordinator left.\n"
+    )
+    backend = FakeBackend([extraction(), "A short brief."])
+    summary = await summarize_meeting(anonymous, backend=backend, model="fake", title="Sync")
+    assert "## Participants" not in summary.render()
+
+
 # --- the whole command, end to end ----------------------------------------
 
 

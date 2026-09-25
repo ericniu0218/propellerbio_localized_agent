@@ -35,7 +35,7 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # concatenated and uncapped, and the exception was swallowed - so whoever spoke
 # most in a meeting got no voice vector and could never be matched to an
 # enrolled name. Voice enrolment only ever worked on short test clips.
-bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@6c380d220a13deaf68be117b5dd4b2f75e6d6618
+bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@d0aa4dad64fa7e6616fd5620413fbd951615783e
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 

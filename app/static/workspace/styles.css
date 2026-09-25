@@ -176,7 +176,12 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
    on something that cannot be undone, and keyboard users still reach it. */
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .card-head h3 { flex: 1; min-width: 0; }
-.card-delete { opacity: 0; transition: opacity 0.12s; flex-shrink: 0; line-height: 1; }
+.card-delete {
+  opacity: 0; transition: opacity 0.12s; flex-shrink: 0;
+  /* .link-btn underlines its label, which on a lone x reads as a typo. And a
+     bare glyph is a small target, so it gets padding of its own. */
+  text-decoration: none; font-size: 15px; line-height: 1; padding: 2px 4px;
+}
 .card:hover .card-delete, .card-delete:focus-visible { opacity: 1; }
 .card-delete:hover { color: var(--bad); }
 /* A generated summary can run to a full paragraph, which makes one card tower

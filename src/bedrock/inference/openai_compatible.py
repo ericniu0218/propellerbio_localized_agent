@@ -11,12 +11,13 @@ We use ``GET /models`` and ``POST /chat/completions`` with ``stream: true``.
 The streaming format is Server-Sent Events: each line looks like
 ``data: {json}`` and the stream ends with ``data: [DONE]``. On Ollama we also
 read ``GET /api/tags`` (outside ``/v1``), because that is the only place it
-says how big each model is.
+says how big each model is and the hash of the weights it is serving.
 
 How ``RequestOptions`` reach the server, field by field:
 
-* ``max_tokens``, ``temperature``, ``stop``: the standard fields; every server
-  above reads them.
+* ``max_tokens``, ``temperature``, ``stop``, ``seed``: the standard fields;
+  every server above reads them. ``seed`` is sent only when it is set, so a
+  call that leaves it ``None`` looks exactly as it did before.
 * ``json_schema``: sent as ``response_format = {"type": "json_schema", ...}``.
   Ollama (0.5+), vLLM and SGLang then constrain the reply to the schema.
 * ``reasoning=False`` (skip the hidden "thinking"): no single field works
@@ -43,11 +44,20 @@ OpenAI; the base URL is whatever the company configures.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import AsyncIterator, Callable
 
 import httpx
 
 from bedrock.inference.base import InferenceError, ModelInfo, RequestOptions, Usage
+
+
+@dataclass(frozen=True)
+class _Tag:
+    """What Ollama's ``/api/tags`` says about one model. Unknown stays ``None``."""
+
+    size: int | None = None
+    digest: str | None = None
 
 
 class OpenAICompatibleBackend:
@@ -101,22 +111,25 @@ class OpenAICompatibleBackend:
         entries = [item for item in data if isinstance(item, dict) and "id" in item]
         if not entries:
             return []
-        sizes = await self._ollama_sizes()
+        tags = await self._ollama_tags()
         return [
             ModelInfo(
                 id=str(item["id"]),
-                size_bytes=_positive_int(item.get("size")) or sizes.get(str(item["id"])),
+                size_bytes=_positive_int(item.get("size")) or tags.get(str(item["id"]), _Tag()).size,
                 # vLLM reports the window it was started with as ``max_model_len``.
                 context_length=_positive_int(item.get("max_model_len")),
+                digest=tags.get(str(item["id"]), _Tag()).digest,
             )
             for item in entries
         ]
 
-    async def _ollama_sizes(self) -> dict[str, int]:
-        """Model sizes from Ollama's ``/api/tags``; empty for any other server.
+    async def _ollama_tags(self) -> dict[str, _Tag]:
+        """Model size and weight digest from Ollama's ``/api/tags``.
 
-        Only ever the configured server. Any failure (a 404 from vLLM, a
-        timeout, an odd body) just means "sizes unknown".
+        Empty for any other server: only Ollama offers this. Always the
+        configured server, never anywhere else. Any failure (a 404 from vLLM, a
+        timeout, an odd body) just means "we do not know", so every caller has
+        to treat a missing entry as unknown rather than as zero or as absent.
         """
         root = self._base_url[: -len("/v1")] if self._base_url.endswith("/v1") else self._base_url
         try:
@@ -126,16 +139,22 @@ class OpenAICompatibleBackend:
             models = response.json().get("models") or []
         except (httpx.HTTPError, ValueError, AttributeError):
             return {}
-        sizes: dict[str, int] = {}
+        tags: dict[str, _Tag] = {}
         for entry in models if isinstance(models, list) else []:
             if not isinstance(entry, dict):
                 continue
-            size = _positive_int(entry.get("size"))
+            digest = entry.get("digest")
+            tag = _Tag(
+                size=_positive_int(entry.get("size")),
+                digest=digest if isinstance(digest, str) and digest else None,
+            )
+            if tag == _Tag():
+                continue
             for key in ("model", "name"):
                 name = entry.get(key)
-                if size and isinstance(name, str):
-                    sizes[name] = size
-        return sizes
+                if isinstance(name, str):
+                    tags[name] = tag
+        return tags
 
     async def stream_chat(
         self,
@@ -196,6 +215,8 @@ class OpenAICompatibleBackend:
             if not self._skip_reasoning_effort:
                 payload["reasoning_effort"] = "none"
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if options.seed is not None:
+            payload["seed"] = options.seed
         return payload
 
     async def close(self) -> None:

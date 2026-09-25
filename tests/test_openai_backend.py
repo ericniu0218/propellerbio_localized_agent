@@ -227,3 +227,37 @@ async def test_a_broken_tags_endpoint_does_not_break_listing_models():
         return httpx.Response(200, json={"data": [{"id": "m"}]})
 
     assert [m.id for m in await make_backend(handler).list_models()] == ["m"]
+
+
+async def test_a_seed_is_sent_when_set_and_left_out_when_not():
+    """The literature review pins a seed so the same question gives the same report."""
+    assert (await sent_body(RequestOptions(seed=0)))["seed"] == 0
+    assert (await sent_body(RequestOptions(seed=7)))["seed"] == 7
+    assert "seed" not in await sent_body(RequestOptions())
+
+
+async def test_ollama_weight_digests_come_from_api_tags():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [
+                {"name": "medgemma1.5:4b", "model": "medgemma1.5:4b",
+                 "size": 3338801804, "digest": "a1b2c3d4e5f60718293a4b5c6d7e8f90"},
+            ]})
+        return httpx.Response(200, json={"data": [{"id": "medgemma1.5:4b"}, {"id": "mystery"}]})
+
+    backend = OpenAICompatibleBackend("http://localhost:11434/v1", transport=httpx.MockTransport(handler))
+    models = {m.id: m for m in await backend.list_models()}
+    assert models["medgemma1.5:4b"].digest == "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    assert models["medgemma1.5:4b"].size_bytes == 3338801804
+    assert models["mystery"].digest is None  # unknown stays unknown
+
+
+async def test_a_server_without_api_tags_reports_no_digest():
+    """vLLM has no /api/tags, so it says nothing about the weights it serves."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"data": [{"id": "Qwen/Qwen3-8B", "max_model_len": 32768}]})
+
+    [model] = await make_backend(handler).list_models()
+    assert model.digest is None

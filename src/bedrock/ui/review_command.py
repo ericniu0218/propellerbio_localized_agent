@@ -22,6 +22,13 @@ of model calls in. `progress_to_toasts` therefore swallows everything.
 Notices are not saved into the conversation, for the same reason a fold's are
 not: the run itself is recorded in litreview's own database, and `/reviews`
 finds it. What is on screen is a receipt, not part of what the model is told.
+
+The `bedrock.litreview` imports are inside the functions that use them, not at
+the top. `app.py` imports this module on every launch, and importing the
+pipeline pulls in pydantic, lxml and the whole of `sources/` and `stages/` -
+about 115 ms of start-up for a feature most sessions never touch. By the time
+someone has typed `/review` they are waiting for a job that takes minutes, so
+that is the right moment to pay for it.
 """
 
 from __future__ import annotations
@@ -31,13 +38,14 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
-from bedrock.litreview.config import ConfigError, Settings as ReviewSettings
-from bedrock.litreview.llm import ModelServerUnavailable, ReviewInterrupted
-from bedrock.litreview.service import ReviewRequest, run_review
 from bedrock.ui.argparsing import CommandParser, CommandUsageError, split_arguments
 from bedrock.ui.rendering import as_code, as_code_path, as_cell, markdown_text, safe_line
+
+if TYPE_CHECKING:  # pragma: no cover - types only
+    from bedrock.litreview.config import Settings as ReviewSettings
+    from bedrock.litreview.service import ReviewRequest
 
 Notify = Callable[[str, str], Awaitable[None]]
 
@@ -85,6 +93,8 @@ def parse_review_command(args: str) -> ReviewCommand:
     Raises `CommandUsageError` for anything that must not start a job, so a
     typo is an error notice rather than a review nobody wanted.
     """
+    from bedrock.litreview.service import ReviewRequest
+
     text = args.strip()
     if not text:
         raise CommandUsageError(REVIEW_QUESTION_MISSING)
@@ -207,8 +217,10 @@ def finish_notice(result, settings: ReviewSettings) -> tuple[str, str]:
     return "\n".join(lines), ("error" if integrity else "info")
 
 
-def interrupted_notice(exc: ReviewInterrupted, run_id: str | None) -> str:
+def interrupted_notice(exc: Exception, run_id: str | None) -> str:
     """What to say when a run stopped partway. Always how to pick it up again."""
+    from bedrock.litreview.llm import ModelServerUnavailable
+
     resume = f"`/review --resume {safe_line(run_id, limit=64)}`" if run_id else "`/reviews` to find its id, then `/review --resume <run-id>`"
     lines = [
         f"**Literature review stopped** — {safe_line(exc, limit=400)}",
@@ -273,7 +285,9 @@ async def run_review_job(
     Every failure the pipeline can produce is turned into a notice here, so the
     app's own bookkeeping - the one-review-at-a-time flag - always gets to run.
     """
-    from bedrock.litreview.db import Database
+    from bedrock.litreview.config import ConfigError
+    from bedrock.litreview.llm import ReviewInterrupted
+    from bedrock.litreview.service import run_review
     from bedrock.litreview.sources.literature import SearchFailed
     from bedrock.litreview.stages.s0_question import QuestionError
     from bedrock.litreview.stages.s1_collect import NoPapers
@@ -343,6 +357,8 @@ async def run_reviews_command(args: str, *, settings_for, notify: Notify) -> Non
     All the reading happens in a worker thread, with the database opened and
     closed there - SQLite connections belong to the thread that made them.
     """
+    from bedrock.litreview.config import ConfigError
+
     text = args.strip()
     if text.casefold() in {"help", "--help", "-h"}:
         await notify(REVIEWS_HELP, "info")
@@ -404,7 +420,7 @@ def _recent_rows(settings: ReviewSettings) -> list[tuple[str, str, str | None, s
         db.conn.close()
 
 
-async def _verify(argument: str, settings: ReviewSettings, notify: Notify) -> None:
+async def _verify(argument: str, settings: "ReviewSettings", notify: Notify) -> None:
     parser = CommandParser("/reviews verify")
     parser.add_argument("run_id", nargs="?")
     parser.add_argument("--all", action="store_true", dest="all_runs")

@@ -117,6 +117,26 @@ and local AlphaFold 2/PyMOL adapters. The web reference client includes the real
 Keycloak login button; the terminal client still uses `BEDROCK_USER` until OIDC is
 wired into it.
 
+Also built: the literature review (`src/bedrock/litreview/`), moved in from its
+own repository. A scientist asks a question and gets back a report in which
+every sentence cites a verified quote from a paper: `/review` beside the chat,
+`/reviews` to list and re-prove past ones, `bedrock-litreview` in a shell, and
+an optional FastAPI front door. **Read `src/bedrock/litreview/CLAUDE.md` before
+changing any of it** - it is a pipeline, not an agent, and its guarantees
+(verbatim quote verification, per-field provenance, the citation guard, the
+report invariants) depend on the model never deciding what happens next. Every
+model call goes through `SchedulerClient` at `Priority.USER_JOB`, at temperature
+0, on model names pinned in `defaults/models.yaml`; a review therefore queues
+behind the employee's own chat and never in front of it. It needs a context
+window of at least 12,288 tokens, which `service.preflight` checks before a run
+starts. Its settings are the `[litreview]` table in `config.toml` and its data
+lives in `~/.local/share/bedrock/litreview/`. Its HTTP API
+(`bedrock.litreview.api`, the `api` extra) is kept on purpose: bedrock is
+terminal-first today and is going to become an app, and the "not a website"
+rule governs the employee's terminal interface, not this optional API - which
+runs its reviews through the same service and the same scheduler as `/review`.
+See `docs/litreview/README.md` and `docs/prompts/LITREVIEW_INTEGRATION.md`.
+
 Recall of past chats (`src/bedrock/recall.py`): transcripts are never loaded unless the employee asks, via `/recall <words>` (alias `/context`) or plain English matched by `wants_recall` ("do you remember when..."). Keyword search reads files one at a time off the UI thread and skips files without the words before parsing. Results are bounded excerpts kept in `Conversation.recalled_context`, placed in the newest user message by the prompt builder (`bedrock.prompting`), and never written to disk - keep it that way so `/forget` stays complete.
 
 Also built: a one-command install with no Python/venv required —

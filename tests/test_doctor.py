@@ -101,3 +101,18 @@ def test_ollama_settings_follow_a_context_window_override():
 
     lines = doctor.ollama_settings(replace(PROFILES["laptop"], context_window=4096))
     assert lines[0] == "OLLAMA_CONTEXT_LENGTH=4096"
+
+
+def test_the_laptop_window_is_flagged_as_too_small_for_a_literature_review():
+    """The window lives on the server, so this is worth saying at first run
+    rather than only when someone starts a review."""
+    from bedrock.config import PROFILES
+    from bedrock.doctor import LITREVIEW_MIN_CONTEXT_WINDOW, server_settings_note
+
+    laptop = server_settings_note(PROFILES["laptop"])
+    assert "/review" in laptop
+    assert f"OLLAMA_CONTEXT_LENGTH={LITREVIEW_MIN_CONTEXT_WINDOW}" in laptop
+
+    # A machine that can already run one is not told to change anything.
+    for name in ("workstation", "server"):
+        assert "/review" not in server_settings_note(PROFILES[name])

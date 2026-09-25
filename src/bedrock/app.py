@@ -41,8 +41,6 @@ from bedrock.biotech import ProteinWorkflow
 from bedrock.config import Settings, load_settings
 from bedrock.connectors import SourceHub, SourceRef
 from bedrock.context import find_relevant_context
-from bedrock.litreview.config import ConfigError as LitReviewConfigError
-from bedrock.litreview.config import load_settings as load_review_settings
 from bedrock.inference import (
     InferenceBackend,
     InferenceError,
@@ -396,6 +394,11 @@ class BedrockApp(LocalCommandsMixin, App[None]):
                 "A literature review is already running. `/review stop` stops it.", kind="error"
             )
             return
+        # Imported here, not at the top: the pipeline pulls in pydantic and the
+        # whole of sources/ and stages/, which is 115 ms of start-up for a
+        # feature most sessions never use. See ui/review_command.py.
+        from bedrock.litreview.config import ConfigError as LitReviewConfigError
+
         try:
             settings = await asyncio.to_thread(self._review_settings, command.request.model_set)
         except LitReviewConfigError as exc:
@@ -417,6 +420,8 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     def _review_settings(self, model_set: str | None):
         """litreview's settings, read off the UI thread (they touch disk)."""
+        from bedrock.litreview.config import load_settings as load_review_settings
+
         return load_review_settings(self.settings, model_set=model_set)
 
     # Not exclusive: the flag above is what keeps it to one review, and an

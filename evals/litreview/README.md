@@ -1,8 +1,13 @@
 # Evaluation
 
+> Moved from Localized-Airgap-LLM-for-literature-review with the rest of the
+> literature review. This directory is a source checkout only: it is not in the
+> wheel, so the benchmark is the one part of `bedrock.litreview` that does not
+> run from an install.
+
 Two instruments, measuring different things:
 
-- **The benchmark** (`litreview/bench/`) grades whole *reports* against
+- **The benchmark** (`src/bedrock/litreview/bench/`) grades whole *reports* against
   references, with no scientist needed. Use it every time a prompt, a model or
   a stage changes.
 - **The gold set** (below) grades *extraction*, field by field, against papers a
@@ -12,8 +17,8 @@ Two instruments, measuring different things:
 ## The benchmark
 
 ```
-python -m litreview.bench build-corpus evals/questions/*.yaml   # once, needs network
-python -m litreview.bench run evals/questions/*.yaml --profile laptop
+python -m bedrock.litreview.bench build-corpus evals/litreview/questions/*.yaml   # once, needs network
+python -m bedrock.litreview.bench run evals/litreview/questions/*.yaml --models laptop
 ```
 
 `questions/*.yaml` — the question, the Europe PMC queries that stand in for the
@@ -39,7 +44,7 @@ catch flipped effects, its "supported" verdicts mean little.
 the first MedGemma 4B runs, asked for one, it rejected claims its own reasoning
 said were stated; asked "is the main point stated?", it said yes to nearly
 everything, including claims with the effect reversed. So the judge is split
-the way the pipeline is ([`bench/judge.py`](../litreview/bench/judge.py)):
+the way the pipeline is ([`bench/judge.py`](../../src/bedrock/litreview/bench/judge.py)):
 
 - the **model** copies the evidence sentence that states the claim, and lists
   details it cannot find
@@ -80,7 +85,7 @@ Pick **20 papers** from a real run. Not the first 20 — choose deliberately:
 | 1 | Mentions the target but is not about it | Tests false positives |
 
 Then read all 20 as a human and write down every finding that *should* be
-extracted, in the schema from `litreview/models.py`. Get a scientist to check
+extracted, in the schema from `src/bedrock/litreview/models.py`. Get a scientist to check
 it — ideally the junior scientist Person 3 is already shadowing.
 
 Those last three categories are the whole point. Models are eager to please:
@@ -98,7 +103,7 @@ and mediocre at everything else, and you will not find out until a client demo.
 ### Running it
 
 ```
-python -m evals.run_extract
+python -m evals.litreview.run_extract
 ```
 
 Read the per-field table, not the headline score. "0.84 overall" is not

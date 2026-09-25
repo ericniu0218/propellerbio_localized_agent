@@ -1,3 +1,10 @@
+> **Moved from Localized-Airgap-LLM-for-literature-review at `dc5c0123d8e1`.** This is a
+> record of measurements made in that repository, and the commands in it are
+> kept exactly as they were run. In bedrock they are spelled
+> `bedrock-litreview ask`, `python -m bedrock.litreview.bench` and `--models`,
+> and `evals/` is `evals/litreview/`; the numbers are unaffected. The to-do
+> list in § Next steps is still the to-do list.
+
 # Benchmark results — anchored evidence (before/after)
 
 **24 September 2026.** This section measures the "anchored evidence" change on

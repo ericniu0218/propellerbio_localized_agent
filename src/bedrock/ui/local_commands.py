@@ -14,7 +14,6 @@ from textual import work
 from bedrock.config import Settings
 from bedrock.connectors import SourceHub
 from bedrock.context import ContextStore
-from bedrock.litreview.config import load_settings as load_review_settings
 from bedrock.ui.audit_command import run_audit_command
 from bedrock.ui.commands import Command
 from bedrock.ui.confidence_view import run_confidence_command
@@ -130,7 +129,14 @@ class LocalCommandsMixin:
     @work(group="history")
     async def command_reviews(self, args: str) -> None:
         """Literature reviews already on this machine. Needs no model, so it
-        works in both app modes and with every server switched off."""
+        works in both app modes and with every server switched off.
+
+        The settings loader is imported here rather than at the top: it pulls in
+        the review pipeline, which both apps would otherwise pay for on every
+        launch. See `bedrock/ui/review_command.py`.
+        """
+        from bedrock.litreview.config import load_settings as load_review_settings
+
         await run_reviews_command(
             args,
             settings_for=lambda: load_review_settings(self.settings, check_endpoint=False),

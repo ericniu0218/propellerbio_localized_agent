@@ -300,6 +300,41 @@ abbreviations), because those are the cases to check first.
 **Capacity** — embedding a large store is a one-off batch job; budget GPU time
 for the initial reindex, and disk per the estimate in step 4.
 
+## Literature review
+
+The pipeline (`src/bedrock/litreview/`) moved in whole, and its own to-do list
+continued in
+[`docs/litreview/BENCHMARK_RESULTS.md` § Next steps, step by step](docs/litreview/BENCHMARK_RESULTS.md#next-steps-step-by-step)
+— 64 numbered steps from the current state to production install and handover.
+That is still the list; its multi-user and packaging phases now mean bedrock's
+packaging.
+
+What the move itself deliberately left out, in the order it is likely to be
+wanted (the full version is `docs/prompts/LITREVIEW_INTEGRATION.md` §8):
+
+1. **Record reviews and searches in `/audit`**, as new journal actions
+   `litreview.review` and `litreview.search`. A search is the one step that
+   sends anything off the machine, so it is the one most worth journalling.
+   Read `docs/COMPLIANCE_MVP.md` and `docs/compliance_mvp/CONTRACT.md` first.
+2. **Publish a finished report to a shared workspace** (`/workspace publish`).
+3. **The drop folder**, built on the existing `share` connector rather than as
+   a new thing, plus the GROBID PDF rung. Propeller already pays for journal
+   access; this is how what their scientists legally download gets in.
+4. **Stage 9 chat**: the bedrock chat with narrow, read-only tools over one
+   run's frozen evidence. It must not become free chat over `report.md`, which
+   would bypass every guard the pipeline exists to provide.
+5. **`/review` in agent-pack mode**, or a read-only agent capability that can
+   start the pipeline but cannot steer it.
+6. **Apply litreview's endpoint check to the chat** (`assert_local_url`,
+   `assert_local_model`). It is strictly safer, and it changes chat behaviour,
+   so it is a product decision.
+7. **`strip_thinking` on chat replies** (MedGemma writes a trace that cannot be
+   switched off), and `finish_reason` in `Usage`, so a cut-off free-text
+   section is logged the way the source logged it.
+8. **Authentication for the HTTP API**, once bedrock's company sign-in reaches
+   it. Until then it has none, and concurrent `POST /ask` requests also share
+   one SQLite file, which a multi-user service has to handle.
+
 ## Testing
 
 `pytest` covers the client's REST/SSE parsing

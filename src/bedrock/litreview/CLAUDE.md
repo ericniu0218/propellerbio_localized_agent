@@ -1,7 +1,15 @@
-# Working in this repository
+# Working in `src/bedrock/litreview/`
 
-Read this before changing anything. `README.md` has the full project context;
-this file is the short version plus the rules that are easy to break by accident.
+Read this before changing anything in this package. The repository root's
+`CLAUDE.md` also applies — this is the terminal client the review lives inside,
+and its model-call rule, its privacy rule and its "not a website" rule are not
+suspended here. `docs/litreview/README.md` has the full project context; this
+file is the short version plus the rules that are easy to break by accident.
+
+This package moved in from its own repository
+(Bedrock-Technical-Consulting/Localized-Airgap-LLM-for-literature-review). What
+changed in the move, and what deliberately did not, is
+`docs/prompts/LITREVIEW_INTEGRATION.md`.
 
 ## What this is
 
@@ -10,7 +18,9 @@ developing biologics (antibodies, peptides, siRNAs) that hit multiple disease
 pathways at once. Focus areas: immunology & inflammation, obesity, CNS.
 
 A scientist types a question ("if I want to prevent psoriasis, what should I
-target?"). The paper searcher (`litreview/sources/literature.py`) collects
+target?"), as `/review` in the app, `bedrock-litreview ask` in a shell, or
+`POST /ask` over the optional HTTP API. The paper searcher
+(`sources/literature.py`) collects
 candidates from Europe PMC, preprints and PubMed. This system reads the question, excludes papers about near-miss entities, ranks
 every paper by relevance, plans which information to take from which papers,
 extracts verified findings, and writes a cited report. It runs entirely on the
@@ -29,13 +39,14 @@ it works elsewhere.
 
 ## Read these first, in order
 
-1. `litreview/models.py` — the data model. Everything is a view of `EvidenceUnit`
-2. `litreview/extract/verify.py` — the fabrication guard
-3. `litreview/extract/provenance.py` — the same guard, for every other field a finding carries
-4. `litreview/report/guard.py` — the same guard, applied to report sentences
-5. `litreview/report/invariants.py` — what code proves about a finished report
-6. `litreview/knowledge/` — exact terms and near-misses, meaning words, and the matcher
-7. `README.md` § The pipeline — what each stage owes the next
+1. `models.py` — the data model. Everything is a view of `EvidenceUnit`
+2. `extract/verify.py` — the fabrication guard
+3. `extract/provenance.py` — the same guard, for every other field a finding carries
+4. `report/guard.py` — the same guard, applied to report sentences
+5. `report/invariants.py` — what code proves about a finished report
+6. `knowledge/` — exact terms and near-misses, meaning words, and the matcher
+7. `docs/litreview/README.md` § The pipeline — what each stage owes the next
+8. `service.py` and `llm/scheduled.py` — how a run reaches the model server
 
 ## Rules that are not style preferences
 
@@ -66,7 +77,7 @@ and it must come with a verified justification quote.
 
 **Exact means exact.** A question about RSV is answered from RSV papers, not
 hMPV or bovine RSV papers. Exact terms and near-misses live in
-`litreview/knowledge/entities.yaml`, are applied by code, and are shown in the
+`knowledge/entities.yaml`, are applied by code, and are shown in the
 report. Never let a model add a synonym or search term: a wrong synonym
 silently lets the wrong papers in. The model may only copy names that are
 verifiably in the question.
@@ -81,7 +92,8 @@ is stated as a gap.
 **Every report is integrity-checked, and a run is pinned to its papers.**
 `report/invariants.py` re-proves the guarantees on every finished report;
 a violation is a bug, written on the report (warning banner) and makes
-`litreview ask` exit non-zero. `litreview verify-run` re-checks a stored run.
+`bedrock-litreview ask` exit non-zero. `bedrock-litreview verify-run` and
+`/reviews verify` re-check a stored run.
 Runs record the exact paper versions they read (`paper_versions`,
 `papers_manifest`); never read a past run's papers from the question's
 current set. Merging duplicate papers never loses a review or retraction flag
@@ -108,7 +120,8 @@ getting different answers to the same question.
 output impossible rather than unlikely. Every structured call uses it.
 
 **Never integrate Sci-Hub or any pirated source.** The client mentioned it; the
-answer is the drop folder (`litreview/dropfolder.py`) — Propeller already pays
+answer is the drop folder (`dropfolder.py`, to be built on bedrock's `share`
+connector) — Propeller already pays
 for journal access, and we ingest what their scientists legally download.
 
 **Reviews are not evidence.** A review article citing a trial is not a trial.
@@ -119,48 +132,74 @@ as `improved`. Models skip these unless explicitly told not to.
 
 ## Conventions
 
-- Stages are `litreview/stages/sN_name.py`, run in numeric order: s0_question,
+- Stages are `stages/sN_name.py`, run in numeric order: s0_question,
   s1_collect, s2_gate, s3_rank, s4_plan, s5_extract, s6_score, s7_write,
   s8_render (s9_chat not built). `runner.py` calls them; nothing else sequences
-- What each question type needs is `litreview/facets.py` (code). The report
-  layout is `config/report.yaml`. Pipeline knobs are `config/pipeline.yaml`
-- The paper searcher plugs in only through `litreview/sources/base.py`
-- The searcher goes to the internet only when asked: `litreview search`,
-  `ask --search`, `"search": true` over HTTP. Never make it a default — a
-  question's papers are frozen once collected, and the air-gapped machine must
-  work from a JSON-lines file. Its queries come from `exact_terms` and
-  `search.focus` in `config/pipeline.yaml`; never let a model add a term
+- What each question type needs is `facets.py` (code). The report layout is
+  `defaults/report.yaml`. Pipeline knobs are `defaults/pipeline.yaml`
+- The paper searcher plugs in only through `sources/base.py`
+- The searcher goes to the internet only when asked: `bedrock-litreview search`,
+  `ask --search`, `/review --search`, or `"search": true` over HTTP. Never make
+  it a default — a question's papers are frozen once collected, and the
+  air-gapped machine must work from a JSON-lines file. Its queries come from
+  `exact_terms` and `search.focus` in `defaults/pipeline.yaml`; never let a
+  model add a term. A request may reach only `www.ebi.ac.uk` and
+  `eutils.ncbi.nlm.nih.gov` (`SOURCE_HOSTS` in `sources/http.py`), redirects
+  included: a search URL carries the scientist's terms in its query string
 - Sources are listed in code (`SOURCES` in `sources/literature.py`), not read
-  from `config/sources.yaml`, so nothing gets wired in by editing a config file
-- Model names live only in `config/models.yaml`. Nothing else hardcodes one
-- Prompts live in `litreview/llm/prompts/*.md` with a `version` in front matter.
+  from a config file, so nothing gets wired in by editing one
+- Model names live only in `defaults/models.yaml`, or in a whole-file
+  replacement at `~/.config/bedrock/litreview/models.yaml`. Nothing else
+  hardcodes one. The *server* is not configured here at all: it is bedrock's
+  `api_base`, and the context window is bedrock's machine profile
+- **The only live model client is `SchedulerClient`** (`llm/scheduled.py`),
+  which goes through bedrock's `Scheduler` at `Priority.USER_JOB`, so a review
+  never gets in front of the employee's own chat. `tests/test_model_call_guard.py`
+  fails if anything reaches the backend directly, and nothing here may talk
+  HTTP to a model server
+- Nothing else in this package imports `bedrock.inference`: only
+  `llm/scheduled.py` and `service.py` do. Everything else depends on the
+  `LLMClient` protocol, so tests use `FakeLLMClient`
+- A model-using review starts through `service.run_review` and nothing else.
+  It is what runs `preflight`, builds the client and puts the blocking pipeline
+  on a worker thread
+- A server that goes away raises `ReviewInterrupted`, which no stage catches, so
+  the run stops and can be resumed. `LLMError` still means "skip this one item"
+- Prompts live in `llm/prompts/*.md` with a `version` in front matter.
   Bump it on every change — it is recorded on each EvidenceUnit
-- Nothing outside `litreview/llm/` imports a concrete model client. Stages
-  depend on the `LLMClient` protocol, so tests use `FakeLLMClient`
 - Everything that can be tested without a GPU is. The whole pure-code layer runs
-  offline, because in week one the office GPU does not exist yet
+  offline, because in week one the office GPU does not exist yet. Run
+  `pytest tests/litreview`, and `pytest` before you commit
 
 ## Current state
 
 | Part | State |
 |---|---|
 | Stages 0-8 (question → report) | Built and tested; runs end to end with `FakeLLMClient` |
-| Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text. GROBID/PDF rung, alias lookup and drop folder not built |
-| Benchmark (`litreview/bench/`) | Built and tested with a fake model; sample corpora in `evals/corpora/` |
-| Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) |
+| Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text, on a two-host allowlist. GROBID/PDF rung, alias lookup and drop folder not built |
+| Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
+| Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
+| Front ends | `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. All three call `service.run_review` |
 | Stage 9 (chat), PPTX, patents, drop folder | Not started |
 
 Working and tested today, with no GPU and no network: everything above except
-real-model quality. Run `pytest`. 217 tests, all passing (install the `api` extra, or the API test is skipped). `tests/test_sources.py`
-plays Europe PMC and PubMed with a mock transport; nothing there needs a network.
+real-model quality. Run `pytest tests/litreview` for this package, `pytest` for
+all of bedrock. `tests/litreview/test_sources.py` plays Europe PMC and PubMed
+with a mock transport; nothing there needs a network.
 
-Benchmark: `python -m litreview.bench run evals/questions/*.yaml --profile laptop`.
+A model-using review needs a context window of at least 12,288 tokens
+(`min_context_window` in `defaults/models.yaml`): extraction sends about 4,300
+prompt tokens and allows a 4,096-token reply. `service.preflight` refuses to
+start otherwise and says what to change.
+
+Benchmark: `python -m bedrock.litreview.bench run evals/litreview/questions/*.yaml --models laptop`.
 Read `scorecard.md`'s "where the pipeline lost points" before changing a prompt,
 and bump the prompt's `version` when you do. `--from-run <id>` scores a report
 an earlier version of the code wrote, which is how before/after is measured.
 
 Every fix so far came from that list, and the failures it found are worth
-knowing before writing a prompt: see BENCHMARK_RESULTS.md § What broke.
+knowing before writing a prompt: see
+[BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) § What broke.
 
 ## Who owns what
 
@@ -171,6 +210,6 @@ knowing before writing a prompt: see BENCHMARK_RESULTS.md § What broke.
 
 ## If you are about to write extraction code
 
-Build `evals/goldset.jsonl` first. See `evals/README.md`. Everything in Stage 5
-is guesswork until it exists, and a prompt tuned without it will be excellent on
+Build `evals/litreview/goldset.jsonl` first. See `evals/litreview/README.md`.
+Everything in Stage 5 is guesswork until it exists, and a prompt tuned without it will be excellent on
 the papers you happened to look at and mediocre everywhere else.

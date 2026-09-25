@@ -93,6 +93,7 @@ async def create_recording(
     startedAt: str | None = Form(None),
     durationSeconds: float | None = Form(None),
     expectedSpeakers: int | None = Form(None),
+    minimumSpeakers: int | None = Form(None),
     consentConfirmed: bool = Form(False),
     participants: str | None = Form(None),
     user=Depends(identity),
@@ -192,7 +193,8 @@ async def create_recording(
         )
     )
     _jobs.start(job, _runner_for(job, recording_config, workspace, projectId, notes,
-                                 started_at, expectedSpeakers, consent, user["id"]))
+                                 started_at, expectedSpeakers, consent, user["id"],
+                                 minimumSpeakers))
     workspace.audit(user["id"], "recorded meeting", job_id)
     return job.public()
 
@@ -462,7 +464,7 @@ def run_retention_sweep() -> dict:
 
 
 def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
-                expected_speakers, consent, owner):
+                expected_speakers, consent, owner, minimum_speakers=None):
     """One runner shape for both a fresh upload and a recovered job."""
 
     async def runner(running_job: RecordingJob) -> None:
@@ -477,6 +479,7 @@ def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
             started_at=started_at,
             deliver=deliver_recording,
             expected_speakers=expected_speakers,
+            minimum_speakers=minimum_speakers,
             consent=consent,
             voice_prints=prints,
         )

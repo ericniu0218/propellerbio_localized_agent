@@ -14,6 +14,7 @@ from app.meetings.diarize import (
     DiarizationResult,
     SpeakerTurn,
     assign,
+    consolidate,
     flatten,
     label_for,
     models_present,
@@ -139,3 +140,74 @@ def test_one_speaker_throughout_needs_no_cuts_at_all():
 
 def test_no_diarisation_means_no_cuts():
     assert speaker_change_points(DiarizationResult([], 0, False, "unavailable")) == []
+
+
+# --- Working out the speaker count without being told -------------------------
+#
+# This is what makes "how many people are here?" a hint instead of a
+# requirement. Raw clustering splintered a genuine three-person call into 17
+# speakers; you do not always know who is coming to a club meeting.
+
+
+def vectors_for(groups: dict[int, list[float]]) -> dict[int, list[float]]:
+    return groups
+
+
+def long_turns(*speakers: int) -> list[SpeakerTurn]:
+    """One ten-second turn each, so nothing is dropped as noise."""
+    return [SpeakerTurn(i * 10_000, i * 10_000 + 10_000, s) for i, s in enumerate(speakers)]
+
+
+A = [1.0, 0.0, 0.0]
+A_ISH = [0.97, 0.24, 0.0]      # same voice, different stretch of speech
+B = [0.0, 1.0, 0.0]            # clearly someone else
+
+
+def test_one_voice_split_in_two_is_put_back_together():
+    result = DiarizationResult(long_turns(0, 1), 2, estimated=True)
+    merged = consolidate(result, {0: A, 1: A_ISH})
+    assert merged.speaker_count == 1
+
+
+def test_two_different_voices_are_left_alone():
+    result = DiarizationResult(long_turns(0, 1), 2, estimated=True)
+    assert consolidate(result, {0: A, 1: B}).speaker_count == 2
+
+
+def test_a_cluster_too_small_to_be_a_person_is_absorbed():
+    """Half a second of a door closing is not a speaker."""
+    turns = [SpeakerTurn(0, 10_000, 0), SpeakerTurn(10_000, 10_400, 1)]
+    merged = consolidate(DiarizationResult(turns, 2, estimated=True), {0: A, 1: B})
+    assert merged.speaker_count == 1
+
+
+def test_a_minimum_stops_it_merging_below_what_you_know():
+    """"At least five people" for a club meeting nobody counted."""
+    result = DiarizationResult(long_turns(0, 1, 2), 3, estimated=True)
+    vectors = {0: A, 1: A_ISH, 2: [0.99, 0.14, 0.0]}  # all one voice
+    assert consolidate(result, vectors).speaker_count == 1
+    assert consolidate(result, vectors, minimum_speakers=3).speaker_count == 3
+
+
+def test_a_minimum_never_invents_speakers_that_are_not_there():
+    """A floor stops merging; it cannot split one cluster into more."""
+    result = DiarizationResult(long_turns(0), 1, estimated=True)
+    assert consolidate(result, {0: A}, minimum_speakers=5).speaker_count == 1
+
+
+def test_every_turn_survives_consolidation():
+    """Merging relabels speech; it must never drop any."""
+    result = DiarizationResult(long_turns(0, 1, 2), 3, estimated=True)
+    merged = consolidate(result, {0: A, 1: A_ISH, 2: B})
+    assert len(merged.turns) == len(result.turns)
+    assert [t.start_ms for t in merged.turns] == [t.start_ms for t in result.turns]
+
+
+def test_consolidation_without_vectors_changes_nothing():
+    result = DiarizationResult(long_turns(0, 1), 2, estimated=True)
+    assert consolidate(result, {}) is result
+
+
+def test_consolidation_of_a_failed_diarisation_changes_nothing():
+    empty = DiarizationResult([], 0, False, "models missing")
+    assert consolidate(empty, {0: A}) is empty

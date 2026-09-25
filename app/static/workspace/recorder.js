@@ -253,7 +253,7 @@
     }
   }
 
-  function upload({ blob, startedAt, mime, title, projectId, notes, expectedSpeakers, consentConfirmed, participants, durationSeconds, onProgress }) {
+  function upload({ blob, startedAt, mime, title, projectId, notes, minimumSpeakers, consentConfirmed, participants, durationSeconds, onProgress }) {
     const form = new FormData();
     form.append("audio", blob, "recording" + extensionFor(mime));
     form.append("title", title || "");
@@ -261,7 +261,7 @@
     form.append("durationSeconds", String(Math.round(durationSeconds)));
     if (projectId) form.append("projectId", projectId);
     if (notes) form.append("notes", notes);
-    if (expectedSpeakers) form.append("expectedSpeakers", String(expectedSpeakers));
+    if (minimumSpeakers) form.append("minimumSpeakers", String(minimumSpeakers));
     form.append("consentConfirmed", consentConfirmed ? "true" : "false");
     if (participants) form.append("participants", participants);
 

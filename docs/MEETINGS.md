@@ -229,14 +229,26 @@ nothing equivalent, so the voices are told apart from the audio itself
 embedding model turns each stretch into a vector, and the vectors are
 clustered. All ONNX, all local.
 
-**Say how many people are in the meeting.** The Record dialog asks, and it
-matters more than it looks. Left to work the number out for itself the
-clustering over-splits badly on real meeting audio — on a genuine three-person
-call it found 46 speakers at the default setting and still 24 at the most
-conservative one, because people talked over each other and a half-second of
-two voices at once embeds like neither of them. Given the number it is
-reliable. Without one, diarisation still runs and the meeting page says the
-count was guessed.
+**The speaker count is a hint, not a requirement.** You do not always know how
+many people will be at a meeting, and a club night has no guest list, so
+nothing about the transcript depends on being told.
+
+Raw clustering does splinter badly — 17 speakers on a genuine three-person
+call, because a stretch of crosstalk embeds unlike the same person speaking
+normally. That is fixed by merging afterwards on the average voice of each
+cluster (`consolidate()`), which brings the same call to 3. Measured across
+three recordings, truth in brackets: raw clustering gave 5 [2], 17 [3], 2 [3];
+after consolidation, 3 [2], 3 [3], 2 [3].
+
+The merge threshold is set to **over-split rather than over-merge**, and the
+asymmetry is the point. A person split in two is visible — somebody sees two
+labels saying the same kind of thing and renames both, and they merge. Two
+people merged into one is invisible, and attributes one person's words to
+another with nothing in the transcript hinting at it.
+
+The dialog asks for a *minimum* — "at least five" — which acts as a floor on
+the merging for somebody who knows roughly how many were there. It never
+invents speakers that are not in the audio.
 
 Two details worth knowing before changing any of this:
 

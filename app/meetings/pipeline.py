@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
-from app.meetings.diarize import assign, diarize, speaker_change_points
+from app.meetings.diarize import assign, consolidate, diarize, speaker_change_points
 from app.meetings.enrollment import cluster_embeddings, identify, rescore_cues
 from app.meetings.vocabulary import VocabularyReport, correct_texts
 
@@ -101,6 +101,7 @@ async def transcribe(
     work_dir: Path,
     on_progress=None,
     expected_speakers: int | None = None,
+    minimum_speakers: int | None = None,
     voice_prints: list | None = None,
 ) -> TranscriptionOutcome:
     """Turn one recorded audio file into timestamped cues and WEBVTT.
@@ -151,6 +152,22 @@ async def transcribe(
         expected_speakers=expected_speakers,
         threads=min(config.threads, 4),
     )
+    # Nobody said how many people were here, which is the normal case — you do
+    # not always know, and a club meeting does not have a guest list. Raw
+    # clustering splinters badly on real audio (17 speakers on a genuine
+    # three-person call), so clusters that are the same voice are merged back
+    # together before anything else uses them.
+    if expected_speakers is None and speakers.ok:
+        try:
+            speakers = consolidate(
+                speakers,
+                cluster_embeddings(wav, speakers.turns, config.embedding_model,
+                                   threads=min(config.threads, 4)),
+                minimum_speakers=minimum_speakers,
+            )
+        except Exception as exc:
+            logger.warning("Speaker consolidation failed, using raw clusters: %s", exc)
+
     boundaries = speaker_change_points(speakers)
 
     if on_progress:
@@ -254,11 +271,10 @@ def _apply_speakers(cues, result, names=None):
     found = len(counts)
     if result.estimated:
         note = (
-            f"{found} speakers were identified, but nobody said how many people "
-            "were in the meeting, so that number was guessed. On a recording "
-            "where people talk over each other the guess splits one person into "
-            "several — say how many were there when you record, and re-record "
-            "if these look wrong."
+            f"{found} speakers were identified from the audio. Where people talk "
+            "over each other this can split one person across two labels — if "
+            "two of these are the same person, rename them to the same name and "
+            "they merge."
         )
     elif names:
         recognised = sum(1 for speaker in counts if speaker in names)

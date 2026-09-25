@@ -1045,11 +1045,11 @@
     } catch (_) {}
 
 
-    const speakerInput = el("input", { type: "number", min: "1", max: "20", placeholder: "e.g. 4" });
+    const speakerInput = el("input", { type: "number", min: "1", max: "40", placeholder: "Leave blank if you don't know" });
     body.appendChild(field("Meeting name", titleInput));
     body.appendChild(field("Project", projSelect));
-    body.appendChild(field("How many people will be speaking?", speakerInput,
-      "Worth filling in. Left to guess from the audio alone it over-counts badly when people talk over each other — on a real three-person call it found twenty-four. Given the number, it is reliable. You can rename the speakers afterwards."));
+    body.appendChild(field("At least how many people? (optional)", speakerInput,
+      "Only if you happen to know, and a rough floor is fine — “at least 5” for a club meeting nobody counted. Speakers are worked out from the audio either way; this just stops the count being merged below what you know is there."));
     const roomMode = el("input", { type: "checkbox", checked: true });
     body.appendChild(check(useMic, "This device's microphone", "For a meeting in a room, and for your own voice on a call."));
     body.appendChild(check(roomMode, "Several people in the room",
@@ -1062,8 +1062,8 @@
     const whoElse = el("input", { placeholder: "e.g. Luke, Priya, Ravi" });
     body.appendChild(check(consent, "Everyone present knows they are being recorded",
       "In several US states every party has to agree. This records that you said so, with your name and the time — it is your statement, not proof."));
-    body.appendChild(field("Who else is here", whoElse,
-      "Optional. Stored with the meeting so there is a record of who was in the room."));
+    body.appendChild(field("Who else is here (optional)", whoElse,
+      "As many or as few as you know. Stored with the meeting as a record of who was in the room; it does not affect the transcript."));
 
     const startBtn = el("button", { class: "btn primary" }, "Start recording");
     const error = el("p", { class: "form-error", hidden: true });
@@ -1083,7 +1083,7 @@
           useSystem: useSystem.checked,
           roomMode: roomMode.checked,
           deviceId: micSelect.value || null,
-          expectedSpeakers: parseInt(speakerInput.value, 10) || null,
+          minimumSpeakers: parseInt(speakerInput.value, 10) || null,
           consentConfirmed: consent.checked,
           participants: whoElse.value.trim() || null,
         });
@@ -1196,7 +1196,7 @@
         title: session.meetingTitle,
         projectId: session.options.projectId,
         notes: session.options.notes,
-        expectedSpeakers: session.options.expectedSpeakers,
+        minimumSpeakers: session.options.minimumSpeakers,
         consentConfirmed: session.options.consentConfirmed,
         participants: session.options.participants,
         durationSeconds,

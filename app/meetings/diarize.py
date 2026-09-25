@@ -199,6 +199,118 @@ def flatten(turns: list[SpeakerTurn]) -> list[SpeakerTurn]:
     return sorted(timeline, key=lambda t: t.start_ms)
 
 
+# Two clusters whose average voice is at least this alike are the same person.
+#
+# Chosen to over-split rather than over-merge, and that asymmetry is the whole
+# point: if one person is split in two, somebody sees "Speaker 1" and
+# "Speaker 3" saying the same kind of thing and renames both — visible and
+# fixable. If two people are merged, one person's words are attributed to the
+# other, invisibly, and nothing in the transcript hints at it.
+#
+# Measured over three recordings (truth in brackets): raw clustering gave
+# 5 [2], 17 [3] and 2 [3]. At 0.56 it gives 2, 2, 2; at 0.60 it gives 3, 3, 2.
+# 0.60 is exact on the hardest real case and splits one speaker on the easy
+# one, which is the error worth having.
+MERGE_SIMILARITY = 0.60
+
+# A "speaker" holding less than this much speech in the whole meeting is a
+# door, a cough, or a half-second of two people at once — not a person.
+MIN_SPEAKER_SPEECH_S = 2.0
+
+
+def _centroid(vectors: list):
+    import numpy
+
+    stacked = numpy.mean(numpy.asarray(vectors, dtype=numpy.float32), axis=0)
+    norm = numpy.linalg.norm(stacked)
+    return stacked / norm if norm else stacked
+
+
+def consolidate(
+    result: DiarizationResult,
+    vectors: dict[int, list[float]],
+    minimum_speakers: int | None = None,
+    similarity: float = MERGE_SIMILARITY,
+    min_speech_s: float = MIN_SPEAKER_SPEECH_S,
+) -> DiarizationResult:
+    """Merge clusters that are the same voice, and drop the ones that are noise.
+
+    Left to itself the clustering splinters badly on real meeting audio — 17
+    speakers on a genuine three-person call — because a stretch of crosstalk or
+    a two-second interjection embeds unlike the same person speaking normally.
+    Merging afterwards, on the average voice of each cluster, recovers most of
+    it: that same call resolves to 3.
+
+    This is what makes "how many people are here?" a hint rather than a
+    requirement. `minimum_speakers` is a floor for somebody who knows there are
+    *at least* four people but not exactly how many — merging stops there
+    rather than collapsing further.
+    """
+    import numpy
+
+    if not result.ok or not vectors:
+        return result
+
+    seconds: dict[int, float] = {}
+    for turn in flatten(result.turns):
+        seconds[turn.speaker] = seconds.get(turn.speaker, 0) + (turn.end_ms - turn.start_ms) / 1000
+
+    # Clusters too small to be a person are set aside, not deleted: their turns
+    # still hold speech, and are folded into whichever surviving voice they are
+    # closest to further down.
+    real = [s for s in vectors if seconds.get(s, 0) >= min_speech_s]
+    if not real:
+        return result
+
+    groups: list[list[int]] = [[speaker] for speaker in real]
+    floor = max(1, minimum_speakers or 1)
+
+    while len(groups) > floor:
+        best = None
+        for a in range(len(groups)):
+            for b in range(a + 1, len(groups)):
+                score = float(
+                    numpy.dot(
+                        _centroid([vectors[s] for s in groups[a]]),
+                        _centroid([vectors[s] for s in groups[b]]),
+                    )
+                )
+                if score >= similarity and (best is None or score > best[0]):
+                    best = (score, a, b)
+        if best is None:
+            break
+        _score, a, b = best
+        groups[a] = groups[a] + groups[b]
+        groups.pop(b)
+
+    # Every original cluster maps to a surviving one: the group it joined, or
+    # for the noise clusters, whichever surviving voice they sound most like.
+    mapping: dict[int, int] = {}
+    for index, group in enumerate(groups):
+        for speaker in group:
+            mapping[speaker] = index
+    for speaker in vectors:
+        if speaker in mapping:
+            continue
+        candidate = numpy.asarray(vectors[speaker], dtype=numpy.float32)
+        scores = [
+            float(numpy.dot(candidate, _centroid([vectors[s] for s in group])))
+            for group in groups
+        ]
+        mapping[speaker] = int(numpy.argmax(scores)) if scores else 0
+
+    turns = [
+        SpeakerTurn(turn.start_ms, turn.end_ms, mapping.get(turn.speaker, 0))
+        for turn in result.turns
+    ]
+    return DiarizationResult(
+        turns=turns,
+        speaker_count=len({t.speaker for t in turns}),
+        estimated=result.estimated,
+        note=result.note,
+    )
+
+
 def speaker_change_points(result: DiarizationResult) -> list[int]:
     """Only the moments where the speaker actually changes.
 

@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.meetings.screen import ScreenTimeline
+
 logger = logging.getLogger(__name__)
 
 # A live session with nothing arriving for this long is assumed abandoned — a
@@ -58,6 +60,9 @@ class LiveSession:
     so a clip that transcribes to nothing can be dropped without leaving a gap
     in the middle of a sentence."""
     failures: int = 0
+    screen: ScreenTimeline = field(default_factory=ScreenTimeline)
+    """What the meeting window itself said about who was speaking. Populated
+    from video frames during an online call; empty for a meeting in a room."""
 
     @property
     def text(self) -> str:
@@ -70,6 +75,8 @@ class LiveSession:
             "failures": self.failures,
             "seconds": round(time.monotonic() - self.started_at, 1),
             "text": self.text,
+            "namesOnScreen": list(self.screen.roster),
+            "framesRead": self.screen.frames,
             "provisional": True,
             "note": (
                 "Live preview — no speaker names, and not corrected. The full "

@@ -101,6 +101,10 @@
           );
         }
         this.streams.push(display);
+        // Already requested, previously thrown away: the meeting window draws
+        // participant names and rings whoever is speaking, which beats
+        // inferring speakers from voices because it is not an inference.
+        this.displayStream = display;
         const audioTracks = display.getAudioTracks();
         if (!audioTracks.length) {
           await this.release();
@@ -226,11 +230,43 @@
       this.raf = requestAnimationFrame(tick);
     }
 
+    /* Grab a still from the shared tab every few seconds. The frame is sent,
+     * read for names, and discarded server-side — never written anywhere. */
+    startScreenReading(onFrame, seconds = 4) {
+      if (!this.displayStream || this.stopped) return;
+      const track = this.displayStream.getVideoTracks()[0];
+      if (!track) return;
+      const video = document.createElement("video");
+      video.srcObject = new MediaStream([track]);
+      video.muted = true;
+      const canvas = document.createElement("canvas");
+      const tick = async () => {
+        if (this.stopped) return;
+        try {
+          if (video.videoWidth) {
+            // Downscaled: OCR reads a 1280-wide frame as well as a 4K one and
+            // a smaller upload keeps this out of the recording's way.
+            const scale = Math.min(1, 1280 / video.videoWidth);
+            canvas.width = Math.round(video.videoWidth * scale);
+            canvas.height = Math.round(video.videoHeight * scale);
+            canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+            const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.7));
+            if (blob) await onFrame(blob, Date.now() - this.startedAt.getTime());
+          }
+        } catch (_) { /* a dropped frame costs a name, never the recording */ }
+        if (!this.stopped) this.screenTimer = setTimeout(tick, seconds * 1000);
+      };
+      video.play().then(() => { this.screenTimer = setTimeout(tick, 1500); }).catch(() => {});
+      this.screenVideo = video;
+    }
+
     async stop() {
       if (this.stopped) return null;
       this.stopped = true;
       if (this.raf) cancelAnimationFrame(this.raf);
       if (this.previewTimer) clearTimeout(this.previewTimer);
+      if (this.screenTimer) clearTimeout(this.screenTimer);
+      if (this.screenVideo) { this.screenVideo.srcObject = null; this.screenVideo = null; }
       const blob = await new Promise((resolve) => {
         if (!this.recorder || this.recorder.state === "inactive") {
           resolve(new Blob(this.chunks, { type: this.mime || "audio/webm" }));
@@ -253,7 +289,7 @@
     }
   }
 
-  function upload({ blob, startedAt, mime, title, projectId, notes, minimumSpeakers, consentConfirmed, participants, durationSeconds, onProgress }) {
+  function upload({ blob, startedAt, mime, title, projectId, notes, minimumSpeakers, consentConfirmed, participants, liveSessionId, durationSeconds, onProgress }) {
     const form = new FormData();
     form.append("audio", blob, "recording" + extensionFor(mime));
     form.append("title", title || "");
@@ -264,6 +300,7 @@
     if (minimumSpeakers) form.append("minimumSpeakers", String(minimumSpeakers));
     form.append("consentConfirmed", consentConfirmed ? "true" : "false");
     if (participants) form.append("participants", participants);
+    if (liveSessionId) form.append("liveSessionId", liveSessionId);
 
     // XHR rather than fetch: an hour of audio is a real upload and the person
     // deserves a progress bar, which fetch cannot report.
@@ -301,8 +338,20 @@
     return res.json();
   }
 
+  async function sendFrame(sessionId, blob, atMs) {
+    const form = new FormData();
+    form.append("image", blob, "frame.jpg");
+    form.append("atMs", String(Math.round(atMs)));
+    const res = await fetch(`/workspace/api/meetings/live/${sessionId}/frame`, {
+      method: "POST", body: form, credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("frame refused");
+    return res.json();
+  }
+
   window.BedrockRecorder = {
     sendClip,
+    sendFrame,
     Session,
     upload,
     listMicrophones,

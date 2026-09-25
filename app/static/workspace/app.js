@@ -17,6 +17,7 @@
   let recording = null;          // the active BedrockRecorder.Session
   let liveSessionId = null;      // preview session on the server, if any
   let livePreviewText = "";
+  let liveNamesOnScreen = [];   // participant names read off the meeting window
   let recordingJobs = [];        // uploads being transcribed, newest first
   let recordingJobPoll = null;
 
@@ -978,6 +979,10 @@
       el("span", { class: "muted small" },
         "Rough, and without speaker names. The full transcript is made when you stop."),
     ]));
+    if (liveNamesOnScreen.length) {
+      box.appendChild(el("div", { class: "muted small", style: "margin-bottom:6px" },
+        "Reading names from the meeting window: " + liveNamesOnScreen.join(", ")));
+    }
     const text = el("div", { class: "live-preview-text muted" }, livePreviewText || "Listening…");
     box.appendChild(text);
     if (recordingUI) recordingUI.preview = text;
@@ -1127,9 +1132,20 @@
     // Preview is best-effort: a meeting must never fail to record because the
     // words could not be shown while it happened.
     livePreviewText = "";
+    liveNamesOnScreen = [];
     liveSessionId = null;
     try {
       liveSessionId = (await api("/meetings/live", { method: "POST", body: {} })).id;
+      // For an online call, read the names and the active-speaker ring off the
+      // meeting's own window. Frames are discarded server-side.
+      session.startScreenReading(async (frame, atMs) => {
+        if (!liveSessionId) return;
+        try {
+          const seen = await Recorder.sendFrame(liveSessionId, frame, atMs);
+          if (seen && seen.roster) liveNamesOnScreen = seen.roster;
+        } catch (_) { /* a dropped frame costs a name, never the recording */ }
+      });
+
       session.startPreview(async (clip) => {
         if (!liveSessionId) return;
         try {
@@ -1165,11 +1181,10 @@
     window.removeEventListener("beforeunload", warnWhileRecording);
 
     const result = await session.stop();
-    if (liveSessionId) {
-      const finished = liveSessionId;
-      liveSessionId = null;
-      api(`/meetings/live/${finished}`, { method: "DELETE" }).catch(() => {});
-    }
+    // Held until after the upload: the server reads the screen timeline off
+    // this session to name the speakers, so it must outlive the recording.
+    const finishedLiveSession = liveSessionId;
+    liveSessionId = null;
     livePreviewText = "";
     renderCenter(true);
     if (!result || !result.blob.size) {
@@ -1199,6 +1214,7 @@
         minimumSpeakers: session.options.minimumSpeakers,
         consentConfirmed: session.options.consentConfirmed,
         participants: session.options.participants,
+        liveSessionId: finishedLiveSession,
         durationSeconds,
         onProgress: (fraction) => {
           pending.stage = "Uploading " + Math.round(fraction * 100) + "%";
@@ -1208,6 +1224,9 @@
         },
       });
       recordingJobs = recordingJobs.map((j) => (j.id === pending.id ? job : j));
+      if (finishedLiveSession) {
+        api(`/meetings/live/${finishedLiveSession}`, { method: "DELETE" }).catch(() => {});
+      }
       startJobPolling();
     } catch (err) {
       recordingJobs = recordingJobs.map((j) =>

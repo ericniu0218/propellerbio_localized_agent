@@ -180,6 +180,7 @@ async def process(
     consent: dict | None = None,
     access_groups: list[str] | None = None,
     voice_prints: list | None = None,
+    screen=None,
 ) -> None:
     """The whole path from a file on disk to a meeting somebody can ask about."""
 
@@ -194,6 +195,7 @@ async def process(
         expected_speakers=expected_speakers,
         minimum_speakers=minimum_speakers,
         voice_prints=voice_prints,
+        screen=screen,
     )
     outcome = await summarise(
         outcome,

@@ -45,6 +45,7 @@ from app.meetings.governance import capture_consent, consent_required
 from app.meetings.job_store import PersistedJob, RecordingJobStore
 from app.meetings.jobs import RecordingJob, RecordingJobs, process
 from app.meetings.live import LiveSessions, transcribe_clip
+from app.meetings.screen import SCREEN_AVAILABLE, read as read_frame
 from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
 from app.meetings.retention import audio_retention_days, sweep, transcript_retention_days
 from app.meetings.vocabulary_source import auto_enabled, suggest
@@ -94,6 +95,7 @@ async def create_recording(
     durationSeconds: float | None = Form(None),
     expectedSpeakers: int | None = Form(None),
     minimumSpeakers: int | None = Form(None),
+    liveSessionId: str | None = Form(None),
     consentConfirmed: bool = Form(False),
     participants: str | None = Form(None),
     user=Depends(identity),
@@ -182,6 +184,9 @@ async def create_recording(
     )
     _jobs.register(job)
 
+    live_session = _live.get(user["id"], liveSessionId) if liveSessionId else None
+    screen = live_session.screen if live_session else None
+
     _job_store.save(
         PersistedJob(
             id=job_id, owner=user["id"], title=job.title,
@@ -194,7 +199,7 @@ async def create_recording(
     )
     _jobs.start(job, _runner_for(job, recording_config, workspace, projectId, notes,
                                  started_at, expectedSpeakers, consent, user["id"],
-                                 minimumSpeakers))
+                                 minimumSpeakers, screen))
     workspace.audit(user["id"], "recorded meeting", job_id)
     return job.public()
 
@@ -387,6 +392,56 @@ async def live_clip(
     return session.public()
 
 
+@router.post("/live/{session_id}/frame")
+async def live_frame(
+    session_id: str,
+    image: UploadFile = File(...),
+    atMs: int = Form(0),
+    user=Depends(identity),
+):
+    """One frame of the meeting window: read the names off it, then discard it.
+
+    For an online call the answer to "who said that?" is already on screen —
+    every client draws participant names and rings whoever is speaking. This
+    reads that, which beats inferring it from voices because it is not an
+    inference at all.
+
+    **The image is never written to disk.** A meeting recording is audio; a
+    meeting *video* is people's faces in their homes, and keeping those would
+    be a far bigger thing to hold than a transcript. The bytes are read into
+    memory, the names come out, and the frame is gone when this returns.
+    """
+    session = _live.get(user["id"], session_id)
+    if session is None:
+        raise HTTPException(404, "That preview session is unavailable or has expired.")
+    if not SCREEN_AVAILABLE:
+        return {"ok": False, "reason": "screen reading unavailable"}
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        raw = await image.read()
+        if len(raw) > 8 * 1024 * 1024:
+            raise HTTPException(413, "That frame is too large.")
+        with Image.open(BytesIO(raw)) as frame:
+            reading = read_frame(frame.convert("RGB"))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.debug("Could not read a meeting frame: %s", exc)
+        return {"ok": False, "reason": "unreadable"}
+
+    session.screen.observe(atMs, reading)
+    return {
+        "ok": True,
+        "active": reading.active,
+        "roster": list(session.screen.roster),
+        "frames": session.screen.frames,
+    }
+
+
 @router.get("/live/{session_id}")
 def live_preview(session_id: str, user=Depends(identity)):
     session = _live.get(user["id"], session_id)
@@ -464,7 +519,7 @@ def run_retention_sweep() -> dict:
 
 
 def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
-                expected_speakers, consent, owner, minimum_speakers=None):
+                expected_speakers, consent, owner, minimum_speakers=None, screen=None):
     """One runner shape for both a fresh upload and a recovered job."""
 
     async def runner(running_job: RecordingJob) -> None:
@@ -482,6 +537,7 @@ def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
             minimum_speakers=minimum_speakers,
             consent=consent,
             voice_prints=prints,
+            screen=screen,
         )
 
     return runner

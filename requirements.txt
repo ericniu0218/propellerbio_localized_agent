@@ -42,6 +42,14 @@ soundfile>=0.12     # reads the 16 kHz WAV the diariser is handed
 # Guarded: without it, ranking falls back to keyword overlap.
 model2vec>=0.9
 
+# Reading the meeting window (app/meetings/screen.py). For an online call the
+# answer to "who said that?" is already on screen — every client draws
+# participant names and rings whoever is speaking — so this reads it instead of
+# inferring speakers from voices. ONNX again, no PyTorch. Guarded: without it,
+# speakers fall back to being worked out from the audio.
+rapidocr-onnxruntime>=1.2
+pillow>=10.0
+
 # Optional biotech tool dependencies — imports are guarded so the app still
 # runs without them (stub results instead); install for real tool behavior.
 biopython>=1.83

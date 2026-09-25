@@ -269,6 +269,37 @@ Labels are provisional. `POST /workspace/api/meetings/{id}/speakers` replaces
 people list in one pass — the Meetings page has the form. An action item owned
 by "Speaker 2" is no more use than one owned by nobody.
 
+### Online calls name themselves
+
+For a meeting in a browser tab, the answer to "who said that?" is already on
+the screen. Every client draws participant names under the tiles and puts a
+coloured ring around whoever is speaking, so `app/meetings/screen.py` reads
+that instead of inferring it: frames are sampled every few seconds, OCR'd for
+names, and the ring is found by looking for the one strongly saturated thing on
+an otherwise grey screen — which is why it survives a re-theme, a platform
+change and dark mode without knowing Zoom's brand colour.
+
+The video track was always there. `getDisplayMedia` only offers tab audio if
+video is requested too, so the recorder has asked for a video track since the
+beginning and thrown it away.
+
+**No frame is stored.** A meeting recording is audio; a meeting *video* is
+people's faces in their homes. Frames are read and discarded in the same
+function call, and what survives is a list of names and the seconds they were
+speaking.
+
+**Name each line, not each cluster.** This is the mistake worth not repeating.
+Naming diarised *clusters* and letting labels flow down to their lines makes
+the names inherit every clustering error — when two people merged into one
+cluster, 3 of 10 lines came out right. Naming each line from what the window
+showed at that moment made it 7 of 8, with all three people identified,
+because it no longer depends on how well the voices separated. Clustering is
+the hard part; the screen is the certain one.
+
+Sampling interval matters too. Turns run three to five seconds, so a "nearby"
+window of four seconds swallows the turns on both sides: observations inside a
+line are used on their own, and only if there are none does it widen.
+
 ### Recording a room full of people
 
 The Record dialog's "Several people in the room" box turns off the echo

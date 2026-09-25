@@ -103,6 +103,7 @@ async def transcribe(
     expected_speakers: int | None = None,
     minimum_speakers: int | None = None,
     voice_prints: list | None = None,
+    screen=None,
 ) -> TranscriptionOutcome:
     """Turn one recorded audio file into timestamped cues and WEBVTT.
 
@@ -202,20 +203,58 @@ async def transcribe(
         for cue, text in zip(cues, repaired)
     ]
 
-    # Enrolled voices turn "Speaker 2" into "Priya". A cluster matching nobody
-    # keeps its placeholder rather than being given the closest name.
+    # Names come from three places, in order of how much they are worth.
+    #
+    # First the meeting window itself, if this was an online call: every client
+    # draws participant names and rings whoever is speaking, so that is not an
+    # inference at all — it is what the software displayed at the time. It
+    # needs no enrolment and no guess about how many people are there.
     names: dict[int, str] = {}
+    if screen is not None and getattr(screen, "ok", False) and speakers.ok:
+        try:
+            names = screen.name_clusters(speakers.turns)
+        except Exception as exc:
+            logger.warning("Could not name speakers from the meeting window: %s", exc)
+
+    # Then enrolled voices, for whoever the screen did not account for — an
+    # in-person meeting, or somebody whose tile was never highlighted.
     if voice_prints and speakers.ok:
         try:
-            names = identify(
+            from_voice = identify(
                 cluster_embeddings(wav, speakers.turns, config.embedding_model,
                                    threads=min(config.threads, 4)),
                 voice_prints,
             )
+            taken = set(names.values())
+            for speaker, name in from_voice.items():
+                if speaker not in names and name not in taken:
+                    names[speaker] = name
+                    taken.add(name)
         except Exception as exc:  # never lose a meeting over a name
             logger.warning("Voice-print matching failed: %s", exc)
 
-    cues, speaker_note, speaker_count = _apply_speakers(cues, speakers, names)
+    cues, speaker_note, speaker_count = _apply_speakers(
+        cues, speakers, names, from_screen=bool(screen is not None and getattr(screen, 'ok', False))
+    )
+
+    # Then, where the meeting window saw who was speaking, let it overrule the
+    # label a cue inherited from its cluster. Clustering is the hard part and
+    # the screen is the certain one, so a line the window can account for
+    # should not be at the mercy of how well the voices separated.
+    if screen is not None and getattr(screen, "ok", False):
+        try:
+            direct = screen.name_cues(cues)
+            for index, name in direct.items():
+                cues[index] = replace(cues[index], speaker=name)
+            if direct:
+                named = len({n for n in direct.values()})
+                speaker_note = (
+                    f"{len(direct)} of {len(cues)} lines were named directly from the "
+                    f"meeting window ({named} people). Anything left is from the audio."
+                )
+                speaker_count = max(speaker_count, named)
+        except Exception as exc:
+            logger.warning("Could not name lines from the meeting window: %s", exc)
 
     # A cue near a handover inherits whichever cluster won the overlap, which
     # is where most misattribution comes from. Cues long enough to embed on
@@ -250,7 +289,7 @@ async def transcribe(
     return outcome
 
 
-def _apply_speakers(cues, result, names=None):
+def _apply_speakers(cues, result, names=None, from_screen=False):
     """Label the cues with who said them, or explain why nobody could be.
 
     Returns the cues, one plain-language note for the person who recorded, and
@@ -278,9 +317,10 @@ def _apply_speakers(cues, result, names=None):
         )
     elif names:
         recognised = sum(1 for speaker in counts if speaker in names)
+        source = "read from the meeting window" if from_screen else "matched to a saved voice"
         note = (
-            f"{found} speakers were identified, {recognised} of them matched to a "
-            "saved voice. Any still labelled 'Speaker N' can be renamed here."
+            f"{found} speakers were identified, {recognised} of them {source}. "
+            "Any still labelled 'Speaker N' can be renamed here."
         )
     else:
         note = (

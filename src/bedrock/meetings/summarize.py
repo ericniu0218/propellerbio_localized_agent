@@ -231,19 +231,34 @@ Rules:
   from two different lines. It is what proves the timestamp, and an item whose
   quote cannot be found in the transcript keeps its text but loses its citation.
 - Use the timestamp shown at the start of the line the quote came from.
-- If this part contains none, return empty arrays. Never invent one.
+- If this part contains none, return empty arrays. Never invent one. Most
+  conversations are not working meetings: people catch up, argue, joke and
+  wander, and decide nothing at all. Empty arrays are the correct answer for
+  those, and are far better than promoting a name somebody mentioned or a
+  round of "yeah, okay" into a decision.
+- A decision or an action is a statement about something happening. A single
+  word, a name, or a run of agreement is neither, however clearly it was said.
 
 Transcript part:
 {transcript}
 """
 
 _OVERVIEW_PROMPT = """\
-Write an overview of this meeting: what it was about and where it landed.
+Write an overview of this recording: what was talked about, and what came of it.
 
 Keep every specific. Numbers, dates, deadlines, names and statuses go in \
 exactly as said - write "enrollment is 148 of 200", never "they discussed \
 enrollment numbers". A reader who was not there should learn the actual \
 figures from this paragraph, not learn that figures exist.
+
+Do not assume this was a working meeting. It may be a social conversation, a \
+class, an interview, or people talking around a table with no agenda. Describe \
+what it actually was. If nothing was decided and nobody agreed to do anything, \
+say so plainly in one sentence rather than implying otherwise - that is a \
+normal outcome and a useful thing for the reader to know.
+
+Do not guess at the format or the occasion. If the transcript does not say it \
+was a podcast, an interview or a meeting, do not call it one.
 
 Plain prose, no headings, no bullet points. Use only what the transcript says.
 
@@ -445,6 +460,49 @@ def _is_unusable_owner(value: object) -> bool:
     return _is_schema_echo(value) or cleaned in _PRONOUN_OWNERS
 
 
+# Words that carry no content on their own. A "decision" made of these is
+# somebody agreeing, not a decision — "we can do that. Yeah, okay. Yeah, yeah,
+# I like that" came back as one from a real recording.
+_FILLER = frozenset(
+    """a an and are as at be been but by can could did do does for from had has
+    have i if in is it its me my of on or our so that the their them then there
+    these they this to us was we were what when where which who why will with
+    would you your yeah yes ok okay right sure like just really very gonna
+    wanna kinda sorta um uh hmm oh well no not now here also too said say says
+    get got go going come came thing things stuff bro dude guys man""".split()
+)
+
+# Below this a "decision" is a noun somebody said out loud. A forty-minute
+# social meeting produced "Momo's", "Sherpa", "Solace", "Ilan" and "Evers" as
+# decisions — every one a word from the conversation, every one with a quote
+# that matched, and not one of them a decision. A decision or an action is a
+# statement about something happening; it takes a few words to make one.
+MIN_POINT_WORDS = 3
+MIN_CONTENT_WORDS = 2
+
+
+def _is_substantive(text: str) -> bool:
+    """Whether a point says something, rather than merely being words.
+
+    Deterministic on purpose. Asking a model to be stricter moves the failure
+    around; this removes a whole class of it, and the class is large — on a
+    casual conversation most of what comes back is a proper noun or a run of
+    agreement.
+    """
+    words = re.findall(r"[A-Za-z0-9$']+", text)
+    if len(words) < 2:
+        return False
+    # A figure is a fact on its own — "148 of 200" is exactly the kind of
+    # detail worth keeping, and holding it to a sentence's worth of words
+    # would throw away the most concrete thing in the transcript.
+    if any(character.isdigit() for character in text):
+        return True
+    if len(words) < MIN_POINT_WORDS:
+        return False
+    content = [w for w in words if w.casefold() not in _FILLER and len(w) > 2]
+    return len(content) >= MIN_CONTENT_WORDS
+
+
 def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]:
     if not isinstance(raw_items, list):
         return []
@@ -453,7 +511,7 @@ def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]
         if not isinstance(item, dict):
             continue
         text = str(item.get("text") or "").strip()
-        if not text or _is_schema_echo(text):
+        if not text or _is_schema_echo(text) or not _is_substantive(text):
             continue
         owner = item.get("owner") if with_owner else None
         # A dropped owner costs the reader a name. A placeholder owner tells

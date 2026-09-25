@@ -321,11 +321,13 @@ async def test_one_unparseable_chunk_does_not_lose_the_others():
 
 async def test_json_wrapped_in_a_code_fence_is_still_read():
     backend = FakeBackend([
-        "```json\n" + extraction(decisions=[{"text": "Fenced", "timestamp": "00:00:12"}]) + "\n```",
+        # A realistic decision, not a marker word: the substance gate drops a
+        # bare noun, and this test is about the code fence, not the content.
+        "```json\n" + extraction(decisions=[{"text": "Move the interim analysis to March", "timestamp": "00:00:12"}]) + "\n```",
         "overview",
     ])
     summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
-    assert summary.decisions[0].text == "Fenced"
+    assert summary.decisions[0].text == "Move the interim analysis to March"
 
 
 async def test_notes_become_the_skeleton_of_the_output():

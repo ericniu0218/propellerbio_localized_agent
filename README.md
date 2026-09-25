@@ -239,7 +239,14 @@ the same papers produces a byte-identical report.
 
 A review runs **beside the chat**: keep asking questions while it works. Its
 calls queue behind your own, so at worst you wait for the one call in flight.
-`Esc` stops a streaming reply, never a review.
+On a laptop that can be a minute or two, because an extraction call may write
+4,096 tokens. `Esc` stops a streaming reply, never a review.
+
+On a machine that holds one model at a time (the `laptop` profile's Ollama
+settings), chat with the review's model while it runs. Otherwise every chat
+message makes the server unload one model and load the other; `/review` says
+so when it starts. Conversation titles also wait until the review finishes,
+because they only run when the server is idle.
 
 **What it needs.** A 16 GB machine or better, and a context window of at least
 12,288 tokens — extraction sends about 4,300 tokens of prompt and allows a

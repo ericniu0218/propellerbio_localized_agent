@@ -187,6 +187,32 @@ def start_notice(request: ReviewRequest, settings: ReviewSettings) -> str:
     )
 
 
+def model_swap_note(request: ReviewRequest, settings: ReviewSettings, scheduler) -> str | None:
+    """A warning when chatting during this review would make the server swap models.
+
+    On a machine that serves one call at a time (the `laptop` and `workstation`
+    profiles), Ollama is usually set to hold one model in memory. The review's
+    models are pinned for determinism, so if the chat is on a different model,
+    every chat turn sent during the review unloads one model and loads the
+    other, twice - gigabytes each way. That undoes what the laptop profile is
+    for. Nothing is changed automatically: which model the chat uses is the
+    employee's choice, so this only says what it costs and how to avoid it.
+    """
+    if not request.use_model or scheduler is None or scheduler.profile.max_parallel > 1:
+        return None
+    chat_model = scheduler.loaded_model
+    review_models = sorted({spec.name for spec in settings.models.values()})
+    if chat_model is None or not review_models or chat_model in review_models:
+        return None
+    return (
+        f"The chat is on {as_code(chat_model)} and this review uses "
+        f"{', '.join(as_code(name) for name in review_models)}. On a machine that holds one "
+        "model at a time, each chat message sent while the review runs makes the server "
+        "unload one and load the other, which is slow. To avoid it, switch the chat with "
+        f"`/model {review_models[0]}` until the review finishes."
+    )
+
+
 def finish_notice(result, settings: ReviewSettings) -> tuple[str, str]:
     """The receipt for a finished review, and whether it is an error notice.
 
@@ -293,6 +319,9 @@ async def run_review_job(
     from bedrock.litreview.stages.s1_collect import NoPapers
 
     await notify(start_notice(request, settings), "info")
+    note = model_swap_note(request, settings, scheduler)
+    if note:
+        await notify(note, "info")
 
     handler = _NoticeHandler(progress)
     logger = logging.getLogger("bedrock.litreview")

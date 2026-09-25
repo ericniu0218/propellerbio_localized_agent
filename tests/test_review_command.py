@@ -241,6 +241,53 @@ async def test_reviews_does_not_need_the_configured_model_set_to_exist(review_di
 
 
 # ---------------------------------------------------------------------------
+# Chatting during a review on a machine that holds one model
+# ---------------------------------------------------------------------------
+
+
+async def _scheduler_after_chat(profile, chat_model: str | None):
+    """A real Scheduler whose last chat turn (if any) was answered by `chat_model`."""
+    from bedrock.inference import Priority, Scheduler
+
+    scheduler = Scheduler(FakeBackend(models=[MODEL, "llama3.2:3b"]), profile)
+    if chat_model:
+        await scheduler.complete(chat_model, [{"role": "user", "content": "hi"}], priority=Priority.CHAT)
+    return scheduler
+
+
+def _review_settings():
+    from bedrock.litreview.config import load_settings
+
+    return load_settings(Settings(model=MODEL, profile=PROFILES["workstation"]), check_endpoint=False)
+
+
+async def test_a_review_warns_when_the_chat_would_make_the_server_swap_models(models_yaml):
+    from bedrock.litreview.service import ReviewRequest
+    from bedrock.ui.review_command import model_swap_note
+
+    laptop = await _scheduler_after_chat(PROFILES["laptop"], "llama3.2:3b")
+    note = model_swap_note(ReviewRequest(question=QUESTION), _review_settings(), laptop)
+    assert note is not None
+    assert "llama3.2:3b" in note and MODEL in note and f"/model {MODEL}" in note
+
+
+async def test_no_swap_warning_where_no_swap_would_happen(models_yaml):
+    from bedrock.litreview.service import ReviewRequest
+    from bedrock.ui.review_command import model_swap_note
+
+    settings, request = _review_settings(), ReviewRequest(question=QUESTION)
+    # The chat already uses the review's model.
+    assert model_swap_note(request, settings, await _scheduler_after_chat(PROFILES["laptop"], MODEL)) is None
+    # A shared server runs several calls at once and holds several models.
+    assert model_swap_note(request, settings, await _scheduler_after_chat(PROFILES["server"], "llama3.2:3b")) is None
+    # No chat has been answered yet, so nothing is loaded to swap out.
+    assert model_swap_note(request, settings, await _scheduler_after_chat(PROFILES["laptop"], None)) is None
+    # A review without a model never reaches the server.
+    other = await _scheduler_after_chat(PROFILES["laptop"], "llama3.2:3b")
+    assert model_swap_note(ReviewRequest(question=QUESTION, use_model=False), settings, other) is None
+
+
+# ---------------------------------------------------------------------------
 # Beside the chat
 # ---------------------------------------------------------------------------
 

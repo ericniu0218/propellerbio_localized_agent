@@ -30,6 +30,12 @@ from bedrock.config.settings import (
     Settings,
 )
 
+LITREVIEW_MIN_CONTEXT_WINDOW = 12288
+"""The window a literature review needs. Kept as one number here rather than
+imported, so the first-run banner does not load the review package to print a
+sentence; `bedrock.litreview.config` reads the real one from
+`defaults/models.yaml` when a run actually starts."""
+
 
 async def _reachable(url: str, timeout: float = 3.0) -> bool:
     try:
@@ -112,6 +118,18 @@ def server_settings_note(profile: MachineProfile) -> str:
         f"\n    For vLLM, start it with --max-model-len {profile.context_window}. "
         'Choose another profile with profile = "laptop" | "workstation" | "server" in the config file.'
     )
+    if profile.context_window < LITREVIEW_MIN_CONTEXT_WINDOW:
+        # Worth saying here rather than only when a review is started: the
+        # window is a server setting, so changing it means restarting Ollama,
+        # and finding that out mid-review is the expensive way to learn it.
+        advice += (
+            f"\n    `/review` (the literature review) needs context_window >= "
+            f"{LITREVIEW_MIN_CONTEXT_WINDOW:,}: its extraction step sends about "
+            f"4,300 tokens of prompt and allows a 4,096-token reply. Set "
+            f"context_window = {LITREVIEW_MIN_CONTEXT_WINDOW} and "
+            f"OLLAMA_CONTEXT_LENGTH={LITREVIEW_MIN_CONTEXT_WINDOW}, or use the "
+            "workstation profile. Everything else here works as it is."
+        )
     return advice
 
 

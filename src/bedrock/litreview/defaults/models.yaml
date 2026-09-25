@@ -1,0 +1,47 @@
+# Model names for the literature review, and nothing else about the server.
+# The server is bedrock's own (`api_base` in ~/.config/bedrock/config.toml, or
+# BEDROCK_API_BASE), and every call waits its turn in bedrock's scheduler.
+# Model names live here and nowhere else. To change them on one machine, put a
+# whole replacement of this file in ~/.config/bedrock/litreview/models.yaml.
+#
+# Choose a set with `model_set` in [litreview], BEDROCK_LITREVIEW_MODELS or
+# --models. Default: `office` on the `server` machine profile, else `laptop`.
+# Tiers are split by COST, not skill: relevance runs once per paper, so it may
+# use the cheap model; everything else runs tens of times per question.
+
+# Extraction sends about 4,300 prompt tokens and allows a 4,096-token reply.
+# The server's window (bedrock's `context_window`, which must match
+# OLLAMA_CONTEXT_LENGTH or vLLM --max-model-len) must be at least this.
+min_context_window: 12288
+
+model_sets:
+  office:      # the client's GPU, served by vLLM
+    small:  {name: qwen3-8b-instruct, thinking: false}
+    medium: {name: qwen3-30b-a3b-instruct, thinking: false}
+  laptop:      # Ollama on a 16 GB machine
+    small:  {name: "qwen3:8b", thinking: false}
+    medium: {name: "qwen3:8b", thinking: false}
+  medgemma:    # MedGemma 1.5 4B via Ollama; produced docs/litreview/BENCHMARK_RESULTS.md. No thinking mode.
+    small:  {name: "medgemma1.5:4b"}
+    medium: {name: "medgemma1.5:4b"}
+
+# Which tier does which job.
+jobs:
+  question: medium     # read the question: entities, type, goal
+  relevance: small     # grade one paper's title+abstract against the question
+  extract: medium      # copy findings out of one chunk of one section
+  write: medium        # write one report section from its evidence slice
+  judge: medium        # benchmark only: does the cited evidence support a sentence
+  baseline: medium     # benchmark only: the chatbot-style comparison answers
+
+embed:
+  name: embeddinggemma-300m
+  # PICK THIS ONCE. Changing it invalidates every stored vector and forces a
+  # full re-index of the corpus. (Not used yet: ranking is lexical + graded.)
+
+defaults:
+  temperature: 0.0     # do not raise. Sampling is why chatbots give different
+                       # answers to the same question, which is the client's
+                       # loudest complaint.
+  seed: 0
+  max_tokens: 2048

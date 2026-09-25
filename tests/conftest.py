@@ -25,6 +25,7 @@ from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.biotech.confidence import ConfidenceReport, PaeOverview
 from bedrock.config import PROFILES, Settings
 from bedrock.inference import InferenceError, ModelInfo, RequestOptions, Usage, tokens
+from bedrock.litreview import config as litreview_config
 from bedrock.provenance import HistoryStore, RunCatalog, RunError
 from bedrock.storage import ConversationStore
 from bedrock.titles import is_title_request, is_topic_check
@@ -228,6 +229,11 @@ def private_bedrock_directories(tmp_path, monkeypatch):
     Only *defaults* are redirected. ``load_settings`` passes every directory
     explicitly, so configuration precedence is still tested for real, and a
     test that names its own directory still gets that one.
+
+    The literature review keeps its own defaults as module constants rather
+    than on ``Settings`` (they are read at call time so exactly this can be
+    done), so they are redirected here too - otherwise a review test would
+    write its database and reports into a real ``~/.local/share/bedrock``.
     """
     root = tmp_path / "private-bedrock"
     defaults = {
@@ -245,6 +251,9 @@ def private_bedrock_directories(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Settings, "__init__", redirected_init)
     monkeypatch.setenv("BEDROCK_ACTION_HISTORY_DIR", defaults["action_history_dir"])
+
+    monkeypatch.setattr(litreview_config, "DEFAULT_DATA_DIR", root / "litreview")
+    monkeypatch.setattr(litreview_config, "DEFAULT_CONFIG_DIR", root / "litreview-config")
     return root
 
 

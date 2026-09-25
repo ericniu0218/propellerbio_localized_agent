@@ -1,0 +1,61 @@
+# Knobs for the question -> report pipeline. Code defaults match these values;
+# this file exists so they can be tuned without touching code.
+
+search:
+  # The paper searcher (src/bedrock/litreview/sources/literature.py). Used only when a
+  # search is asked for: `bedrock-litreview search`, or `bedrock-litreview ask --search`.
+  # Merge priority is fixed in code: europepmc, then biorxiv, then pubmed.
+  sources: [europepmc, biorxiv, pubmed]
+  # Records asked of each source, per query. Preprints get a smaller lane.
+  per_query: 100
+  preprints_per_query: 25
+  # Open-access full text (Europe PMC JATS) is fetched for at most this many
+  # of the kept papers, best-ranked first. The rest stay abstract-only.
+  full_text_max: 80
+  full_text_workers: 4
+  # One extra query per question type and per goal: the exact entity terms
+  # AND one of these words. Added to the plain entity query, never replacing
+  # it. Words only — no synonyms for the entity, which only the knowledge
+  # table may supply.
+  focus:
+    target_identification: [knockout, deficient, deficiency, blockade, inhibition, inhibitor,
+                             antagonist, neutralizing, loss-of-function, genetic association,
+                             mendelian randomization, randomized]
+    intervention_efficacy: [randomized, trial, placebo, efficacy, cohort]
+    mechanism: [pathway, signaling, knockout, mechanism]
+    safety: [adverse event, adverse events, safety, toxicity]
+    prevent: [prevention, prevents, prophylaxis, prophylactic, relapse, recurrence, onset]
+
+rank:
+  # How many papers get a model relevance grade, chosen by lexical score among
+  # those that pass the exact-entity gate. The rest are ranked lexically only.
+  # Each grade is one small model call, so this bounds the cost of a question.
+  max_graded: 40
+
+plan:
+  # How many papers are read in full (well: in sections) for one report.
+  # Raised from 12 after the first benchmark with a strong judge: the reports
+  # missed facts that published reviews call key and that the collected papers
+  # do support. Reading is the cost that scales — roughly two minutes a paper
+  # on a laptop — so this is the knob to lower when a question must be fast.
+  max_papers: 16
+  # A paper must be graded at least this relevant to be read for evidence.
+  min_grade: 2
+
+extract:
+  sections: [abstract, results]
+  # Read the Discussion only when a paper has no Results section at all.
+  discussion_when_no_results: true
+  # Long sections are split on paragraph boundaries so the model reads one
+  # manageable piece at a time. ~6000 characters is ~1500 tokens.
+  chunk_chars: 6000
+  methods_context_chars: 2500
+  max_chunks_per_paper: 6
+
+write:
+  # How many candidate targets get their own section. At 6, evidence the
+  # pipeline had extracted never reached the page: the RSV report held
+  # findings on clesrovimab and palivizumab and wrote up neither.
+  max_targets: 10
+  units_per_target: 5
+  max_units_per_section: 14

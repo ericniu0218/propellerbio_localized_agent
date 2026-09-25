@@ -1,0 +1,930 @@
+# Localized Air-Gapped LLM for Literature Review
+
+> **Moved from Localized-Airgap-LLM-for-literature-review at `dc5c0123d8e1`.** In
+> bedrock, `litreview` is `bedrock-litreview` (or `/review` in the app),
+> `--profile` is `--models`, `config/*.yaml` is
+> `src/bedrock/litreview/defaults/*.yaml`, `evals/` is `evals/litreview/`,
+> and the HTTP API is `bedrock.litreview.api` (install the `api` extra).
+> See `docs/prompts/LITREVIEW_INTEGRATION.md` §3.
+>
+> This document is the pipeline's own README: what it does, why it is a
+> pipeline rather than an agent, and what each stage owes the next. All of that
+> is unchanged by the move. The rules for working on it are in
+> `src/bedrock/litreview/CLAUDE.md`.
+
+A local AI system that researches a drug target and writes a cited report —
+running entirely on Propeller Bio's own in-office GPU, so no data ever leaves
+their network.
+
+**Client:** [Propeller Bio](https://propeller.bio/) — Bay Area biotech developing
+biologic therapeutics (antibodies, peptides, siRNAs) that target multiple
+disease-driving pathways at once for synergistic effects. Focus areas:
+immunology & inflammation (I&I), obesity, and CNS disease.
+
+**Built by:** Bedrock Technical Consulting, 4 engineers.
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Why it has to be local](#why-it-has-to-be-local)
+- [The core decision: pipeline, not free-form agent](#the-core-decision-pipeline-not-free-form-agent)
+- [The data model](#the-data-model)
+- [The pipeline, stage by stage](#the-pipeline-stage-by-stage)
+- [Models](#models)
+- [Fixing the client's three complaints](#fixing-the-clients-three-complaints)
+- [The paper searcher](#the-paper-searcher)
+- [Paywalls, and what we will not do](#paywalls-and-what-we-will-not-do)
+- [Patents](#patents)
+- [Repository layout](#repository-layout)
+- [Current state](#current-state)
+- [Getting started](#getting-started)
+- [The team](#the-team)
+- [Timeline](#timeline)
+- [How we measure it](#how-we-measure-it)
+- [Results](#results)
+- [Next steps](#next-steps)
+- [Open questions for the client](#open-questions-for-the-client)
+- [Risks](#risks)
+- [A note on hallucination](#a-note-on-hallucination)
+
+---
+
+## What it does
+
+A scientist types a question:
+
+```
+If I want to prevent psoriasis, what areas should I target?
+```
+
+The paper searcher ([`sources/literature.py`](../../src/bedrock/litreview/sources/literature.py))
+collects candidate papers from Europe PMC, bioRxiv/medRxiv and PubMed, with
+open-access full text. This system then:
+
+1. **reads the question** — what it is about, exactly, and which near-misses
+   do not count (psoriatic arthritis is not psoriasis; hMPV is not RSV)
+2. **ranks every collected paper** by how directly it answers that exact question
+3. **plans the evidence** — which information the answer needs, from how many
+   papers, and which ones — and says where the papers cannot supply it
+4. **reads the planned papers**, extracting findings with verbatim quotes
+   checked against the source
+5. **writes a report** in which every sentence cites the findings it rests on,
+   and code removes any sentence whose numbers or names are not in its citations
+
+The report is one file the scientist can act on: the direct answer, the single
+most relevant source, one section per candidate target, the human and animal
+evidence separately, negative and conflicting results, safety, and — stated
+plainly rather than hidden — what the collected papers could **not** supply.
+Under it sit the full ranking of every paper with the reason for its place, an
+evidence table of every finding with its verbatim quote, and the list of papers
+excluded for being about something else. It is written to `report.md`,
+`report.html` (self-contained; hover a citation to see its quote) and
+`report.json`.
+
+Today a junior scientist does this by hand over several days and turns it into a
+PowerPoint. We are automating the searching and reading, and leaving the
+judgement to them.
+
+On the two sample questions this beats both chatbot baselines on the same local
+model and the same papers — **90.0 / 90.6 out of 100**, against 69.1 / 70.3 for
+a chatbot asked the question directly. See [Results](#results).
+
+Because Propeller develops drugs that hit two pathways at once, **pairwise
+questions are supported** — "is there evidence for blocking target A *and*
+target B in disease Y?" — through `combo_with` on every finding.
+
+### What the client actually asked for
+
+From our 15-question intake:
+
+- **Sources they use:** Google, Google Scholar, PubMed, Europe PMC, bioRxiv,
+  and patent databases (Espacenet, Lens, WIPO, Google Patents). Also paid
+  databases (Tabs, GlobalData), press releases, investor decks, SEC filings.
+  Any source is acceptable *as long as it is cited*; humans judge reliability.
+- **Their current workflow:** junior scientists start with a Google or chatbot
+  search, read papers, and build a PPT — not a written report.
+- **What the deck covers:** the target's biological mechanism, the disease's
+  unmet need, competitor landscape, supporting evidence (in vitro, in vivo,
+  human clinical), strengths and weaknesses, reference links.
+- **The key information they want:** evidence that modulating the target —
+  blocking or activating it — improves the disease indication.
+- **Report elements desired:** background, summary/conclusion, source
+  literature, confidence in the conclusion, caveats. Users should be able to
+  pick which sections to include.
+- **Papers:** usually under 20 pages, with text, images and tables. Many are
+  paywalled. **Patents are much harder for AI than papers.**
+- **Knowledge storage today:** old PPTs on company servers, unstandardised,
+  not formally shared.
+- **No gold-standard report exists.** They will tweak once we start.
+
+---
+
+## Why it has to be local
+
+Propeller's research is their entire value. Unpublished target work, competitive
+intelligence, and internal assessments of what to pursue are exactly the things
+that cannot be pasted into a chatbot run by someone else. A cloud AI service
+reads whatever you send it, on their hardware, under their terms.
+
+So the model comes to the data instead. Open-weight models — where the model file
+itself is published and you may run it yourself — make this possible. The whole
+system runs on a GPU in Propeller's office. Nothing leaves.
+
+Everything awkward about this project follows from that one constraint: we
+cannot use any cloud AI API, we must build the surrounding software ourselves,
+and we get no vendor support once it is installed.
+
+---
+
+## The core decision: pipeline, not free-form agent
+
+There are two ways to build this.
+
+**Free-form agent.** Tell the model to "research IL-23" and let it decide each
+next step itself — which search to run, what to read, when it is finished.
+
+**Pipeline.** We write the steps in ordinary Python. At each stage we hand the
+model one narrow job and take the answer back. **The model never decides what
+happens next.**
+
+This repository is the pipeline. Three reasons:
+
+**1. Their three complaints about existing chatbots are all failure modes of
+free-form agent loops.** Inconsistent answers, lost context, and collapse on
+complex questions are what agent loops do when the planning model is not strong
+enough. Removing the loop removes the failure mode.
+
+**2. A local ~30B model is weaker at long multi-step planning** than the
+frontier models those complaints were formed against. A free-form loop here
+would be *worse* than what they already have, not better.
+
+**3. Their process is identical every time.** Every deck has the same sections.
+There is nothing to figure out, so we do not pay a model to figure it out.
+
+### Where agent-style behaviour *is* appropriate
+
+The follow-up chat at the end (Stage 9). By then the evidence is frozen and the
+tools are narrow — `search_evidence`, `get_paper`, `compare_targets`,
+`list_conflicts` — all scoped to one project's saved data. The model cannot
+wander because there is nowhere to wander to.
+
+So: **rigid pipeline for the research, flexible chat on top of the results.**
+
+---
+
+## The data model
+
+See [`src/bedrock/litreview/models.py`](../../src/bedrock/litreview/models.py). Everything is built around one
+record:
+
+```python
+EvidenceUnit
+  target          IL23A              normalized gene symbol
+  direction       block | activate | unclear
+  modality        antibody | peptide | siRNA | small_molecule | vaccine | genetic | other
+  intervention    guselkumab         the agent used, as written
+  disease         psoriasis
+  evidence_type   in_vitro | in_vivo | human_clinical | human_genetic
+  species         human | mouse | cyno | cell_line | ...
+  outcome         improved | no_effect | worsened | mixed | association
+  setting         prevention | treatment | unclear
+  effect_detail   "PASI-75 in 78% vs 8% placebo at wk12"
+  n               507
+  facet           clinical           which part of the answer it supplies
+  quote           the paper's own sentence, at quote_start:quote_end of its section
+  quote_status    exact | fuzzy
+  provenance      where each model-written field was found: quote | chunk | methods | none
+  context_quote   the paper's sentence naming the subjects / sample size, if not the quote
+  entity_match    exact | paper_context
+  combo_with      IL17A | null       for multi-pathway claims
+```
+
+Around it: `QuestionSpec` (what was asked, with exact terms and near-misses),
+`RankedPaper` (a paper's place in the ranking, with its reasons),
+`EvidencePlan` (which information, from which papers) and `Report` (sentences,
+each with the evidence ids it cites).
+
+The report, the slide deck, and the chat are all **views of a table of these**.
+Build the table well and the rest is rendering.
+
+### Rules enforced in code
+
+**1. Every unit carries a verbatim quote, and code verifies it.**
+The model must copy the exact sentence it took the finding from. Then
+[`extract/verify.py`](../../src/bedrock/litreview/extract/verify.py) string-matches that sentence
+against the source text. No match, the unit is destroyed. A fuzzy match may
+differ only in typography: a changed number, negation or other meaning word
+fails it. The unit stores the paper's own sentence and its position, not the
+model's copy, and every other field the model filled in (target, agent,
+subjects, sample size, result) must be found in the text it read or is blanked
+([`extract/provenance.py`](../../src/bedrock/litreview/extract/provenance.py)).
+
+This is how you stop a model inventing things: you do not ask it to be honest,
+you check. It is plain string matching that anyone can read and nobody has to
+trust.
+
+**2. No model ever rates paper quality.**
+The client told us they do not trust AI judgement here and will check sources
+themselves. So code looks up objective facts — journal, citation count, preprint
+status, human vs animal, sample size, retraction status — and displays them. The
+scientist decides what they mean.
+
+**3. `combo_with` exists from day one.**
+Propeller's whole thesis is hitting two pathways at once. Retrofitting pairwise
+support later would mean reworking every stage.
+
+**4. Exact means exact.**
+A question about RSV is answered from RSV papers — not human metapneumovirus
+papers that look close enough. Exact terms and near-misses come from a table
+in code, never from the model, and are shown at the top of every report.
+
+**5. Every sentence of a report is checked against what it cites.**
+The writing model can still invent a number or name a drug from memory while
+citing real evidence. [`report/guard.py`](../../src/bedrock/litreview/report/guard.py) removes any
+sentence whose numbers, names or subjects ("in mice") do not appear in the
+paper text it cites. Then [`report/invariants.py`](../../src/bedrock/litreview/report/invariants.py)
+re-checks the finished report against the exact paper versions the run pinned;
+a violation puts a warning banner on the report. `bedrock-litreview verify-run <id>`
+repeats the check on any stored run.
+
+### Why raw and normalised are separate fields
+
+`ExtractedFinding` is what the model returns. `EvidenceUnit` is what we store.
+The model's job is to **copy** ("C57BL/6 mice"); code's job is to **translate**
+("mouse").
+
+Keeping those separate is deliberate. Copying is something a small model does
+reliably. Translating is something code does *deterministically* — and
+determinism is a feature the client asked for by name.
+
+---
+
+## The pipeline, stage by stage
+
+Python owns the control flow ([`runner.py`](../../src/bedrock/litreview/runner.py)); every stage
+writes its output to SQLite before the next begins, so a crashed run resumes
+where it stopped. The model is called only for narrow jobs.
+
+| # | Stage | Who | What it owes the next stage |
+|---|---|---|---|
+| 0 | [question](../../src/bedrock/litreview/stages/s0_question.py) | model copies, code resolves | `QuestionSpec`: type, goal, each entity with its exact terms and near-misses |
+| 1 | [collect](../../src/bedrock/litreview/stages/s1_collect.py) | the searcher, then code | papers with sections, reviews and retractions flagged, duplicates removed; frozen per question |
+| 2 | [gate](../../src/bedrock/litreview/stages/s2_gate.py) | code | pass / near-miss / absent / review / retracted, with the reason |
+| 3 | [rank](../../src/bedrock/litreview/stages/s3_rank.py) | code + small model | every paper ranked; top ones graded 0–3 by a written rule from the model's answers, with a verified justification sentence |
+| 4 | [plan](../../src/bedrock/litreview/stages/s4_plan.py) | code | facets the answer needs, the papers that supply each, gaps, extraction jobs |
+| 5 | [extract](../../src/bedrock/litreview/stages/s5_extract.py) | model copies, code checks | verified, normalised `EvidenceUnit`s |
+| 6 | [score](../../src/bedrock/litreview/stages/s6_score.py) | code, never a model | short ids, per-target summaries, conflicts, facet slices |
+| 7 | [write](../../src/bedrock/litreview/stages/s7_write.py) | model per section, code guard | `Report`: sentences with citations; generated sections |
+| 8 | [render](../../src/bedrock/litreview/stages/s8_render.py) | code | `report.json`, `report.md`, self-contained `report.html` |
+| 9 | chat | not built | tools over the frozen evidence |
+
+### Stage 0 — Read the question
+
+The model copies entity names out of the question; code verifies each one is
+really in the question (the fabrication guard, applied to the question), then
+resolves it against [`knowledge/entities.yaml`](../../src/bedrock/litreview/knowledge/entities.yaml):
+synonyms that mean exactly this entity (RSV = hRSV = human orthopneumovirus)
+and near-misses that do not (hMPV, bovine RSV). Names the table does not know
+are matched verbatim and nothing else. The model never adds a search term.
+
+### Stage 2 — The exact-entity gate · *pure code*
+
+A paper counts only if it names the entity by an exact term in its title or
+abstract, or repeatedly in its full text. Matching respects boundaries —
+"SARS-CoV" does not match inside "SARS-CoV-2", "IL-2" not inside "IL-23" — and
+the longest match wins, so "psoriatic arthritis" swallows "psoriatic". A
+paper whose title is about a sibling, with the sibling outnumbering the
+subject, is excluded as a near-miss. Reviews are excluded: a review citing a
+trial is not a trial. Every excluded paper is listed with its reason.
+
+### Stage 3 — Rank · *code, plus one small-model call per paper*
+
+BM25 over title and abstract (the question's words plus the vocabulary of its
+type and goal) picks which papers get a model grade. The grade measures how
+directly each paper's own results answer the question — **relevance, never
+quality**. The model is not asked for a number: it answers narrow questions
+about the abstract (is the subject what the paper studies, or only a risk
+factor for something else? is it a review? which molecule, pathway or drug did
+the paper's own experiments change?), quotes a sentence, and code applies a
+written rule:
+
+| Grade | Rule |
+|---|---|
+| 3 | its own experiments changed a named molecule, pathway or drug (name found in the abstract by code) and measured the effect |
+| 2 | it studies the subject with its own data, but changed nothing |
+| 1 | the subject is a risk factor or a passing mention, the paper is a review, or the quote does not verify |
+| 0 | not about the exact entity |
+
+Which information needs a paper can supply is assigned by code from the
+abstract's study-design words, not by the model — a small model asked for
+either a grade or a list of needs gives every paper the maximum. The top
+usable paper is reported as the *most relevant source*.
+
+### Stage 4 — Plan · *pure code*
+
+Facet templates per question type ([`facets.py`](../../src/bedrock/litreview/facets.py)) say what
+the answer needs — for "what should I target to prevent X": disease biology,
+targets with causal evidence, human clinical evidence, prevention-specific
+evidence, negative results, safety. The planner fills every facet's minimum
+before topping any up, within a paper budget, preferring full text among
+equally relevant papers. A facet no paper supplies is a **gap**, stated in
+the report, never filled from elsewhere.
+
+### Stage 5 — Extract · *model copies, code checks*
+
+```
+model extracts  →  code verifies quotes  →  code checks the entity
+                →  code checks direction and outcome  →  code normalises  →  code dedupes
+```
+
+One chunk of one section per call, with the Methods paragraphs that describe
+subjects passed as context. The finding's own field (disease, drug, target)
+is checked against the question's entity: a finding about atopic dermatitis
+is dropped even when its quote mentions psoriasis. The model also copies the
+words saying what was done to the target ("deficiency") and what happened to
+the disease ("aggravated"); code classifies those words and overrules the
+model's `direction` / `outcome` labels when they unambiguously disagree, and
+records every overrule on the finding. A mouse result filed as clinical
+evidence is refiled by code. IDs are content hashes, so the same run produces
+the same bytes.
+
+### Stage 6 — Score and group · *pure code, no model, ever*
+
+Targets are ordered by a written rule — human clinical evidence of benefit,
+then human genetics, then animal evidence of benefit, then independent papers
+— which counts kinds of evidence and never judges a paper. Disagreements are
+surfaced as conflicts.
+
+### Stage 7 — Write · *model, one call per section, under the citation guard*
+
+Each section gets its own slice of evidence. The model lists the evidence ids
+a sentence relies on *before* writing it (guided decoding restricts the ids to
+that slice), and [`report/guard.py`](../../src/bedrock/litreview/report/guard.py) then checks every
+sentence: a number or a drug/target/disease name that is not in the cited
+evidence removes the sentence. The layout lives in
+[`src/bedrock/litreview/defaults/report.yaml`](../../src/bedrock/litreview/defaults/report.yaml), so the client's format is a config change.
+
+Generated by code, not the model: most relevant source, gaps and caveats, the
+evidence plan, the relevance ranking, the evidence table, the method, and the
+excluded papers.
+
+### Stage 8 — Render
+
+JSON → Markdown → self-contained HTML (no external assets; hovering a citation
+shows the exact sentence it rests on). PPTX later via `python-pptx`: the
+report is structured data, so **the deck is a renderer, not a rewrite**.
+
+### Stage 9 — Chat
+
+Not built. Agent-style, and safe when built: evidence is frozen, tools are
+narrow and question-scoped.
+
+## Models
+
+**Two model files. Six jobs. Zero training.**
+
+| Job | Tier | What the model is asked for |
+|---|---|---|
+| `question` | medium | copy the entity names out of the question — code resolves them |
+| `relevance` | **small** | narrow questions about one abstract — code grades it |
+| `extract` | medium | copy findings out of one chunk of one section, with their quotes |
+| `write` | medium | one report section from one slice of evidence |
+| `judge` | medium | *benchmark only* — find the evidence sentence for a claim |
+| `baseline` | medium | *benchmark only* — the chatbot answers we compare against |
+
+The split is by **cost, not skill**. Relevance runs once per collected paper so
+it gets the cheap model; everything else runs tens of times per question.
+
+Notice what is *not* in that table: nothing asks the model for a score, a
+ranking, a plan, or a synonym. Those are code's, because a lookup table returns
+the same answer every time and a 4B model does not — see
+[BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for what happened when we asked it
+for a grade.
+
+- **small** — 7–8B instruct
+- **medium** — Qwen3-30B-A3B-Instruct class. Mixture-of-experts: ~30B total but
+  only ~3B active per token, so it follows instructions like a big model and
+  runs like a small one, with long context for whole sections
+- **embeddings** — a small (~300M) model. Genuinely separate, because it does
+  different maths. **Pick it once** — changing it invalidates every stored
+  vector and forces a full re-index
+- Served with **vLLM**
+
+All model names live in [`src/bedrock/litreview/defaults/models.yaml`](../../src/bedrock/litreview/defaults/models.yaml) and nowhere
+else, so swapping one is a one-line change.
+
+### Why we are not fine-tuning
+
+Specialisation comes from the **instructions**, not the weights. One model with
+five well-built prompts is five specialists.
+
+1. **No training data.** Fine-tuning extraction would need ~2,000 hand-labelled
+   findings. We have zero, and producing them is months of a scientist's time.
+2. **The target moves.** The schema will change weekly in weeks 5–8 as
+   scientists react to real output. A prompt edit takes 30 seconds; a retrain
+   takes hours and invalidates every prior result.
+3. **You cannot debug it.** A bad prompt can be read. A bad weight cannot.
+4. **Mistakes bake in permanently.** A habit learned in fine-tuning lives in the
+   weights; you cannot reach in and remove it.
+
+**What actually makes each job good:** a narrow prompt · a forced output shape ·
+3–5 worked examples in the prompt · a checker in code.
+
+**Revisit after months of real use, and only for job 2 (screening).** By then,
+scientists' corrections become free training data. Note the order — you use the
+system to generate the data that makes training possible.
+
+---
+
+## Fixing the client's three complaints
+
+These are the acceptance criteria that matter to them.
+
+### "I ask the same question twice and get different answers"
+
+- `temperature=0.0` everywhere, pinned model versions, fixed prompts
+- **Every model call is cached**, keyed on `hash(prompt + model + params)`.
+  A re-run replays the cache. See [`llm/cache.py`](../../src/bedrock/litreview/llm/cache.py).
+  Editing a prompt changes the key, so a prompt change invalidates exactly the
+  entries it should and nothing else
+- **The paper set is frozen.** Re-running a report uses the papers already
+  gathered; going back out to the sources is a separate, explicit action
+- Every run has a `run_id`; reports are immutable
+
+> **The acceptance test: run the same project twice, get byte-identical
+> reports.** One sentence the client can verify themselves.
+
+### "It can't remember earlier conversation"
+
+Not a memory problem — a storage problem. Chatbots hold everything in the
+conversation and the conversation fills up. Everything here lives in the
+project's database, and chat queries that database. Close the laptop for a
+month; the project is untouched.
+
+### "It breaks down on complex questions, just stops working"
+
+The model is never asked a complex question. Python decomposes the work, and
+every call is "classify this abstract" or "write two paragraphs from these nine
+quotes."
+
+---
+
+## The paper searcher
+
+[`src/bedrock/litreview/sources/literature.py`](../../src/bedrock/litreview/sources/literature.py) finds the
+papers. It plugs in through the one seam every searcher uses,
+[`sources/base.py`](../../src/bedrock/litreview/sources/base.py) — `search(SearchRequest) ->
+list[Paper]` — and, like the rest of the system, it is code from end to end:
+
+- **Queries come from the question's exact terms**, never from a model. Each
+  required entity contributes an OR-group of the names the knowledge table
+  accepts for it; groups are ANDed. One more query per question type and goal
+  adds focus words from `src/bedrock/litreview/defaults/pipeline.yaml` (`search.focus`: knockout,
+  blockade, trial, prophylaxis …) — added to the plain query, never instead of it.
+- **Three sources**, in parallel: Europe PMC (the workhorse, with citation
+  counts and open-access flags), a preprint lane through Europe PMC's `SRC:PPR`
+  index (bioRxiv has no keyword search of its own), and PubMed E-utilities
+  (publication types, PMCIDs). Every record keeps its publication types, so
+  reviews and retractions are recognised downstream.
+- **Merged in a fixed order**: duplicates collapse on DOI, then PMID, then
+  normalised title, keeping Europe PMC's record and every query that found the
+  paper; lists are interleaved in proportion to their length, so the same
+  responses always give the same list, and cut to `max_results` (200).
+- **Open-access full text** (Europe PMC JATS, the first rung of the
+  acquisition ladder) for up to `search.full_text_max` papers — only where
+  the record says it is open access, or PubMed does not say.
+- **Loud failure.** One source down is logged and reported, and the others
+  carry on. All sources down raises `SearchFailed` instead of returning
+  nothing — an empty list would be frozen as the question's paper set and read
+  as "no literature found".
+
+**What leaves the network**: the search terms and paper identifiers, sent to
+Europe PMC and NCBI, plus the contact address in `SOURCES_CONTACT_EMAIL` to
+NCBI (use a generic mailbox). Requests identify only as `litreview`, never
+by the client's name. Never papers, findings, reports or anything a model
+wrote. The searcher runs only when asked — `bedrock-litreview search`, `ask
+--search`, or `"search": true` over HTTP — never as a default. On an
+air-gapped deployment run `bedrock-litreview search` on a machine that is allowed out
+and carry the JSON-lines file across; `ask --corpus` reads it offline.
+
+It was ported from a standalone retrieval agent, and some of that agent was
+deliberately left behind: its **model-scored "credibility"** (no model scores
+paper quality here, and that one was a cloud model), its **web, news, SEC and
+Google Scholar** results (not papers; a snippet is not an abstract), and its
+**patents** (a separate lane that is never evidence — see [Patents](#patents)).
+
+## Paywalls, and what we will not do
+
+Many key papers are paid. The client mentioned Sci-Hub.
+
+**We will not integrate it.** It is illegal and Propeller is a real company with
+real lawyers and real IP to protect.
+
+But here is the thing: **Propeller already pays for journal access.** Their
+scientists can legally download these papers right now.
+
+So we build a **drop folder** ([`src/bedrock/litreview/dropfolder.py`](../../src/bedrock/litreview/dropfolder.py)).
+A watched directory on the shared drive. A scientist downloads a PDF the normal
+legal way, drops it in, and the pipeline hashes it, matches it to a DOI, and
+ingests it like any other full text.
+
+About 100 lines of code, and it probably doubles usable full-text coverage. We
+never fetch anything we should not; we just stop throwing away the access they
+already pay for.
+
+**Build it in week 1.**
+
+---
+
+## Patents
+
+The client told us patents are much harder for AI than papers. They are right —
+long, dense legal language, odd structure. We do not fight that in v1.
+
+- **EPO OPS** — family resolution and legal status. The only reliable source for
+  INPADOC families, but XML and fiddly
+- **Lens.org** — search across ~140M records, free for research use
+- **PatentsView** — clean, structured US data
+
+**Extract only title, abstract, assignee, priority date and claim 1.** Never the
+full body. Patents feed the **competitor landscape section only** — *who else is
+working on this* — never the biological evidence sections, and they are marked
+as a distinct class in the UI.
+
+---
+
+## Repository layout
+
+Inside bedrock, the package lives at `src/bedrock/litreview/`; the paths below
+are relative to it.
+
+```
+models.py              ★ the data model. Read this first
+config.py                settings; takes the server from bedrock, refuses non-local ones
+service.py               preflight, run_review: the one way into a review that uses a model
+db.py                    SQLite: questions, papers, runs, artifacts, reports, ratings
+runner.py                orchestrator, resumable
+api.py  cli.py           front doors: ask(), optional FastAPI app, `bedrock-litreview ask`
+ingest.py                sections, review/retraction flags, dedupe
+facets.py                what each question type needs (code, not model)
+lexical.py               BM25
+knowledge/
+  entities.yaml        ★ exact terms and near-misses, per entity
+  __init__.py            the matcher (boundaries, longest match, case)
+llm/
+  client.py              LLMClient protocol + the fake, strip_thinking, parse_json_reply
+  scheduled.py         ★ SchedulerClient: the one live client, through bedrock's Scheduler
+  cache.py             ★ the call cache (determinism)
+  prompts/*.md           versioned prompts
+stages/s0_question.py … s8_render.py   one file per stage, numeric order
+report/
+  guard.py             ★ the citation guard
+  layout.py              reads defaults/report.yaml, or an override
+extract/
+  verify.py            ★ quote verification — the fabrication guard
+  normalize.py  dedupe.py
+parsing/sections.py      JATS, GROBID TEI and flat text → sections
+sources/
+  base.py              ★ the seam for the paper searcher
+  literature.py          the paper searcher: query, merge, full text
+  query.py               queries from exact terms, in code
+  europepmc.py  pubmed.py  biorxiv.py   one client per source
+  http.py                retries, backoff, rate limits, and the host allowlist
+  corpus.py              JSON-lines handoff format
+bench/                   the benchmark (see "How we measure it")
+defaults/  models.yaml  pipeline.yaml  report.yaml
+```
+
+And elsewhere in bedrock:
+
+```
+src/bedrock/ui/review_command.py    /review and /reviews in the terminal app
+tests/litreview/                    the ported tests; `pytest tests/litreview`
+evals/litreview/                    questions/*.yaml  corpora/<id>/  results/  goldset.jsonl
+                                    (a source checkout only — not in the wheel)
+docs/litreview/                     this file, BENCHMARK_RESULTS.md, sources.yaml
+scripts/litreview/judge_answers.py  the file-judge helper
+```
+
+## Current state
+
+| Part | State |
+|---|---|
+| Question → report pipeline (stages 0–8) | **Built and tested.** End-to-end with a scripted fake model; no-model runs on the real sample corpora |
+| Paper searcher | **Built and tested** (offline, hand-written fixtures through a mock transport) and run live: Europe PMC, preprints, PubMed, open-access full text. `bedrock-litreview search`, `ask --search` |
+| Benchmark (`bedrock.litreview.bench`) | **Built and tested** with a fake model; sample corpora for two questions frozen in `evals/litreview/corpora/` |
+| Benchmark results with a real model | **Run** on MedGemma 1.5 4B for both sample questions — [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) |
+| In bedrock | **Built.** `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. Every model call goes through bedrock's `Scheduler` at `USER_JOB` |
+| Stage 9 (chat), PPTX, patents, drop folder, GROBID PDF rung, alias lookup | Not started |
+
+`pytest tests/litreview` runs the pipeline's own tests with no GPU and no
+network; `pytest` runs the whole of bedrock. Measured quality on two sample
+questions is in [Results](#results); what to do next is in
+[Next steps](#next-steps), and what was deliberately left out of the move is
+`docs/prompts/LITREVIEW_INTEGRATION.md` §8.
+
+## Getting started
+
+The literature review installs with bedrock; there is nothing separate to set
+up.
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest tests/litreview
+```
+
+No GPU needed for the tests. To search the literature for a question (needs
+the network) and save what was found:
+
+```bash
+bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
+```
+
+To ask a question against a saved corpus — the searcher's, or a benchmark one:
+
+```bash
+bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" \
+    --corpus papers.jsonl --models laptop
+```
+
+Or both in one go on a machine that is allowed out: `bedrock-litreview ask "..." --search`.
+A question's papers are frozen once collected; `--refresh` searches again.
+`NCBI_API_KEY` and `SOURCES_CONTACT_EMAIL` in the environment are optional but
+recommended (PubMed's rate limit, and NCBI's terms).
+
+The same review runs inside the terminal app, beside the chat:
+
+```
+/review If I want to prevent psoriasis, what should I target? --corpus papers.jsonl
+/reviews
+/reviews verify <run-id>
+```
+
+**Before the first run with a model,** the server needs a context window of at
+least 12,288 tokens: `context_window = 12288` in `~/.config/bedrock/config.toml`
+(or `BEDROCK_CONTEXT_WINDOW=12288`), with `OLLAMA_CONTEXT_LENGTH=12288` set
+where Ollama is started. Extraction sends about 4,300 tokens of prompt and
+allows a 4,096-token reply, and a smaller window silently truncates it.
+`bedrock-litreview ask` says so before it starts rather than after.
+
+The server itself is bedrock's: `api_base` in `~/.config/bedrock/config.toml`,
+or `BEDROCK_API_BASE`. Only the model *names* live here, in
+`src/bedrock/litreview/defaults/models.yaml`. `--models office` names the vLLM
+model set; `--models laptop` a local Ollama (`ollama pull qwen3:8b`);
+`--models medgemma` MedGemma 1.5 4B (`ollama pull medgemma1.5:4b`), which is
+what produced [the measured results](#results). `--no-model` runs the code-only
+stages (gate, lexical ranking, plan) and writes the report skeleton.
+
+From Python, with a client of your own: `bedrock.litreview.api.ask(question,
+papers=..., client=...)`. Over HTTP:
+
+```bash
+pip install -e ".[api]"
+uvicorn bedrock.litreview.api:create_app --factory --host 127.0.0.1
+```
+
+The HTTP app has no authentication yet, so keep it on localhost or the office
+network. It runs its reviews through the same `service.run_review` and the same
+scheduler as the terminal and the CLI.
+
+---
+
+## The team
+
+Roles 1 → 2 → 3 follow a paper's journey from the internet to a scientist's
+screen. Role 4 wraps around all three.
+
+### 1. The Collector — finding and fetching papers
+Owns every connection to the outside world. Everything downstream is blocked on
+this, so it starts day one.
+
+Builds: source connectors · alias lookup · deduplication · the acquisition
+ladder · GROBID parsing · **the drop folder**.
+
+**Done when:** type in a target, get 200 deduplicated papers with full text
+wherever legally available, plus a count of abstract-only ones.
+
+### 2. The Reader — turning papers into findings
+Owns the part that decides whether the product is any good.
+
+Builds: screening · the `EvidenceUnit` schema · extraction · **the quote
+checker** · the weekly accuracy tests.
+
+**Done when:** 50 findings from 10 papers, hand-checked and correct. 100% of
+quotes verified.
+
+*Hardest job. One invented finding destroys trust in all of them.*
+
+### 3. The Presenter — what the scientist sees
+The only part anyone outside the team will look at.
+
+Builds: the project setup form · the report · **the review screen** (click a
+finding, see the sentence it came from) · the excluded-papers list · later, PPTX.
+
+**Done when:** a junior scientist reads a report start to finish without asking
+what anything means.
+
+*Should sit next to a real scientist in week 1 and watch them work by hand.*
+
+### 4. The Foreman — running the line
+Builds: the runner · the model-call cache · the frozen paper set · storage · run
+versioning · restart logic (a crash at stage 6 must not discard stages 1–5) ·
+the chat tools.
+
+**Done when:** the same project run twice produces identical reports.
+
+### Working in parallel
+
+Nobody waits. Two data shapes, agreed in writing in week 1:
+
+- **what a `Paper` looks like** (Collector → Reader)
+- **what an `EvidenceUnit` looks like** (Reader → Presenter)
+
+Both are in [`src/bedrock/litreview/models.py`](../../src/bedrock/litreview/models.py). Once fixed, everyone
+builds against fake data and plugs in later — the Presenter can design the whole
+report from twenty made-up findings.
+
+---
+
+## Timeline
+
+| Weeks | Goal |
+|---|---|
+| 1–2 | **Walking skeleton.** One hardcoded target, Europe PMC only, no screening, ugly Markdown out. End-to-end and ugly beats one beautiful stage |
+| 3–4 | All sources, dedupe, GROBID, drop folder. **Report the full-text coverage number** |
+| **5–6** | **Screening and extraction. Build the gold set here** ← *we are here* |
+| 7–8 | Scoring, sections, first report a scientist reviews properly. Expect the schema to change |
+| 9–10 | Determinism, chat, patents |
+| 11–12 | Polish, PPTX, handoff |
+
+---
+
+## How we measure it
+
+Three layers, from cheapest to most expensive:
+
+**1. Mechanical checks, on every run.** Quote validity (1.00, not 0.98), every
+sentence cited, every number and name in its cited evidence (the guard), and
+byte-identical reports for the same question over the same papers.
+
+**2. The benchmark — no scientist in the loop.** `python -m bedrock.litreview.bench run
+evals/litreview/questions/*.yaml --models laptop` runs the pipeline and two chatbot-style baselines on
+the same local model and the same frozen papers — *closed book* (the question
+alone) and *naive RAG* (top abstracts pasted in) — and scores all three:
+
+| Measure | How |
+|---|---|
+| Accuracy | each claim judged against the evidence it cites (local model, entailment only) |
+| Groundedness | each claim judged against the best-matching passages of the whole corpus — no support means outside information |
+| Exactness | near-miss entities named in the answer; **distractor papers** (real abstracts with the entity swapped for a near-miss) must not reach the evidence |
+| Completeness | facts ("nuggets") from published reviews, and Open Targets' clinically tested targets — counted only where the corpus supports them |
+| Detail | supported claims carrying numbers; distinct sources |
+| Benchmark validity | supported claims are corrupted (number, effect direction, entity) and the judge and guard must catch them |
+
+Each run writes a scorecard (`evals/litreview/results/<id>/<time>/scorecard.md`) listing
+the unsupported claims, missed facts and missed targets — the list to fix —
+and appends to `evals/litreview/results/history.jsonl` to track scores across prompt
+versions. Scientist ratings are stored beside benchmark scores (`ratings`
+table) so the two can be compared once they exist.
+
+**3. The gold set and the old PowerPoints.** Per-field extraction accuracy
+against hand-labelled papers, and recall of the papers the client's own decks
+cited. Neither exists yet; both need the client.
+
+| Metric | Target |
+|---|---|
+| Quote validity | **1.00** |
+| Claims supported by their citations | ≥ 0.85 |
+| Distractor leak rate | **0** |
+| Extraction precision (gold set) | > 0.85 |
+
+## Results
+
+First real-model run, 23 September 2026: **MedGemma 1.5 4B** (Google's medical
+Gemma 3) through Ollama on a 16 GB laptop, no network. Two questions, two
+chatbot baselines, same model and same papers for all three.
+
+| Metric | Psoriasis | | | RSV in infants | | |
+|---|---|---|---|---|---|---|
+| | **Pipeline** | No papers | Pasted | **Pipeline** | No papers | Pasted |
+| **Overall (0–100)** | **90.0** | 69.1 | 54.5 | **90.6** | 70.3 | 84.4 |
+| Claims made | 58 | 19 | 22 | 53 | 15 | 13 |
+| Claims supported by their citations | **1.00** | – | 0.45 | **0.98** | – | 0.77 |
+| Claims supported by the collected papers | **1.00** | 0.79 | 0.93 | **1.00** | 0.73 | 1.00 |
+| Review facts covered (vital) | **0.83** | 0.50 | 0.33 | **0.90** | 0.40 | 0.90 |
+| Known drug targets named | **0.50** | 0.21 | 0.00 | – | – | – |
+| Supported claims carrying a number | **22** | 0 | 0 | **25** | 1 | 2 |
+| Distinct sources cited | **40** | 0 | 9 | **34** | 0 | 9 |
+
+Every mechanical check passed on both questions: quote validity 1.00, every
+sentence cited, every number in its cited evidence, **zero** claims naming a
+near-miss entity, **zero** distractor papers leaked, and byte-identical reports
+on re-run. The judge caught 100% of deliberately corrupted claims, so those
+verdicts are worth something.
+
+The same pipeline before this round of fixes scored **69.3** on psoriasis with
+the identical judge — it was careful but incomplete, reading 6 papers where it
+now reads 11 and extracting 37 findings where it now extracts 130.
+
+The failures behind those numbers, each with the fix it produced, are in
+**[BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md)** — the small model graded 39 of
+40 papers 3/3, recorded a knockout that *worsened* disease as an improvement,
+and left a prevention question's prevention section empty. Sample reports:
+[`evals/samples/`](../../evals/litreview/samples/).
+
+`pytest tests/litreview` → the pipeline's own tests, no GPU and no network.
+
+## Next steps
+
+**The to-do list is [BENCHMARK_RESULTS.md § Next steps, step by step](BENCHMARK_RESULTS.md#next-steps-step-by-step).**
+It has 64 numbered steps, grouped in phases, from the current state to
+production install, acceptance and handover. Each step names its owner and
+dependencies. It is the only to-do list. This section only records what has
+finished since the first real-model run, and where each earlier item went, so
+the two lists cannot disagree.
+
+The same file's [audit](BENCHMARK_RESULTS.md#audit--benchmark-findings-and-deployment-readiness)
+explains why that order was chosen. It covers accuracy and completeness in the
+latest benchmark, and what is missing for a deployment.
+
+**Done**
+
+- ~~Benchmark the paper searcher's corpora.~~ **Done.** See
+  [searcher corpus vs frozen corpus](BENCHMARK_RESULTS.md#benchmark-results--searcher-corpus-vs-frozen-corpus-strong-judge).
+  The searcher did not improve the reports. The audit traces most of that to
+  the pipeline, not to the searcher: see steps 13 and 25.
+- ~~Teach the citation guard about ranges and bounds.~~ **Done.** This is
+  `bound_misuse` in [`report/guard.py`](../../src/bedrock/litreview/report/guard.py). On the
+  frozen-corpus re-run it removed the RSV "upper range" sentence ("268.8 is a
+  bound of the opposite end").
+- ~~Raise `plan.max_papers`.~~ **Done.** It went from 12 to 16 in
+  `src/bedrock/litreview/defaults/pipeline.yaml`, and the planner now spends any leftover budget on the
+  best unread papers (`stages/s4_plan.py`). What is still open is which papers
+  can be read at all: only 40 per question get a relevance grade (step 25).
+- ~~Use a different, larger model for judging.~~ **The seam is done.**
+  `--judge-file` (`src/bedrock/litreview/bench/filejudge.py`) lets another judge answer.
+  The latest scores were judged by Claude Sonnet at development time. Still
+  open: a judge that runs inside the air gap (step 37), and a scientist checking
+  the judge's verdicts (step 23).
+
+**Where the earlier items went**
+
+- Office GPU spec, and a benchmark on the larger model: steps 1 and 31–37.
+- The gold set (the file exists but holds only template rows): step 22.
+- The client's report format and PPTX: steps 4 and 52.
+- Growing the knowledge table: step 30.
+- Stage 9 chat, patents and the drop folder: steps 48, 53 and 54.
+- Scientist ratings: the `ratings` table and `POST /reports/{id}/ratings`
+  exist, but no review screen does yet. The human-review fields on
+  `EvidenceUnit` are never written. See step 51.
+
+## Open questions for the client
+
+1. **How much VRAM is on the office GPU?** Decides the model tier, which decides
+   the quality ceiling. **Blocking — get this first.**
+2. **5–10 old PowerPoints.** The only route to a gold standard.
+3. **Which journal subscriptions do they have?** Determines what the drop folder
+   buys us.
+4. **Tabs Database and GlobalData — API access, or manual export only?**
+   Probably manual; plan a CSV import path.
+5. **Two real target/indication pairs to build against** — one single-target,
+   one pairwise, so multi-pathway is exercised from the start.
+
+---
+
+## Risks
+
+**The paywall ceiling is real.** If the pivotal papers for their targets sit
+behind Cell Press and Nature paywalls, abstract-only extraction will look thin,
+and no amount of engineering fixes it. The drop folder plus OA coverage is the
+mitigation. **Measure the ratio in week 3 and tell them the number early** — do
+not let them discover it at a demo.
+
+**Figures are invisible to us.** GROBID does not read them, and in biology a
+great deal of the result is a picture of a graph. Flag early.
+
+**Verify OpenAlex pricing.** Usage-based pricing was introduced in early 2026.
+The bulk snapshot is the fallback. Confirm before building a dependency on the
+live API.
+
+**Patents may stay hard.** We have scoped them to competitor landscape only. If
+the client wants real patent claim analysis, that is a separate project.
+
+---
+
+## A note on hallucination
+
+A model making things up is not a bug someone forgot to fix. It is how these
+models work: they predict what *sounds* right, one token at a time. Usually that
+overlaps with what is true. When it does not, you get a confident, fluent,
+entirely invented finding.
+
+That is why the quote-verification rule matters more than any other decision in
+this repository.
+
+We are not building a system that is never wrong. We are building one that
+**shows its work** — so a scientist can check any claim in seconds, and catch
+the wrong ones themselves.

@@ -60,6 +60,10 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 | `/fold <fasta or src://id> [--project X]` | Predict one monomer with AlphaFold 2 |
 | `/pymol [structure or src://id]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools`         | Check AlphaFold 2 and PyMOL configuration |
+| `/review <question> [--corpus FILE \| --search]` | Write a cited literature review beside the chat |
+| `/review stop`   | Stop the running review (it can be resumed) |
+| `/reviews`       | Literature reviews recorded on this machine |
+| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
 | `/runs`          | Prediction runs recorded on this machine |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions, PAE |
 | `/audit`         | What this client has done on this machine |
@@ -212,6 +216,98 @@ file is, and the run manifest records which registry record and version it
 came from — so "where did this prediction's input come from" has an answer
 that does not depend on remembering.
 
+## Literature review (`/review`)
+
+A scientist asks a question; the review reads papers and writes a report in
+which **every sentence cites a verified quote from a paper**. Nothing is
+summarised from memory: the model copies the sentence it took a finding from
+and code string-matches it against the source, so a finding whose quote is not
+in the paper is destroyed rather than shown. It is a pipeline, not an agent —
+Python decides what happens next, never the model — and the same question over
+the same papers produces a byte-identical report.
+
+```text
+/review If I want to prevent psoriasis, what should I target? --corpus papers.jsonl
+/review What drives RSV severity in infants? --search
+/review ... --no-model            # rules and code only, no written sections
+/review ... --models medgemma     # a different model set
+/review --resume 4b66f48fec0a     # pick up a run that stopped
+/review stop                      # stop the running one; it stays resumable
+/reviews                          # the 20 most recent runs
+/reviews verify 4b66f48fec0a      # re-prove a report against the papers it pinned
+```
+
+A review runs **beside the chat**: keep asking questions while it works. Its
+calls queue behind your own, so at worst you wait for the one call in flight.
+On a laptop that can be a minute or two, because an extraction call may write
+4,096 tokens. `Esc` stops a streaming reply, never a review.
+
+On a machine that holds one model at a time (the `laptop` profile's Ollama
+settings), chat with the review's model while it runs. Otherwise every chat
+message makes the server unload one model and load the other; `/review` says
+so when it starts. Conversation titles also wait until the review finishes,
+because they only run when the server is idle.
+
+**What it needs.** A 16 GB machine or better, and a context window of at least
+12,288 tokens — extraction sends about 4,300 tokens of prompt and allows a
+4,096-token reply, and a smaller window silently truncates it. So:
+
+```toml
+# ~/.config/bedrock/config.toml
+context_window = 12288
+request_timeout = 600        # 600 or more on a slow machine
+
+[litreview]
+model_set = "laptop"         # office | laptop | medgemma
+contact_email = "research@example.com"   # sent to NCBI with PubMed searches
+```
+
+and, where Ollama is started, `OLLAMA_CONTEXT_LENGTH=12288`. On a vLLM server
+this is `--max-model-len`. Then pull the models the set names, for example
+`ollama pull qwen3:8b` or `ollama pull medgemma1.5:4b`. `/review` checks all of
+this before it starts and says exactly what to change, rather than failing
+forty minutes in. The `workstation` and `server` profiles already have a large
+enough window.
+
+**What leaves this machine.** Only `--search` sends anything anywhere, and only
+search terms and paper identifiers, only to Europe PMC (`www.ebi.ac.uk`) and
+NCBI (`eutils.ncbi.nlm.nih.gov`) — enforced in code, redirects included. Your
+question, the papers and the report stay here. Without `--search`, a review
+reads a JSON-lines file you already have and touches no network at all.
+
+**Where files go.** `~/.local/share/bedrock/litreview/` (change it with
+`BEDROCK_LITREVIEW_DIR` or `data_dir`): the SQLite database, the model-call
+cache and `reports/`, each run's `report.json`, `report.md` and a
+self-contained `report.html`. The directory is 0700 and the database 0600 —
+research questions are sensitive. Model names live in
+`src/bedrock/litreview/defaults/models.yaml`; to change them on one machine,
+put a whole replacement file at `~/.config/bedrock/litreview/models.yaml`.
+
+**From a shell.** `bedrock-litreview` does the same things without the app:
+
+```bash
+bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
+bedrock-litreview ask "..." --corpus papers.jsonl --models laptop
+bedrock-litreview runs
+bedrock-litreview verify-run <run-id>
+```
+
+**Over HTTP.** There is an optional FastAPI front door — `POST /ask`,
+`GET /reports/{id}`, `POST /reports/{id}/ratings`:
+
+```bash
+pip install -e ".[api]"
+uvicorn bedrock.litreview.api:create_app --factory --host 127.0.0.1
+```
+
+It runs its reviews through the same service and the same scheduler as
+`/review`, so there is one pipeline and one set of guarantees. It has **no
+authentication yet**: keep it on localhost or the office network.
+
+Fuller documentation is [docs/litreview/README.md](docs/litreview/README.md),
+and the measured quality of the pipeline on two sample questions is
+[docs/litreview/BENCHMARK_RESULTS.md](docs/litreview/BENCHMARK_RESULTS.md).
+
 ## Meeting notes
 
 `bedrock.meetings` turns a meeting transcript into notes using a model you
@@ -344,6 +440,12 @@ Settings are read from, highest priority first:
 | `BEDROCK_WORKSPACE_DIR`| `workspace_dir` | `~/.local/share/bedrock/workspaces` |
 | `BEDROCK_ACTION_HISTORY_DIR`| `action_history_dir` | `~/.local/share/bedrock/history` |
 | `BEDROCK_BIOTECH_WORK_DIR`| `biotech_work_dir` | `~/.local/share/bedrock/biotech` |
+| `BEDROCK_LITREVIEW_MODELS` | `litreview.model_set` | `office` on the `server` profile, else `laptop` |
+| `BEDROCK_LITREVIEW_DIR` | `litreview.data_dir` | `~/.local/share/bedrock/litreview` |
+| `BEDROCK_LITREVIEW_CONFIG_DIR` | (none)     | `~/.config/bedrock/litreview` |
+| `BEDROCK_LITREVIEW_ALLOWED_HOSTS` | `litreview.allowed_hosts` | none |
+| `SOURCES_CONTACT_EMAIL` | `litreview.contact_email` | none |
+| `NCBI_API_KEY`       | (none: a secret)  | none                         |
 | `BEDROCK_USER`       | `user_id`         | current local username       |
 | `BEDROCK_DISPLAY_NAME`| `display_name`   | `user_id`                    |
 |                      | `system_prompt`   | none                         |
@@ -387,6 +489,7 @@ src/bedrock/
     argparsing.py        argparse that reports errors instead of exiting
     rendering.py         Escaped, control-character-free terminal text
     workspace_command.py Native picker, preview, publish, roles and export flow
+    review_command.py    `/review` and `/reviews`: parsing, the job, the notices
     styles.tcss          Layout and colours (Textual CSS)
   inference/
     base.py              InferenceBackend protocol - the seam between UI and server
@@ -402,6 +505,8 @@ src/bedrock/
   biotech/               AlphaFold 2 and PyMOL adapters, confidence, workflow
   workspaces/            Private SQLite collaboration vault and validation
   meetings/              Local transcription and model-assisted meeting notes
+  litreview/             The literature review: question in, cited report out
+                         (its own CLAUDE.md - read it before changing anything there)
   config/
     settings.py          Loads env vars + config file
 tests/                   pytest; drives the real app with a fake backend

@@ -78,6 +78,11 @@ class RequestOptions:
     """``False`` asks a reasoning model to skip its hidden "thinking" and answer
     straight away. ``None`` leaves the server's default."""
 
+    seed: int | None = None
+    """The random seed the server should start from. With ``temperature=0`` a
+    fixed seed is what makes the same prompt give back the same words, which the
+    literature review depends on. ``None`` leaves it to the server."""
+
 
 @dataclass(frozen=True)
 class Usage:
@@ -118,6 +123,12 @@ class ModelInfo:
 
     context_length: int | None = None
     """The longest prompt plus reply, in tokens, the server will accept."""
+
+    digest: str | None = None
+    """A hash of the model's weights, when the server reports one (Ollama does,
+    on ``/api/tags``). Two servers that report the same digest are running the
+    same weights, so a record of it says which model actually wrote something.
+    vLLM does not report one, so there it stays ``None``."""
 
 
 class InferenceBackend(Protocol):

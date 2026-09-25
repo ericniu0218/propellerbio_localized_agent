@@ -1,0 +1,25 @@
+# Immunology & inflammation — the user's example question, verbatim in shape.
+id: psoriasis-prevention-targets
+question: "If I want to prevent psoriasis, what areas should I target?"
+notes: >-
+  The corpus mimics what a searcher returns for this question: animal studies
+  that knock out or block a molecule, clinical trials, prevention/relapse
+  papers, human genetics — plus reviews (the gate must exclude them) and a few
+  papers about near-miss diseases (atopic dermatitis, psoriatic arthritis).
+corpus:
+  max_per_query: 25
+  full_text_max: 45
+  queries:
+    - 'TITLE_ABS:"psoriasis" AND (TITLE_ABS:"knockout" OR TITLE_ABS:"deficient" OR TITLE_ABS:"blockade" OR TITLE_ABS:"neutralization" OR TITLE_ABS:"inhibition") AND (TITLE_ABS:"mice" OR TITLE_ABS:"mouse") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]'
+    - 'TITLE:"psoriasis" AND (PUB_TYPE:"Randomized Controlled Trial" OR TITLE_ABS:"phase 3") AND (TITLE_ABS:"IL-23" OR TITLE_ABS:"IL-17" OR TITLE_ABS:"TNF" OR TITLE_ABS:"TYK2") AND PUB_YEAR:[2012 TO 2025]'
+    - 'TITLE_ABS:"psoriasis" AND (TITLE_ABS:"prevent*" OR TITLE_ABS:"relapse" OR TITLE_ABS:"flare" OR TITLE_ABS:"onset") AND (TITLE_ABS:"target*" OR TITLE_ABS:"inhibit*") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]'
+    - 'TITLE_ABS:"psoriasis" AND (TITLE_ABS:"genome-wide" OR TITLE_ABS:"mendelian randomization" OR TITLE_ABS:"loss-of-function") AND OPEN_ACCESS:y'
+  near_miss_max: 4
+  near_miss_queries:
+    - 'TITLE:"atopic dermatitis" AND (TITLE_ABS:"blockade" OR TITLE_ABS:"inhibitor") AND OPEN_ACCESS:y AND NOT TITLE_ABS:"psoriasis"'
+    - 'TITLE:"psoriatic arthritis" AND TITLE_ABS:"inhibitor" AND OPEN_ACCESS:y'
+references:
+  reviews_query: 'TITLE:"psoriasis" AND (TITLE:"target*" OR TITLE:"pathogenesis" OR TITLE:"therap*") AND PUB_TYPE:"review" AND PUB_YEAR:[2021 TO 2025]'
+  reviews_max: 5
+  open_targets_disease: MONDO_0005083
+  open_targets_min_phase: 3

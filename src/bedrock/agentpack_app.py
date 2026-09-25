@@ -78,6 +78,13 @@ PENDING_REVIEW_PREFIX = "_⏳ Drafting — not yet compliance-reviewed_\n\n---\n
 # still takes real time after that.
 REVIEWING_PREFIX = "_🔍 Reviewing before this is shown as final…_\n\n---\n\n"
 
+AGENTPACK_REVIEW_NOTICE = (
+    "Literature reviews are not available in agent-pack mode. Run one in the "
+    "default mode (start `bedrock` without `BEDROCK_BACKEND=agentpack`) or from "
+    "a shell with `bedrock-litreview ask`. `/reviews` works here either way: it "
+    "only reads what is already on this machine."
+)
+
 AGENTPACK_HELP_TEXT = """\
 **Commands**
 
@@ -90,6 +97,8 @@ AGENTPACK_HELP_TEXT = """\
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
+| `/reviews` | Literature reviews recorded on this machine |
+| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
 | `/audit` | What this client has done on this machine |
 | `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
@@ -112,8 +121,10 @@ interactively in PyMOL.”
   `/runs --project X --since 2026-07-01 --before 2026-10-01`
 - Export the action history: `/audit export "/approved/review/actions.jsonl"`
 
-`/runs`, `/confidence` and `/audit` read local files only. They keep working
-when the AI system is unreachable, and nothing they show is sent to a model.
+`/runs`, `/confidence`, `/reviews` and `/audit` read local files only. They keep
+working when the AI system is unreachable, and nothing they show is sent to a
+model. Starting a literature review needs the default mode or a shell; see
+`/review` below.
 """
 
 
@@ -262,6 +273,11 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
                     await self.post_notice(str(exc), kind="error")
                 else:
                     self.open_pymol(structure)
+            case "review" | "litreview":
+                # The pipeline calls a model server directly and is not an
+                # agent; there is nothing for the agent system to run it on.
+                # `/reviews` still works here, because it reads local files.
+                await self.post_notice(AGENTPACK_REVIEW_NOTICE, kind="error")
             case _:
                 await self.post_notice(
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",

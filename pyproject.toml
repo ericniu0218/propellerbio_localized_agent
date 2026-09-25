@@ -17,6 +17,11 @@ dependencies = [
     # library's lzma when missing, so this is a performance dependency
     # rather than a hard one - see src/bedrock/context/codec.py.
     "zstandard>=0.22",
+    # The literature review (src/bedrock/litreview/).
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "lxml>=5.0",          # open-access JATS full text
+    "rapidfuzz>=3.0",     # quote matching; a slower pure-Python fallback exists
 ]
 
 [project.optional-dependencies]
@@ -24,6 +29,9 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
 ]
+# The literature review's optional HTTP front door (bedrock.litreview.api).
+# The terminal app never needs it; see docs/prompts/LITREVIEW_INTEGRATION.md.
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 # Telling voices apart, and recognising an enrolled one. ONNX only — no
 # PyTorch — so it installs on the same laptop as everything else. Optional:
@@ -41,12 +49,19 @@ speakers = [
 bedrock = "bedrock.app:main"
 bedrock-biotech = "bedrock.biotech.cli:main"
 bedrock-meeting = "bedrock.meetings.cli:main"
+bedrock-litreview = "bedrock.litreview.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-bedrock = ["ui/*.tcss", "workspaces/migrations/*.sql"]
+bedrock = [
+    "ui/*.tcss",
+    "workspaces/migrations/*.sql",
+    "litreview/llm/prompts/*.md",
+    "litreview/knowledge/*.yaml",
+    "litreview/defaults/*.yaml",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

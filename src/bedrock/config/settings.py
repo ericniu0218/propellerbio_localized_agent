@@ -190,6 +190,13 @@ class Settings:
     here, so a broken table is reported by ``/sources`` instead of stopping
     the app from starting."""
 
+    litreview: dict = field(default_factory=dict)
+    """The ``[litreview]`` table: which model set the literature review uses,
+    where its data lives, and which extra hosts count as local. Validated by
+    ``bedrock.litreview.config`` when a review runs rather than here, so a typo
+    in it is reported by ``/review`` instead of stopping the app from
+    starting - the same rule as ``connectors``."""
+
     agents: dict = field(default_factory=default_agent_settings)
     """The ``[agents]`` block: roster path, execution budgets and capability
     configuration. A configured capability is still unavailable unless an
@@ -273,6 +280,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "alphafold_db_preset", "alphafold_gpu_devices",
         "alphafold_models_to_relax", "biotech_max_sequence_length",
         "pymol_executable", "connectors", "agents", "profile", "context_window",
+        "litreview",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -321,6 +329,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     # not fit in one environment variable. Secrets still stay out of the
     # file - a connector names the environment variable that holds its token.
     connectors = file_values.get("connectors") or {}
+    litreview = file_values.get("litreview") or {}
     agents = _agent_settings(file_values.get("agents"))
     profile = _profile(env, file_values)
 
@@ -355,6 +364,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         biotech_max_sequence_length=int(env.get("BEDROCK_MAX_SEQUENCE_LENGTH") or file_values.get("biotech_max_sequence_length") or 2500),
         pymol_executable=env.get("PYMOL_EXECUTABLE") or file_values.get("pymol_executable") or "pymol",
         connectors=connectors,
+        litreview=litreview,
         agents=agents,
         extra=extra,
     )

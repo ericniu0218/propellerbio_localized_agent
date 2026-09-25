@@ -143,6 +143,26 @@ from reported counts. The status bar's `context` counter shows the last prompt
 against the window, locally only. The first-run check prints matching Ollama
 settings. New features read limits from the profile, not constants of their own.
 
+Also built: the literature review (`src/bedrock/litreview/`), moved in from its
+own repository. A scientist asks a question and gets back a report in which
+every sentence cites a verified quote from a paper: `/review` beside the chat,
+`/reviews` to list and re-prove past ones, `bedrock-litreview` in a shell, and
+an optional FastAPI front door. **Read `src/bedrock/litreview/CLAUDE.md` before
+changing any of it** - it is a pipeline, not an agent, and its guarantees
+(verbatim quote verification, per-field provenance, the citation guard, the
+report invariants) depend on the model never deciding what happens next. Every
+model call goes through `SchedulerClient` at `Priority.USER_JOB`, at temperature
+0, on model names pinned in `defaults/models.yaml`; a review therefore queues
+behind the employee's own chat and never in front of it. It needs a context
+window of at least 12,288 tokens, which `service.preflight` checks before a run
+starts. Its settings are the `[litreview]` table in `config.toml` and its data
+lives in `~/.local/share/bedrock/litreview/`. Its HTTP API
+(`bedrock.litreview.api`, the `api` extra) is kept on purpose: bedrock is
+terminal-first today and is going to become an app, and the "not a website"
+rule governs the employee's terminal interface, not this optional API - which
+runs its reviews through the same service and the same scheduler as `/review`.
+See `docs/litreview/README.md` and `docs/prompts/LITREVIEW_INTEGRATION.md`.
+
 ## Development Philosophy
 
 Build the smallest working vertical slice first. Prioritise understandable, maintainable Python over abstraction. Explain important architectural decisions in plain English in docstrings, because some contributors are learning software development.

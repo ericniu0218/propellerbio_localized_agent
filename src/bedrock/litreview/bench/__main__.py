@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -54,26 +55,41 @@ def main(argv: list[str] | None = None) -> int:
             build_corpus(bq, (args.out or CORPORA) / bq.id, searcher=searcher, progress=say)
         return 0
 
+    from bedrock.config import load_settings as load_bedrock_settings
     from bedrock.litreview.bench.run import evaluate
     from bedrock.litreview.llm import make_client
+    from bedrock.litreview.service import standalone_scheduler
 
     settings = load_settings(model_set=args.models)
-    client = make_client(settings)
     judge_client = None
     if args.judge_file:
         from bedrock.litreview.bench.filejudge import FileClient
 
         judge_client = FileClient(args.judge_file, version=f"file:{args.judge_file.name}")
         say(f"judging from {args.judge_file} ({len(judge_client.answers)} answer(s) on file)")
-    for path in args.questions:
-        bq = BenchQuestion.load(path)
-        card, out_dir = evaluate(
-            bq, settings=settings, client=client, skip_baselines=args.skip_baselines,
-            corpus_dir=(args.corpora / bq.id) if args.corpora else None,
-            skip_distractors=args.skip_distractors, skip_perturb=args.skip_perturb, from_run=args.from_run,
-            judge_client=judge_client, progress=say,
-        )
-        print(out_dir / "scorecard.md")
+
+    async def go() -> list[Path]:
+        # The benchmark is a long job on its own machine, so it opens a backend
+        # and a scheduler of its own - the same ones the app would give it, just
+        # with no chat to wait behind. `evaluate` is blocking, so it runs on a
+        # worker thread and its model calls come back to this loop.
+        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+            client = make_client(settings, scheduler=scheduler, loop=asyncio.get_running_loop())
+            cards = []
+            for path in args.questions:
+                bq = BenchQuestion.load(path)
+                _, out_dir = await asyncio.to_thread(
+                    evaluate,
+                    bq, settings=settings, client=client, skip_baselines=args.skip_baselines,
+                    corpus_dir=(args.corpora / bq.id) if args.corpora else None,
+                    skip_distractors=args.skip_distractors, skip_perturb=args.skip_perturb,
+                    from_run=args.from_run, judge_client=judge_client, progress=say,
+                )
+                cards.append(out_dir / "scorecard.md")
+            return cards
+
+    for card in asyncio.run(go()):
+        print(card)
     return 0
 
 

@@ -8,6 +8,20 @@ no-op `sleep`, so the whole searcher runs offline.
 This is the only place in the package that talks to a public server during a
 question. It sends search terms and identifiers out; it never sends papers,
 findings or reports.
+
+Every request must land on one of `SOURCE_HOSTS`, and so must every redirect it
+follows. The URLs here are fixed in code - there is no path by which a model or
+a config file chooses one - but a redirect is chosen by the far end, and a
+search URL carries the scientist's search terms in its query string. A 302 to
+somewhere else would hand those terms to a third party, which is the one thing
+this client is careful not to do. So the check is on the request, not the
+first one: httpx fires the hook again for each hop, and a redirect to another
+host raises `SourceError` before it is sent.
+
+Bedrock's `web.fetch` capability requires a proxy and refuses to follow
+redirects at all. That rule was written for URLs a *model* picks. These are not,
+so the narrower host allowlist is the right shape here; httpx honours
+`HTTPS_PROXY` already, for a site that requires one.
 """
 
 from __future__ import annotations
@@ -23,9 +37,22 @@ import httpx
 USER_AGENT = "litreview/0.2"
 _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
+SOURCE_HOSTS = frozenset({"www.ebi.ac.uk", "eutils.ncbi.nlm.nih.gov"})
+"""The only hosts a literature search may reach. See the module docstring."""
+
 
 class SourceError(RuntimeError):
     """A source could not answer, after retries."""
+
+
+def _only_source_hosts(request: httpx.Request) -> None:
+    """Refuse any request, redirect included, to a host that is not a source."""
+    host = (request.url.host or "").lower()
+    if host not in SOURCE_HOSTS:
+        raise SourceError(
+            f"refusing to send {request.method} to {host or request.url!r}: "
+            f"a literature search may only reach {', '.join(sorted(SOURCE_HOSTS))}"
+        )
 
 
 class SourceHTTP:
@@ -42,6 +69,7 @@ class SourceHTTP:
         self.client = httpx.Client(
             timeout=timeout, transport=transport, headers={"User-Agent": user_agent},
             follow_redirects=True,
+            event_hooks={"request": [_only_source_hosts]},
         )
         self.min_interval = min_interval
         self.retries = max(1, retries)

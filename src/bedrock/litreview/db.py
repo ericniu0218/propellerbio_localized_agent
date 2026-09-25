@@ -167,6 +167,22 @@ class Database:
         ).fetchone()
         return row[0] if row else None
 
+    def recent_runs(self, limit: int = 20) -> list[Run]:
+        """The most recent runs, newest first.
+
+        Ordered by `started` rather than by id: a run id is a hash, so the
+        rowid and the id both say nothing about when a run happened.
+        """
+        rows = self.conn.execute("SELECT body FROM runs").fetchall()
+        runs = [Run.model_validate_json(b) for (b,) in rows]
+        runs.sort(key=lambda r: (r.started, r.id), reverse=True)
+        return runs[:limit]
+
+    def report_id_for(self, run_id: str) -> str | None:
+        """The report a run wrote, if it got that far."""
+        row = self.conn.execute("SELECT id FROM reports WHERE run_id = ?", (run_id,)).fetchone()
+        return row[0] if row else None
+
     def finished_run_ids(self) -> list[str]:
         """Runs that got as far as writing a report."""
         rows = self.conn.execute("SELECT body FROM runs ORDER BY id").fetchall()

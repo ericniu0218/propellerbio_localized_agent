@@ -1,14 +1,23 @@
 """Command line.
 
-    litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
-    litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl
-    litreview ask "..." --search            # search and answer in one go (needs the network)
-    litreview ask "..." --no-model          # rules + code only; no written sections
-    litreview rate REPORT_ID 4 --rater jd --comment "missed IL-36"
+    bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
+    bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl
+    bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
+    bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
+    bedrock-litreview runs                  # the most recent runs
+    bedrock-litreview verify-run RUN_ID     # re-prove a stored report
+    bedrock-litreview rate REPORT_ID 4 --rater jd --comment "missed IL-36"
+
+The same reviews run inside the terminal app as `/review`; this is the shell
+way in, for a script, a cron job or a machine with no app running. Both go
+through `service.run_review`, so both get one pipeline and one scheduler.
 
 `search` is the only command that goes to the internet, and `ask` does so only
 with `--search`. On an air-gapped machine, run `search` on one that is allowed
 out and carry the JSON-lines file across.
+
+Only `ask` with a model opens a connection to the model server. `search`,
+`verify-run`, `rate`, `runs` and `ask --no-model` never build a backend at all.
 
 The benchmark has its own entry point: `python -m bedrock.litreview.bench --help`.
 """
@@ -16,11 +25,13 @@ The benchmark has its own entry point: `python -m bedrock.litreview.bench --help
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
+import threading
 from pathlib import Path
 
-from bedrock.litreview.config import load_settings
+from bedrock.litreview.config import ConfigError, load_settings
 from bedrock.litreview.sources.corpus import CorpusSearcher
 from bedrock.litreview.sources.literature import SOURCES, LiteratureSearcher, SearchFailed
 from bedrock.litreview.stages.s0_question import QuestionError
@@ -40,8 +51,94 @@ def _searcher_overrides(args) -> dict:
     return overrides
 
 
+def _ask(args) -> int:
+    """`ask`, which is the one command that may use a model.
+
+    With a model this needs an event loop, because every call goes through
+    bedrock's scheduler: `standalone_scheduler` opens a backend for this process
+    alone, and `service.run_review` runs the pipeline on a worker thread behind
+    it. Without a model there is nothing to talk to, so no backend is opened.
+    """
+    from bedrock.litreview.llm import ModelServerUnavailable, ReviewInterrupted
+    from bedrock.litreview.service import ReviewRequest, run_review, standalone_scheduler
+
+    try:
+        settings = load_settings(model_set=args.models, check_endpoint=not args.no_model)
+    except ConfigError as exc:
+        _say(f"ask: {exc}")
+        return 1
+
+    request = ReviewRequest(
+        question=args.question,
+        corpus=args.corpus,
+        search=args.search,
+        refresh=args.refresh,
+        resume=args.resume,
+        use_model=not args.no_model,
+        model_set=args.models,
+        sources=_searcher_overrides(args).get("sources"),
+        full_text=not args.no_full_text,
+        out_dir=args.out,
+    )
+
+    async def go():
+        from bedrock.config import load_settings as load_bedrock_settings
+
+        def review(scheduler):
+            return run_review(
+                request, settings=settings, scheduler=scheduler,
+                progress=_say, cancel=threading.Event(),
+            )
+
+        # A run without a model never reaches a server, so none is opened: the
+        # machine allowed to search is usually not the machine with the GPU.
+        if args.no_model:
+            return await review(None)
+        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+            return await review(scheduler)
+
+    try:
+        result = asyncio.run(go())
+    except NoPapers:
+        _say("ask: no papers for this question yet — pass --corpus FILE, or --search")
+        return 1
+    except ReviewInterrupted as exc:
+        _say(f"ask: {exc}")
+        _say(f"ask: resume it with `bedrock-litreview ask {args.question!r} --resume {_unfinished_run_id(settings)}`")
+        if isinstance(exc, ModelServerUnavailable):
+            _say("ask: on a slow machine, raise `request_timeout` in ~/.config/bedrock/config.toml.")
+        return 1
+    except (ConfigError, QuestionError, SearchFailed) as exc:
+        _say(f"ask: {exc}")
+        return 1
+    except (OSError, ValueError) as exc:
+        _say(f"ask: {exc}")
+        return 1
+
+    print(result.paths["html"])
+    if result.report.integrity:
+        _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
+             "it opens with a warning")
+        return 1
+    return 0
+
+
+def _unfinished_run_id(settings) -> str:
+    """The most recent run that has no report, so the message can name it."""
+    from bedrock.litreview.db import Database
+
+    try:
+        for run in Database(settings.db_path).recent_runs(20):
+            if run.finished is None:
+                return run.id
+    except Exception:  # noqa: BLE001 - a hint must not replace the real error
+        pass
+    return "<run-id>"
+
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="litreview")
+    parser = argparse.ArgumentParser(prog="bedrock-litreview")
     sub = parser.add_subparsers(dest="command", required=True)
 
     search = sub.add_parser("search", help="search the literature and save papers as JSON lines (needs network)")
@@ -68,6 +165,9 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("run_id", nargs="?", help="the run to check")
     verify.add_argument("--all", action="store_true", help="check every finished run in the database")
     verify.add_argument("--db", help="database file (default: the configured one; the benchmark uses data/bench.sqlite3)")
+
+    runs = sub.add_parser("runs", help="list the most recent runs")
+    runs.add_argument("--limit", type=int, default=20)
 
     rate = sub.add_parser("rate", help="record a scientist's rating of a report")
     rate.add_argument("report_id")
@@ -103,40 +203,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "ask":
-        from bedrock.litreview.runner import answer_question
+        return _ask(args)
 
-        settings = load_settings(model_set=args.models, check_endpoint=not args.no_model)
-        searcher = None
-        if args.corpus:
-            try:
-                searcher = CorpusSearcher(args.corpus)
-            except (OSError, ValueError) as exc:
-                _say(f"ask: {exc}")
-                return 1
-        elif args.search:
-            searcher = LiteratureSearcher.from_settings(settings, **_searcher_overrides(args))
-        try:
-            result = answer_question(
-                args.question,
-                settings=settings,
-                use_model=not args.no_model,
-                searcher=searcher,
-                refresh_papers=args.refresh,
-                out_dir=args.out,
-                resume_run_id=args.resume,
-                progress=_say,
-            )
-        except NoPapers:
-            _say("ask: no papers for this question yet — pass --corpus FILE, or --search")
-            return 1
-        except (QuestionError, SearchFailed) as exc:
-            _say(f"ask: {exc}")
-            return 1
-        print(result.paths["html"])
-        if result.report.integrity:
-            _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
-                 "it opens with a warning")
-            return 1
+    if args.command == "runs":
+        from bedrock.litreview.db import Database
+
+        db = Database(load_settings(check_endpoint=False).db_path)
+        for run in db.recent_runs(args.limit):
+            report_id = db.report_id_for(run.id)
+            question = db.get_question(run.question_id)
+            state = report_id or f"unfinished (stage {run.stage_reached})"
+            print(f"{run.id}  {run.started}  {state}  {question.text if question else ''}")
         return 0
 
     if args.command == "verify-run":

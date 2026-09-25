@@ -298,6 +298,42 @@ def test_every_source_failing_raises_instead_of_returning_nothing(spec):
     assert s.last_report.failures
 
 
+# --- the search stays on its own hosts -----------------------------------------
+
+def test_a_request_to_any_other_host_is_refused():
+    """The URLs here are fixed in code; this is the guard for the ones that
+    are not, which is every redirect the far end chooses."""
+    def anywhere(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    http = SourceHTTP(transport=httpx.MockTransport(anywhere), sleep=lambda s: None, retries=1)
+    with pytest.raises(SourceError, match="may only reach"):
+        http.get("https://example.com/search?query=psoriasis+prevention")
+
+
+def test_a_redirect_to_another_host_is_refused_and_the_other_sources_carry_on(spec):
+    """A 302 would otherwise hand the scientist's search terms to a third party."""
+    class Redirecting(Servers):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.host == "eutils.ncbi.nlm.nih.gov":
+                self.requests.append(request)
+                return httpx.Response(302, headers={"Location": "https://evil.example/collect?q=psoriasis"})
+            return super().__call__(request)
+
+    servers = Redirecting()
+    s = searcher(servers)
+    papers = s.search(search_request(spec))
+
+    # PubMed is lost, and says why; Europe PMC and the preprints still answer.
+    assert papers and all(p.source in ("europepmc", "biorxiv") for p in papers)
+    assert s.last_report.failures
+    assert all(key.startswith("pubmed") for key in s.last_report.failures)
+    assert any("may only reach" in reason for reason in s.last_report.failures.values())
+
+    # The refusal happened before the request left: nothing reached that host.
+    assert servers.requests and not any(r.url.host == "evil.example" for r in servers.requests)
+
+
 def test_a_bad_request_is_not_retried():
     servers = Servers(epmc_status=400)
     http = SourceHTTP(transport=httpx.MockTransport(servers), sleep=lambda s: None)
@@ -376,8 +412,7 @@ class _MockedSearcher(LiteratureSearcher):
 
 def test_cli_search_writes_the_handoff_file_and_ask_reads_it(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "LiteratureSearcher", _MockedSearcher)
-    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("OUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "data"))
     out = tmp_path / "papers.jsonl"
     assert cli.main(["search", QUESTION, "--out", str(out)]) == 0
     papers = read_papers(out)
@@ -392,13 +427,35 @@ def test_cli_reports_a_failed_search_and_a_missing_paper_set(tmp_path, monkeypat
         servers = Servers(down=True)
 
     monkeypatch.setattr(cli, "LiteratureSearcher", Down)
-    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "data"))
     assert cli.main(["search", QUESTION, "--out", str(tmp_path / "p.jsonl")]) == 1
     assert "every source failed" in capsys.readouterr().err
     assert not (tmp_path / "p.jsonl").exists()
 
     assert cli.main(["ask", QUESTION, "--no-model", "--models", "laptop"]) == 1
     assert "pass --corpus FILE, or --search" in capsys.readouterr().err
+
+
+def test_cli_ask_with_a_model_goes_through_the_scheduler_and_runs_lists_it(tmp_path, monkeypatch, capsys):
+    """The shell path opens its own backend and scheduler, then the same service."""
+    backend = _ScriptedBackend()
+    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: backend)
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
+
+    corpus = tmp_path / "papers.jsonl"
+    monkeypatch.setattr(cli, "LiteratureSearcher", _MockedSearcher)
+    assert cli.main(["search", QUESTION, "--out", str(corpus)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["ask", QUESTION, "--corpus", str(corpus), "--models", "laptop"]) == 0
+    report_path = Path(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report_path.exists() and report_path.name == "report.html"
+    assert backend.calls, "the review made no model calls"
+
+    assert cli.main(["runs"]) == 0
+    listed = capsys.readouterr().out.strip().splitlines()
+    assert len(listed) == 1 and QUESTION in listed[0]
 
 
 def test_http_ask_searches_only_when_asked(settings, monkeypatch):
@@ -413,24 +470,40 @@ def test_http_ask_searches_only_when_asked(settings, monkeypatch):
         return searcher(lanes[len(made) - 1])
 
     monkeypatch.setattr(LiteratureSearcher, "from_settings", classmethod(from_settings))
-    settings.backend = "fake"
-    client = testclient.TestClient(create_app(settings))
+    settings.context_window = 12288
+    app = create_app(settings, bedrock_settings=_bedrock_settings(), backend=_ScriptedBackend())
 
-    resp = client.post("/ask", json={"question": QUESTION})
-    assert resp.status_code == 422 and "search=true" in resp.json()["detail"]
-    assert made == []
+    # `with` runs the app's lifespan, which is what opens the scheduler the
+    # review's model calls go through.
+    with testclient.TestClient(app) as client:
+        resp = client.post("/ask", json={"question": QUESTION})
+        assert resp.status_code == 422 and "search=true" in resp.json()["detail"]
+        assert made == []
 
-    resp = client.post("/ask", json={"question": QUESTION, "search": True})
-    assert resp.status_code == 502 and "every source failed" in resp.json()["detail"]
+        resp = client.post("/ask", json={"question": QUESTION, "search": True})
+        assert resp.status_code == 502 and "every source failed" in resp.json()["detail"]
 
-    resp = client.post("/ask", json={"question": QUESTION, "search": True})
-    assert resp.status_code == 200, resp.text
-    report_id = resp.json()["report_id"]
-    assert client.get(f"/reports/{report_id}").status_code == 200
+        resp = client.post("/ask", json={"question": QUESTION, "search": True})
+        assert resp.status_code == 200, resp.text
+        report_id = resp.json()["report_id"]
+        assert client.get(f"/reports/{report_id}").status_code == 200
 
-    resp = client.post(f"/reports/{report_id}/ratings", json={"score": 4, "rater": "jd"})
-    assert resp.status_code == 200 and resp.json()["score"] == 4
-    assert client.post("/reports/nope/ratings", json={"score": 4, "rater": "jd"}).status_code == 404
+        resp = client.post(f"/reports/{report_id}/ratings", json={"score": 4, "rater": "jd"})
+        assert resp.status_code == 200 and resp.json()["score"] == 4
+        assert client.post("/reports/nope/ratings", json={"score": 4, "rater": "jd"}).status_code == 404
+
+
+def test_http_ask_says_503_when_the_machine_cannot_run_a_review(settings):
+    """A preflight failure is "fix the machine", not "fix your question"."""
+    testclient = pytest.importorskip("fastapi.testclient")
+    from bedrock.litreview.api import create_app
+
+    settings.context_window = 4096  # smaller than min_context_window
+    app = create_app(settings, bedrock_settings=_bedrock_settings(), backend=_ScriptedBackend())
+    with testclient.TestClient(app) as client:
+        resp = client.post("/ask", json={"question": QUESTION, "papers": []})
+    assert resp.status_code == 503
+    assert "12,288" in resp.json()["detail"]
 
 
 def test_a_benchmark_corpus_can_come_from_the_searcher(tmp_path):
@@ -442,3 +515,39 @@ def test_a_benchmark_corpus_can_come_from_the_searcher(tmp_path):
     assert manifest["searcher"] == "literature" and manifest["papers"] == 5 and manifest["full_text"] == 1
     assert manifest["queries"] and all("psoriasis" in q for q in manifest["queries"])
     assert len(read_papers(tmp_path / "papers.jsonl")) == 5
+
+
+# --- the model server the HTTP app talks to ------------------------------------
+#
+# The API now runs its reviews through `service.run_review` and bedrock's
+# scheduler, exactly as `/review` and `bedrock-litreview ask` do, so its test
+# needs a server rather than a fake client. This one answers each call the way
+# `tests/litreview/fixtures.responder` would.
+
+
+def _bedrock_settings():
+    from bedrock.config import PROFILES, Settings as BedrockSettings
+
+    return BedrockSettings(api_base="http://localhost:11434/v1", profile=PROFILES["workstation"])
+
+
+class _ScriptedBackend:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def check_connection(self) -> bool:
+        return True
+
+    async def list_models(self):
+        from bedrock.inference import ModelInfo
+
+        return [ModelInfo(id="qwen3:8b")]
+
+    async def stream_chat(self, model, messages, options=None, on_usage=None):
+        from tests.litreview.fixtures import responder
+
+        self.calls.append(model)
+        yield responder(messages[-1]["content"], options.json_schema if options else None)
+
+    async def close(self) -> None:
+        pass

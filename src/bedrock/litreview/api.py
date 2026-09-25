@@ -6,12 +6,25 @@ Two ways in:
   model and rendered files on disk.
 - HTTP (optional, `pip install -e ".[api]"`): `create_app()` returns a small
   FastAPI app — POST /ask, GET /reports/{id}, POST /reports/{id}/ratings.
-  Serve it on the office machine only: `uvicorn litreview.api:app`.
+  Serve it on the office machine only:
+  `uvicorn bedrock.litreview.api:create_app --factory --host 127.0.0.1`.
 
-The searcher plugs in through `set_searcher`, or its papers can be posted with
-the question, or `"search": true` on POST /ask runs the literature searcher
-(`sources/literature.py`) for that question — the only way the HTTP app goes
-to the internet, and only when asked.
+  This is kept on purpose. bedrock is terminal-first today and is going to
+  become an app, and this is the front door that app will knock on. The "not a
+  website" rule in the root CLAUDE.md governs the *employee interface*, which is
+  the terminal; this API is not that interface, and it is optional. What matters
+  is that it is not a second pipeline: a POST /ask goes through the same
+  `service.run_review`, the same scheduler and the same guarantees as `/review`
+  in the app and `bedrock-litreview ask` in a shell.
+
+  It has no authentication yet. Keep it on localhost or the office network.
+
+Papers can be posted with the question, or `"search": true` on POST /ask runs
+the literature searcher (`sources/literature.py`) for that question — the only
+way the HTTP app goes to the internet, and only when asked. `set_searcher`
+registers a default searcher for the Python `ask()` entry point; the HTTP app
+builds its own through `service.run_review`, so that one request's `search`
+flag is the whole of what decides.
 
 Ratings are stored now so that, once enough exist, they can be compared with
 the automatic benchmark (`litreview.bench`) — the benchmark is the check that
@@ -54,7 +67,7 @@ class RateBody(BaseModel):
 
 
 def set_searcher(searcher: PaperSearcher) -> None:
-    """Register the paper searcher the HTTP app and `ask` use by default."""
+    """Register the paper searcher the Python `ask()` uses by default."""
     global _searcher
     _searcher = searcher
 
@@ -112,29 +125,60 @@ def rate_report(
     return rating
 
 
-def create_app(settings: Settings | None = None):
+def create_app(settings: Settings | None = None, *, bedrock_settings=None, backend=None):
+    """The FastAPI app, with one backend and one `Scheduler` per server process.
+
+    They are opened by the app's lifespan and closed on shutdown, so every
+    request shares one queue to the model server rather than each opening its
+    own - which is the same reason the terminal app has exactly one.
+    `backend` is for tests.
+    """
+    import threading
+    from contextlib import asynccontextmanager
+
     try:
         from fastapi import FastAPI, HTTPException
         from fastapi.responses import HTMLResponse, JSONResponse
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError('the HTTP API needs: pip install -e ".[api]"') from exc
 
+    from bedrock.config import load_settings as load_bedrock_settings
+    from bedrock.litreview.config import ConfigError
+    from bedrock.litreview.llm import ReviewInterrupted
     from bedrock.litreview.models import Report
-    from bedrock.litreview.sources.literature import LiteratureSearcher, SearchFailed
+    from bedrock.litreview.service import ReviewRequest, run_review, standalone_scheduler
+    from bedrock.litreview.sources.literature import SearchFailed
     from bedrock.litreview.stages.s0_question import QuestionError
     from bedrock.litreview.stages.s1_collect import NoPapers
     from bedrock.litreview.stages.s8_render import to_html
 
     settings = settings or load_settings()
-    app = FastAPI(title="litreview", version="0.2")
+    bedrock_settings = bedrock_settings or load_bedrock_settings()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with standalone_scheduler(bedrock_settings, backend=backend) as scheduler:
+            app.state.scheduler = scheduler
+            yield
+
+    app = FastAPI(title="litreview", version="0.2", lifespan=lifespan)
 
     @app.post("/ask")
-    def post_ask(body: AskBody) -> dict:
-        searcher = LiteratureSearcher.from_settings(settings) if body.search else None
+    async def post_ask(body: AskBody) -> dict:
+        request = ReviewRequest(
+            question=body.question,
+            papers=body.papers,
+            search=body.search,
+            refresh=body.refresh_papers,
+            approved_terms=body.approved_terms,
+        )
         try:
-            result = ask(
-                body.question, papers=body.papers, searcher=searcher, settings=settings,
-                refresh_papers=body.refresh_papers, approved_terms=body.approved_terms,
+            result = await run_review(
+                request,
+                settings=settings,
+                scheduler=app.state.scheduler,
+                progress=lambda msg: None,
+                cancel=threading.Event(),
             )
         except QuestionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -144,6 +188,10 @@ def create_app(settings: Settings | None = None):
             ) from exc
         except SearchFailed as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except (ConfigError, ReviewInterrupted) as exc:
+            # The machine cannot run a review, or the run stopped partway. Both
+            # are "try again once something changes", not "your question is bad".
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"report_id": result.report_id, "report": result.report.model_dump(mode="json")}
 
     @app.get("/reports/{report_id}")

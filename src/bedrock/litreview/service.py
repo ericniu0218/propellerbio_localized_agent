@@ -105,11 +105,15 @@ async def run_review(
     request: ReviewRequest,
     *,
     settings: Settings,
-    scheduler: Scheduler,
+    scheduler: Scheduler | None,
     progress: Callable[[str], None],
     cancel: threading.Event,
 ) -> RunResult:
     """Run one review and return its result.
+
+    `scheduler` may be None only when `request.use_model` is False. A run
+    without a model never reaches a server, so the shell commands that do that
+    do not open one.
 
     `progress` is called from the worker thread, so a caller that touches a UI
     has to hand the message back to its own thread. It must never raise: a
@@ -123,6 +127,8 @@ async def run_review(
 
     client = None
     if request.use_model:
+        if scheduler is None:
+            raise ValueError("a review that uses a model needs bedrock's scheduler")
         await preflight(settings, scheduler.backend)
         client = make_client(
             settings,

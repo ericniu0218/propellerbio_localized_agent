@@ -608,6 +608,65 @@ async def test_the_overview_never_carries_an_unverified_citation():
     assert "00:00:01" not in summary.render()
 
 
+# --- Briefs that talk about the meeting, not about themselves -----------------
+#
+# Three of these came back from llama3.1:8b in one afternoon of real use. The
+# first one sat in the meetings list looking like a broken feature.
+
+
+async def test_the_model_asking_for_a_transcript_is_not_a_summary():
+    """A one-second recording produced a polite request addressed to whoever
+    was reading. It rendered where the summary goes, so to anyone skimming the
+    list the product had simply broken."""
+    backend = FakeBackend([extraction(), (
+        "There is no provided transcript, only an opening phrase. Please provide "
+        "the transcript for a specific discussion and I will be happy to create "
+        "an overview of what was talked about."
+    )])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == ""
+    assert "Please provide" not in summary.render()
+    # The computed half is untouched: who spoke, how long, how many words.
+    assert summary.facts.word_count > 0
+
+
+async def test_a_brief_that_only_describes_the_recording_is_dropped():
+    backend = FakeBackend([extraction(), "This appears to be a conversation between two individuals."])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == ""
+
+
+async def test_the_padding_goes_and_the_content_stays():
+    """The common shape: one sentence of hedging about the format, then the
+    part the reader actually wants."""
+    backend = FakeBackend([extraction(), (
+        "This appears to be a recording of a group conversation, likely a podcast. "
+        "Enrollment is 148 of 200 and the readout moves to March."
+    )])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == "Enrollment is 148 of 200 and the readout moves to March."
+
+
+async def test_a_real_brief_is_left_exactly_as_written():
+    """Including its bullets - the format the brief is now asked for."""
+    brief = (
+        "A two-person check on the recorder before a client demo.\n\n"
+        "- Enrollment is 148 of 200; the readout moves to March.\n"
+        "- Delivery is a downloadable file, not an app store."
+    )
+    backend = FakeBackend([extraction(), brief])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == brief
+
+
+async def test_a_one_line_brief_beginning_with_this_survives():
+    """"This was a microphone test" is a good brief for a microphone test. Only
+    hedging or naming the format as the subject counts as padding."""
+    backend = FakeBackend([extraction(), "This was a microphone test before the club meeting."])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == "This was a microphone test before the club meeting."
+
+
 # --- the whole command, end to end ----------------------------------------
 
 

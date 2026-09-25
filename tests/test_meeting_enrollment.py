@@ -133,3 +133,107 @@ def test_a_missing_file_is_not_an_error(tmp_path):
     assert rescore_cues(
         tmp_path / "gone.wav", [FakeCue(0, 5000, "Priya")], [("Priya", ALICE)], tmp_path / "m.onnx"
     ) == {}
+
+
+# --- The model's length ceiling ----------------------------------------------
+#
+# These use a fake extractor rather than the real ONNX model, so they run on a
+# machine with no models installed and in CI. What they pin is the arithmetic
+# that decides how much audio reaches the model, which is exactly where the bug
+# was: the model itself behaved correctly, by raising.
+
+
+class FakeExtractor:
+    """Records how much audio each call was given, and refuses too much.
+
+    The ceiling is real: TitaNet's ONNX export is built for 12,288 frames at a
+    10ms hop and raises above that, which is what shipped as "voice enrolment
+    does not work".
+    """
+
+    CEILING_SAMPLES = 12_288 * 160  # frames x hop, in samples at 16 kHz
+
+    def __init__(self):
+        self.lengths: list[int] = []
+
+    def create_stream(self):
+        return self
+
+    def accept_waveform(self, sample_rate, samples):
+        self.lengths.append(len(samples))
+        self._last = len(samples)
+
+    def input_finished(self):
+        pass
+
+    def compute(self, stream):
+        if self._last > self.CEILING_SAMPLES:
+            raise RuntimeError(
+                "Attempting to broadcast an axis by a dimension other than 1. "
+                f"12288 by {self._last // 160}"
+            )
+        return [1.0, 0.0, 0.0]
+
+
+class FakeTurn:
+    def __init__(self, start_ms, end_ms, speaker):
+        self.start_ms, self.end_ms, self.speaker = start_ms, end_ms, speaker
+
+
+def test_audio_longer_than_the_model_accepts_is_truncated():
+    from bedrock.meetings.enrollment import MAX_EMBED_S, embed_samples
+
+    extractor = FakeExtractor()
+    embed_samples(extractor, [0.0] * (16_000 * 300), 16_000)  # five minutes
+    assert extractor.lengths == [int(MAX_EMBED_S * 16_000)]
+
+
+def test_short_audio_is_passed_through_whole():
+    from bedrock.meetings.enrollment import embed_samples
+
+    extractor = FakeExtractor()
+    embed_samples(extractor, [0.0] * 16_000, 16_000)
+    assert extractor.lengths == [16_000]
+
+
+def test_the_speaker_who_talked_most_still_gets_a_vector(monkeypatch):
+    """The regression. Three turns of a minute each totalled 180 seconds, went
+    to the model in one call, raised, and were swallowed by a warning - so the
+    person who spoke most in the meeting was the one who could never be given
+    their enrolled name. It only ever worked on short test clips."""
+    import bedrock.meetings.enrollment as enrollment
+
+    extractor = FakeExtractor()
+    monkeypatch.setattr(enrollment, "ENROLLMENT_AVAILABLE", True)
+    monkeypatch.setattr(enrollment, "_extractor", lambda model, threads: extractor)
+
+    turns = [FakeTurn(i * 60_000, (i + 1) * 60_000, 0) for i in range(3)]
+    vectors = enrollment.cluster_embeddings(
+        "ignored.wav", turns, "model.onnx", samples=[0.0] * (16_000 * 180)
+    )
+
+    assert 0 in vectors, "the dominant speaker must get a vector"
+    assert len(extractor.lengths) == 3, "each turn is embedded on its own"
+    assert max(extractor.lengths) <= FakeExtractor.CEILING_SAMPLES
+
+
+def test_one_unusable_turn_does_not_cost_the_speaker_their_vector(monkeypatch):
+    """Embedding per turn means a turn the model chokes on pulls the average
+    instead of destroying the whole profile."""
+    import bedrock.meetings.enrollment as enrollment
+
+    class OneBadTurn(FakeExtractor):
+        def compute(self, stream):
+            if len(self.lengths) == 2:  # the second turn only
+                raise RuntimeError("model said no")
+            return [1.0, 0.0, 0.0]
+
+    extractor = OneBadTurn()
+    monkeypatch.setattr(enrollment, "ENROLLMENT_AVAILABLE", True)
+    monkeypatch.setattr(enrollment, "_extractor", lambda model, threads: extractor)
+
+    turns = [FakeTurn(i * 10_000, (i + 1) * 10_000, 0) for i in range(3)]
+    vectors = enrollment.cluster_embeddings(
+        "ignored.wav", turns, "model.onnx", samples=[0.0] * (16_000 * 30)
+    )
+    assert 0 in vectors

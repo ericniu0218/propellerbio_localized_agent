@@ -244,23 +244,41 @@ Transcript part:
 """
 
 _OVERVIEW_PROMPT = """\
-Write an overview of this recording: what was talked about, and what came of it.
+Write a catch-up brief for a colleague who missed this and has two minutes. \
+They will not read the transcript. Everything they need is what you write.
 
-Keep every specific. Numbers, dates, deadlines, names and statuses go in \
-exactly as said - write "enrollment is 148 of 200", never "they discussed \
-enrollment numbers". A reader who was not there should learn the actual \
-figures from this paragraph, not learn that figures exist.
+Format, exactly this and nothing else:
+- One sentence saying what this was.
+- A blank line.
+- Two to six bullets, each beginning with "- ".
 
-Do not assume this was a working meeting. It may be a social conversation, a \
-class, an interview, or people talking around a table with no agenda. Describe \
-what it actually was. If nothing was decided and nobody agreed to do anything, \
-say so plainly in one sentence rather than implying otherwise - that is a \
-normal outcome and a useful thing for the reader to know.
+Each bullet covers one topic and states what was actually said about it. Lead \
+with the substance, never with the fact that it came up:
 
-Do not guess at the format or the occasion. If the transcript does not say it \
-was a podcast, an interview or a meeting, do not call it one.
+  Good:  - Enrollment is 148 of 200. The readout moves to March.
+  Bad:   - The group discussed enrollment numbers and timelines.
 
-Plain prose, no headings, no bullet points. Use only what the transcript says.
+Rules:
+- Keep every specific exactly as said: numbers, doses, dates, deadlines, \
+sample and batch counts, names, statuses, instrument and assay names, \
+versions. These are the point. The reader should finish knowing the figures, \
+not knowing that figures were mentioned.
+- Write the way a colleague talks. No filler: not "touched base", not \
+"aligned on", not "synergies", not "circled back", not "leveraged".
+- Never describe the recording. Do not write "this appears to be", "this is a \
+conversation between two individuals", "the participants discuss", or \
+anything about the audio, the transcript, the speakers as speakers, or the \
+format. Begin with the content.
+- Never guess. If a word is garbled or a reference is unclear, leave it out. \
+Do not write "possibly", "perhaps", "potentially", "likely", "it is not \
+clear", "appears to", or a guess in brackets. A shorter brief that is \
+entirely true beats a longer one that speculates.
+- Not every recording is a working meeting. It may be a test, a class, or \
+people catching up. Say which in the first sentence and keep the bullets to \
+what was said. If nothing was decided, do not imply that anything was.
+- If the transcript is too short or too garbled to brief anyone on, write \
+only the first sentence and no bullets. Never address the reader, never ask \
+for anything, never explain what you cannot do.
 
 Transcript:
 {transcript}
@@ -503,6 +521,74 @@ def _is_substantive(text: str) -> bool:
     return len(content) >= MIN_CONTENT_WORDS
 
 
+# The model talking to whoever asked, instead of briefing whoever missed the
+# meeting. A one-second recording produced "There is no provided transcript,
+# only an opening phrase. Please provide the transcript for a specific
+# discussion and I will be happy to create an overview" — which then sat in the
+# meetings list as if it were the summary of that meeting. It reads as a bug in
+# the product, and to a reader skimming ten meetings it is indistinguishable
+# from one.
+#
+# Matched on the second person and on the model referring to its own inability,
+# both of which are absent from any real brief: a brief is about the meeting.
+_META_REPLY = re.compile(
+    r"\b(?:"
+    r"please provide|i (?:will|'ll|would) be happy to|i (?:can|could)not|"
+    r"i[' ]?a?m (?:unable|sorry)|there is no (?:provided |actual |real )?"
+    r"(?:transcript|text|content|conversation)|no transcript (?:was |is )?"
+    r"(?:provided|given|supplied)|if you (?:provide|share|give)|"
+    r"let me know|feel free to|as an ai"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# A brief that opens by describing the recording rather than its content. Every
+# one of these was produced by llama3.1:8b against a real meeting, and they are
+# pure padding: the reader already knows they are reading a meeting summary.
+#
+# Deliberately narrow. "This was a microphone test before the club meeting" is
+# a perfectly good one-line brief and must survive, so a bare "This was ..."
+# does not qualify. Either the model hedges, or it names the format as the
+# subject of the sentence - "this is a conversation between two people", which
+# tells a reader nothing they did not know from the word "meeting".
+_HEDGE = r"appears? to be|seems? to be|sounds? like|is likely|is possibly"
+_FORMAT_NOUN = r"recording|transcript|audio|excerpt|snippet|conversation|discussion|dialogue|exchange|podcast|interview"
+_META_OPENER = re.compile(
+    r"^\s*(?:this|it|the (?:recording|transcript|audio|conversation|meeting))\s+"
+    r"(?:"
+    rf"(?:{_HEDGE})"
+    rf"|(?:is|was)\s+(?:an?\s+)?(?:\w+\s+){{0,3}}(?:{_FORMAT_NOUN})\b"
+    r")"
+    r"[^.!?]*[.!?]\s*",
+    re.IGNORECASE,
+)
+
+
+def is_meta_reply(text: str) -> bool:
+    """Whether the model answered the prompt instead of summarising the meeting."""
+    return bool(_META_REPLY.search(text))
+
+
+def clean_overview(text: str) -> str:
+    """Drop a meta reply entirely; trim a meta opener off a real one.
+
+    Returning "" is deliberate. An empty overview renders as no Overview
+    section, and the computed facts — who spoke, how long, how many words —
+    still appear. Saying nothing about a one-second recording is correct.
+    """
+    text = text.strip()
+    if not text or is_meta_reply(text):
+        return ""
+    trimmed = _META_OPENER.sub("", text, count=1).strip()
+    if trimmed:
+        return trimmed
+    # Nothing followed the opener, so the whole brief was a description of the
+    # recording. If it hedged as well - "this appears to be a conversation
+    # between two people" - it said nothing at all and goes. If it did not, it
+    # is thin but it is a claim, and a thin brief beats a blank one.
+    return "" if re.search(_HEDGE, text, re.IGNORECASE) else text
+
+
 def _points(raw_items: object, cues: list[Cue], with_owner: bool) -> list[Point]:
     if not isinstance(raw_items, list):
         return []
@@ -652,7 +738,7 @@ async def summarize_meeting(
             )
             # The overview prompt does not ask for citations. One that appears
             # anyway is the model's own invention, so it goes without checking.
-            summary.overview = strip_citation_markup(overview)
+            summary.overview = clean_overview(strip_citation_markup(overview))
     except InferenceError as exc:
         summary.degraded_reason = str(exc)
         return summary

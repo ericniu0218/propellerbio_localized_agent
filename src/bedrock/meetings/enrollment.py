@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bedrock.meetings.vectors import cosine
+from bedrock.meetings.vectors import centroid, cosine
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,28 @@ DEFAULT_THRESHOLD = 0.55
 # Ten seconds is enough for a stable vector and short enough that people will
 # actually do it. Below about three, the vector is mostly the start of a word.
 MIN_SAMPLE_S = 3.0
-MAX_SAMPLE_S = 120.0
+
+# The TitaNet ONNX export has a hard ceiling. Its encoder is built for 12,288
+# frames at a 10ms hop - a little over 123 seconds - and audio longer than that
+# does not degrade, it raises, from deep inside onnxruntime:
+#
+#   Attempting to broadcast an axis by a dimension other than 1. 12288 by 17998
+#
+# cluster_embeddings used to concatenate a speaker's three longest turns and
+# embed the lot in one call, with no cap. In a four-minute two-person recording
+# that is already 130 seconds, so the call raised, the exception was logged and
+# swallowed, and the speaker came back with no vector at all. With no vector
+# they cannot be matched against an enrolled voice, so they keep "Speaker 1".
+#
+# The person it hits first is whoever talked most, which is why this looked
+# like "enrolment does not work" rather than like a crash: it was silent, and
+# it took out the main speaker of every meeting long enough to matter. It only
+# ever worked on short test clips.
+#
+# 60 seconds is the cap now, less than half the ceiling, with no accuracy cost:
+# a voice print stops improving long before a minute of speech.
+MAX_EMBED_S = 60.0
+MAX_SAMPLE_S = MAX_EMBED_S
 
 
 def threshold() -> float:
@@ -156,7 +177,17 @@ def _extractor(model: Path, threads: int = 2):
     )
 
 
-def embed_samples(extractor, samples, sample_rate: int):
+def embed_samples(extractor, samples, sample_rate: int, max_seconds: float = MAX_EMBED_S):
+    """One vector for one stretch of audio, truncated to what the model accepts.
+
+    The cap is applied here, at the one place that talks to the extractor, so
+    no caller can reach the ceiling described at MAX_EMBED_S by accident. Every
+    caller already had a reason to believe its audio was short enough, and one
+    of them was wrong for months.
+    """
+    limit = int(max_seconds * sample_rate)
+    if len(samples) > limit:
+        samples = samples[:limit]
     stream = extractor.create_stream()
     stream.accept_waveform(sample_rate, samples)
     stream.input_finished()
@@ -209,19 +240,27 @@ def cluster_embeddings(
     vectors: dict[int, list[float]] = {}
     for speaker, speaker_turns in by_speaker.items():
         longest = sorted(speaker_turns, key=lambda t: t.end_ms - t.start_ms, reverse=True)[:3]
-        pieces = [
-            channel[int(t.start_ms / 1000 * sample_rate) : int(t.end_ms / 1000 * sample_rate)]
-            for t in longest
-        ]
-        pieces = [p for p in pieces if len(p) > sample_rate * 0.5]
-        if not pieces:
-            continue
-        try:
-            vectors[speaker] = [
-                float(x) for x in embed_samples(extractor, numpy.concatenate(pieces), sample_rate)
+        # Each turn is embedded on its own and the results averaged, rather
+        # than the turns being glued together and embedded once. Two reasons.
+        # It cannot reach the model's length ceiling, because no single call
+        # carries more than one turn. And one turn that happens to be recorded
+        # badly - somebody turning away from the microphone - pulls the average
+        # rather than contaminating the whole vector.
+        embedded = []
+        for turn in longest:
+            piece = channel[
+                int(turn.start_ms / 1000 * sample_rate) : int(turn.end_ms / 1000 * sample_rate)
             ]
-        except Exception as exc:  # pragma: no cover - model-level failure
-            logger.warning("Could not embed speaker %s: %s", speaker, exc)
+            if len(piece) <= sample_rate * 0.5:
+                continue
+            try:
+                embedded.append(embed_samples(extractor, piece, sample_rate))
+            except Exception as exc:  # pragma: no cover - model-level failure
+                logger.warning("Could not embed one turn of speaker %s: %s", speaker, exc)
+        if embedded:
+            vectors[speaker] = [float(x) for x in centroid(embedded)]
+        else:
+            logger.warning("No usable audio to embed for speaker %s", speaker)
     return vectors
 
 

@@ -198,13 +198,21 @@ async def run_digest_command(
     history: Any | None = None,
     actor_id: str | None = None,
     auto_context: AutoContext | None = None,
+    scheduler=None,
 ) -> None:
     """Handle one ``/digest ...`` invocation.
 
     ``history`` and ``actor_id`` are optional so this function stays usable on
     its own; both production apps always supply them, and their
     ``auto_context`` switch as well.
+
+    The optional model summary goes through ``scheduler`` (the app's
+    ``Scheduler``), so it waits for a chat reply to finish instead of
+    competing with it. ``backend`` is still accepted for callers without an
+    app; it then gets a scheduler of its own (see ``context.digest.summarize``).
     """
+    if scheduler is not None:
+        backend = scheduler
     args = args.strip()
     verb, _, rest = args.partition(" ")
     verb, rest = verb.lower(), rest.strip()
@@ -225,7 +233,10 @@ async def run_digest_command(
         if not rest:
             await notify("Give me something to search for: `/digest search <words>`.", "error")
             return
-        await notify(format_hits(rest, store.search(rest, limit=5)), "info")
+        # Off the UI thread: the search reads the on-disk index, and the
+        # screen must keep drawing while it does.
+        hits = await asyncio.to_thread(store.search, rest, limit=5)
+        await notify(format_hits(rest, hits), "info")
         return
 
     if verb == "show":

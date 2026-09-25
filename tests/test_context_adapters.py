@@ -5,6 +5,10 @@ overview is what a model reads instead of the file, so what matters is that
 the facts a person would ask for are actually in there.
 """
 
+from pathlib import Path
+
+import pytest
+
 from bedrock.context.adapters import (
     CodeAdapter,
     LogAdapter,
@@ -14,6 +18,8 @@ from bedrock.context.adapters import (
     TextAdapter,
     select_adapter,
 )
+from bedrock.context.adapters import code as code_adapter
+from bedrock.context.adapters.base import MAX_DECODE_BYTES
 from bedrock.context.adapters.logs import templatise
 
 CSV = "\n".join(
@@ -105,6 +111,43 @@ def test_unparseable_python_still_ingests_as_code():
     )
     assert extraction.source_kind == "code"
     assert extraction.segments
+
+
+@pytest.mark.parametrize("failure", [ValueError("null byte"), RecursionError("too deep")])
+def test_python_parser_failures_fall_back_to_generic_code(monkeypatch, failure):
+    def fail_parse(_text):
+        raise failure
+
+    monkeypatch.setattr(code_adapter.ast, "parse", fail_parse)
+    extraction = CodeAdapter().extract(
+        Source.from_text("def still_visible():\n    pass", name="x.py", suffix=".py")
+    )
+
+    assert extraction.source_kind == "code"
+    assert "def still_visible()" in extraction.overview
+
+
+def test_source_rejects_an_oversized_path_before_reading_it(tmp_path, monkeypatch):
+    path = tmp_path / "too-large.txt"
+    with path.open("wb") as handle:
+        handle.truncate(MAX_DECODE_BYTES + 1)
+
+    def unexpected_read(_path: Path):
+        raise AssertionError("oversized source was read into memory")
+
+    monkeypatch.setattr(Path, "read_bytes", unexpected_read)
+    with pytest.raises(ValueError, match="over the .* MB limit"):
+        Source.from_path(path)
+
+
+def test_csv_cells_larger_than_the_parser_default_are_supported():
+    large_cell = "x" * 200_000
+    extraction = TabularAdapter().extract(
+        Source.from_text(f"id,payload\n1,{large_cell}\n", name="large.csv", suffix=".csv")
+    )
+
+    assert extraction.metadata["rows"] == 1
+    assert large_cell in extraction.segments[-1].text
 
 
 def test_text_adapter_reports_the_outline():

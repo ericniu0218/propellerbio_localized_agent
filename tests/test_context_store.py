@@ -5,11 +5,12 @@ store on disk.
 """
 
 import pytest
+from time import perf_counter
 
 from bedrock.context import ContextStore, ingest
 from bedrock.context.adapters import Source
 from bedrock.context.chunker import chunk_segments
-from bedrock.context.types import Segment
+from bedrock.context.types import Chunk, Digest, Extraction, Segment
 
 CSV = "\n".join(
     ["sample,ph,note"]
@@ -78,6 +79,77 @@ def test_search_spans_every_artifact_and_can_be_narrowed(store: ContextStore):
     assert {hit.artifact_name for hit in store.search("protocol", limit=5)} == {"one.md", "two.md"}
     narrowed = store.search("protocol", limit=5, artifact_id=beta.id)
     assert {hit.artifact_name for hit in narrowed} == {"two.md"}
+
+
+def test_fts_ranking_matches_manifest_scan_on_existing_search_fixtures(store: ContextStore):
+    ingest(Source.from_text(CSV, name="a.csv", suffix=".csv"), store=store)
+    ingest(Source.from_text("alpha protocol covers storage and alpha handling", name="one.md"), store=store)
+    ingest(Source.from_text("beta protocol covers shipping", name="two.md"), store=store)
+    for query in ("protocol", "alpha protocol", "sample routine", "contamination"):
+        assert [(hit.artifact_id, hit.chunk_index) for hit in store.search(query, limit=5)] == [
+            (hit.artifact_id, hit.chunk_index) for hit in store._scan_search(query, limit=5, artifact_id=None)
+        ]
+
+
+def test_fts_index_rebuilds_and_survives_deletion(store: ContextStore, monkeypatch):
+    first = ingest(Source.from_text("alpha protocol", name="one.md"), store=store)
+    second = ingest(Source.from_text("beta protocol", name="two.md"), store=store)
+    assert store.search("protocol")
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_manifest", lambda _: (_ for _ in ()).throw(AssertionError("manifest loaded during search")))
+        assert store.search("protocol")
+    assert store.delete(first.id)
+    assert {hit.artifact_id for hit in store.search("protocol")} == {second.id}
+    store._index_path.unlink()
+    rebuilt = ContextStore(store.root)
+    assert {hit.artifact_id for hit in rebuilt.search("protocol")} == {second.id}
+
+
+def test_fts_keeps_underscore_terms_and_has_a_scan_fallback(store: ContextStore, monkeypatch, capsys):
+    artifact = ingest(Source.from_text("sample_id is the source key", name="schema.md"), store=store)
+    assert store.search("sample_id")[0].artifact_id == artifact.id
+    fallback = ContextStore(store.root)
+    monkeypatch.setattr("bedrock.context.store.sqlite3.connect", lambda *args, **kwargs: (_ for _ in ()).throw(
+        __import__("sqlite3").OperationalError("no such module: fts5")))
+    assert fallback.search("sample_id")[0].artifact_id == artifact.id
+    assert "FTS5 unavailable" in capsys.readouterr().err
+
+
+def test_index_rebuilds_after_an_external_manifest_edit(store: ContextStore):
+    import json
+
+    artifact = ingest(Source.from_text("alpha protocol", name="one.md"), store=store)
+    assert store.search("alpha")
+    path = store.root / artifact.id / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["chunks"][0]["terms"] = {"newword": 1}
+    manifest["chunks"][0]["term_count"] = 1
+    path.write_text(json.dumps(manifest))
+    assert store.search("newword")
+    assert store.search("alpha") == []
+
+
+def test_updating_digest_keeps_search_index_in_step(store: ContextStore):
+    artifact = ingest(Source.from_text("alpha protocol", name="one.md"), store=store)
+    replacement = Digest("updated gist", "updated overview")
+    assert store.update_digest(artifact.id, replacement).digest_text() == replacement.to_text()
+    assert store.search("alpha")[0].artifact_id == artifact.id
+    assert ContextStore(store.root).search("alpha")[0].artifact_id == artifact.id
+
+
+def test_large_fts_search_is_bounded_and_keeps_no_manifest_cache(store: ContextStore):
+    chunks = [Chunk(i, f"sample {i} regular observation") for i in range(14_000)]
+    chunks[-1] = Chunk(13_999, "sample 13999 uniquezebra observation")
+    source = Source.from_text("synthetic source", name="large.txt")
+    store.put(source=source, extraction=Extraction("text", "synthetic"), chunks=chunks,
+              digest=Digest("synthetic", "14k chunks"))
+    assert not hasattr(store, "_manifest_cache")
+    store.search("uniquezebra")  # warm the filesystem cache
+    start = perf_counter()
+    hits = store.search("uniquezebra")
+    elapsed = perf_counter() - start
+    assert hits[0].chunk_index == 13_999
+    assert elapsed < 0.04
 
 
 def test_resolve_accepts_an_id_prefix_or_a_name(store: ContextStore):

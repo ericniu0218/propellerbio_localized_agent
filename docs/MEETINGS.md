@@ -127,41 +127,57 @@ Ollama's default context is 4,096. The transcript is cut on cue boundaries into
 chunks that fit anywhere, each read separately, findings merged and deduplicated.
 Pass `words_per_chunk` to use a bigger window on a server that has one.
 
-**Never cite a moment that did not say it.** Models invent citations, and they
-also put real timestamps on the wrong line. Every timestamp the model writes -
-in decisions, action items, facts, the overview and rewritten notes - is checked
-against the line it points at, by the distinctive words the note and that line
-share (numbers count at any length; filler words do not):
+**Every timestamp is backed by words, not by a list of timestamps.** Models
+invent citations, and — less obviously — they attach *real* timestamps to the
+wrong sentence. So the model is asked for two separate things: the short line
+you read, and a verbatim quote copied out of one transcript cue. Python then
+finds that quote and prints the timestamp of the cue it is in.
 
-- **kept** if that line shares two or more, or one and no other line shares more;
-- **moved** to the line that shares the most, if that is at least two;
-- **removed** otherwise. A note with no timestamp is honest; a wrong one is not.
+The rules, in `meetings/citations.py`, and all of them plain string work — no
+model is asked to confirm a model, and the check still runs with every server
+switched off:
 
-`bedrock-meeting` prints how many citations it checked, moved and removed.
-Bracketed times you typed in your own notes (`[14:00] standup`) are left alone.
-The logic is `src/bedrock/meetings/citations.py`. Across test runs this holds at
-zero fabricated citations.
+- The quote must appear **contiguously and whole-word** inside a single cue.
+  Case, surrounding whitespace and curly-vs-straight quotes are folded; nothing
+  else is. Word order, numbers, negation and punctuation all still count, so
+  "140 of 200" does not match "148 of 200" and "coordinator never left" does not
+  match "coordinator left".
+- Evidence shorter than **three words** is rejected. Quoting "Yes." locates
+  nothing.
+- If the model's suggested timestamp names a cue that really contains the
+  quote, it is kept. This is also how a phrase repeated later in the meeting
+  gets pinned to the occurrence that was meant.
+- Otherwise, if every cue containing the quote shows the same timestamp, the
+  citation is **repaired** to it.
+- If the quote appears at two different times and nothing chooses between them,
+  or does not appear at all, the citation is **dropped** — the decision, action
+  or note keeps its words and loses its bracket. Picking the earliest or the
+  nearest would be a guess printed as a fact.
+- A quote is only ever looked for in the cues that model call was actually
+  shown, never the whole meeting.
 
-## Choosing models — measured on real audio
+The prose halves go through the same door. Enhanced notes come back as a small
+JSON envelope — the Markdown plus one record per citation — so each timestamp in
+them is checked before anyone sees it; the overview is asked not to cite at all.
+Any bracketed timestamp a model writes directly into its output is removed
+before the verified ones are written in, **including one it copied out of your
+own rough notes**. Typing "[00:14:00]" during a call is a reminder, not a
+verified citation, and once the model echoes it the two are indistinguishable.
+Your own notes file is never modified.
 
-Both defaults were checked against a real recording rather than assumed, and in
-both cases the bigger model was **not** better:
-
-| | Result |
-|---|---|
-| `small.en` vs `large-v3-turbo` | turbo wrote "side four" where small.en got "Site four" right, dropped punctuation across a long run, hallucinated on the same noisy patch, and took 2.3x longer |
-| `qwen2.5:7b` vs `qwen2.5:14b` | 14b returned 0 decisions and 0 actions where 7b found 1 and 2; both emitted valid JSON, so this is the model being conservative, not a parse failure. 14b writes a better prose overview and is 50% slower |
-
-So the defaults stay `small.en` and `qwen2.5:7b`. `--speech-model` and `--model`
-exist to re-run this comparison on your own audio, which is the only way to
-settle it — recording quality and how people actually talk matter more here
-than parameter count.
-
-The limiting factor on casual, noisy audio is the recording, not the model.
+**What a timestamp here does and does not mean.** It means the quote was found
+at that point in the transcript. It does **not** mean the paraphrase next to it
+logically follows from the quote — a model can summarise badly while quoting
+accurately — and it is **not** word-level audio alignment. Citations are
+cue-level and floored to whole seconds: they point at the start of the utterance
+the quote is in, and the transcript's own timing is only as good as the
+transcription (see the VAD and slicing numbers above).
 
 ## Quality, measured not assumed
 
-With `qwen2.5:7b` on a real 38-turn transcript:
+With `qwen2.5:7b` on a real 38-turn transcript. These numbers predate the
+citation rework described above and its prompt changes, and have not been
+re-measured since:
 
 | | Result |
 |---|---|
@@ -172,9 +188,9 @@ With `qwen2.5:7b` on a real 38-turn transcript:
 
 Decision extraction is the weak point. The model reliably finds explicit
 assignments and misses group decisions phrased in passing ("then we're not
-opening a new site"). Before tuning prompts further, try a 14B — this is the
-kind of gap model size usually closes. Note a 14B at Q4 is ~9 GB and will be
-tight on a 16 GB machine alongside the KV cache.
+opening a new site"). A measured 14B run was more conservative rather than
+more complete, returning no decisions or actions where the 7B default found
+both, so model changes need to be evaluated against the same real fixture.
 
 ## Licensing
 
@@ -187,12 +203,14 @@ and record the name, revision, hash, and license alongside the deployment.
 
 - **No PHI redaction.** Meeting transcripts in a biotech company will discuss
   patients, and nothing on this path redacts anything.
-- **Citations are checked by shared words, not meaning.** A note that
-  paraphrases its line without sharing one distinctive word with it loses its
-  citation rather than keeping an unverifiable one. When two lines say the same
-  thing equally well (the request and the reply, say) the model's choice or the
-  earlier line wins, which may not be the one you would pick. The six-second
-  wrong-line citation seen in testing is now moved to the right line.
+- **Citations are cue-level, not word-level.** A verified timestamp is the
+  start of the cue containing the quote, floored to a whole second — not the
+  instant the quoted word was spoken. And it says nothing about whether the
+  paraphrase beside it is a fair reading of that quote; it locates the quote,
+  no more.
+- **A quote spanning two cues loses its citation.** Evidence is matched inside
+  one cue, so a sentence a speaker finished in their next utterance cannot be
+  located. Cross-cue alignment is deliberately not built.
 - **Whisper is not run against meetings with crosstalk.** Per-participant
   tracks make overlapping speech easy in principle, but it has only been tested
   on synthesised audio where nobody interrupts.

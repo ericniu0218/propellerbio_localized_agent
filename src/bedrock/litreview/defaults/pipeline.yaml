@@ -2,8 +2,8 @@
 # this file exists so they can be tuned without touching code.
 
 search:
-  # The paper searcher (litreview/sources/literature.py). Used only when a
-  # search is asked for: `litreview search`, or `litreview ask --search`.
+  # The paper searcher (src/bedrock/litreview/sources/literature.py). Used only when a
+  # search is asked for: `bedrock-litreview search`, or `bedrock-litreview ask --search`.
   # Merge priority is fixed in code: europepmc, then biorxiv, then pubmed.
   sources: [europepmc, biorxiv, pubmed]
   # Records asked of each source, per query. Preprints get a smaller lane.

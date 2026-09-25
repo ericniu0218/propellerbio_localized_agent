@@ -64,9 +64,15 @@ def paper_sha256(paper: Paper) -> str:
 
 class Database:
     def __init__(self, path: Path | str) -> None:
+        # The database holds research questions, the papers behind them and the
+        # reports written from them, so it follows bedrock's rule for anything
+        # private: 0700 on the directory, 0600 on the file. Anyone else on a
+        # shared machine can then see that a file exists and nothing more.
         if str(path) != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.conn = sqlite3.connect(str(path))
+        if str(path) != ":memory:":
+            Path(path).chmod(0o600)
         self.conn.executescript(_SCHEMA)
         self._backfill_paper_versions()
 

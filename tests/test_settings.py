@@ -194,3 +194,17 @@ def test_every_profile_leaves_room_for_a_prompt():
         assert profile.reply_limit <= profile.context_window // 4
         assert 0 < profile.attachment_share < 1
         assert profile.max_parallel >= 1
+
+
+def test_the_litreview_table_is_read_and_is_empty_when_absent(tmp_path: Path):
+    """Kept whole and unchecked here; `bedrock.litreview.config` validates it, so
+    a typo stops a review rather than the app (the same rule as connectors)."""
+    assert load_settings(config_path=tmp_path / "missing.toml", env={}).litreview == {}
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[litreview]\nmodel_set = "medgemma"\nallowed_hosts = ["gpu01"]\n'
+    )
+    settings = load_settings(config_path=config, env={})
+    assert settings.litreview == {"model_set": "medgemma", "allowed_hosts": ["gpu01"]}
+    assert settings.extra == {}  # a known table, not an unrecognised key

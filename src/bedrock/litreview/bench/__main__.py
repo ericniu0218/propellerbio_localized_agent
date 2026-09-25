@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser("run", help="run the pipeline and baselines on a frozen corpus and score them")
     run.add_argument("questions", nargs="+", type=Path)
-    run.add_argument("--profile", help="model profile (office, laptop)")
+    run.add_argument("--models", help="model set from defaults/models.yaml (office, laptop, medgemma)")
     run.add_argument("--skip-baselines", action="store_true")
     run.add_argument("--skip-distractors", action="store_true")
     run.add_argument("--skip-perturb", action="store_true")
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     from bedrock.litreview.bench.run import evaluate
     from bedrock.litreview.llm import make_client
 
-    settings = load_settings(profile=args.profile)
+    settings = load_settings(model_set=args.models)
     client = make_client(settings)
     judge_client = None
     if args.judge_file:

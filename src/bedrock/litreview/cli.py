@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     papers_from = ask.add_mutually_exclusive_group()
     papers_from.add_argument("--corpus", type=Path, help="papers as JSON lines (the searcher's handoff format)")
     papers_from.add_argument("--search", action="store_true", help="search the literature now (needs network)")
-    ask.add_argument("--profile", help="model profile from config/models.yaml (office, laptop)")
+    ask.add_argument("--models", help="model set from defaults/models.yaml (office, laptop, medgemma)")
     ask.add_argument("--out", type=Path, help="output directory (default: out/)")
     ask.add_argument("--no-model", action="store_true", help="run without any model")
     ask.add_argument("--refresh", action="store_true", help="re-collect papers instead of reusing the frozen set")
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ask":
         from bedrock.litreview.runner import answer_question
 
-        settings = load_settings(profile=args.profile, check_endpoint=not args.no_model)
+        settings = load_settings(model_set=args.models, check_endpoint=not args.no_model)
         searcher = None
         if args.corpus:
             try:

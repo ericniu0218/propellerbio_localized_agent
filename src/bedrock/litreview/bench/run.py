@@ -1,6 +1,6 @@
 """Run the benchmark for one question and write its scorecard.
 
-    python -m bedrock.litreview.bench run evals/litreview/questions/psoriasis_prevention.yaml --profile laptop
+    python -m bedrock.litreview.bench run evals/litreview/questions/psoriasis_prevention.yaml --models laptop
 
 Reads the frozen corpus and references from evals/litreview/corpora/<id>/ (built once
 with `build-corpus`), runs the pipeline and both baselines, scores all three
@@ -33,7 +33,7 @@ from bedrock.litreview.bench.models import (
 )
 from bedrock.litreview.bench.perturb import perturbations
 from bedrock.litreview.bench.references import load_reference_targets, reachable_targets, target_recall
-from bedrock.litreview.config import ROOT, Settings
+from bedrock.litreview.config import EVALS_DIR, Settings
 from bedrock.litreview.db import Database
 from bedrock.litreview.extract.verify import verify_quote
 from bedrock.litreview.facets import facets_for, subject_label
@@ -46,8 +46,10 @@ from bedrock.litreview.sources.corpus import read_papers
 
 log = logging.getLogger(__name__)
 
-CORPORA = ROOT / "evals" / "corpora"
-RESULTS = ROOT / "evals" / "results"
+# `evals/litreview/` is a source checkout only - it is not in the wheel - so the
+# benchmark is the one part of the package that does not run from an install.
+CORPORA = EVALS_DIR / "corpora"
+RESULTS = EVALS_DIR / "results"
 MAX_NUGGETS = 20
 
 

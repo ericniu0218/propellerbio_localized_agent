@@ -35,7 +35,7 @@ from typing import Callable
 
 from pydantic import TypeAdapter
 
-from bedrock.litreview.config import ROOT, Settings, load_settings
+from bedrock.litreview.config import PACKAGE_DIR, Settings, config_file, load_settings
 from bedrock.litreview.db import Database
 from bedrock.litreview.facets import facets_for
 from bedrock.litreview.knowledge import TABLE as KNOWLEDGE_TABLE
@@ -94,11 +94,15 @@ def _now() -> str:
 
 def input_files() -> list[Path]:
     """The config and knowledge files a run reads. Hashed onto the Run, so a
-    past report can be matched to the tables and knobs it was written under."""
+    past report can be matched to the tables and knobs it was written under.
+
+    `config_file` returns the override in ~/.config/bedrock/litreview when there
+    is one, so what is hashed is the file this run actually read, not the
+    packaged default it replaced."""
     files = [
-        ROOT / "config" / "models.yaml",
-        ROOT / "config" / "pipeline.yaml",
-        ROOT / "config" / "report.yaml",
+        config_file("models.yaml"),
+        config_file("pipeline.yaml"),
+        config_file("report.yaml"),
         KNOWLEDGE_TABLE,
     ]
     files += sorted(p for p in KNOWLEDGE_TABLE.parent.glob("*.yaml") if p != KNOWLEDGE_TABLE)
@@ -106,8 +110,12 @@ def input_files() -> list[Path]:
 
 
 def _rel(path: Path) -> str:
+    """A packaged file as `defaults/models.yaml`; anything else in full.
+
+    An override lives outside the package, so it is recorded as the absolute
+    path it was read from - which is the useful thing to know about it."""
     try:
-        return path.resolve().relative_to(ROOT).as_posix()
+        return path.resolve().relative_to(PACKAGE_DIR).as_posix()
     except ValueError:
         return str(path)
 
@@ -136,14 +144,14 @@ def code_version() -> str | None:
     try:
         out = subprocess.run(
             ["git", "describe", "--always", "--dirty"],
-            cwd=Path(__file__).resolve().parent, capture_output=True, text=True, timeout=5,
+            cwd=PACKAGE_DIR, capture_output=True, text=True, timeout=5,
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
     except Exception:  # noqa: BLE001 — provenance is best effort; a run must not fail on it
         pass
     try:
-        return importlib.metadata.version("litreview")
+        return importlib.metadata.version("bedrock-private-ai")
     except Exception:  # noqa: BLE001
         return None
 

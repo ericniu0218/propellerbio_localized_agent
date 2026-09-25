@@ -1,64 +1,29 @@
-# The only place model names live. Nothing else in the codebase hardcodes one,
-# so swapping a model — including for a biology-tuned Qwen — is a one-line change.
+# Model names for the literature review, and nothing else about the server.
+# The server is bedrock's own (`api_base` in ~/.config/bedrock/config.toml, or
+# BEDROCK_API_BASE), and every call waits its turn in bedrock's scheduler.
+# Model names live here and nowhere else. To change them on one machine, put a
+# whole replacement of this file in ~/.config/bedrock/litreview/models.yaml.
 #
-# Two model files, several jobs. The split is by COST, not skill: relevance
-# grading runs once per paper so it may use the cheap model; everything else
-# runs tens of times per question.
-#
-# Pick a profile with LLM_PROFILE (default below). A profile says which server
-# speaks for the models and how. Every base_url must be on the local network:
-# config.py refuses anything else at startup, because a misconfigured endpoint
-# is how an air-gap quietly stops being one.
+# Choose a set with `model_set` in [litreview], BEDROCK_LITREVIEW_MODELS or
+# --models. Default: `office` on the `server` machine profile, else `laptop`.
+# Tiers are split by COST, not skill: relevance runs once per paper, so it may
+# use the cheap model; everything else runs tens of times per question.
 
-default_profile: office
+# Extraction sends about 4,300 prompt tokens and allows a 4,096-token reply.
+# The server's window (bedrock's `context_window`, which must match
+# OLLAMA_CONTEXT_LENGTH or vLLM --max-model-len) must be at least this.
+min_context_window: 12288
 
-profiles:
-  # The client's in-office GPU, serving through vLLM's OpenAI-compatible API.
-  office:
-    backend: openai
-    base_url: ${LLM_BASE_URL:-http://localhost:8000/v1}
-    # `response_format` is the OpenAI-style json_schema field that current vLLM
-    # accepts; `guided_json` is the older vLLM-only field. Confirm against the
-    # deployed version — it has moved between releases.
-    structured_output: response_format
-    models:
-      small:
-        name: qwen3-8b-instruct
-        thinking: false
-      medium:
-        name: qwen3-30b-a3b-instruct
-        thinking: false
-        # MoE: ~30B total, ~3B active per token. Big-model instruction-following
-        # at small-model speed, with long context for whole sections.
-
-  # A developer laptop running Ollama. Same code path, smaller model: this is
-  # what the sample runs in evals/ were produced with on a 16 GB machine.
-  laptop:
-    backend: ollama
-    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
-    models:
-      small:
-        name: qwen3:8b
-        thinking: false
-        num_ctx: 12288
-      medium:
-        name: qwen3:8b
-        thinking: false
-        num_ctx: 12288
-
-  # Google's MedGemma 1.5 (4B), a Gemma 3 model tuned on medical text, on a
-  # laptop via Ollama. Small enough for a 16 GB machine; used for the first
-  # sample runs. Gemma has no "thinking" mode, so none is configured.
-  medgemma:
-    backend: ollama
-    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
-    models:
-      small:
-        name: medgemma1.5:4b
-        num_ctx: 12288
-      medium:
-        name: medgemma1.5:4b
-        num_ctx: 12288
+model_sets:
+  office:      # the client's GPU, served by vLLM
+    small:  {name: qwen3-8b-instruct, thinking: false}
+    medium: {name: qwen3-30b-a3b-instruct, thinking: false}
+  laptop:      # Ollama on a 16 GB machine
+    small:  {name: "qwen3:8b", thinking: false}
+    medium: {name: "qwen3:8b", thinking: false}
+  medgemma:    # MedGemma 1.5 4B via Ollama; produced docs/litreview/BENCHMARK_RESULTS.md. No thinking mode.
+    small:  {name: "medgemma1.5:4b"}
+    medium: {name: "medgemma1.5:4b"}
 
 # Which tier does which job.
 jobs:

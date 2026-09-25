@@ -194,7 +194,16 @@ async def transcribe(
     if on_progress:
         on_progress("Transcribing speech")
     try:
-        cues = await transcriber.transcribe_track(wav, work_dir, split_at_ms=boundaries)
+        # Run it as a task so the stage can be updated while it works. A
+        # forty-minute meeting spends ten minutes or more in here, and a label
+        # that has not changed in ten minutes is indistinguishable from a hung
+        # one — which cost real time diagnosing a job that was working fine.
+        work = asyncio.create_task(
+            transcriber.transcribe_track(wav, work_dir, split_at_ms=boundaries)
+        )
+        if on_progress:
+            await _report_progress(work, work_dir, on_progress)
+        cues = await work
     except Exception as exc:
         # An empty recording is a real, ordinary outcome — somebody pressed
         # Record on a muted microphone. It is reported as an empty transcript
@@ -311,6 +320,35 @@ async def transcribe(
     if not cues:
         outcome.notes.append("No speech was found in this recording.")
     return outcome
+
+
+async def _report_progress(work, work_dir: Path, on_progress) -> None:
+    """Count finished slices while whisper runs, so the stage keeps moving.
+
+    Whisper writes one `.vtt` beside each slice as it finishes it, and the
+    slices are cut before any of them are transcribed — so the two counts are
+    a real fraction of the work, not an invented one. Nothing here can fail
+    the transcription: it only reads the directory, and stops the moment the
+    real work does.
+    """
+    last = ""
+    while not work.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(work), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            return  # the real await below will surface it
+        try:
+            slices = list(work_dir.glob("*.slices/*.wav"))
+            done = list(work_dir.glob("*.slices/*.vtt"))
+        except OSError:
+            continue
+        if slices:
+            stage = f"Transcribing speech — {len(done)} of {len(slices)} segments"
+            if stage != last:
+                on_progress(stage)
+                last = stage
 
 
 def _apply_speakers(cues, result, names=None, from_screen=False):

@@ -55,6 +55,12 @@ fi
 
 pkill -f "contrib.datacenter_connector" 2>/dev/null || true
 pkill -f "uvicorn app.main:app" 2>/dev/null || true
+# And the work a previous run left behind. Killing the server does not kill the
+# transcription it spawned: whisper and the VAD binary keep running, and the
+# next recording then competes with them for every core. Two orphaned VAD
+# processes made a forty-minute meeting look hung for the best part of an hour.
+pkill -f "whisper-vad-speech-segments" 2>/dev/null || true
+pkill -f "whisper-cli" 2>/dev/null || true
 sleep 1
 
 mkdir -p "$DATA_DIR"

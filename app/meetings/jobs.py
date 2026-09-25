@@ -246,6 +246,13 @@ async def process(
         "meetings",
         {
             "title": job.title,
+            # Kept so that deleting this meeting can also delete the audio it
+            # came from. The record and the recording have separate ids, and
+            # without this there is no way back from one to the other: a
+            # "delete" would leave the .webm sitting in the recordings
+            # directory until the retention sweep aged it out, which on a
+            # deployment with retention switched off is for ever.
+            "recordingId": job.id,
             "projectId": project_id,
             "transcriptTruncated": len(outcome.vtt) > 100_000,
             "recordedAt": started_at.isoformat(),

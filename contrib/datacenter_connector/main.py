@@ -137,6 +137,27 @@ async def get_transcript(meeting_id: str, request: Request) -> JSONResponse:
     )
 
 
+@app.delete("/transcripts/{meeting_id:path}")
+async def forget_transcript(meeting_id: str, request: Request) -> JSONResponse:
+    """Remove one transcript. An extension to the contract, not part of it.
+
+    The workspace calls this when somebody deletes a recorded meeting, so that
+    "delete" means the copy here goes too. A datacenter that has not
+    implemented it answers 404 or 405 and the workspace says plainly that the
+    local copy is gone and this one is not — which is the honest outcome, and
+    better than a delete button that quietly leaves a transcript behind.
+
+    Deleting something that is already absent succeeds. The caller asked for it
+    to be gone; it is gone.
+    """
+    await verify_signature(request, "")
+    path = _record_path(meeting_id)
+    existed = path.exists()
+    if existed:
+        path.unlink()
+    return JSONResponse({"ok": True, "deleted": existed})
+
+
 @app.get("/transcripts")
 async def search_transcripts(request: Request) -> JSONResponse:
     await verify_signature(request, "")

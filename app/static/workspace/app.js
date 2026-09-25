@@ -770,7 +770,14 @@
         if (m.recordedAt) meta.push(new Date(m.recordedAt).toLocaleString());
         if (m.durationMs) meta.push(Recorder.formatClock(m.durationMs / 1000));
         const c = el("div", { class: "card" }, [
-          el("h3", {}, m.title),
+          el("div", { class: "card-head" }, [
+            el("h3", {}, m.title),
+            el("button", {
+              class: "link-btn small card-delete",
+              title: "Delete this meeting",
+              onclick: (event) => { event.stopPropagation(); deleteMeeting(m); },
+            }, "×"),
+          ]),
           meta.length ? el("div", { class: "row-sub" }, meta.join(" · ")) : null,
           el("p", {}, m.summary || ""),
         ]);
@@ -779,6 +786,58 @@
       });
     pane.appendChild(grid);
     body.appendChild(pane);
+  }
+
+  // Deleting a meeting destroys the audio, the transcript and the notes, and
+  // there is no undo — so this asks first, and says exactly what goes. The
+  // confirmation is a modal rather than confirm(), which some browsers style
+  // as a scam warning and which says nothing about what is being deleted.
+  function deleteMeeting(meeting) {
+    const lines = [
+      el("p", {}, "This removes the recording, the transcript and the notes. It cannot be undone."),
+    ];
+    if (meeting.recordedAt) {
+      lines.push(el("p", { class: "muted small" },
+        new Date(meeting.recordedAt).toLocaleString()
+        + (meeting.durationMs ? " · " + Recorder.formatClock(meeting.durationMs / 1000) : "")));
+    }
+    const body = el("div", {}, lines);
+    const status = el("p", { class: "muted small" });
+    body.appendChild(status);
+
+    const remove = el("button", { class: "btn danger", onclick: async () => {
+      remove.disabled = true;
+      status.textContent = "Deleting…";
+      let result;
+      try {
+        result = await api(`/meetings/${meeting.id}`, { method: "DELETE" });
+      } catch (err) {
+        remove.disabled = false;
+        status.textContent = "Could not delete this meeting: " + (err && err.message ? err.message : err);
+        return;
+      }
+      if (currentMeetingId === meeting.id) currentMeetingId = null;
+      await refresh();
+      const notes = result.notes || [];
+      if (!notes.length) { dialog.close(); return; }
+      // Something survived that we could not remove — almost always the
+      // datacenter's copy, which is on somebody else's machine. The dialog
+      // stays open and says so, because this is the one moment the person
+      // deleting it is looking, and a delete that half worked is exactly the
+      // thing they need to know about.
+      body.innerHTML = "";
+      body.appendChild(el("p", {}, "Deleted from this workspace. One thing did not go:"));
+      notes.forEach((note) => body.appendChild(el("p", { class: "muted small" }, note)));
+      remove.remove();
+      keep.textContent = "Close";
+    } }, "Delete meeting");
+    const keep = el("button", { class: "btn ghost", onclick: () => dialog.close() }, "Keep it");
+
+    const dialog = openModal({
+      title: `Delete “${meeting.title || "this meeting"}”?`,
+      body,
+      footer: [keep, remove],
+    });
   }
 
   // Diarisation can tell voices apart but has no idea whose they are, so it

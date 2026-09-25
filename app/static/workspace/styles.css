@@ -170,6 +170,15 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .card:hover { border-color: var(--border-strong); background: var(--panel-2); }
 .card h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .card p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+
+/* The delete control on a meeting card. Hidden until the card is hovered or
+   the button itself is focused: a row of x's down the page invites a mis-click
+   on something that cannot be undone, and keyboard users still reach it. */
+.card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.card-head h3 { flex: 1; min-width: 0; }
+.card-delete { opacity: 0; transition: opacity 0.12s; flex-shrink: 0; line-height: 1; }
+.card:hover .card-delete, .card-delete:focus-visible { opacity: 1; }
+.card-delete:hover { color: var(--bad); }
 /* A generated summary can run to a full paragraph, which makes one card tower
    over its neighbours and leaves the grid ragged. The card is a way in, not
    the place to read the summary — that is what opening the meeting is for. */

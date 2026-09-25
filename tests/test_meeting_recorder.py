@@ -354,3 +354,89 @@ def test_readiness_reports_a_missing_pipeline_instead_of_crashing(monkeypatch):
     result = routes.readiness(user={"id": "maya", "name": "Maya"})
     assert result["ready"] is False
     assert "not installed" in result["issues"][0]
+
+
+# --- Deleting a meeting -------------------------------------------------------
+#
+# "Delete" has to mean the audio, the transcript, the job row and the
+# datacenter's copy. A button that removed only the workspace record would take
+# the meeting off the screen and leave every copy of it on disk, which is worse
+# than having no button: the person who pressed it believes it is gone.
+
+
+async def test_deleting_a_meeting_removes_the_datacenter_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATACENTER_SIGNING_SECRET", SECRET)
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(tmp_path))
+    from contrib.datacenter_connector.main import app as connector_app
+
+    client = DatacenterTranscriptClient(
+        config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret=SECRET),
+        transport=httpx.ASGITransport(app=connector_app),
+    )
+    monkeypatch.setattr("app.meetings.delivery.DatacenterTranscriptClient", lambda: client)
+    await deliver_recording(
+        {"id": "gone1", "title": "Weekly"}, _outcome(), datetime.now(timezone.utc), "maya"
+    )
+    stored = tmp_path / f"{hashlib.sha256(b'recording:gone1').hexdigest()}.json"
+    assert stored.exists(), "nothing was delivered, so the delete proves nothing"
+
+    assert await client.forget(f"{MEETING_ID_PREFIX}gone1") is None
+    assert not stored.exists()
+
+
+async def test_deleting_a_transcript_that_is_already_gone_is_not_an_error(tmp_path, monkeypatch):
+    """The caller asked for it to be absent. It is absent."""
+    monkeypatch.setenv("DATACENTER_SIGNING_SECRET", SECRET)
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(tmp_path))
+    from contrib.datacenter_connector.main import app as connector_app
+
+    client = DatacenterTranscriptClient(
+        config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret=SECRET),
+        transport=httpx.ASGITransport(app=connector_app),
+    )
+    assert await client.forget("recording:never-existed") is None
+
+
+async def test_a_datacenter_without_delete_is_reported_not_hidden():
+    """DELETE is an extension, not part of the connector contract. A datacenter
+    that has not implemented it must not leave the employee believing their
+    transcript was destroyed there."""
+    def not_implemented(request):
+        return httpx.Response(405, json={"detail": "Method Not Allowed"})
+
+    client = DatacenterTranscriptClient(
+        config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret=SECRET),
+        transport=httpx.MockTransport(not_implemented),
+    )
+    note = await client.forget("recording:m1")
+    assert note and "does not support deleting" in note
+
+
+async def test_an_unreachable_datacenter_does_not_raise_while_deleting():
+    """Deleting locally must still happen. Raising here would leave the meeting
+    on screen with its audio already removed."""
+    def unreachable(request):
+        raise httpx.ConnectError("no route to host")
+
+    client = DatacenterTranscriptClient(
+        config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret=SECRET),
+        transport=httpx.MockTransport(unreachable),
+    )
+    note = await client.forget("recording:m1")
+    assert note and "could not be reached" in note
+
+
+async def test_the_delete_signature_covers_the_method(tmp_path, monkeypatch):
+    """The signature is over "{ts}.{METHOD}.{path}.{body}", so a DELETE signed
+    as a GET is rejected. Pinned because the method is the only thing that
+    differs between this call and the fetch beside it."""
+    monkeypatch.setenv("DATACENTER_SIGNING_SECRET", SECRET)
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(tmp_path))
+    from contrib.datacenter_connector.main import app as connector_app
+
+    wrong = DatacenterTranscriptClient(
+        config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret="wrong"),
+        transport=httpx.ASGITransport(app=connector_app),
+    )
+    note = await wrong.forget("recording:m1")
+    assert note and "rejected our signature" in note

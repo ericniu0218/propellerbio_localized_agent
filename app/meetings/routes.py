@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +35,7 @@ from app.meetings.config import (
     RecordingConfig,
     readiness_issues,
 )
-from app.meetings.delivery import deliver_recording
+from app.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
 from bedrock.meetings.enrollment import (
     ENROLLMENT_AVAILABLE,
     ENROLLMENT_MISSING,
@@ -50,6 +51,11 @@ from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
 from app.meetings.retention import audio_retention_days, sweep, transcript_retention_days
 from app.meetings.vocabulary_source import auto_enabled, suggest
 from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
+from app.tools.datacenter_client import (
+    DatacenterError,
+    DatacenterNotConfigured,
+    DatacenterTranscriptClient,
+)
 from app.workspace.routes import identity, require_object, store
 from app.workspace.store import uid
 
@@ -336,6 +342,60 @@ def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity))
     saved = workspace.put(user["id"], "meetings", meeting)
     workspace.audit(user["id"], "renamed meeting speakers", meeting_id)
     return saved
+
+
+@router.delete("/{meeting_id}")
+async def delete_meeting(meeting_id: str, user=Depends(identity)):
+    """Delete one recorded meeting, everywhere it was put.
+
+    A recording ends up in four places: the workspace record, the audio file on
+    disk, the job row that would let it be retried, and the datacenter's copy
+    of the transcript. A delete button that removed only the first would be
+    worse than none at all — the meeting would vanish from the list while the
+    audio and the transcript stayed, and the person who pressed it would have
+    been told otherwise.
+
+    The three local removals always happen. The datacenter is asked too, and
+    whatever it says comes back in `notes`, because that copy is on somebody
+    else's machine and we can only report what we were told.
+    """
+    workspace = store()
+    meeting = require_object(workspace, user["id"], meeting_id, "meetings")
+    notes: list[str] = []
+
+    recording_id = meeting.get("recordingId")
+    if recording_id:
+        directory = config().storage_dir / user["id"]
+        for path in directory.glob(f"{recording_id}.*"):
+            try:
+                path.unlink()
+            except OSError as exc:  # a locked or already-gone file
+                logger.warning("Could not delete %s: %s", path, exc)
+                notes.append(f"The audio file could not be removed: {exc}")
+        work_dir = directory / f"{recording_id}.work"
+        if work_dir.is_dir():
+            shutil.rmtree(work_dir, ignore_errors=True)
+        _job_store.forget(recording_id)
+    elif meeting.get("source") == "recording":
+        # Recorded before recordingId was stored on the record. The audio is
+        # still on disk under an id this record never kept.
+        notes.append(
+            "This meeting predates audio tracking, so its recording file is "
+            "still on disk and will be removed by the retention sweep."
+        )
+
+    try:
+        note = await DatacenterTranscriptClient().forget(f"{MEETING_ID_PREFIX}{meeting_id}")
+        if note:
+            notes.append(note)
+    except DatacenterNotConfigured:
+        pass  # nothing was ever sent there
+    except DatacenterError as exc:
+        notes.append(f"The datacenter copy may remain: {exc}")
+
+    workspace.delete(user["id"], meeting_id)
+    workspace.audit(user["id"], "deleted meeting", meeting_id)
+    return {"ok": True, "notes": notes}
 
 
 @router.post("/live")

@@ -29,7 +29,13 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # prints - importing numpy from inside the functions, so a machine without the
 # extra crashed where it should have carried on. The fix split the sums
 # (bedrock.meetings.vectors, plain Python) from the models.
-bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@edd14b606aecc61d536735d3087f48bfce2428c5
+#
+# And forward again for the one that mattered: TitaNet raises above ~123
+# seconds of audio, cluster_embeddings fed it a speaker's three longest turns
+# concatenated and uncapped, and the exception was swallowed - so whoever spoke
+# most in a meeting got no voice vector and could never be matched to an
+# enrolled name. Voice enrolment only ever worked on short test clips.
+bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@6c380d220a13deaf68be117b5dd4b2f75e6d6618
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 

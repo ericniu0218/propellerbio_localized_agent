@@ -29,12 +29,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from urllib.parse import quote, urlsplit
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # Fetching a wide date range means pulling every transcript in it across the
 # network. These bound a single call so one vague question can't drag tens of
@@ -258,6 +261,54 @@ class DatacenterTranscriptClient:
                 f"The datacenter connector returned {response.status_code} storing "
                 f"meeting {transcript.meeting_id}."
             )
+
+
+    async def forget(self, meeting_id: str) -> str | None:
+        """Ask the datacenter to delete one transcript.
+
+        Returns None when the copy is gone, or a plain sentence saying why it
+        is not. Never raises: this is called while deleting a meeting, and
+        failing to reach the datacenter must not leave the workspace holding a
+        recording the employee has already been told is deleted.
+
+        DELETE is an extension, not part of the connector contract, so a
+        datacenter that has not implemented it answers 404 or 405. That is
+        reported as a fact about their system rather than as our error, because
+        somebody there has to remove it by hand.
+        """
+        path = f"/transcripts/{meeting_id}"
+        headers = signed_headers(self._config.signing_secret, "DELETE", path, "")
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._config.timeout_s, transport=self._transport
+            ) as client:
+                response = await client.delete(
+                    f"{self._config.base_url}{path}", headers=headers
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("Could not reach the datacenter to delete %s: %s", meeting_id, exc)
+            return (
+                "Deleted here, but the datacenter could not be reached, so its "
+                "copy of the transcript is still there."
+            )
+
+        if response.status_code in (404, 405, 501):
+            return (
+                "Deleted here. This datacenter does not support deleting "
+                "transcripts, so ask whoever runs it to remove their copy."
+            )
+        if response.status_code == 401:
+            return (
+                "Deleted here, but the datacenter rejected our signature, so "
+                "its copy of the transcript is still there."
+            )
+        if response.status_code >= 400:
+            return (
+                f"Deleted here, but the datacenter returned "
+                f"{response.status_code}, so its copy is still there."
+            )
+        return None
 
 
 def _to_transcript(record: dict) -> MeetingTranscript:

@@ -35,7 +35,7 @@ from app.meetings.config import (
     readiness_issues,
 )
 from app.meetings.delivery import deliver_recording
-from app.meetings.enrollment import (
+from bedrock.meetings.enrollment import (
     ENROLLMENT_AVAILABLE,
     ENROLLMENT_MISSING,
     VoicePrintStore,

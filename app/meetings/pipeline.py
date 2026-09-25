@@ -32,9 +32,9 @@ from datetime import date
 from pathlib import Path
 
 from app.meetings.config import RecordingConfig, readiness_issues
-from app.meetings.diarize import assign, consolidate, diarize, speaker_change_points
-from app.meetings.enrollment import cluster_embeddings, identify, rescore_cues
-from app.meetings.vocabulary import VocabularyReport, correct_texts
+from bedrock.meetings.diarize import assign, consolidate, diarize, speaker_change_points
+from bedrock.meetings.enrollment import cluster_embeddings, identify, rescore_cues
+from bedrock.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
 

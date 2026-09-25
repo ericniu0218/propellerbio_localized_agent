@@ -41,9 +41,9 @@ from bedrock.meetings.vectors import centroid, cosine
 logger = logging.getLogger(__name__)
 
 # Recording and embedding a voice print needs the models; comparing two of them
-# afterwards does not. identify() below is deliberately outside this guard.
+# afterwards does not. identify() below is deliberately outside this guard, and
+# nothing in here needs numpy any more - see vectors.py.
 try:
-    import numpy
     import sherpa_onnx
     import soundfile
 
@@ -191,7 +191,11 @@ def embed_samples(extractor, samples, sample_rate: int, max_seconds: float = MAX
     stream = extractor.create_stream()
     stream.accept_waveform(sample_rate, samples)
     stream.input_finished()
-    return numpy.array(extractor.compute(stream), dtype=numpy.float32)
+    # A plain list, not a numpy array. Everything downstream is now plain
+    # Python - cosine, centroid, and the store, which json-dumps it - so
+    # wrapping it was the last thing keeping numpy in this module, and it kept
+    # these functions untestable on a machine without the speakers extra.
+    return [float(x) for x in extractor.compute(stream)]
 
 
 def enroll_from_wav(wav: Path, model: Path, threads: int = 2):

@@ -258,6 +258,9 @@ with the substance, never with the fact that it came up:
   Good:  - Enrollment is 148 of 200. The readout moves to March.
   Bad:   - The group discussed enrollment numbers and timelines.
 
+Those two lines illustrate the shape. Their words and their figures come from
+a different meeting and are not facts about this one. Never repeat them.
+
 Rules:
 - Keep every specific exactly as said: numbers, doses, dates, deadlines, \
 sample and batch counts, names, statuses, instrument and assay names, \
@@ -564,6 +567,58 @@ _META_OPENER = re.compile(
 )
 
 
+# The overview prompt shows one good bullet and one bad one, because saying
+# "lead with the substance" without an example produced prose. The cost is that
+# a transcript with nothing in it leaves llama3.1:8b with nothing to write, and
+# it writes the example instead. A one-second recording came back as
+# "Enrollment is 148 of 200. The readout moves to March." — a clinical figure,
+# in a meeting summary, invented whole.
+#
+# The extraction pass already guards against this (_SCHEMA_ECHOES); an example
+# needs the same treatment as a placeholder. Matched on the distinctive part,
+# not the whole line, since the model paraphrases as often as it copies.
+_EXAMPLE_ECHOES = (
+    re.compile(r"\b148\s+of\s+200\b", re.IGNORECASE),
+    re.compile(r"\breadout\s+moves?\s+to\s+march\b", re.IGNORECASE),
+    re.compile(r"\bdiscussed\s+enrollment\s+numbers\s+and\s+timelines\b", re.IGNORECASE),
+)
+
+
+def _is_example_echo(line: str) -> bool:
+    return any(pattern.search(line) for pattern in _EXAMPLE_ECHOES)
+
+
+# A line that announces the list rather than being in it. llama3.1:8b writes
+# these constantly on a long transcript - "Here are some specific points that
+# can be noted from the conversation:" - and the prompt asking it not to has no
+# effect at forty minutes of input. Deleting the line costs nothing.
+_LIST_PREAMBLE = re.compile(
+    r"^\s*(?:here (?:are|is)|the following|below (?:are|is)|some (?:of the )?"
+    r"(?:specific |key |main )?(?:points|highlights|topics|details))\b.*:\s*$",
+    re.IGNORECASE,
+)
+
+# The model's guesses about what a garbled word meant, in brackets: "a 'sasu'
+# (which is likely a mishearing of 'sister-in-law')", "a 'vet' (short for
+# veterinarian)". Every one is invention dressed as helpfulness, and on a
+# transcript of people talking over each other they arrive by the paragraph.
+# The sentence around them is usually fine, so the bracket goes and the line
+# stays.
+_SPECULATIVE_ASIDE = re.compile(
+    r"\s*\((?:\s*(?:which|who|this|that)\s+(?:is|was|are|were|may|might|could)\s+"
+    r"(?:likely|possibly|probably|perhaps|potentially|maybe)?|"
+    r"\s*(?:likely|possibly|probably|perhaps|potentially|maybe|presumably)\b|"
+    r"\s*(?:short for|i\.e\.|or (?:a|an|some) similar)\b)[^()]*\)",
+    re.IGNORECASE,
+)
+
+
+def _tidy_line(line: str) -> str:
+    """Normalise one line of a brief: asterisk bullets, and the model's asides."""
+    line = re.sub(r"^(\s*)[*•]\s+", r"\1- ", line)
+    return _SPECULATIVE_ASIDE.sub("", line).rstrip()
+
+
 def is_meta_reply(text: str) -> bool:
     """Whether the model answered the prompt instead of summarising the meeting."""
     return bool(_META_REPLY.search(text))
@@ -578,6 +633,17 @@ def clean_overview(text: str) -> str:
     """
     text = text.strip()
     if not text or is_meta_reply(text):
+        return ""
+    # Line by line, because the usual shape is a real brief with one borrowed
+    # figure in it rather than a wholly invented one.
+    kept = [
+        _tidy_line(line)
+        for line in text.splitlines()
+        if not _is_example_echo(line) and not _LIST_PREAMBLE.match(line)
+    ]
+    # Removing a preamble leaves the blank line that followed it.
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    if not text:
         return ""
     trimmed = _META_OPENER.sub("", text, count=1).strip()
     if trimmed:
@@ -726,6 +792,11 @@ async def summarize_meeting(
         # shown, never the whole meeting.
         if notes and notes.strip():
             await _rewrite_notes(summary, scheduler, model, cues, notes)
+        elif facts.word_count < MIN_OVERVIEW_WORDS:
+            summary.notices.append(
+                f"Too short to summarise — {facts.word_count} word(s) were "
+                "transcribed. The transcript below is everything that was said."
+            )
         else:
             reply_tokens = OVERVIEW_REPLY_TOKENS
             room = prompt_budget(profile.context_window, reply_tokens) - estimate_tokens(
@@ -749,6 +820,23 @@ async def summarize_meeting(
     summary.model_used = model
     return summary
 
+
+MIN_OVERVIEW_WORDS = 40
+"""Below this there is nothing to brief anyone on, and the model is not asked.
+
+Not a tuning knob - a safety gate. Asked to summarise a one-second recording
+whose whole transcript was the word "Sometimes", llama3.1:8b returned, on three
+consecutive runs, "The last project is finished and shipped", "They're going to
+a conference next week", and - before the example-echo guard - "Enrollment is
+148 of 200." None of it happened. A small instruction-tuned model asked to
+write a brief will write one whether or not it was given anything to write
+about, and no wording of the prompt reliably stops it.
+
+The transcript, the duration, the word count and the speaker list are all still
+computed and still shown. What goes away is the invented paragraph on top.
+
+Forty words is about fifteen seconds of speech. The shortest real recording
+here, a 1m32s test, has roughly four hundred."""
 
 MIN_NOTES_TRANSCRIPT_TOKENS = 200
 """Rewriting notes against less transcript than this would be guesswork."""

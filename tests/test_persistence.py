@@ -212,12 +212,22 @@ async def test_nothing_is_written_when_history_is_switched_off(fake_backend, tmp
 
 
 async def test_an_answer_stopped_half_way_is_still_saved(fake_backend, store):
-    fake_backend.fragment_delay = 0.05
+    """Half way through means half way through.
+
+    This used to set a per-fragment delay and assume one pause() landed inside
+    the stream. On a loaded CI runner it did not - the sleeps had all expired,
+    the reply finished during the pause, and Escape stopped nothing. The
+    backend now holds the stream open after two fragments, so there is always
+    a part-written answer to interrupt."""
+    fake_backend.hold_reply = asyncio.Event()
+    fake_backend.hold_after_fragments = 2
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"a question with a long answer", "enter")
-        await pilot.pause()
+        while not app._streaming:
+            await pilot.pause()
         await pilot.press("escape")
+        fake_backend.hold_reply.set()
         await wait_for_app_workers(app, cancelled_groups=frozenset({"chat"}))
         await pilot.pause()
 

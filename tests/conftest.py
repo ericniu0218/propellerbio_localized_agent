@@ -68,6 +68,15 @@ class FakeBackend:
         self.closed = False
         self.fragment_delay = 0.0
         self.hold_reply: asyncio.Event | None = None
+        self.hold_after_fragments = 0
+        """Yield this many fragments, then wait on ``hold_reply``.
+
+        For tests about interrupting a reply that is already part-written. The
+        alternative - a per-fragment delay and a pause() assumed to land in the
+        middle - is a race: the delays are asyncio.sleeps, so a loaded CI runner
+        that stalls for a moment leaves every one expired and the whole reply
+        arrives before the test can interrupt it. Holding the stream open makes
+        "half way through" mean half way through."""
         self.request_options: list[RequestOptions | None] = []
         self.background_options: list[RequestOptions | None] = []
         self.usage: Usage | None = None
@@ -101,12 +110,14 @@ class FakeBackend:
             return
         self.requests.append((model, list(messages)))
         self.request_options.append(options)
-        if self.hold_reply is not None:
+        if self.hold_reply is not None and not self.hold_after_fragments:
             await self.hold_reply.wait()
-        for word in self.reply.split(" "):
+        for index, word in enumerate(self.reply.split(" ")):
             if self.fragment_delay:
                 await asyncio.sleep(self.fragment_delay)
             yield word + " "
+            if self.hold_reply is not None and index + 1 == self.hold_after_fragments:
+                await self.hold_reply.wait()
         if on_usage is not None and self.usage is not None:
             on_usage(self.usage)
 

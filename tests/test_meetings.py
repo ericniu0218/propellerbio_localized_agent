@@ -641,17 +641,17 @@ async def test_the_padding_goes_and_the_content_stays():
     part the reader actually wants."""
     backend = FakeBackend([extraction(), (
         "This appears to be a recording of a group conversation, likely a podcast. "
-        "Enrollment is 148 of 200 and the readout moves to March."
+        "Site four has no coordinator and the assay repeats on Thursday."
     )])
     summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
-    assert summary.overview == "Enrollment is 148 of 200 and the readout moves to March."
+    assert summary.overview == "Site four has no coordinator and the assay repeats on Thursday."
 
 
 async def test_a_real_brief_is_left_exactly_as_written():
     """Including its bullets - the format the brief is now asked for."""
     brief = (
         "A two-person check on the recorder before a client demo.\n\n"
-        "- Enrollment is 148 of 200; the readout moves to March.\n"
+        "- Site four has no coordinator; the assay repeats on Thursday.\n"
         "- Delivery is a downloadable file, not an app store."
     )
     backend = FakeBackend([extraction(), brief])
@@ -665,6 +665,112 @@ async def test_a_one_line_brief_beginning_with_this_survives():
     backend = FakeBackend([extraction(), "This was a microphone test before the club meeting."])
     summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
     assert summary.overview == "This was a microphone test before the club meeting."
+
+
+async def test_the_prompts_own_example_is_never_reported_as_a_fact():
+    """The overview prompt shows one good bullet so the model stops writing
+    prose. On a recording with nothing in it, llama3.1:8b had nothing to write
+    and wrote the example: a one-second clip came back claiming enrollment was
+    148 of 200 and a readout had moved to March. An invented clinical figure in
+    a meeting summary is the worst thing this module can produce."""
+    backend = FakeBackend([extraction(), (
+        "- Enrollment is 148 of 200.\n- The readout moves to March."
+    )])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == ""
+    assert "148" not in summary.render()
+
+
+async def test_one_borrowed_figure_does_not_cost_the_rest_of_the_brief():
+    """The commoner shape: a real brief with one line lifted from the example."""
+    backend = FakeBackend([extraction(), (
+        "A two-person check on the recorder.\n"
+        "- Enrollment is 148 of 200.\n"
+        "- Delivery is a downloadable file, not an app store."
+    )])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert "148" not in summary.overview
+    assert "downloadable file" in summary.overview
+    assert "A two-person check on the recorder." in summary.overview
+
+
+async def test_a_recording_too_short_to_summarise_is_not_summarised():
+    """The gate that stops the invention at its source. Three runs against a
+    one-second recording produced three different meetings, none of which
+    happened. The model is not asked when there is nothing to ask about."""
+    tiny = parse_vtt("WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nSometimes.\n")
+    backend = FakeBackend([extraction(), "A productive planning session about the Q3 roadmap."])
+    summary = await summarize_meeting(tiny, backend=backend, model="fake", title="Ajawkd")
+
+    assert summary.overview == ""
+    assert "roadmap" not in summary.render()
+    assert any("Too short to summarise" in n for n in summary.notices)
+    # The computed half survives: this is a downgrade, not a failure.
+    assert summary.degraded_reason is None
+    assert summary.facts.word_count == 1
+
+
+async def test_a_short_but_real_recording_is_still_summarised():
+    """The floor has to sit below a genuine short meeting. A 1m32s test
+    recording runs to roughly four hundred words."""
+    lines = ["WEBVTT", ""]
+    for i in range(6):
+        lines += [str(i + 1),
+                  f"00:00:{i * 5:02d}.000 --> 00:00:{i * 5 + 4:02d}.000",
+                  "We agreed the assay repeats on Thursday and site four still has no coordinator.",
+                  ""]
+    backend = FakeBackend([extraction(), "The assay repeats on Thursday."])
+    summary = await summarize_meeting(
+        parse_vtt("\n".join(lines)), backend=backend, model="fake", title="Short"
+    )
+    assert summary.overview == "The assay repeats on Thursday."
+
+
+async def test_a_line_that_announces_the_list_is_not_part_of_the_brief():
+    """llama3.1:8b writes these constantly once a transcript is long enough
+    that the format instruction stops landing."""
+    backend = FakeBackend([extraction(), (
+        "The team reviewed the assay.\n\n"
+        "Here are some specific points that can be noted from the conversation:\n\n"
+        "- Site four still has no coordinator."
+    )])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert "Here are some" not in summary.overview
+    assert summary.overview == (
+        "The team reviewed the assay.\n\n- Site four still has no coordinator."
+    )
+
+
+async def test_the_models_guesses_about_garbled_words_are_removed():
+    """A forty-minute recording of people talking over each other produced a
+    bracketed guess per paragraph - "a 'sasu' (which is likely a mishearing of
+    'sister-in-law')". The sentence around it is usually fine; the guess is
+    invention wearing a helpful hat."""
+    backend = FakeBackend([extraction(), (
+        "- She was called a \u201csasu\u201d (which is likely a mishearing of "
+        "\u201csister-in-law\u201d), then corrected.\n"
+        "- He was the \u201cvet\u201d (short for veterinarian) in the game."
+    )])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert "likely" not in summary.overview
+    assert "short for" not in summary.overview
+    assert "then corrected" in summary.overview
+    assert "in the game" in summary.overview
+
+
+async def test_an_ordinary_bracket_is_not_a_guess():
+    """The filter is for speculation, not for parentheses."""
+    backend = FakeBackend([extraction(), "- Delivery is a downloadable file (Mac and Windows)."])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == "- Delivery is a downloadable file (Mac and Windows)."
+
+
+async def test_asterisk_bullets_become_ordinary_ones():
+    """The prompt asks for "- ". Markdown renders both; a meeting that mixes
+    them looks like two summaries stapled together."""
+    backend = FakeBackend([extraction(), "* Site four has no coordinator.\n* The assay repeats."])
+    summary = await summarize_meeting(parse_vtt(VTT), backend=backend, model="fake", title="Sync")
+    assert summary.overview == "- Site four has no coordinator.\n- The assay repeats."
 
 
 # --- the whole command, end to end ----------------------------------------

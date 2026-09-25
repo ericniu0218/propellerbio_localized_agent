@@ -1,5 +1,7 @@
 """The conversation sidebar, and the summary titles it shows."""
 
+import asyncio
+
 from tests.workers import wait_for_app_workers
 
 from bedrock.app import BedrockApp
@@ -94,7 +96,17 @@ async def test_clicking_new_conversation_starts_one_and_keeps_the_old(fake_backe
 
 
 async def test_a_title_is_only_requested_after_the_reply_finishes(fake_backend, store):
-    fake_backend.fragment_delay = 0.05
+    """The reply is held open rather than merely made slow.
+
+    This used to set fragment_delay and assume one pause() landed in the middle
+    of the stream. That holds on an idle laptop and not on a loaded CI runner:
+    the delays are asyncio.sleeps, so a runner that stalls for a moment leaves
+    every one of them already expired, the whole reply arrives inside the
+    pause, and the test fails on a precondition rather than on the thing it is
+    checking. hold_reply keeps the stream open until this test says otherwise,
+    so "during the reply" means during the reply no matter how the machine is
+    behaving."""
+    fake_backend.hold_reply = asyncio.Event()
     app = make_app(fake_backend, store)
     async with app.run_test() as pilot:
         await pilot.press(*"slow question", "enter")
@@ -103,6 +115,7 @@ async def test_a_title_is_only_requested_after_the_reply_finishes(fake_backend, 
         assert fake_backend.title_requests == []  # the employee's answer comes first
         assert fake_backend.topic_checks == []
 
+        fake_backend.hold_reply.set()
         await wait_for_app_workers(app)
         await pilot.pause()
         assert len(fake_backend.title_requests) == 1

@@ -42,6 +42,17 @@ def _say(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _db_settings():
+    """Settings for the commands that only read the database.
+
+    `require_models=False` because `runs`, `verify-run` and `rate` need
+    `db_path` and nothing about models: a site whose `models.yaml` override
+    defines only its own set must still be able to list and re-prove its past
+    runs, rather than being told its machine profile's default set is unknown.
+    """
+    return load_settings(check_endpoint=False, require_models=False)
+
+
 def _searcher_overrides(args) -> dict:
     overrides = {}
     if args.sources:
@@ -182,6 +193,18 @@ def main(argv: list[str] | None = None) -> int:
     # One line per HTTP request drowns out the pipeline's own progress.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    try:
+        return _run(args)
+    except ConfigError as exc:
+        # A bad config file or a missing model set is something to fix, not a
+        # crash to report: say what is wrong and exit non-zero.
+        _say(f"{args.command}: {exc}")
+        return 1
+
+
+def _run(args) -> int:
+    """Everything after the arguments are read. Split out so `main` has exactly
+    one place that turns a `ConfigError` into a message."""
     if args.command == "search":
         from bedrock.litreview.knowledge import load_knowledge
         from bedrock.litreview.sources.corpus import write_papers
@@ -208,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "runs":
         from bedrock.litreview.db import Database
 
-        db = Database(load_settings(check_endpoint=False).db_path)
+        db = Database(_db_settings().db_path)
         for run in db.recent_runs(args.limit):
             report_id = db.report_id_for(run.id)
             question = db.get_question(run.question_id)
@@ -220,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         from bedrock.litreview.db import Database
         from bedrock.litreview.report.invariants import verify_run
 
-        db = Database(args.db or load_settings(check_endpoint=False).db_path)
+        db = Database(args.db or _db_settings().db_path)
         if args.all:
             # Only runs that finished a report; an interrupted run has nothing to verify.
             run_ids = db.finished_run_ids()

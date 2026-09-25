@@ -190,3 +190,47 @@ def test_a_non_zero_temperature_is_refused_whatever_the_endpoint_check_says(tmp_
             bedrock(), model_set="x", check_endpoint=False,
             env={"BEDROCK_LITREVIEW_CONFIG_DIR": str(tmp_path)},
         )
+
+
+# ---------------------------------------------------------------------------
+# Reading the database without a model set
+# ---------------------------------------------------------------------------
+
+
+def test_the_database_commands_do_not_need_a_model_set_to_exist(tmp_path):
+    """`runs`, `verify-run`, `rate` and `/reviews` need `db_path` and nothing else.
+
+    A site whose models.yaml override defines only its own set would otherwise
+    be told its machine profile's default set is unknown, and be unable to list
+    or re-prove any of its past runs.
+    """
+    (tmp_path / "models.yaml").write_text(
+        "min_context_window: 12288\nmodel_sets:\n  house: {medium: {name: house-model}}\n"
+        "jobs:\n  extract: medium\ndefaults: {temperature: 0.0}\n"
+    )
+    env = {"BEDROCK_LITREVIEW_CONFIG_DIR": str(tmp_path)}
+
+    with pytest.raises(ConfigError, match="unknown model set"):
+        load_settings(bedrock(), env=env, check_endpoint=False)
+
+    settings = load_settings(bedrock(), env=env, check_endpoint=False, require_models=False)
+    assert settings.db_path.name == "litreview.sqlite3"
+    assert settings.models == {}
+    # ... and it still refuses to invent a model name.
+    with pytest.raises(ConfigError):
+        settings.model_for("extract")
+
+
+def test_rating_a_report_does_not_need_a_model_set_to_exist(tmp_path, monkeypatch):
+    """`rate` goes through `rate_report`, which loads its own settings when
+    given none. It gets as far as looking the report up, not "unknown model set"."""
+    from bedrock.litreview.api import rate_report
+
+    (tmp_path / "models.yaml").write_text(
+        "min_context_window: 12288\nmodel_sets:\n  house: {medium: {name: house-model}}\n"
+        "jobs:\n  extract: medium\ndefaults: {temperature: 0.0}\n"
+    )
+    monkeypatch.setenv("BEDROCK_LITREVIEW_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "data"))
+    with pytest.raises(KeyError, match="no report"):
+        rate_report("nope", 4, rater="jd")

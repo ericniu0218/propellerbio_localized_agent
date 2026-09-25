@@ -110,7 +110,8 @@ def rate_report(
     db: Database | None = None,
     settings: Settings | None = None,
 ) -> Rating:
-    db = db or Database((settings or load_settings(check_endpoint=False)).db_path)
+    # Recording a rating needs the database, not a model set.
+    db = db or Database((settings or load_settings(check_endpoint=False, require_models=False)).db_path)
     if db.get_report(report_id) is None:
         raise KeyError(f"no report {report_id}")
     rating = Rating(

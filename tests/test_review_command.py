@@ -227,6 +227,19 @@ async def test_reviews_with_nothing_recorded_says_so(review_dir, models_yaml):
         assert "No literature reviews on this machine yet" in notices(app)[-1]
 
 
+async def test_reviews_does_not_need_the_configured_model_set_to_exist(review_dir, models_yaml, monkeypatch):
+    """Listing reads the database only. A machine whose model set is missing
+    from its models.yaml must still be able to see and re-check past runs."""
+    monkeypatch.setenv("BEDROCK_LITREVIEW_MODELS", "not-in-the-file")
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, "/reviews")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert "No literature reviews on this machine yet" in notices(app)[-1], notices(app)[-1]
+
+
 # ---------------------------------------------------------------------------
 # Beside the chat
 # ---------------------------------------------------------------------------

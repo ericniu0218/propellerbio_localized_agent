@@ -139,7 +139,8 @@ class LocalCommandsMixin:
 
         await run_reviews_command(
             args,
-            settings_for=lambda: load_review_settings(self.settings, check_endpoint=False),
+            # Listing and verifying need the database, not a model set.
+            settings_for=lambda: load_review_settings(self.settings, check_endpoint=False, require_models=False),
             notify=self.post_notice,
         )
 

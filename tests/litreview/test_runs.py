@@ -220,3 +220,24 @@ def test_read_papers_refuses_an_edited_corpus_file(tmp_path):
     path.write_text(path.read_text().replace("psoriasis", "eczema"))
     with pytest.raises(ValueError, match="changed since it was written"):
         read_papers(path)
+
+
+def test_two_identical_runs_each_report_the_report_they_wrote(settings, tmp_path):
+    """A report id is the hash of the report, so both runs share one row.
+
+    Looking the report up by run id therefore called the earlier of two
+    identical runs unfinished, which is what `/reviews` and `bedrock-litreview
+    runs` show.
+    """
+    db = Database(tmp_path / "db.sqlite3")
+    first = run(settings, db)
+    second = run(settings, db)
+    assert first.run.id != second.run.id
+    assert first.report_id == second.report_id
+
+    assert db.report_id_for(first.run.id) == first.report_id
+    assert db.report_id_for(second.run.id) == second.report_id
+
+    # Both are listed. Their order is not asserted: two runs started in the same
+    # second tie on `started`, and recent_runs then orders them by id.
+    assert {r.id for r in db.recent_runs()} == {first.run.id, second.run.id}

@@ -190,12 +190,20 @@ def load_settings(
     model_set: str | None = None,
     env: Mapping[str, str] | None = None,
     check_endpoint: bool = True,
+    require_models: bool = True,
 ) -> Settings:
     """Read the settings for one review. Touches no disk beyond the YAML files.
 
     `bedrock_settings` is bedrock's own `Settings`; when it is None this loads
     them itself, so a shell command and a running app read the same config.toml
     and the same environment.
+
+    `require_models=False` is for the commands that only read the database -
+    `runs`, `verify-run`, `rate`, `/reviews`. They need `db_path` and nothing
+    about models, and a site whose `models.yaml` override defines only its own
+    set should still be able to list and re-prove its past runs rather than
+    being told its machine profile's default set does not exist. `models` comes
+    back empty there, so `model_for` still refuses to invent a name.
     """
     import os
 
@@ -222,11 +230,11 @@ def load_settings(
         or profile_default
     )
     sets = models_cfg.get("model_sets", {})
-    if name not in sets:
+    if name not in sets and require_models:
         raise ConfigError(f"unknown model set {name!r}; known: {sorted(sets)}")
 
     models = {}
-    for tier, body in (sets[name] or {}).items():
+    for tier, body in (sets.get(name) or {}).items():
         body = dict(body or {})
         models[tier] = ModelSpec(tier=tier, name=str(body.pop("name")), options=body)
 

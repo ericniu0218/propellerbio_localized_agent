@@ -179,9 +179,17 @@ class Database:
         return runs[:limit]
 
     def report_id_for(self, run_id: str) -> str | None:
-        """The report a run wrote, if it got that far."""
-        row = self.conn.execute("SELECT id FROM reports WHERE run_id = ?", (run_id,)).fetchone()
-        return row[0] if row else None
+        """The report a run wrote, if it got that far.
+
+        Taken from the run's own record, not by searching the reports table for
+        this run id. A report id is the hash of the report body, and asking the
+        same question over the same papers twice is meant to produce the same
+        bytes — so both runs share one row, whose `run_id` is whichever wrote it
+        last. Searching by run id therefore reports the earlier of two identical
+        runs as unfinished, which is how this was found.
+        """
+        run = self.get_run(run_id)
+        return run.report_sha256[:16] if run and run.report_sha256 else None
 
     def finished_run_ids(self) -> list[str]:
         """Runs that got as far as writing a report."""

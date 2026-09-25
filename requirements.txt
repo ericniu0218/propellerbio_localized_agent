@@ -23,7 +23,13 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # and an invented one was indistinguishable from a real one; and it predates
 # the summariser fix that stops llama3.1:8b handing its own JSON placeholders
 # back as content ("owner": "name or null" reaching a reader as an action item).
-bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@87061af7976b582cb796605a9ad1a412ce7a1331
+#
+# Moved forward again from 87061af, which moved diarisation and voice prints
+# into that repo but left their arithmetic - cosine similarity over voice
+# prints - importing numpy from inside the functions, so a machine without the
+# extra crashed where it should have carried on. The fix split the sums
+# (bedrock.meetings.vectors, plain Python) from the models.
+bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@edd14b606aecc61d536735d3087f48bfce2428c5
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 

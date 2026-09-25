@@ -1,0 +1,24 @@
+{
+  "question_id": "psoriasis-prevention-targets",
+  "built": "2026-09-23",
+  "papers": 208,
+  "full_text": 73,
+  "reviews": 5,
+  "reference_targets": 37,
+  "queries": [
+    "(TITLE_ABS:\"psoriasis\" OR TITLE_ABS:\"psoriatic\" OR TITLE_ABS:\"psoriasiform\" OR TITLE_ABS:\"plaque psoriasis\" OR TITLE_ABS:\"psoriasis vulgaris\" OR TITLE_ABS:\"psoriasis-like\")",
+    "(TITLE_ABS:\"psoriasis\" OR TITLE_ABS:\"psoriatic\" OR TITLE_ABS:\"psoriasiform\" OR TITLE_ABS:\"plaque psoriasis\" OR TITLE_ABS:\"psoriasis vulgaris\" OR TITLE_ABS:\"psoriasis-like\") AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"deficiency\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibition\" OR TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antagonist\" OR TITLE_ABS:\"neutralizing\" OR TITLE_ABS:\"loss-of-function\" OR TITLE_ABS:\"genetic association\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"randomized\")",
+    "(TITLE_ABS:\"psoriasis\" OR TITLE_ABS:\"psoriatic\" OR TITLE_ABS:\"psoriasiform\" OR TITLE_ABS:\"plaque psoriasis\" OR TITLE_ABS:\"psoriasis vulgaris\" OR TITLE_ABS:\"psoriasis-like\") AND (TITLE_ABS:\"prevention\" OR TITLE_ABS:\"prevents\" OR TITLE_ABS:\"prophylaxis\" OR TITLE_ABS:\"prophylactic\" OR TITLE_ABS:\"relapse\" OR TITLE_ABS:\"recurrence\" OR TITLE_ABS:\"onset\")",
+    "(TITLE_ABS:\"psoriasis\" OR TITLE_ABS:\"psoriatic\" OR TITLE_ABS:\"psoriasiform\" OR TITLE_ABS:\"plaque psoriasis\" OR TITLE_ABS:\"psoriasis vulgaris\" OR TITLE_ABS:\"psoriasis-like\")",
+    "(TITLE_ABS:\"psoriasis\" OR TITLE_ABS:\"psoriatic\" OR TITLE_ABS:\"psoriasiform\" OR TITLE_ABS:\"plaque psoriasis\" OR TITLE_ABS:\"psoriasis vulgaris\" OR TITLE_ABS:\"psoriasis-like\") AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"deficiency\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibition\" OR TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antagonist\" OR TITLE_ABS:\"neutralizing\" OR TITLE_ABS:\"loss-of-function\" OR TITLE_ABS:\"genetic association\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"randomized\")",
+    "(TITLE_ABS:\"psoriasis\" OR TITLE_ABS:\"psoriatic\" OR TITLE_ABS:\"psoriasiform\" OR TITLE_ABS:\"plaque psoriasis\" OR TITLE_ABS:\"psoriasis vulgaris\" OR TITLE_ABS:\"psoriasis-like\") AND (TITLE_ABS:\"prevention\" OR TITLE_ABS:\"prevents\" OR TITLE_ABS:\"prophylaxis\" OR TITLE_ABS:\"prophylactic\" OR TITLE_ABS:\"relapse\" OR TITLE_ABS:\"recurrence\" OR TITLE_ABS:\"onset\")",
+    "(\"psoriasis\"[tiab] OR \"psoriatic\"[tiab] OR \"psoriasiform\"[tiab] OR \"plaque psoriasis\"[tiab] OR \"psoriasis vulgaris\"[tiab] OR \"psoriasis-like\"[tiab])",
+    "(\"psoriasis\"[tiab] OR \"psoriatic\"[tiab] OR \"psoriasiform\"[tiab] OR \"plaque psoriasis\"[tiab] OR \"psoriasis vulgaris\"[tiab] OR \"psoriasis-like\"[tiab]) AND (\"knockout\"[tiab] OR \"deficient\"[tiab] OR \"deficiency\"[tiab] OR \"blockade\"[tiab] OR \"inhibition\"[tiab] OR \"inhibitor\"[tiab] OR \"antagonist\"[tiab] OR \"neutralizing\"[tiab] OR \"loss-of-function\"[tiab] OR \"genetic association\"[tiab] OR \"mendelian randomization\"[tiab] OR \"randomized\"[tiab])",
+    "(\"psoriasis\"[tiab] OR \"psoriatic\"[tiab] OR \"psoriasiform\"[tiab] OR \"plaque psoriasis\"[tiab] OR \"psoriasis vulgaris\"[tiab] OR \"psoriasis-like\"[tiab]) AND (\"prevention\"[tiab] OR \"prevents\"[tiab] OR \"prophylaxis\"[tiab] OR \"prophylactic\"[tiab] OR \"relapse\"[tiab] OR \"recurrence\"[tiab] OR \"onset\"[tiab])"
+  ],
+  "searcher": "literature",
+  "near_miss_queries": [
+    "TITLE:\"atopic dermatitis\" AND (TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibitor\") AND OPEN_ACCESS:y AND NOT TITLE_ABS:\"psoriasis\"",
+    "TITLE:\"psoriatic arthritis\" AND TITLE_ABS:\"inhibitor\" AND OPEN_ACCESS:y"
+  ]
+}

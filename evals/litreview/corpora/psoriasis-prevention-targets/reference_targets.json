@@ -1,0 +1,343 @@
+[
+  {
+    "symbol": "AHR",
+    "max_phase": 4.0,
+    "drugs": [
+      "TAPINAROF"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "DHFR",
+    "max_phase": 4.0,
+    "drugs": [
+      "METHOTREXATE SODIUM",
+      "METHOTREXATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL12A",
+    "max_phase": 4.0,
+    "drugs": [
+      "BRIAKINUMAB",
+      "USTEKINUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL12B",
+    "max_phase": 4.0,
+    "drugs": [
+      "BRIAKINUMAB",
+      "RISANKIZUMAB",
+      "USTEKINUMAB",
+      "TILDRAKIZUMAB",
+      "GUSELKUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL17A",
+    "max_phase": 4.0,
+    "drugs": [
+      "IXEKIZUMAB",
+      "SECUKINUMAB",
+      "BIMEKIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL17F",
+    "max_phase": 4.0,
+    "drugs": [
+      "BIMEKIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL17RA",
+    "max_phase": 4.0,
+    "drugs": [
+      "BRODALUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL1RAP",
+    "max_phase": 4.0,
+    "drugs": [
+      "SPESOLIMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL1RL2",
+    "max_phase": 4.0,
+    "drugs": [
+      "SPESOLIMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "IL23A",
+    "max_phase": 4.0,
+    "drugs": [
+      "BRIAKINUMAB",
+      "RISANKIZUMAB",
+      "USTEKINUMAB",
+      "TILDRAKIZUMAB",
+      "GUSELKUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "ITGAL",
+    "max_phase": 4.0,
+    "drugs": [
+      "EFALIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "ITGB2",
+    "max_phase": 4.0,
+    "drugs": [
+      "EFALIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "KEAP1",
+    "max_phase": 4.0,
+    "drugs": [
+      "DIMETHYL FUMARATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "NR3C1",
+    "max_phase": 4.0,
+    "drugs": [
+      "BETAMETHASONE DIPROPIONATE",
+      "DEXAMETHASONE SODIUM PHOSPHATE",
+      "BETAMETHASONE VALERATE",
+      "PREDNISOLONE ACETATE",
+      "DEXAMETHASONE",
+      "MOMETASONE FUROATE",
+      "BETAMETHASONE",
+      "PREDNISOLONE",
+      "PREDNISONE",
+      "FLUOCINOLONE ACETONIDE",
+      "CLOBETASOL PROPIONATE",
+      "HALOBETASOL PROPIONATE",
+      "DESOXIMETASONE",
+      "HYDROCORTISONE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "PDE4A",
+    "max_phase": 4.0,
+    "drugs": [
+      "APREMILAST",
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "PDE4B",
+    "max_phase": 4.0,
+    "drugs": [
+      "APREMILAST",
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "PDE4C",
+    "max_phase": 4.0,
+    "drugs": [
+      "APREMILAST",
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "PDE4D",
+    "max_phase": 4.0,
+    "drugs": [
+      "APREMILAST",
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "PPIA",
+    "max_phase": 4.0,
+    "drugs": [
+      "CYCLOSPORINE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "RARA",
+    "max_phase": 4.0,
+    "drugs": [
+      "TAZAROTENE",
+      "ACITRETIN",
+      "ETRETINATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "RARB",
+    "max_phase": 4.0,
+    "drugs": [
+      "TAZAROTENE",
+      "ACITRETIN",
+      "ETRETINATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "RARG",
+    "max_phase": 4.0,
+    "drugs": [
+      "TAZAROTENE",
+      "ACITRETIN",
+      "ETRETINATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "RXRA",
+    "max_phase": 4.0,
+    "drugs": [
+      "ACITRETIN",
+      "ETRETINATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "RXRB",
+    "max_phase": 4.0,
+    "drugs": [
+      "ACITRETIN",
+      "ETRETINATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "RXRG",
+    "max_phase": 4.0,
+    "drugs": [
+      "ACITRETIN",
+      "ETRETINATE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "TNF",
+    "max_phase": 4.0,
+    "drugs": [
+      "INFLIXIMAB",
+      "CERTOLIZUMAB PEGOL",
+      "ADALIMUMAB",
+      "ETANERCEPT"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "TRPA1",
+    "max_phase": 4.0,
+    "drugs": [
+      "MENTHOL"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "TRPM8",
+    "max_phase": 4.0,
+    "drugs": [
+      "MENTHOL"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "TYK2",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOFACITINIB",
+      "DEUCRAVACITINIB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "VDR",
+    "max_phase": 4.0,
+    "drugs": [
+      "CALCITRIOL",
+      "CALCIPOTRIENE",
+      "PEFCALCITOL"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "ADORA3",
+    "max_phase": 3.0,
+    "drugs": [
+      "PICLIDENOSON"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "FKBP1A",
+    "max_phase": 3.0,
+    "drugs": [
+      "TACROLIMUS",
+      "TACROLIMUS ANHYDROUS"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "GLP1R",
+    "max_phase": 3.0,
+    "drugs": [
+      "SEMAGLUTIDE"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "HMGCR",
+    "max_phase": 3.0,
+    "drugs": [
+      "ATORVASTATIN"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "JAK1",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOFACITINIB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "JAK2",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOFACITINIB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  },
+  {
+    "symbol": "JAK3",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOFACITINIB"
+    ],
+    "source": "Open Targets MONDO_0005083"
+  }
+]

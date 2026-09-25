@@ -7,3 +7,9 @@ build/
 dist/
 .pytest_cache/
 package-lock.json
+
+# Benchmark runs: one directory per run, a few hundred KB each. The scores
+# worth keeping are in docs/litreview/BENCHMARK_RESULTS.md and the trend is in
+# history.jsonl.
+evals/litreview/results/*/
+!evals/litreview/results/history.jsonl

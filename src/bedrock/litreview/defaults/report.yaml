@@ -1,0 +1,159 @@
+# Report layout, per question type. The client will supply the exact format
+# later; this file is where it goes, so changing the report's shape is an edit
+# here rather than a code change.
+#
+# kind: written    one model call, from `source`, under the citation guard
+# kind: generated  written by code from the evidence, the ranking and the plan
+#
+# source (written sections only):
+#   top_targets   the best evidence for the leading targets
+#   per_target    one subsection per leading target, each from its own evidence
+#   facet:<id>    the units extracted for that facet
+#   prevention    every finding whose setting is prevention, whatever its facet
+#   negative      no-effect / worse / mixed results, and conflicts
+#   all           the strongest evidence overall
+#
+# generated sections: best_source, gaps, plan, ranking, evidence_table,
+# method, excluded.
+
+target_identification:
+  - id: answer
+    title: Answer
+    kind: written
+    source: top_targets
+    sentences: "3 to 5"
+    instructions: >-
+      Answer the question directly. Name the targets with the strongest evidence
+      for the goal in the question, and for each say what kind of evidence
+      supports it (human trial, human genetics, animal model, cells).
+  - id: best_source
+    title: Most relevant source
+    kind: generated
+  - id: targets
+    title: Candidate targets
+    kind: written
+    source: per_target
+    sentences: "2 to 4"
+    instructions: >-
+      Summarise the evidence for this one target: what was done to it, in what
+      system, what happened, with the numbers given. Include results where
+      acting on it did not help.
+  - id: mechanism
+    title: Disease biology
+    kind: written
+    source: facet:mechanism
+    sentences: "2 to 5"
+    instructions: Describe which pathways, cell types and molecules the evidence shows driving the disease.
+  - id: clinical
+    title: Human clinical evidence
+    kind: written
+    source: facet:clinical
+    sentences: "2 to 6"
+    instructions: Summarise what human studies showed when a target was modulated, with effect sizes and numbers of subjects.
+  - id: prevention
+    title: Prevention-specific evidence
+    kind: written
+    source: prevention
+    sentences: "1 to 4"
+    instructions: >-
+      Summarise evidence that acting early, before onset or exposure, or during
+      remission prevented the disease or its return.
+  - id: negative
+    title: Negative and conflicting results
+    kind: written
+    source: negative
+    sentences: "1 to 4"
+    instructions: Report where acting on a target did not help, made things worse, or where studies disagree.
+  - id: safety
+    title: Safety considerations
+    kind: written
+    source: facet:safety
+    sentences: "1 to 4"
+    instructions: Summarise the adverse effects and risks reported for acting on these targets.
+  - {id: gaps, title: Gaps and caveats, kind: generated}
+  - {id: plan, title: What the answer needed, kind: generated}
+  - {id: ranking, title: Papers ranked by relevance, kind: generated}
+  - {id: evidence_table, title: Evidence table, kind: generated}
+  - {id: method, title: How this answer was assembled, kind: generated}
+  - {id: excluded, title: Papers excluded, kind: generated}
+
+intervention_efficacy:
+  - id: answer
+    title: Answer
+    kind: written
+    source: all
+    sentences: "3 to 5"
+    instructions: >-
+      Answer the question directly: does the evidence show the intervention
+      works for this condition, in whom, and how strongly? Say what kind of
+      evidence supports the answer.
+  - {id: best_source, title: Most relevant source, kind: generated}
+  - id: clinical
+    title: Clinical efficacy
+    kind: written
+    source: facet:clinical
+    sentences: "2 to 6"
+    instructions: Summarise the human results, with effect sizes and numbers of subjects.
+  - id: preclinical
+    title: Preclinical efficacy
+    kind: written
+    source: facet:preclinical
+    sentences: "1 to 4"
+    instructions: Summarise the animal and cell results.
+  - id: prevention
+    title: Prevention-specific evidence
+    kind: written
+    source: prevention
+    sentences: "1 to 4"
+    instructions: Summarise evidence about giving the intervention before onset or exposure.
+  - id: mechanism
+    title: Mechanism of action
+    kind: written
+    source: facet:mechanism
+    sentences: "1 to 4"
+    instructions: Describe how the intervention acts, as the evidence shows it.
+  - id: negative
+    title: Negative and conflicting results
+    kind: written
+    source: negative
+    sentences: "1 to 4"
+    instructions: Report where it did not help, made things worse, or where studies disagree.
+  - id: safety
+    title: Safety
+    kind: written
+    source: facet:safety
+    sentences: "1 to 4"
+    instructions: Summarise adverse events and risks reported.
+  - {id: gaps, title: Gaps and caveats, kind: generated}
+  - {id: plan, title: What the answer needed, kind: generated}
+  - {id: ranking, title: Papers ranked by relevance, kind: generated}
+  - {id: evidence_table, title: Evidence table, kind: generated}
+  - {id: method, title: How this answer was assembled, kind: generated}
+  - {id: excluded, title: Papers excluded, kind: generated}
+
+default:
+  - id: answer
+    title: Answer
+    kind: written
+    source: all
+    sentences: "3 to 5"
+    instructions: Answer the question directly from the evidence, saying what kind of evidence supports each point.
+  - {id: best_source, title: Most relevant source, kind: generated}
+  - id: evidence
+    title: Evidence
+    kind: written
+    source: all
+    sentences: "3 to 8"
+    instructions: Summarise the evidence in more detail, with the numbers given.
+  - id: negative
+    title: Negative and conflicting results
+    kind: written
+    source: negative
+    sentences: "1 to 4"
+    instructions: Report results that disagree with the others or show no effect.
+  - {id: gaps, title: Gaps and caveats, kind: generated}
+  - {id: plan, title: What the answer needed, kind: generated}
+  - {id: ranking, title: Papers ranked by relevance, kind: generated}
+  - {id: evidence_table, title: Evidence table, kind: generated}
+  - {id: method, title: How this answer was assembled, kind: generated}
+  - {id: excluded, title: Papers excluded, kind: generated}

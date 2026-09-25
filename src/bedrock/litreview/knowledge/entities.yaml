@@ -1,0 +1,300 @@
+# Exact-name tables. Code reads these; no model ever writes to them.
+#
+# `terms`      names that mean exactly this entity: abbreviations, brand names,
+#              code names, spelling variants. A paper using any of them is about
+#              this entity.
+# `near_miss`  names that are close but are NOT this entity — a sibling virus,
+#              a drug in the same class, a neighbouring disease. The client asked
+#              for answers about the exact thing, not about things that look
+#              close enough, so a paper that only mentions these is excluded,
+#              with that reason shown.
+# `near_miss_patterns`  regexes for families too large to list (flu subtypes).
+#
+# Deliberately left out of `terms`: ambiguous short forms. "AD" is atopic
+# dermatitis and Alzheimer's disease; "RA" is rheumatoid arthritis and retinoic
+# acid; "p19" is IL-23 and p19ARF. A missing synonym costs recall, and the
+# report shows which terms were used so a scientist can add one. A wrong
+# synonym silently lets the wrong papers in.
+#
+# Matching is case-insensitive except for short acronyms (RSV, PsA, H5N1),
+# which match case-sensitively. Hyphens and spaces are interchangeable.
+
+diseases:
+  psoriasis:
+    terms: [psoriasis, psoriatic, psoriasiform, plaque psoriasis, psoriasis vulgaris, psoriasis-like]
+    near_miss: [psoriatic arthritis, PsA, atopic dermatitis, atopic eczema, seborrheic dermatitis, lichen planus, rosacea, palmoplantar pustulosis]
+  psoriatic arthritis:
+    terms: [psoriatic arthritis, PsA]
+    near_miss: [rheumatoid arthritis, ankylosing spondylitis, axial spondyloarthritis, osteoarthritis]
+  atopic dermatitis:
+    terms: [atopic dermatitis, atopic eczema]
+    near_miss: [psoriasis, contact dermatitis, seborrheic dermatitis, chronic urticaria]
+  rheumatoid arthritis:
+    terms: [rheumatoid arthritis]
+    near_miss: [osteoarthritis, psoriatic arthritis, juvenile idiopathic arthritis, systemic lupus erythematosus, ankylosing spondylitis]
+  crohn's disease:
+    terms: [Crohn's disease, Crohn disease, Crohns disease, Crohn's]
+    near_miss: [ulcerative colitis, irritable bowel syndrome, celiac disease]
+  ulcerative colitis:
+    terms: [ulcerative colitis]
+    near_miss: [Crohn's disease, Crohn disease, irritable bowel syndrome, celiac disease]
+  inflammatory bowel disease:
+    terms: [inflammatory bowel disease, IBD]
+    near_miss: [irritable bowel syndrome, IBS, celiac disease]
+  systemic lupus erythematosus:
+    terms: [systemic lupus erythematosus, SLE, lupus]
+    near_miss: [rheumatoid arthritis, Sjogren's syndrome, systemic sclerosis, cutaneous lupus erythematosus]
+  multiple sclerosis:
+    terms: [multiple sclerosis]
+    near_miss: [neuromyelitis optica, NMOSD, acute disseminated encephalomyelitis]
+  asthma:
+    terms: [asthma, asthmatic]
+    near_miss: [chronic obstructive pulmonary disease, COPD, allergic rhinitis]
+  obesity:
+    terms: [obesity, obese, diet-induced obesity]
+    near_miss: [overweight, cachexia, lipodystrophy, anorexia nervosa]
+  type 2 diabetes:
+    terms: [type 2 diabetes, type 2 diabetes mellitus, T2D, T2DM, non-insulin-dependent diabetes]
+    near_miss: [type 1 diabetes, T1D, T1DM, gestational diabetes, prediabetes]
+  type 1 diabetes:
+    terms: [type 1 diabetes, type 1 diabetes mellitus, T1D, T1DM, insulin-dependent diabetes]
+    near_miss: [type 2 diabetes, T2D, T2DM, gestational diabetes]
+  metabolic dysfunction-associated steatohepatitis:
+    terms: [metabolic dysfunction-associated steatohepatitis, MASH, nonalcoholic steatohepatitis, non-alcoholic steatohepatitis, NASH]
+    near_miss: [alcoholic hepatitis, alcohol-associated hepatitis, hepatitis C]
+  alzheimer's disease:
+    terms: [Alzheimer's disease, Alzheimer disease, Alzheimers disease, Alzheimer's]
+    near_miss: [frontotemporal dementia, vascular dementia, dementia with Lewy bodies, Lewy body dementia, Parkinson's disease]
+  parkinson's disease:
+    terms: [Parkinson's disease, Parkinson disease, Parkinsons disease]
+    near_miss: [multiple system atrophy, progressive supranuclear palsy, dementia with Lewy bodies, essential tremor]
+  amyotrophic lateral sclerosis:
+    terms: [amyotrophic lateral sclerosis, ALS]
+    near_miss: [frontotemporal dementia, spinal muscular atrophy, primary lateral sclerosis]
+  major depressive disorder:
+    terms: [major depressive disorder, MDD, major depression]
+    near_miss: [bipolar disorder, dysthymia, generalized anxiety disorder]
+  migraine:
+    terms: [migraine]
+    near_miss: [cluster headache, tension-type headache]
+  covid-19:
+    terms: [COVID-19, COVID, coronavirus disease 2019]
+    near_miss: [MERS, Middle East respiratory syndrome, influenza]
+
+pathogens:
+  respiratory syncytial virus:
+    terms: [respiratory syncytial virus, human respiratory syncytial virus, human orthopneumovirus, RSV, hRSV, HRSV]
+    near_miss: [bovine respiratory syncytial virus, BRSV, bRSV, human metapneumovirus, metapneumovirus, hMPV, HMPV, parainfluenza virus, influenza, rhinovirus]
+  sars-cov-2:
+    terms: [SARS-CoV-2, severe acute respiratory syndrome coronavirus 2, 2019-nCoV, HCoV-19]
+    near_miss: [SARS-CoV, SARS-CoV-1, severe acute respiratory syndrome coronavirus, MERS-CoV, HCoV-OC43, HCoV-229E, HCoV-NL63, HCoV-HKU1]
+  influenza a h5n1:
+    terms: [H5N1, A(H5N1), influenza A(H5N1)]
+    near_miss_patterns: ['H\d{1,2}N\d{1,2}']
+  influenza:
+    terms: [influenza, influenza virus, flu]
+    near_miss: [respiratory syncytial virus, RSV, parainfluenza, SARS-CoV-2]
+  hiv-1:
+    terms: [HIV-1, HIV, human immunodeficiency virus type 1, human immunodeficiency virus]
+    near_miss: [HIV-2, SIV, simian immunodeficiency virus, SHIV]
+  hepatitis b virus:
+    terms: [hepatitis B virus, HBV, hepatitis B]
+    near_miss: [hepatitis C virus, HCV, hepatitis C, hepatitis D virus, HDV, hepatitis E virus]
+  hepatitis c virus:
+    terms: [hepatitis C virus, HCV, hepatitis C]
+    near_miss: [hepatitis B virus, HBV, hepatitis B]
+  human cytomegalovirus:
+    terms: [human cytomegalovirus, HCMV, cytomegalovirus, CMV]
+    near_miss: [murine cytomegalovirus, MCMV, rhesus cytomegalovirus, RhCMV]
+  epstein-barr virus:
+    terms: [Epstein-Barr virus, EBV]
+    near_miss: [Kaposi's sarcoma-associated herpesvirus, KSHV, cytomegalovirus]
+  zika virus:
+    terms: [Zika virus, ZIKV, Zika]
+    near_miss: [dengue virus, DENV, dengue, West Nile virus, chikungunya]
+  dengue virus:
+    terms: [dengue virus, DENV, dengue]
+    near_miss: [Zika virus, ZIKV, West Nile virus, yellow fever virus]
+
+drugs:
+  semaglutide:
+    terms: [semaglutide, Ozempic, Wegovy, Rybelsus, NN9535]
+    near_miss: [liraglutide, tirzepatide, dulaglutide, exenatide, lixisenatide, retatrutide, orforglipron]
+  liraglutide:
+    terms: [liraglutide, Victoza, Saxenda, NN2211]
+    near_miss: [semaglutide, tirzepatide, dulaglutide, exenatide]
+  tirzepatide:
+    terms: [tirzepatide, Mounjaro, Zepbound, LY3298176]
+    near_miss: [semaglutide, retatrutide, liraglutide]
+  guselkumab:
+    terms: [guselkumab, Tremfya, CNTO 1959]
+    near_miss: [risankizumab, tildrakizumab, mirikizumab, ustekinumab]
+  risankizumab:
+    terms: [risankizumab, Skyrizi, BI 655066]
+    near_miss: [guselkumab, tildrakizumab, mirikizumab, ustekinumab]
+  ustekinumab:
+    terms: [ustekinumab, Stelara, CNTO 1275]
+    near_miss: [briakinumab, guselkumab, risankizumab]
+  secukinumab:
+    terms: [secukinumab, Cosentyx, AIN457]
+    near_miss: [ixekizumab, brodalumab, bimekizumab]
+  ixekizumab:
+    terms: [ixekizumab, Taltz, LY2439821]
+    near_miss: [secukinumab, brodalumab, bimekizumab]
+  adalimumab:
+    terms: [adalimumab, Humira, D2E7]
+    near_miss: [infliximab, etanercept, certolizumab, golimumab]
+  etanercept:
+    terms: [etanercept, Enbrel]
+    near_miss: [adalimumab, infliximab, certolizumab, golimumab]
+  deucravacitinib:
+    terms: [deucravacitinib, Sotyktu, BMS-986165]
+    near_miss: [tofacitinib, baricitinib, upadacitinib, abrocitinib]
+  apremilast:
+    terms: [apremilast, Otezla, CC-10004]
+    near_miss: [roflumilast, crisaborole]
+  dupilumab:
+    terms: [dupilumab, Dupixent, REGN668]
+    near_miss: [tralokinumab, lebrikizumab]
+  nirsevimab:
+    terms: [nirsevimab, Beyfortus, MEDI8897]
+    near_miss: [palivizumab, clesrovimab, motavizumab, suptavumab]
+  palivizumab:
+    terms: [palivizumab, Synagis, MEDI-493]
+    near_miss: [nirsevimab, motavizumab, clesrovimab]
+  clesrovimab:
+    terms: [clesrovimab, MK-1654, Enflonsia]
+    near_miss: [nirsevimab, palivizumab]
+  lecanemab:
+    terms: [lecanemab, Leqembi, BAN2401]
+    near_miss: [aducanumab, donanemab, gantenerumab]
+  donanemab:
+    terms: [donanemab, Kisunla, LY3002813]
+    near_miss: [aducanumab, lecanemab, gantenerumab]
+
+# Targets are mostly *answers* ("what should I target?"), so these tables are
+# used to merge names — "IL-23p19", "interleukin-23" and "IL23A" become one row —
+# more than to gate papers. Keys are HGNC symbols, or a protein name where no
+# single gene fits (pathogen proteins).
+targets:
+  IL23A:
+    terms: [IL-23, IL23, IL23A, interleukin-23, interleukin 23, IL-23p19, IL-23 p19, IL23p19]
+    near_miss: [IL-12, IL-23R, IL-27]
+  IL12B:
+    terms: [IL12B, IL-12/23 p40, IL-12/IL-23 p40, IL-12p40, IL-12 p40, IL12p40]
+  IL12A:
+    terms: [IL-12, IL12A, interleukin-12, IL-12p35]
+  IL23R:
+    terms: [IL-23R, IL23R, IL-23 receptor, interleukin-23 receptor]
+  IL17A:
+    terms: [IL-17A, IL17A, IL-17, IL17, interleukin-17A, interleukin-17, interleukin 17]
+    near_miss: [IL-17F, IL-17RA, IL-17C, IL-17E, IL-25]
+  IL17F:
+    terms: [IL-17F, IL17F, interleukin-17F]
+  IL17RA:
+    terms: [IL-17RA, IL17RA, IL-17 receptor A, IL-17 receptor]
+  IL17C:
+    terms: [IL-17C, IL17C]
+  IL22:
+    terms: [IL-22, IL22, interleukin-22]
+  IL36:
+    terms: [IL-36, IL36, IL-36 gamma, IL-36γ, IL-36α, IL-36 alpha, interleukin-36]
+  IL1RL2:
+    terms: [IL1RL2, IL-36R, IL-36 receptor, IL36R]
+  IL6:
+    terms: [IL-6, IL6, interleukin-6]
+  IL6R:
+    terms: [IL-6R, IL6R, IL-6 receptor]
+  IL1B:
+    terms: [IL-1β, IL-1beta, IL-1b, IL1B, interleukin-1β, interleukin-1 beta]
+  IL4R:
+    terms: [IL-4Rα, IL-4R, IL4R, IL-4 receptor, IL-4 receptor alpha]
+  IL13:
+    terms: [IL-13, IL13, interleukin-13]
+  IL2:
+    terms: [IL-2, IL2, interleukin-2]
+  TNF:
+    terms: [TNF, TNF-α, TNF-alpha, TNFα, TNFa, tumor necrosis factor, tumour necrosis factor, tumor necrosis factor-alpha, tumor necrosis factor alpha]
+  TYK2:
+    terms: [TYK2, tyrosine kinase 2]
+  JAK1:
+    terms: [JAK1, Janus kinase 1]
+  JAK2:
+    terms: [JAK2, Janus kinase 2]
+  JAK3:
+    terms: [JAK3, Janus kinase 3]
+  PDE4:
+    terms: [PDE4, PDE-4, phosphodiesterase 4, phosphodiesterase-4, PDE4B, PDE4D]
+  STAT3:
+    terms: [STAT3]
+  RORC:
+    terms: [RORγt, RORgammat, RORγ, RORC, ROR gamma t, RORyt]
+  TSLP:
+    terms: [TSLP, thymic stromal lymphopoietin]
+  TNFRSF4:
+    terms: [OX40, TNFRSF4]
+  BTK:
+    terms: [BTK, Bruton's tyrosine kinase, Bruton tyrosine kinase]
+  S1PR1:
+    terms: [S1P1, S1PR1, sphingosine-1-phosphate receptor 1]
+  MS4A1:
+    terms: [CD20, MS4A1]
+  IFNAR1:
+    terms: [IFNAR, IFNAR1, type I interferon receptor]
+  GLP1R:
+    terms: [GLP-1R, GLP1R, GLP-1 receptor, glucagon-like peptide-1 receptor, glucagon-like peptide 1 receptor]
+  GLP1:
+    terms: [GLP-1, GLP1, glucagon-like peptide-1, glucagon-like peptide 1]
+  GIPR:
+    terms: [GIPR, GIP receptor, glucose-dependent insulinotropic polypeptide receptor]
+  GIP:
+    terms: [GIP, glucose-dependent insulinotropic polypeptide, gastric inhibitory polypeptide]
+  GCGR:
+    terms: [GCGR, glucagon receptor]
+  MC4R:
+    terms: [MC4R, melanocortin-4 receptor, melanocortin 4 receptor, MC4 receptor]
+  LEPR:
+    terms: [LEPR, leptin receptor]
+  LEP:
+    terms: [leptin, LEP]
+  CALCR:
+    terms: [amylin receptor, calcitonin receptor, CALCR]
+  IAPP:
+    terms: [amylin, IAPP]
+  CNR1:
+    terms: [CB1, CB1R, CNR1, cannabinoid receptor 1, cannabinoid type 1 receptor]
+  GDF15:
+    terms: [GDF15, GDF-15, growth differentiation factor 15]
+  GFRAL:
+    terms: [GFRAL]
+  ACVR2:
+    terms: [ACVR2, ACVR2A, ACVR2B, activin type II receptor, activin receptor type II]
+  FGF21:
+    terms: [FGF21, FGF-21, fibroblast growth factor 21]
+  NPY:
+    terms: [NPY, neuropeptide Y]
+  POMC:
+    terms: [POMC, proopiomelanocortin, pro-opiomelanocortin]
+  APP:
+    terms: [amyloid-β, amyloid-beta, amyloid beta, Aβ, APP, amyloid precursor protein]
+  MAPT:
+    terms: [tau, MAPT]
+  SNCA:
+    terms: [α-synuclein, alpha-synuclein, SNCA]
+  LRRK2:
+    terms: [LRRK2]
+  TREM2:
+    terms: [TREM2]
+  CALCA:
+    terms: [CGRP, calcitonin gene-related peptide, CALCA]
+  RSV F:
+    terms: [RSV F, RSV F protein, RSV fusion protein, RSV prefusion F, RSVpreF, prefusion F, pre-fusion F, preF, pre-F, prefusion F protein]
+    # Generic words that only mean RSV F inside an RSV paper. Used to merge
+    # extracted target names, never to scan questions or gate papers.
+    context_terms: [F protein, fusion protein, fusion glycoprotein, F glycoprotein, postfusion F]
+  RSV G:
+    terms: [RSV G, RSV G protein, RSV attachment glycoprotein]
+    context_terms: [G protein, attachment glycoprotein, G glycoprotein, attachment protein]
+  SARS-CoV-2 spike:
+    terms: [SARS-CoV-2 spike, SARS-CoV-2 spike protein]
+    context_terms: [spike protein, spike glycoprotein, S protein, receptor-binding domain, RBD]

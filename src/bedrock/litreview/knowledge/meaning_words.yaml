@@ -1,0 +1,73 @@
+# Words that carry a finding's meaning. Written by hand; no model writes here.
+#
+# Two readers:
+#
+# `extract/verify.py` — a quote that matches its paper only fuzzily is kept
+#   only if every word that differs is typography or filler. If a differing
+#   word is a number or appears in any list under `meaning`, the quote has
+#   changed what the paper said ("did not reduce" -> "did reduce") and fails.
+#
+# `report/guard.py` and `extract/provenance.py` — who was studied. Each class
+#   under `studied` is one kind of subject. A report sentence naming a class is
+#   kept only if the paper text it cites names the same class, and a species
+#   the model wrote is kept only if the text it read names the same class. A
+#   word under `ambiguous_human` counts as human only when the same text names
+#   no animal.
+#
+# Lower case, single words. Quote any word YAML would read as a boolean ("no"). Multi-word phrases are not needed: any one word of
+# a changed phrase is enough to fail the match.
+
+meaning:
+  negation: [not, "no", none, neither, nor, never, without, lack, lacked, lacking, lacks, absent, absence,
+             fail, failed, fails, cannot, nothing, non, insignificant, nonsignificant, unchanged, unaffected,
+             "n't"]
+  contrast: [but, however, although, though, whereas, while, except, unless, despite, only, yet]
+  comparison: [more, less, fewer, greater, higher, lower, larger, smaller, increase, increased, increases,
+               increasing, decrease, decreased, decreases, decreasing, elevated, raised, reduced, reduce,
+               reduces, reducing, reduction, above, below, superior, inferior, noninferior, similar,
+               comparable, equivalent, versus, vs, than, maximum, minimum, upper, lower, most, least]
+  change: [inhibit, inhibited, inhibits, inhibition, inhibitor, block, blocked, blocking, blockade,
+           activate, activated, activates, activation, agonist, antagonist, deletion, deleted, deficiency,
+           deficient, knockout, knockdown, silencing, silenced, overexpression, overexpressed, mutant,
+           mutation, loss, gain, suppress, suppressed, suppresses, suppression, enhance, enhanced, enhances,
+           promote, promoted, promotes, induce, induced, induces, induction, prevent, prevented, prevents,
+           prevention, abolish, abolished, attenuate, attenuated, exacerbate, exacerbated, aggravate,
+           aggravated, ameliorate, ameliorated, restore, restored, treated, untreated, placebo, vehicle,
+           control, controls]
+  effect: [improve, improved, improves, improvement, worsen, worsened, worsens, worse, better, protect,
+           protected, protective, protection, efficacy, effective, ineffective, significant, significantly,
+           associated, association, correlated, correlation, risk, benefit, harm, adverse, toxicity,
+           increased, severe, mild, cure, cured, relapse, remission, response, responders, resistant,
+           resistance, sensitive]
+  setting: [vitro, vivo]
+  hedge: [may, might, could, possibly, potentially, suggest, suggests, suggested, likely, unlikely,
+          putative, trend, tended, appear, appeared, appears]
+  quantity: [all, every, each, both, some, several, most, many, few, half, majority, minority, single,
+             once, twice, always, rarely, often, frequently, occasionally, sometimes, partially, completely,
+             fully, entirely]
+
+studied:
+  # One class per kind of subject. Only words that cannot describe an animal
+  # go under `human`: "subjects", "cohort" and "clinical score" all occur in
+  # mouse studies. Words that name a stage of life rather than a species are
+  # under `ambiguous_human`: "adult mice", "pregnant dams", "newborn pups".
+  human: [human, humans, patient, patients, participant, participants, volunteer, volunteers, people,
+          person, persons, individuals, children, women, woman, men]
+  mouse: [mouse, mice, murine, c57bl, balb]
+  rat: [rat, rats, wistar, sprague]
+  primate: [primate, primates, macaque, macaques, cynomolgus, rhesus, monkey, monkeys, nhp]
+  # Any non-human animal. Backed by cited text naming animals, mice, rats or
+  # primates: "in animals" citing a mouse study is fine, citing a human
+  # modelling study is not.
+  animal: [animal, animals, rodent, rodents, preclinical]
+  # Not a bare "cells": "Th17 cells" and "T cells rose in patients" say
+  # nothing about work in a dish.
+  cells: [cell line, cell lines, in vitro, cultured, hacat, hek293, hela, jurkat, thp-1, caco-2]
+
+# Nouns that can follow a count and make it a sample size ("24 mice",
+# "12 donors"), beyond the words in `studied` and `ambiguous_human`.
+counted: [subject, subjects, animal, animals, case, cases, control, controls, donor, donors, pig, pigs,
+          dog, dogs, rabbit, rabbits, hamster, hamsters, zebrafish, pups, dams, eyes, samples, biopsies]
+
+ambiguous_human: [adult, adults, child, infant, infants, neonate, neonates, neonatal, newborn, newborns,
+                  mother, mothers, pregnant, pregnancy, maternal]

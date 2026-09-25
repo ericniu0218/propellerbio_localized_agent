@@ -1,0 +1,528 @@
+"""Stage 5 — turn the planned papers into EvidenceUnits.
+
+The order below is the whole design, and it is deliberate:
+
+    model extracts  ->  code verifies quotes  ->  code checks the entity
+                    ->  code checks direction and outcome against the
+                        words the model copied  ->  code normalises
+                    ->  code dedupes
+
+The model does one narrow thing — copy findings out of one chunk of one
+section — and every subsequent step is deterministic code that can be read,
+tested and trusted. The model never normalises, never scores quality, and
+never sees a whole paper.
+
+Which sections we send, and why (set by the plan, from config/pipeline.yaml):
+
+  abstract    extract from it. Clean sentences, high signal.
+  results     extract from it. The primary data lives here. Long results
+              sections are split on paragraph boundaries; when there are more
+              pieces than the budget, code keeps the ones that share the most
+              vocabulary with the question.
+  methods     NOT extracted from. Passed as *context*, so species and sample
+              size are available where the outcome is. Only the paragraphs
+              that mention subjects, animals or sample sizes are sent.
+  discussion  only when a paper has no results section; flagged
+              `from_discussion`, because authors overstate there.
+
+After the model, the entity check: a finding whose own words name a
+near-miss (hMPV in an RSV question) or a different known disease is dropped,
+even though the paper passed the gate. A psoriasis paper can report an atopic
+dermatitis cohort too, and that finding does not answer a psoriasis question.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from collections import Counter
+
+from pydantic import ValidationError
+
+from bedrock.litreview.extract.dedupe import dedupe_within_paper
+from bedrock.litreview.extract.provenance import NONE, SUBJECT_WORDS, Provenance, trace
+from bedrock.litreview.extract.normalize import (
+    classify_direction,
+    classify_outcome,
+    classify_setting,
+    extract_n,
+    infer_evidence_type,
+    normalize_species,
+)
+from bedrock.litreview.extract.verify import normalize as normalize_text
+from bedrock.litreview.extract.verify import Located, locate_quote, region_of, verify_quote
+from bedrock.litreview.facets import subject_label
+from bedrock.litreview.knowledge import Knowledge, TermMatcher, load_knowledge
+from bedrock.litreview.lexical import BM25
+from bedrock.litreview.llm import LLMError, ask_json, load_prompt, strict_schema, version_of
+from bedrock.litreview.models import (
+    EvidencePlan,
+    EvidenceUnit,
+    ExtractedFinding,
+    ExtractionJob,
+    ExtractionResult,
+    Facet,
+    Paper,
+    QuestionSpec,
+    stable_id,
+)
+
+log = logging.getLogger(__name__)
+
+PROMPT = "extract"
+CONTEXT_SECTION = "methods"
+
+_SUBJECT_WORDS = SUBJECT_WORDS
+
+
+# --- text preparation ---------------------------------------------------------
+
+
+def chunk_text(text: str, max_chars: int) -> list[str]:
+    """Split on paragraph boundaries into pieces of at most ~max_chars."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    pieces: list[str] = []
+    for para in paragraphs:
+        if len(para) <= max_chars:
+            pieces.append(para)
+            continue
+        # One enormous paragraph (flat PDF text): fall back to sentences.
+        buf = ""
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", para):
+            if buf and len(buf) + len(sentence) + 1 > max_chars:
+                pieces.append(buf)
+                buf = sentence
+            else:
+                buf = f"{buf} {sentence}".strip()
+        if buf:
+            pieces.append(buf)
+
+    chunks: list[str] = []
+    buf = ""
+    for piece in pieces:
+        if buf and len(buf) + len(piece) + 2 > max_chars:
+            chunks.append(buf)
+            buf = piece
+        else:
+            buf = f"{buf}\n\n{piece}".strip()
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+def methods_context(paper: Paper, max_chars: int) -> str:
+    """The Methods paragraphs that say who or what was studied, and how many."""
+    text = paper.sections.get(CONTEXT_SECTION, "")
+    if not text:
+        return "(no methods section available)"
+    picked, total = [], 0
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if para and _SUBJECT_WORDS.search(para):
+            if total + len(para) > max_chars:
+                para = para[: max(0, max_chars - total)]
+            picked.append(para)
+            total += len(para)
+            if total >= max_chars:
+                break
+    return "\n\n".join(picked) or "(no methods paragraphs describing subjects)"
+
+
+def plan_chunks(paper: Paper, job: ExtractionJob, query: str, *, chunk_chars: int, max_chunks: int) -> list[tuple[str, int, str]]:
+    """(section, chunk index, text) to send, within the per-paper budget."""
+    candidates: list[tuple[str, int, str]] = []
+    for section in job.sections:
+        for i, chunk in enumerate(chunk_text(paper.sections.get(section, ""), chunk_chars)):
+            candidates.append((section, i, chunk))
+    if len(candidates) <= max_chunks:
+        return candidates
+    # Keep the abstract, then the chunks that best match the question.
+    keep = [c for c in candidates if c[0] == "abstract"][:1]
+    rest = [c for c in candidates if c not in keep]
+    bm25 = BM25({f"{s}:{i}": t for s, i, t in rest})
+    best = {doc for doc, _ in bm25.rank(query)[: max_chunks - len(keep)]}
+    keep += [c for c in rest if f"{c[0]}:{c[1]}" in best]
+    return keep
+
+
+# --- the model call -----------------------------------------------------------
+
+
+def extraction_schema(facets: list[Facet]) -> dict:
+    return strict_schema(ExtractionResult.model_json_schema(), enums={"facet": [f.id for f in facets]})
+
+
+def render_prompt(
+    spec: QuestionSpec, facets: list[Facet], job: ExtractionJob, section: str, text: str, methods: str
+) -> str:
+    subject = spec.subject
+    near = subject.near_miss_terms if subject else []
+    return load_prompt(PROMPT).render(
+        question=spec.text,
+        subject=subject_label(spec),
+        exact_terms=", ".join(f'"{t}"' for t in (subject.exact_terms if subject else [])),
+        near_miss_line=(
+            "These are different things and do NOT count: " + ", ".join(f'"{t}"' for t in near[:12]) + "."
+            if near else ""
+        ),
+        job_facets=", ".join(job.facets),
+        facets="\n".join(f"- `{f.id}` — {f.title}: {f.need}" for f in facets),
+        methods_text=methods,
+        section_name=section,
+        section_text=text,
+    )
+
+
+def _extract_chunk(prompt: str, schema: dict, client, *, model: str) -> ExtractionResult:
+    """One model call. Guided decoding makes a malformed reply impossible."""
+    data = ask_json(client, prompt, model=model, schema=schema, max_tokens=4096)
+    return ExtractionResult.model_validate(data)
+
+
+# --- the checks after the model ---------------------------------------------------
+
+
+def _locate_in_chunk(quote: str, chunk: str, section_text: str) -> Located:
+    """The quote, found in the part of the section this chunk came from, with
+    offsets into the whole section."""
+    region = region_of(chunk, section_text)
+    if region is None:
+        # Cannot place the chunk (should not happen: chunks are the section's
+        # own paragraphs). Verify against what the model saw, then place it.
+        if verify_quote(quote, chunk) == "failed":
+            return locate_quote(quote, chunk, widen=False)
+        return locate_quote(quote, section_text)
+    lo, hi = region
+    found = locate_quote(quote, section_text[lo:hi])
+    if found.status == "failed":
+        return found
+    start, end = found.start + lo, found.end + lo
+    return Located(found.status, start, end, section_text[start:end])
+
+
+def entity_check(finding: ExtractedFinding, spec: QuestionSpec, kb: Knowledge) -> tuple[str | None, str]:
+    """(drop reason or None, 'exact' | 'paper_context').
+
+    The finding's own field for the entity is read first — `disease` for a
+    disease or pathogen, `intervention` for a drug, `target` for a target. If
+    that field names a near-miss or a different known disease, the finding is
+    about something else, whatever its quote mentions in passing. Only when
+    the field is neutral ("skin inflammation") does the quote decide.
+    """
+    match = "paper_context"
+    for entity in spec.required_entities:
+        matcher = TermMatcher(entity.exact_terms, entity.near_miss_terms, entity.near_miss_patterns)
+        if entity.kind == "disease":
+            primary = [finding.disease]
+        elif entity.kind == "pathogen":
+            primary = [finding.disease, finding.target]
+        elif entity.kind == "drug":
+            primary = [finding.intervention or ""]
+        else:
+            primary = [finding.target]
+        exact, near = matcher.summary(" | ".join(primary))
+        if exact:
+            match = "exact"
+            continue
+        if near:
+            return f"near_miss:{near[0]}", match
+        if entity.kind in ("disease", "pathogen"):
+            others = {
+                e.canonical for e, _ in kb.scan(finding.disease, ("disease", "pathogen"))
+                if e.canonical != entity.canonical
+            }
+            if others:
+                return f"other_disease:{sorted(others)[0]}", match
+        exact, near = matcher.summary(" | ".join([finding.quote, finding.target, finding.intervention or ""]))
+        if exact:
+            match = "exact"
+        elif near:
+            return f"near_miss:{near[0]}", match
+    return None, match
+
+
+def reconcile(finding: ExtractedFinding) -> tuple[str, str, str, list[str]]:
+    """(direction, outcome, setting, corrections): the model's labels, overruled
+    where the words it copied from its own quote unambiguously say otherwise.
+
+    The copied words must be in the quote, or they are ignored. An
+    observation with nothing done to a target stays an `association` whatever
+    its verbs: "IL-17A was increased in lesions" did not worsen anything.
+    """
+    quote = normalize_text(finding.quote)
+    direction, outcome, notes = finding.direction, finding.outcome, []
+    change = finding.change.strip()
+    if change and normalize_text(change) in quote:
+        said = classify_direction(change)
+        if said and said != direction:
+            notes.append(f'direction: {direction} -> {said} ("{change}")')
+            direction = said
+    effect = finding.effect.strip()
+    if effect and normalize_text(effect) in quote and outcome != "mixed":
+        said = classify_outcome(effect)
+        if said and said != outcome and not (outcome == "association" and direction == "unclear"):
+            notes.append(f'outcome: {outcome} -> {said} ("{effect}")')
+            outcome = said
+    setting = finding.setting
+    said_setting = classify_setting(f"{finding.quote} {finding.effect_detail} {finding.intervention or ''}", setting)
+    if said_setting and said_setting != setting:
+        notes.append(f"setting: {setting} -> {said_setting}")
+        setting = said_setting
+    return direction, outcome, setting, notes
+
+
+def settle_facet(facet: str, *, evidence_type: str, direction: str, outcome: str, setting: str,
+                 facet_ids: list[str]) -> str:
+    """Which information need a finding supplies, checked against its labels.
+
+    The model files findings; code refuses filings the labels contradict. The
+    MedGemma run filed mouse results under "Human clinical evidence", and the
+    report's clinical section duly presented them as human data.
+    """
+    def first(*ids: str) -> str:
+        return next((i for i in ids if i in facet_ids), facet)
+
+    fallback = first("causal", "preclinical", "mechanism", "direct") if direction != "unclear" \
+        else first("mechanism", "direct")
+    if facet == "clinical" and evidence_type != "human_clinical":
+        return fallback
+    if facet == "prevention" and setting != "prevention":
+        return fallback
+    if facet == "negative" and outcome not in ("no_effect", "worsened", "mixed"):
+        return fallback
+    if facet in ("causal", "preclinical") and direction == "unclear":
+        return first("mechanism", "direct")
+    return facet
+
+
+def _to_unit(
+    finding: ExtractedFinding,
+    *,
+    status: str,
+    match: str,
+    paper: Paper,
+    spec: QuestionSpec,
+    section: str,
+    chunk: int,
+    model_version: str,
+    prompt_version: str,
+    kb: Knowledge,
+    facet_ids: list[str] | None = None,
+    located: Located,
+    model_quote: str,
+    prov: Provenance,
+) -> EvidenceUnit:
+    # Fields the model wrote, as far as the text it was shown supports them
+    # (`extract/provenance.py`). Labels are read from these too: a result
+    # summary provenance rejected must not set the setting either.
+    v = prov.values
+    species = normalize_species(v["species_raw"])
+    direction, outcome, setting, corrected = reconcile(
+        finding.model_copy(update={"effect_detail": v["effect_detail"], "intervention": v["intervention"]})
+    )
+    evidence_type = infer_evidence_type(species, finding.evidence_type)
+    if not v["species_raw"]:
+        # Subjects the paper does not state are not shown, but the model's own
+        # species may still *weaken* its label: a model that says "mice" and
+        # "human_clinical" in one breath has not found human evidence. It may
+        # never strengthen one.
+        weakened = infer_evidence_type(normalize_species(finding.species), finding.evidence_type)
+        if finding.evidence_type.startswith("human") and not weakened.startswith("human"):
+            evidence_type = weakened
+    facet = settle_facet(
+        finding.facet, evidence_type=evidence_type, direction=direction, outcome=outcome,
+        setting=setting, facet_ids=facet_ids or [finding.facet],
+    )
+    subject = spec.subject
+    if subject is not None and subject.kind in ("disease", "pathogen") and (
+        match == "exact" or not kb.scan(v["disease_raw"], ("disease", "pathogen"))
+    ):
+        disease = subject.canonical
+    else:
+        disease = kb.normalize(v["disease_raw"], "disease")
+    return EvidenceUnit(
+        # The model's own quote is part of the id: two findings copied from
+        # different halves of one sentence widen to the same paper sentence,
+        # and must not share an id.
+        id=stable_id(spec.id, paper.id, section, chunk, normalize_text(finding.quote), finding.target, outcome,
+                     normalize_text(model_quote) if model_quote else ""),
+        paper_id=paper.id,
+        question_id=spec.id,
+        target=kb.normalize(finding.target, "target"),
+        target_raw=finding.target,
+        direction=direction,  # type: ignore[arg-type]
+        modality=finding.modality,
+        intervention=v["intervention"],
+        disease=disease,
+        disease_raw=v["disease_raw"],
+        evidence_type=evidence_type,  # type: ignore[arg-type]
+        species=species,
+        species_raw=v["species_raw"],
+        outcome=outcome,  # type: ignore[arg-type]
+        setting=setting,  # type: ignore[arg-type]
+        effect_detail=v["effect_detail"],
+        n=v["n"],
+        combo_with=kb.normalize(v["combo_with"], "target") if v["combo_with"] else None,
+        target_is_primary=finding.target_is_primary,
+        facet=facet,
+        quote=finding.quote,
+        quote_status=status,  # type: ignore[arg-type]
+        section=section,  # type: ignore[arg-type]
+        quote_start=located.start,
+        quote_end=located.end,
+        quote_model=model_quote if model_quote.strip() != finding.quote else None,
+        provenance=dict(prov.where),
+        context_quote=prov.context.text if prov.context else None,
+        context_section=prov.context_section,
+        context_start=prov.context.start if prov.context else None,
+        context_end=prov.context.end if prov.context else None,
+        from_discussion=(section == "discussion"),
+        entity_match=match,  # type: ignore[arg-type]
+        corrected=corrected,
+        extracted_by_model=model_version,
+        prompt_version=prompt_version,
+    )
+
+
+def extract_paper(
+    paper: Paper,
+    job: ExtractionJob,
+    spec: QuestionSpec,
+    facets: list[Facet],
+    client,
+    *,
+    model: str,
+    chunk_chars: int = 6000,
+    max_chunks: int = 6,
+    methods_chars: int = 2500,
+    knowledge: Knowledge | None = None,
+    stats: Counter | None = None,
+) -> list[EvidenceUnit]:
+    """Extract every verified finding from one paper.
+
+    A chunk that fails is logged and skipped. One bad chunk must never take
+    down a paper, and one bad paper must never take down a report.
+    """
+    kb = knowledge or load_knowledge()
+    stats = stats if stats is not None else Counter()
+    prompt_version = load_prompt(PROMPT).version
+    model_version = version_of(client, model)
+    schema = extraction_schema(facets)
+    methods = methods_context(paper, methods_chars)
+    query = f"{spec.text} {' '.join(t for e in spec.entities for t in e.exact_terms)}"
+    species_filter = [normalize_species(e.text) for e in spec.entities if e.kind == "species"]
+
+    units: list[EvidenceUnit] = []
+    for section, chunk_i, text in plan_chunks(paper, job, query, chunk_chars=chunk_chars, max_chunks=max_chunks):
+        prompt = render_prompt(spec, facets, job, section, text, methods)
+        try:
+            result = _extract_chunk(prompt, schema, client, model=model)
+        except (LLMError, ValidationError) as exc:
+            log.warning("extraction failed: paper=%s section=%s chunk=%d: %s", paper.id, section, chunk_i, exc)
+            stats["chunk_failed"] += 1
+            continue
+        stats["chunks"] += 1
+        if result.is_review:
+            stats["review_chunks"] += 1
+            if section == "abstract":
+                # The paper describes itself as a review: a review citing a
+                # trial is not a trial. Nothing from it counts.
+                log.info("paper=%s reads as a review; discarding its findings", paper.id)
+                return []
+            continue
+
+        for finding in result.findings:
+            stats["findings"] += 1
+            # Looked for only in the passage the model read — located in the
+            # section so its offsets are the section's — never elsewhere in
+            # the section, where the same words may carry other qualifiers.
+            located = _locate_in_chunk(finding.quote, text, paper.sections.get(section, ""))
+            if located.status == "failed":
+                # The model produced a sentence that is not in the paper, or
+                # changed one that is. This is the fabrication guard doing its
+                # job; the finding does not exist.
+                stats["quote_failed"] += 1
+                if located.reason.startswith("meaning changed"):
+                    stats["quote_meaning_changed"] += 1
+                log.debug("unverified quote discarded (%s): paper=%s quote=%r",
+                          located.reason, paper.id, finding.quote[:80])
+                continue
+            model_quote = finding.quote
+            # From here on every check reads the paper's own sentence.
+            finding = finding.model_copy(update={"quote": located.text})
+            status = located.status
+            drop, match = entity_check(finding, spec, kb)
+            if drop:
+                stats[drop.split(":", 1)[0]] += 1
+                log.debug("finding dropped (%s): paper=%s", drop, paper.id)
+                continue
+            # Every other field the model wrote must be in the text it read.
+            prov = trace(
+                quote=finding.quote, chunk=text, methods=methods, section=section,
+                section_text=paper.sections.get(section, ""),
+                methods_section_text=paper.sections.get(CONTEXT_SECTION, ""),
+                target=finding.target, intervention=finding.intervention, combo_with=finding.combo_with,
+                disease_raw=finding.disease, species_raw=finding.species,
+                n=finding.n if finding.n is not None else extract_n(finding.quote),
+                effect_detail=finding.effect_detail, kb=kb,
+            )
+            if prov.drop:
+                stats[prov.drop] += 1
+                log.debug("finding dropped (%s): paper=%s target=%r", prov.drop, paper.id, finding.target)
+                continue
+            for name, where in prov.where.items():
+                if where == NONE:
+                    stats[f"{name}_unlocated"] += 1
+            unit = _to_unit(
+                finding, status=status, match=match, paper=paper, spec=spec, section=section,
+                chunk=chunk_i, model_version=model_version, prompt_version=prompt_version, kb=kb,
+                facet_ids=[f.id for f in facets], located=located, model_quote=model_quote, prov=prov,
+            )
+            # A species the paper states decides. When it states none, the
+            # model's own species may still rule a finding out (it said
+            # "patients" in a mouse question), never in; unknown is kept and
+            # shown as "not stated".
+            species_seen = unit.species if unit.species_raw else normalize_species(finding.species)
+            if species_filter and (unit.species_raw or species_seen != "other") and species_seen not in species_filter:
+                stats["species_mismatch"] += 1
+                continue
+            for note in unit.corrected:
+                stats[f"{note.split(':', 1)[0]}_corrected"] += 1
+            units.append(unit)
+
+    kept = dedupe_within_paper(units)
+    stats["duplicates"] += len(units) - len(kept)
+    stats["kept"] += len(kept)
+    return kept
+
+
+def extract_plan(
+    plan: EvidencePlan,
+    papers: dict[str, Paper],
+    spec: QuestionSpec,
+    facets: list[Facet],
+    client,
+    *,
+    model: str,
+    progress=None,
+    **kwargs,
+) -> tuple[list[EvidenceUnit], dict[str, int]]:
+    """Extract across the whole plan; returns the units and the reject tally.
+
+    The tally matters as much as the units. A run where 30% of findings fail
+    quote verification is telling you something broke upstream, and it
+    should be loud.
+    """
+    stats: Counter = Counter()
+    all_units: list[EvidenceUnit] = []
+    for i, job in enumerate(plan.jobs, 1):
+        units = extract_paper(papers[job.paper_id], job, spec, facets, client, model=model, stats=stats, **kwargs)
+        all_units.extend(units)
+        if progress:
+            progress(f"extracted {i}/{len(plan.jobs)} papers, {len(all_units)} findings")
+    if stats["findings"] and stats["quote_failed"] / stats["findings"] > 0.3:
+        log.warning(
+            "%d of %d findings failed quote verification — check parsing before prompts",
+            stats["quote_failed"], stats["findings"],
+        )
+    return all_units, dict(stats)

@@ -1,0 +1,18 @@
+{
+  "question_id": "psoriasis-prevention-targets",
+  "built": "2026-09-23",
+  "papers": 108,
+  "full_text": 45,
+  "reviews": 5,
+  "reference_targets": 37,
+  "queries": [
+    "TITLE_ABS:\"psoriasis\" AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"neutralization\" OR TITLE_ABS:\"inhibition\") AND (TITLE_ABS:\"mice\" OR TITLE_ABS:\"mouse\") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]",
+    "TITLE:\"psoriasis\" AND (PUB_TYPE:\"Randomized Controlled Trial\" OR TITLE_ABS:\"phase 3\") AND (TITLE_ABS:\"IL-23\" OR TITLE_ABS:\"IL-17\" OR TITLE_ABS:\"TNF\" OR TITLE_ABS:\"TYK2\") AND PUB_YEAR:[2012 TO 2025]",
+    "TITLE_ABS:\"psoriasis\" AND (TITLE_ABS:\"prevent*\" OR TITLE_ABS:\"relapse\" OR TITLE_ABS:\"flare\" OR TITLE_ABS:\"onset\") AND (TITLE_ABS:\"target*\" OR TITLE_ABS:\"inhibit*\") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]",
+    "TITLE_ABS:\"psoriasis\" AND (TITLE_ABS:\"genome-wide\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"loss-of-function\") AND OPEN_ACCESS:y"
+  ],
+  "near_miss_queries": [
+    "TITLE:\"atopic dermatitis\" AND (TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibitor\") AND OPEN_ACCESS:y AND NOT TITLE_ABS:\"psoriasis\"",
+    "TITLE:\"psoriatic arthritis\" AND TITLE_ABS:\"inhibitor\" AND OPEN_ACCESS:y"
+  ]
+}

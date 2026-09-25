@@ -1,0 +1,37 @@
+# Where papers come from, and the limits each source imposes.
+
+europepmc:
+  base: https://www.ebi.ac.uk/europepmc/webservices/rest
+  api_key_required: false
+  full_text: true       # JATS XML for the OA subset — always try this first
+  notes: "The workhorse. Covers PubMed + preprints. No signup."
+
+pubmed:
+  base: https://eutils.ncbi.nlm.nih.gov/entrez/eutils
+  api_key_env: NCBI_API_KEY
+  rate_limit_per_sec: 3       # 10 with a key. Get a key; it is free.
+  full_text: false
+  notes: "MeSH-precise queries."
+
+biorxiv:
+  base: https://api.biorxiv.org
+  api_key_required: false
+  full_text: true
+  notes: "Preprints. Flag every hit as is_preprint."
+
+openalex:
+  base: https://api.openalex.org
+  api_key_required: false
+  full_text: false
+  notes: >
+    Citation counts, venue, and pointers to legal OA copies (carries Unpaywall
+    data). VERIFY PRICING — usage-based pricing was introduced in early 2026.
+    The bulk snapshot is the fallback.
+
+patents:
+  epo_ops: http://ops.epo.org/3.2
+  lens: https://api.lens.org
+  patentsview: https://search.patentsview.org/api/v1
+  notes: >
+    Competitor landscape only, never biological evidence. Extract title,
+    abstract, assignee, priority date and claim 1. Never the full body.

@@ -1,0 +1,23 @@
+# Infectious disease — chosen to stress exactness: RSV has close siblings
+# (human metapneumovirus, bovine RSV) that a "close enough" answer drifts to.
+id: rsv-infant-prevention-targets
+question: "What should I target to prevent RSV infection in infants?"
+notes: >-
+  Open Targets lists human targets only, so the viral targets (F and G
+  proteins) are graded through review facts rather than reference targets.
+corpus:
+  max_per_query: 25
+  full_text_max: 45
+  queries:
+    - '(TITLE_ABS:"respiratory syncytial virus" OR TITLE_ABS:"RSV") AND (TITLE_ABS:"prevent*" OR TITLE_ABS:"prophyla*") AND TITLE_ABS:"infant*" AND (TITLE_ABS:"antibody" OR TITLE_ABS:"vaccine" OR TITLE_ABS:"fusion") AND OPEN_ACCESS:y AND PUB_YEAR:[2013 TO 2025]'
+    - 'TITLE_ABS:"respiratory syncytial virus" AND (TITLE_ABS:"prefusion F" OR TITLE_ABS:"G protein" OR TITLE_ABS:"neutralizing antibod*" OR TITLE_ABS:"fusion inhibitor") AND OPEN_ACCESS:y AND NOT PUB_TYPE:"review"'
+    - '(TITLE:"nirsevimab" OR TITLE:"palivizumab" OR TITLE:"clesrovimab" OR TITLE:"RSVpreF" OR TITLE:"maternal RSV") AND (PUB_TYPE:"Randomized Controlled Trial" OR TITLE_ABS:"trial")'
+  near_miss_max: 4
+  near_miss_queries:
+    - 'TITLE:"human metapneumovirus" AND (TITLE_ABS:"antibody" OR TITLE_ABS:"vaccine") AND OPEN_ACCESS:y AND NOT TITLE_ABS:"respiratory syncytial"'
+    - 'TITLE:"bovine respiratory syncytial virus" AND OPEN_ACCESS:y'
+references:
+  reviews_query: 'TITLE:"respiratory syncytial virus" AND (TITLE:"prevention" OR TITLE:"immunization" OR TITLE:"monoclonal" OR TITLE:"vaccine") AND PUB_TYPE:"review" AND PUB_YEAR:[2022 TO 2025]'
+  reviews_max: 5
+  open_targets_disease: MONDO_0001577
+  open_targets_min_phase: 3

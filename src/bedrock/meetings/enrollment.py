@@ -36,8 +36,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bedrock.meetings.vectors import cosine
+
 logger = logging.getLogger(__name__)
 
+# Recording and embedding a voice print needs the models; comparing two of them
+# afterwards does not. identify() below is deliberately outside this guard.
 try:
     import numpy
     import sherpa_onnx
@@ -257,9 +261,7 @@ def rescore_cues(
 
     channel = samples
     extractor = _extractor(model, threads)
-    references = {
-        name: numpy.array(vector, dtype=numpy.float32) for name, vector in enrolled
-    }
+    references = dict(enrolled)
 
     changes: dict[int, str] = {}
     for index, cue in enumerate(cues):
@@ -277,11 +279,9 @@ def rescore_cues(
         except Exception:  # pragma: no cover
             continue
 
-        scores = {}
-        for name, reference in references.items():
-            denominator = numpy.linalg.norm(vector) * numpy.linalg.norm(reference)
-            if denominator:
-                scores[name] = float(numpy.dot(vector, reference) / denominator)
+        scores = {
+            name: cosine(vector, reference) for name, reference in references.items()
+        }
         if not scores:
             continue
 
@@ -305,19 +305,14 @@ def identify(
     between somebody and themselves, so the better match wins and the other
     stays a placeholder.
     """
-    if not ENROLLMENT_AVAILABLE or not cluster_vectors or not enrolled:
+    if not cluster_vectors or not enrolled:
         return {}
     minimum = threshold() if minimum is None else minimum
 
     scored: list[tuple[float, int, str]] = []
     for speaker, vector in cluster_vectors.items():
-        candidate = numpy.array(vector, dtype=numpy.float32)
         for name, enrolled_vector in enrolled:
-            reference = numpy.array(enrolled_vector, dtype=numpy.float32)
-            denominator = numpy.linalg.norm(candidate) * numpy.linalg.norm(reference)
-            if denominator == 0:
-                continue
-            similarity = float(numpy.dot(candidate, reference) / denominator)
+            similarity = cosine(vector, enrolled_vector)
             if similarity >= minimum:
                 scored.append((similarity, speaker, name))
 

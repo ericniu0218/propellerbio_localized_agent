@@ -34,14 +34,15 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from bedrock.meetings.vectors import centroid as _centroid
+from bedrock.meetings.vectors import cosine, dot
+
 logger = logging.getLogger(__name__)
 
+# Only the models are optional. The arithmetic that turns their output into
+# speaker labels - see vectors.py - is plain Python and always available, so
+# consolidate() below works on a machine that cannot run diarization at all.
 try:
-    # numpy belongs in here with the others. It used to be imported inside the
-    # two functions that need it, which put it outside this guard: on a box
-    # without the extra those functions raised instead of degrading, and a
-    # developer machine that happens to have numpy never sees it.
-    import numpy
     import sherpa_onnx
     import soundfile
 
@@ -245,12 +246,6 @@ MIN_SPEAKER_SPEECH_S = 2.0
 MIN_SPEAKER_SHARE = 0.01
 
 
-def _centroid(vectors: list):
-    stacked = numpy.mean(numpy.asarray(vectors, dtype=numpy.float32), axis=0)
-    norm = numpy.linalg.norm(stacked)
-    return stacked / norm if norm else stacked
-
-
 def consolidate(
     result: DiarizationResult,
     vectors: dict[int, list[float]],
@@ -272,11 +267,9 @@ def consolidate(
     *at least* four people but not exactly how many — merging stops there
     rather than collapsing further.
     """
-    # Guarded like everything else here. A local `import numpy` slipped past
-    # the module-level check and turned "no speaker extra installed" from a
-    # graceful downgrade into a crash — caught by CI, which installs without
-    # the extra, on a machine where the developer's venv had numpy anyway.
-    if not DIARIZATION_AVAILABLE or not result.ok or not vectors:
+    # No DIARIZATION_AVAILABLE check: this is arithmetic over vectors somebody
+    # else produced, and it runs wherever those vectors came from.
+    if not result.ok or not vectors:
         return result
 
     seconds: dict[int, float] = {}
@@ -299,11 +292,9 @@ def consolidate(
         best = None
         for a in range(len(groups)):
             for b in range(a + 1, len(groups)):
-                score = float(
-                    numpy.dot(
-                        _centroid([vectors[s] for s in groups[a]]),
-                        _centroid([vectors[s] for s in groups[b]]),
-                    )
+                score = dot(
+                    _centroid([vectors[s] for s in groups[a]]),
+                    _centroid([vectors[s] for s in groups[b]]),
                 )
                 if score >= similarity and (best is None or score > best[0]):
                     best = (score, a, b)
@@ -322,12 +313,11 @@ def consolidate(
     for speaker in vectors:
         if speaker in mapping:
             continue
-        candidate = numpy.asarray(vectors[speaker], dtype=numpy.float32)
         scores = [
-            float(numpy.dot(candidate, _centroid([vectors[s] for s in group])))
+            cosine(vectors[speaker], _centroid([vectors[s] for s in group]))
             for group in groups
         ]
-        mapping[speaker] = int(numpy.argmax(scores)) if scores else 0
+        mapping[speaker] = max(range(len(scores)), key=scores.__getitem__) if scores else 0
 
     turns = [
         SpeakerTurn(turn.start_ms, turn.end_ms, mapping.get(turn.speaker, 0))

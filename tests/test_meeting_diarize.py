@@ -238,25 +238,23 @@ def test_a_short_meeting_is_judged_on_the_absolute_floor():
 # --- Without the optional speaker extra installed -----------------------------
 
 
-def test_consolidate_degrades_when_numpy_is_absent(monkeypatch):
-    """The promise everywhere here is that a missing extra costs speaker names
-    and nothing else. A local `import numpy` inside consolidate() slipped past
-    the module-level guard and turned that downgrade into a crash — invisible
-    on a developer machine that has numpy anyway, and caught by CI, which
-    installs without the extra."""
-    import bedrock.meetings.diarize as diarize
+def test_everything_but_running_the_models_works_without_the_extra(monkeypatch):
+    """Only the models are optional, and the line between them and the rest of
+    this module is worth pinning.
 
-    monkeypatch.setattr(diarize, "DIARIZATION_AVAILABLE", False)
-    result = DiarizationResult([SpeakerTurn(0, 10_000, 0), SpeakerTurn(10_000, 20_000, 1)], 2, True)
-    assert diarize.consolidate(result, {0: A, 1: A_ISH}) is result
-
-
-def test_the_model_free_helpers_work_without_the_extra(monkeypatch):
-    """flatten and speaker_change_points are arithmetic over turns; they must
-    keep working when the models are not installed."""
+    consolidate() used to import numpy inside its own body, which put the
+    arithmetic behind the same guard as sherpa-onnx. It read as working code on
+    any developer machine, because numpy arrives with a dozen other things.
+    CI installs without the extra and found it: a crash where the contract
+    promises a downgrade. Comparing vectors needs no model, so it now needs no
+    extra either."""
     import bedrock.meetings.diarize as diarize
 
     monkeypatch.setattr(diarize, "DIARIZATION_AVAILABLE", False)
     turns = [SpeakerTurn(0, 5000, 0), SpeakerTurn(6000, 9000, 1)]
     assert len(diarize.flatten(turns)) == 2
     assert diarize.speaker_change_points(DiarizationResult(turns, 2, True)) == [5500]
+
+    # And the real work: two clusters of the same voice still come back as one.
+    result = DiarizationResult([SpeakerTurn(0, 10_000, 0), SpeakerTurn(10_000, 20_000, 1)], 2, True)
+    assert diarize.consolidate(result, {0: A, 1: A_ISH}).speaker_count == 1

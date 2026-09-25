@@ -37,6 +37,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 try:
+    # numpy belongs in here with the others. It used to be imported inside the
+    # two functions that need it, which put it outside this guard: on a box
+    # without the extra those functions raised instead of degrading, and a
+    # developer machine that happens to have numpy never sees it.
+    import numpy
     import sherpa_onnx
     import soundfile
 
@@ -241,8 +246,6 @@ MIN_SPEAKER_SHARE = 0.01
 
 
 def _centroid(vectors: list):
-    import numpy
-
     stacked = numpy.mean(numpy.asarray(vectors, dtype=numpy.float32), axis=0)
     norm = numpy.linalg.norm(stacked)
     return stacked / norm if norm else stacked
@@ -269,9 +272,11 @@ def consolidate(
     *at least* four people but not exactly how many — merging stops there
     rather than collapsing further.
     """
-    import numpy
-
-    if not result.ok or not vectors:
+    # Guarded like everything else here. A local `import numpy` slipped past
+    # the module-level check and turned "no speaker extra installed" from a
+    # graceful downgrade into a crash — caught by CI, which installs without
+    # the extra, on a machine where the developer's venv had numpy anyway.
+    if not DIARIZATION_AVAILABLE or not result.ok or not vectors:
         return result
 
     seconds: dict[int, float] = {}

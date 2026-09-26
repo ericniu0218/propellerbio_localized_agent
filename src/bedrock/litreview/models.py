@@ -535,8 +535,9 @@ class EvidenceUnit(BaseModel):
     """Authors overstate in the Discussion. Kept, but flagged."""
     entity_match: Literal["exact", "paper_context"] = "paper_context"
     corrected: list[str] = Field(default_factory=list)
-    """Fields code overruled because the model's own copied words said
-    otherwise, e.g. 'outcome: improved -> worsened ("aggravated")'."""
+    """Fields code overruled because the model's own copied words, or the
+    quote's own words, said otherwise, e.g. 'outcome: improved -> worsened
+    ("aggravated")' or 'evidence_type: in_vivo -> in_vitro ("HBECs")'."""
     """`exact`: the finding itself names the asked-about entity. `paper_context`:
     it does not, but the paper passed the gate, so the context supplies it."""
 

@@ -8,8 +8,9 @@ The order below is the whole design, and it is deliberate:
                         an aim, a method or a prediction
                     ->  code checks the entity
                     ->  code checks direction and outcome against the
-                        words the model copied  ->  code normalises
-                    ->  code dedupes
+                        words the model copied  ->  code normalises,
+                        and sets the evidence type from the quote's own
+                        words  ->  code dedupes
 
 The model does one narrow thing — copy findings out of one chunk of one
 section — and every subsequent step is deterministic code that can be read,
@@ -55,6 +56,16 @@ sentence is shown as its context, and the unit records `methods_subjects`
 `methods_subjects`; counted as `people_not_in_methods`). A paper with no
 Methods text is left alone.
 
+The labels are the model's, checked by code (issue #9). The evidence type
+comes from the quote's own words about what was studied before the species:
+"HBECs were exposed to CRE" is in_vitro though the context sentence names
+mice, and a Western blot of "mast cells from individuals with obesity" is
+human_clinical, not human_genetic, because nothing in it is genetic
+(`settle_evidence_type`, `extract/normalize.py` `system_in_quote`). An
+`improved` or `worsened` finding with nothing done to its target is an
+`association` (`reconcile`). Every change is written on the unit
+(`corrected`) and counted as `<field>_corrected`.
+
 Which sections we send, and why (set by the plan, from config/pipeline.yaml):
 
   abstract    extract from it. Clean sentences, high signal.
@@ -98,8 +109,12 @@ from bedrock.litreview.extract.normalize import (
     classify_outcome,
     classify_setting,
     extract_n,
+    genetic_words,
     infer_evidence_type,
+    names_intervention,
     normalize_species,
+    system_in_quote,
+    target_changed_in,
 )
 from bedrock.litreview.extract.verify import normalize as normalize_text
 from bedrock.litreview.extract.verify import (
@@ -302,13 +317,32 @@ def entity_check(finding: ExtractedFinding, spec: QuestionSpec, kb: Knowledge) -
     return None, match
 
 
+def something_done(finding: ExtractedFinding) -> bool:
+    """Did the quote report an intervention, even one whose direction on the
+    target code cannot read? An agent the paper names (`intervention`, as
+    provenance kept it); a block or activate word beside the target's name in
+    the quote itself ("PGGT1B deficiency"; `extract/normalize.py`
+    `target_changed_in`); or words the model copied from the quote for what
+    was done to the target that name an intervention ("treatment with", "LOF
+    variants"; `names_intervention`)."""
+    if (finding.intervention or "").strip():
+        return True
+    if target_changed_in(finding.quote, finding.target):
+        return True
+    change = finding.change.strip()
+    return bool(change) and normalize_text(change) in normalize_text(finding.quote) and names_intervention(change)
+
+
 def reconcile(finding: ExtractedFinding) -> tuple[str, str, str, list[str]]:
     """(direction, outcome, setting, corrections): the model's labels, overruled
     where the words it copied from its own quote unambiguously say otherwise.
 
     The copied words must be in the quote, or they are ignored. An
     observation with nothing done to a target stays an `association` whatever
-    its verbs: "IL-17A was increased in lesions" did not worsen anything.
+    its verbs: "IL-17A was increased in lesions" did not worsen anything. And
+    it becomes one when the model called it `improved` or `worsened`: with the
+    direction still `unclear` and nothing done (`something_done`), there is no
+    intervention for the outcome to be the outcome of.
     """
     quote = normalize_text(finding.quote)
     direction, outcome, notes = finding.direction, finding.outcome, []
@@ -324,12 +358,75 @@ def reconcile(finding: ExtractedFinding) -> tuple[str, str, str, list[str]]:
         if said and said != outcome and not (outcome == "association" and direction == "unclear"):
             notes.append(f'outcome: {outcome} -> {said} ("{effect}")')
             outcome = said
+    if direction == "unclear" and outcome in ("improved", "worsened") and not something_done(finding):
+        # Nothing was done to the target, so nothing it did improved or
+        # worsened anything: "similar increases in hypothalamic Sik3 mRNA
+        # levels in db/db mice" was filed `worsened`, and a worsened finding
+        # reads as a negative result (the "negative" section, the "against"
+        # count of Stage 6). The model's own label is overruled here too, not
+        # only a label code read from its copied words. Measured on the 593
+        # stored qwen3:8b findings: 12 change, every one an observation (Sik3
+        # mRNA in db/db and HFD-fed mice, ROS in DIO mice, a correlation with
+        # body weight); the drugs, diets and LOF variants beside them keep
+        # their outcome.
+        notes.append(f"outcome: {outcome} -> association (nothing done to the target)")
+        outcome = "association"
     setting = finding.setting
     said_setting = classify_setting(f"{finding.quote} {finding.effect_detail} {finding.intervention or ''}", setting)
     if said_setting and said_setting != setting:
         notes.append(f"setting: {setting} -> {said_setting}")
         setting = said_setting
     return direction, outcome, setting, notes
+
+
+def settle_evidence_type(
+    stated: str,
+    *,
+    species: str,
+    species_raw: str,
+    model_species: str,
+    quote: str,
+    context: str,
+    unbacked: MethodsSubjects | None = None,
+) -> tuple[str, str | None]:
+    """(evidence type, correction note or None): the model's label, checked
+    against the paper's words, strongest evidence last.
+
+    1. The normalised species (`infer_evidence_type`): a mouse is never human
+       evidence. When the paper states no subjects, the model's own species
+       may still *weaken* a human label - a model that says "mice" and
+       "human_clinical" in one breath has not found human evidence - but
+       never strengthen one.
+    2. The quote's own words about what was studied
+       (`extract/normalize.py` `system_in_quote`): cells in a dish are
+       in_vitro even when the context sentence names mice, and people's
+       tissue is human_clinical unless genetic-study words say otherwise.
+       These are the paper's words about the very result, so they may
+       strengthen a label as well as weaken it. When the quote does not say,
+       a human_genetic label still needs a genetic word in the quote or the
+       context sentence, or it is human_clinical.
+    3. The Methods, when the quote is a conclusion naming people the Methods
+       never studied (issue #4, `extract/provenance.py` `methods_subjects`).
+
+    Every change is noted on the unit (`EvidenceUnit.corrected`), counted as
+    `evidence_type_corrected`, so a rising rate shows up in the run's stats.
+    """
+    evidence_type = infer_evidence_type(species, stated)
+    why = f"species {species}"
+    if not species_raw:
+        weakened = infer_evidence_type(normalize_species(model_species), stated)
+        if stated.startswith("human") and not weakened.startswith("human"):
+            evidence_type, why = weakened, f"model's species {normalize_species(model_species)}"
+    said = system_in_quote(quote, evidence_type, context)
+    if said is not None:
+        evidence_type, why = said[0], f'"{said[1]}"'
+    elif evidence_type == "human_genetic" and not (genetic_words(quote) or genetic_words(context)):
+        evidence_type, why = "human_clinical", "no genetic words"
+    if unbacked is not None:
+        evidence_type, why = unbacked.evidence_type, f"methods: {unbacked.label}"
+    if evidence_type == stated:
+        return stated, None
+    return evidence_type, f"evidence_type: {stated} -> {evidence_type} ({why})"
 
 
 def settle_facet(facet: str, *, evidence_type: str, direction: str, outcome: str, setting: str,
@@ -399,17 +496,12 @@ def _to_unit(
     direction, outcome, setting, corrected = reconcile(
         finding.model_copy(update={"effect_detail": v["effect_detail"], "intervention": v["intervention"]})
     )
-    evidence_type = infer_evidence_type(species, finding.evidence_type)
-    if unbacked is not None:
-        evidence_type = unbacked.evidence_type
-    elif not v["species_raw"]:
-        # Subjects the paper does not state are not shown, but the model's own
-        # species may still *weaken* its label: a model that says "mice" and
-        # "human_clinical" in one breath has not found human evidence. It may
-        # never strengthen one.
-        weakened = infer_evidence_type(normalize_species(finding.species), finding.evidence_type)
-        if finding.evidence_type.startswith("human") and not weakened.startswith("human"):
-            evidence_type = weakened
+    evidence_type, note = settle_evidence_type(
+        finding.evidence_type, species=species, species_raw=v["species_raw"], model_species=finding.species,
+        quote=finding.quote, context=context.text if context else "", unbacked=unbacked,
+    )
+    if note:
+        corrected.append(note)
     facet = settle_facet(
         finding.facet, evidence_type=evidence_type, direction=direction, outcome=outcome,
         setting=setting, facet_ids=facet_ids or [finding.facet],
@@ -622,8 +714,10 @@ def extract_paper(
             if species_filter and (unit.species_raw or species_seen != "other") and species_seen not in species_filter:
                 stats["species_mismatch"] += 1
                 continue
-            for note in unit.corrected:
-                stats[f"{note.split(':', 1)[0]}_corrected"] += 1
+            # Once per field: an outcome read from the copied words and then
+            # found to be an association is one corrected outcome, not two.
+            for field in dict.fromkeys(note.split(":", 1)[0] for note in unit.corrected):
+                stats[f"{field}_corrected"] += 1
             units.append(unit)
 
     kept = dedupe_within_paper(units)

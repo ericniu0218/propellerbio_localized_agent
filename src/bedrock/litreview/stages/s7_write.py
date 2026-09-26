@@ -659,7 +659,8 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "chunks_failed": ctx.extract_stats.get("chunk_failed", 0),
         "findings_proposed": ctx.extract_stats.get("findings", 0),
         "labels_corrected": ctx.extract_stats.get("direction_corrected", 0)
-        + ctx.extract_stats.get("outcome_corrected", 0),
+        + ctx.extract_stats.get("outcome_corrected", 0)
+        + ctx.extract_stats.get("evidence_type_corrected", 0),
         "findings_quote_failed": ctx.extract_stats.get("quote_failed", 0),
         "findings_other_entity": ctx.extract_stats.get("near_miss", 0) + ctx.extract_stats.get("other_disease", 0),
         "findings_other_work": ctx.extract_stats.get("other_work", 0),

@@ -147,6 +147,9 @@ def to_markdown(report: Report) -> str:
                 out.append(f"  - qualifier (next sentence): \"{unit.qualifier_quote}\"")
             if unit.naming_quote:
                 out.append(f"  - names {_named(unit)} ({unit.naming_section}): \"{unit.naming_quote}\"")
+            if unit.methods_subjects:
+                out.append(f"  - subjects: the quote is the authors' conclusion; the paper's methods studied only "
+                           f"{unit.methods_subjects}")
         out.append("")
 
     dropped = [(sec.title, x) for sec in _walk(report.sections) for x in sec.sentences if not x.kept]
@@ -313,6 +316,8 @@ def to_html(report: Report) -> str:
                            if u.qualifier_quote else "")
                         + (f'<br><small>names {html.escape(_named(u))} ({html.escape(u.naming_section or "")}): '
                            f'“{html.escape(u.naming_quote)}”</small>' if u.naming_quote else "")
+                        + (f"<br><small>subjects: the quote is the authors' conclusion; the paper's methods "
+                           f"studied only {html.escape(u.methods_subjects)}</small>" if u.methods_subjects else "")
                         + "</li>")
         body.append("</ul></details>")
 

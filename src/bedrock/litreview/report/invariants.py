@@ -9,7 +9,9 @@ the whole thing:
               and so is every context sentence, every qualifying next
               sentence and every sentence shown for naming a target or agent
   fields      every field the model wrote that the report shows was found in
-              the paper by `extract/provenance.py`, and is still there
+              the paper by `extract/provenance.py`, and is still there; and
+              no finding whose conclusion names people its paper's Methods
+              never studied is labelled human
   sentences   every kept sentence passes the citation guard, re-run here
               against the paper text it cites. Pure code: a sentence the
               optional entailment check (`report/entailment.py`) dropped is
@@ -107,6 +109,11 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"fields: {where}: sample size {u.n} is shown but not in the quote or context")
         if u.effect_detail and u.provenance.get("effect_detail", "none") == "none":
             out.append(f"fields: {where}: a result summary is shown that the paper does not support")
+        # A conclusion's people the Methods do not back never make a finding
+        # human evidence (`extract/provenance.py` `methods_subjects`).
+        if u.methods_subjects and (u.species == "human" or u.evidence_type.startswith("human")):
+            out.append(f"fields: {where}: is labelled human, but its paper's methods studied only "
+                       f"{u.methods_subjects}")
     return out
 
 

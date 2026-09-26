@@ -522,6 +522,15 @@ class EvidenceUnit(BaseModel):
     naming_section: str | None = None
     naming_start: int | None = None
     naming_end: int | None = None
+    methods_subjects: str | None = None
+    """Set when the quote is the authors' conclusion and names people ("...
+    in patients with asthma"), but the paper's Methods name no human
+    subjects, only animals or cells: what they do name, "mice and cells".
+    The finding's subjects and evidence type then come from the Methods, not
+    the quote, the Methods sentence is its context sentence, and the citation
+    guard lets no sentence resting only on such findings say "patients"
+    (`report/guard.py`, check 4). Found by `extract/provenance.py`
+    `methods_subjects`, never by the model."""
     from_discussion: bool = False
     """Authors overstate in the Discussion. Kept, but flagged."""
     entity_match: Literal["exact", "paper_context"] = "paper_context"
@@ -543,8 +552,8 @@ class EvidenceUnit(BaseModel):
 
     @model_serializer(mode="wrap")
     def _omit_absent_optional(self, handler):
-        """Leave the qualifier and naming-sentence fields out of the JSON
-        when there is none.
+        """Leave the qualifier, naming-sentence and Methods-subjects fields
+        out of the JSON when there is none.
 
         They were added after reports were already stored, and a stored run
         is verified by re-serialising its report and comparing the bytes
@@ -553,7 +562,8 @@ class EvidenceUnit(BaseModel):
         data = handler(self)
         if isinstance(data, dict):
             for group in (("qualifier_quote", "qualifier_start", "qualifier_end"),
-                          ("naming_quote", "naming_section", "naming_start", "naming_end")):
+                          ("naming_quote", "naming_section", "naming_start", "naming_end"),
+                          ("methods_subjects",)):
                 if data.get(group[0]) is None:
                     for name in group:
                         data.pop(name, None)

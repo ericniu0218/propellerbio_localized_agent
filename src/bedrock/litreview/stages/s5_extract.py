@@ -46,6 +46,15 @@ context sentence, the qualifier, or else the passage's sentence that names it,
 stored as `naming_quote` (`extract/provenance.py`). A target that cannot be
 shown drops the finding (`target_not_shown`).
 
+And one check of who was studied that reads past the passage: when the quote
+is the authors' conclusion and names people ("... in patients with asthma"),
+but the paper's Methods name no human subjects, only animals or cells, the
+finding's subjects and evidence type come from the Methods, the Methods
+sentence is shown as its context, and the unit records `methods_subjects`
+(`extract/verify.py` `conclusion_reason`, `extract/provenance.py`
+`methods_subjects`; counted as `people_not_in_methods`). A paper with no
+Methods text is left alone.
+
 Which sections we send, and why (set by the plan, from config/pipeline.yaml):
 
   abstract    extract from it. Clean sentences, high signal.
@@ -74,7 +83,16 @@ from collections import Counter
 from pydantic import ValidationError
 
 from bedrock.litreview.extract.dedupe import dedupe_within_paper
-from bedrock.litreview.extract.provenance import NONE, SUBJECT_WORDS, Provenance, trace
+from bedrock.litreview.extract.provenance import (
+    METHODS,
+    NONE,
+    SUBJECT_WORDS,
+    MethodsSubjects,
+    Provenance,
+    methods_subjects,
+    species_in,
+    trace,
+)
 from bedrock.litreview.extract.normalize import (
     classify_direction,
     classify_outcome,
@@ -86,6 +104,7 @@ from bedrock.litreview.extract.normalize import (
 from bedrock.litreview.extract.verify import normalize as normalize_text
 from bedrock.litreview.extract.verify import (
     Located,
+    conclusion_reason,
     locate_quote,
     not_a_result_reason,
     other_work_reason,
@@ -354,17 +373,36 @@ def _to_unit(
     model_quote: str,
     prov: Provenance,
     qualifier: Located | None = None,
+    unbacked: MethodsSubjects | None = None,
 ) -> EvidenceUnit:
     # Fields the model wrote, as far as the text it was shown supports them
     # (`extract/provenance.py`). Labels are read from these too: a result
     # summary provenance rejected must not set the setting either.
-    v = prov.values
-    species = normalize_species(v["species_raw"])
+    v = dict(prov.values)
+    where = dict(prov.where)
+    context, context_section = prov.context, prov.context_section
+    if unbacked is not None:
+        # A conclusion names people the Methods never studied (issue #4):
+        # who was studied comes from the Methods. Their sentence becomes the
+        # context sentence unless there already is one, and the subjects are
+        # shown only if the context sentence names them; else "not stated".
+        if context is None and unbacked.context is not None:
+            context, context_section = unbacked.context, unbacked.context_section
+            where["context"] = METHODS
+        if context is not None and unbacked.species_raw and species_in(unbacked.species_raw, context.text):
+            v["species_raw"], where["species"] = unbacked.species_raw, where.get("context", METHODS)
+        else:
+            v["species_raw"] = ""
+            if "species" in where:
+                where["species"] = NONE
+    species = normalize_species(v["species_raw"] or (unbacked.species_raw if unbacked else ""))
     direction, outcome, setting, corrected = reconcile(
         finding.model_copy(update={"effect_detail": v["effect_detail"], "intervention": v["intervention"]})
     )
     evidence_type = infer_evidence_type(species, finding.evidence_type)
-    if not v["species_raw"]:
+    if unbacked is not None:
+        evidence_type = unbacked.evidence_type
+    elif not v["species_raw"]:
         # Subjects the paper does not state are not shown, but the model's own
         # species may still *weaken* its label: a model that says "mice" and
         # "human_clinical" in one breath has not found human evidence. It may
@@ -414,11 +452,11 @@ def _to_unit(
         quote_start=located.start,
         quote_end=located.end,
         quote_model=model_quote if model_quote.strip() != finding.quote else None,
-        provenance=dict(prov.where),
-        context_quote=prov.context.text if prov.context else None,
-        context_section=prov.context_section,
-        context_start=prov.context.start if prov.context else None,
-        context_end=prov.context.end if prov.context else None,
+        provenance=where,
+        context_quote=context.text if context else None,
+        context_section=context_section,
+        context_start=context.start if context else None,
+        context_end=context.end if context else None,
         qualifier_quote=qualifier.text if qualifier else None,
         qualifier_start=qualifier.start if qualifier else None,
         qualifier_end=qualifier.end if qualifier else None,
@@ -426,6 +464,7 @@ def _to_unit(
         naming_section=prov.naming_section if prov.naming else None,
         naming_start=prov.naming.start if prov.naming else None,
         naming_end=prov.naming.end if prov.naming else None,
+        methods_subjects=unbacked.label if unbacked else None,
         from_discussion=(section == "discussion"),
         entity_match=match,  # type: ignore[arg-type]
         corrected=corrected,
@@ -558,11 +597,22 @@ def extract_paper(
                     stats[f"{name}_unlocated"] += 1
             if prov.naming is not None:
                 stats["naming_sentence"] += 1
+            # The authors' conclusion names people; do the Methods back it?
+            # Read from the paper's own Methods, not the model's species.
+            unbacked = None
+            if section_text[located.start:located.end] == located.text \
+                    and conclusion_reason(section_text, located.start, located.end, section):
+                unbacked = methods_subjects(
+                    finding.quote, methods_section_text=paper.sections.get(CONTEXT_SECTION, ""),
+                    abstract=paper.sections.get("abstract", ""),
+                )
+                if unbacked is not None:
+                    stats["people_not_in_methods"] += 1
             unit = _to_unit(
                 finding, status=status, match=match, paper=paper, spec=spec, section=section,
                 chunk=chunk_i, model_version=model_version, prompt_version=prompt_version, kb=kb,
                 facet_ids=[f.id for f in facets], located=located, model_quote=model_quote, prov=prov,
-                qualifier=qualifier,
+                qualifier=qualifier, unbacked=unbacked,
             )
             # A species the paper states decides. When it states none, the
             # model's own species may still rule a finding out (it said

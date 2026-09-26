@@ -274,6 +274,19 @@ def studied_in(text: str) -> dict[str, str]:
     return found
 
 
+# Words that name no people where they stand: the adjective "human", and a
+# word joined to the next by a hyphen ("adult-onset deletion", "maternal-fetal").
+_NOT_PEOPLE = re.compile(r"\bhuman\b|\b[^\W\d_]+-(?=[^\W\d_])", re.I)
+
+
+def people_named(text: str) -> str | None:
+    """The first word in `text` that says people were studied ("patients",
+    "participants", "children"), or None. `studied_in`'s human class, less
+    words that name no people where they stand: "human bronchial epithelial
+    cells" are cells, and "adult-onset Gpr75 deletion" was done in mice."""
+    return studied_in(_NOT_PEOPLE.sub(" ", text)).get("human")
+
+
 @lru_cache(maxsize=1)
 def entity_words() -> frozenset[str]:
     """Every one-word name in the knowledge table ("tnf", "semaglutide",
@@ -900,6 +913,112 @@ def not_a_result_reason(text: str) -> str | None:
     if reports_result(_NAMED_MODEL.sub(" ", " ".join(left))):
         return None
     return f"not_a_result:{kind}"
+
+
+# --- a conclusion sentence ------------------------------------------------------
+#
+# Authors' conclusions generalise, and the most common way they do is by who
+# was studied. The asthma hand audit (S3, evals/litreview/hand_audit/
+# qwen_asthma.md) found a report sentence copying an abstract's conclusion,
+# "MUC1-CT reduces NLRP3 inflammasome-mediated pyroptosis ... thereby
+# attenuating neutrophil airway inflammation in patients with asthma", when
+# the mechanism was shown in a cell line and in mice. The sentence is the
+# paper's own and verifies; what it overstates is its subjects.
+#
+# This block only says which sentences are conclusions. What is done about
+# one that names people is `extract/provenance.py` `methods_subjects`: its
+# people are checked against the paper's Methods. That catches the plain
+# case - a conclusion naming people in a paper whose Methods studied none.
+# It does not reach S3 itself: that paper also recruited patients (for
+# induced sputum), and which of a paper's experiments backs which clause of
+# its conclusion is beyond a word rule.
+#
+# A sentence is a conclusion when
+#
+# - it opens with a concluding phrase ("In conclusion", "Taken together",
+#   "Collectively", "Overall,", "Our findings demonstrate", "This study
+#   revealed", "These data suggest"). Not a bare "The results show": in a
+#   Results section that opens a result, not a conclusion. And "Overall",
+#   "Together" and "Altogether" only with a comma: "Overall survival was ..."
+#   is a result;
+# - in an abstract, it sits under a "Conclusion(s)" or "Interpretation"
+#   label ("CONCLUSIONS:", or glued on as Europe PMC often leaves it:
+#   "...p<0.001.ConclusionDPL combined with BUD ..."); or, in an abstract with
+#   no labels, a concluding phrase opened an earlier sentence of its
+#   paragraph. That is S3: "This study revealed that MUC1 downregulation ...
+#   MUC1-CT reduces ...". In a labelled abstract the label decides, so a
+#   "Our results show" under RESULTS does not make the rest of that part a
+#   conclusion.
+
+CONCLUSION_CUE = re.compile(
+    r"^\W*(?:"
+    r"in\s+(?:summary|conclusion|sum|short)\b"
+    r"|to\s+(?:conclude|summari[sz]e)\b"
+    r"|taken\s+together\b|collectively\b"
+    r"|(?:overall|together|altogether|conclusively)\s*,"
+    r"|(?:our|these|this|the\s+present|the\s+current|present)\s+(?:present\s+|current\s+|combined\s+)?"
+    r"(?:findings|results|data|study|work|observations|analyses|experiments)\s+(?:\w+\s+){0,2}?"
+    r"(?:show|suggest|indicat|demonstrat|reveal|support|highlight|provid|confirm|establish|impl|identif|"
+    r"uncover|point)\w*"
+    r")",
+    re.I,
+)
+
+# Structured-abstract labels, in the three forms the corpora show: "LABEL:"
+# (any case), glued to the previous sentence and the next word
+# ("...unclear.MethodsKidney samples ...", Title case only, so ordinary
+# prose never matches), and alone on a line.
+_LABELS = (r"Background|Introduction|Objectives?|Aims?|Purpose|Materials\s+and\s+methods|Patients\s+and\s+methods|"
+           r"Subjects\s+and\s+methods|Methods?|Design|Participants|Results|Findings|Conclusions?|Interpretation")
+ABSTRACT_LABEL = re.compile(
+    r"\b(?P<a>" + _LABELS + r")\s*:"
+    r"|(?:(?<=[a-z0-9.%)\]\s])|^)(?-i:(?P<b>" + _LABELS + r"))(?-i:(?=[A-Z]))"
+    r"|(?:^|(?<=\n))[ \t]*(?P<c>" + _LABELS + r")[ \t]*(?=\n|$)",
+    re.I,
+)
+_CONCLUSION_LABEL = re.compile(r"^(?:conclusions?|interpretation)$", re.I)
+_METHODS_LABEL = re.compile(r"^(?:(?:materials|patients|subjects)\s+and\s+methods|methods?|design|participants)$", re.I)
+
+
+def abstract_labels(abstract: str) -> list[tuple[str, int, int]]:
+    """(label, start, end) of each structured-abstract label, in order."""
+    out = []
+    for m in ABSTRACT_LABEL.finditer(abstract or ""):
+        label = m.group("a") or m.group("b") or m.group("c")
+        out.append((re.sub(r"\s+", " ", label), m.start(), m.end()))
+    return out
+
+
+def abstract_methods(abstract: str) -> list[tuple[int, int]]:
+    """Where a structured abstract's Methods part is: (start, end) of the
+    text after each Methods-type label, up to the next label. Empty for an
+    abstract with no such label - an unlabelled paragraph is not guessed at."""
+    labels = abstract_labels(abstract)
+    spans = []
+    for i, (label, _, end) in enumerate(labels):
+        if _METHODS_LABEL.match(label):
+            stop = labels[i + 1][1] if i + 1 < len(labels) else len(abstract)
+            spans.append((end, stop))
+    return spans
+
+
+def conclusion_reason(section_text: str, start: int, end: int, section: str) -> str | None:
+    """Why the sentence at `section_text[start:end]` is the authors'
+    conclusion - "conclusion:cue", "conclusion:label" or
+    "conclusion:paragraph" - or None. See the block comment above."""
+    quote = section_text[start:end]
+    if any(CONCLUSION_CUE.search(s) for s in split_sentences(quote)):
+        return "conclusion:cue"
+    if section != "abstract":
+        return None
+    labels = [lab for lab in abstract_labels(section_text) if lab[2] <= start]
+    if labels:
+        return "conclusion:label" if _CONCLUSION_LABEL.match(labels[-1][0]) else None
+    paragraph = section_text.rfind("\n\n", 0, start)
+    head = section_text[paragraph + 2 if paragraph >= 0 else 0 : start]
+    if any(CONCLUSION_CUE.search(s) for s in split_sentences(head)):
+        return "conclusion:paragraph"
+    return None
 
 
 # --- a qualifier in the paper's next sentence ---------------------------------

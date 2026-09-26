@@ -52,6 +52,11 @@ cannot be shown drops the finding; an agent or partner is blanked. Showing
 the name is not the same as the quote being about it: the citation guard
 still drops a sentence that gives the quote's result to a name the quote does
 not state (`report/guard.py`, check 9).
+
+One more check reads beyond the text the model was shown, because the
+quote itself can be what overstates: a conclusion sentence that names
+people, in a paper whose Methods studied only animals or cells
+(`methods_subjects`, at the end of this file).
 """
 
 from __future__ import annotations
@@ -61,7 +66,17 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 from bedrock.litreview.extract.normalize import normalize_species
-from bedrock.litreview.extract.verify import Located, covered, locate_quote, meaning_words, normalize, split_sentences, studied_in
+from bedrock.litreview.extract.verify import (
+    Located,
+    abstract_methods,
+    covered,
+    locate_quote,
+    meaning_words,
+    normalize,
+    people_named,
+    split_sentences,
+    studied_in,
+)
 from bedrock.litreview.knowledge import Knowledge, TermMatcher
 from bedrock.litreview.negation import drops_negation
 from bedrock.litreview.report.guard import numbers_in
@@ -439,3 +454,119 @@ def trace(
         "effect_detail": keep("effect_detail", detail) or "",
     }
     return p
+
+
+# --- a conclusion's people, against the Methods ---------------------------------
+#
+# The model copies "patients" from a conclusion sentence, and the species check
+# above finds "patients" in the quote: the field is the paper's word, so it is
+# kept. But an abstract's conclusion can generalise from a cell line and mice
+# to "patients with asthma" (the shape of asthma S3). The Methods say who was
+# actually studied. So when a conclusion sentence (`extract/verify.py`
+# `conclusion_reason`) names people, Stage 5 reads the paper's Methods - the
+# Methods section, and a structured abstract's METHODS part - and if they name
+# no human subjects but do name animals or cells, the finding is not human
+# evidence, whatever the quote says (`stages/s5_extract.py` `_to_unit`), and
+# the citation guard will not let a sentence resting on it say "patients"
+# (`report/guard.py`, check 4).
+#
+# A paper with no Methods text at all - common, since only open-access papers
+# come with full text - is left alone. An abstract-only paper says nothing
+# about its Methods beyond what its abstract says, and guessing from nothing
+# would drop real human findings.
+#
+# Built to leave a finding alone whenever the Methods might describe people:
+# any word below counts, including some that also occur in animal work
+# ("cells from donors", "individuals"). A false "people were studied" only
+# means the conclusion keeps its word, which is where things stood before.
+# S3's own paper is such a case: its Methods recruited patients for induced
+# sputum, so its conclusion keeps "patients", though the mechanism it states
+# was shown in cells and mice.
+#
+# Measured on the three stored qwen3:8b corpora (every sentence of every
+# abstract, Results and Discussion): 164 conclusion sentences name people, 100
+# of them in papers with Methods text, and 7 are marked - all in mouse or rat
+# papers generalising to "individuals", "infants" or "patients". Of the 593
+# stored findings, 7 are conclusions naming people and one is marked
+# (PMID31616172, a mouse paper: "... a therapeutic potential for obese/
+# diabetic postmenopausal patients").
+# Not "cohort" or "subjects": `knowledge/meaning_words.yaml` keeps those out
+# of the human class because mouse studies use them ("two cohorts of mice"),
+# and a mouse paper was the one stored case this check exists for.
+
+HUMAN_SUBJECTS = re.compile(
+    r"\b(?:enrol(?:l)?(?:ed|ment)|recruit(?:ed|ment)|participants?|patients?|volunteers?|donors?|individuals|"
+    r"children|women|men|infants|informed\s+consent|declaration\s+of\s+helsinki|"
+    r"institutional\s+review\s+board|questionnaires?|case[- ]control|clinical\s+trials?|"
+    r"healthy\s+(?:controls?|subjects)|"
+    r"(?:human|patient)\s+(?:subjects?|samples?|biops(?:y|ies)|tissues?|specimens?|sera|serum|blood|sputum)|"
+    r"biops(?:y|ies)\s+(?:from|of|were|was))\b",
+    re.I,
+)
+# The non-human classes of `knowledge/meaning_words.yaml` `studied`, in the
+# order one is picked to describe the finding: an animal before cells, since
+# a paper with both put its claim to the test in the animal. How each is said.
+_NON_HUMAN = {"mouse": "mice", "rat": "rats", "primate": "primates", "animal": "animals", "cells": "cells"}
+
+
+@dataclass
+class MethodsSubjects:
+    """Who a paper's Methods studied, when they name no people."""
+
+    label: str
+    """What the Methods name, for the reader: "mice and cells"."""
+    species_raw: str
+    """The paper's own word for the first of them ("mice"), from `context`."""
+    evidence_type: str
+    """in_vivo for an animal, in_vitro for cells."""
+    context: Located | None = None
+    """The Methods sentence that names it, anchored in `context_section`."""
+    context_section: str | None = None
+
+
+def methods_subjects(quote: str, *, methods_section_text: str, abstract: str) -> MethodsSubjects | None:
+    """Who the Methods studied, when `quote` names people and the Methods
+    name no human subjects but do name animals or cells; else None.
+
+    The caller decides the quote is a conclusion first. Read from the
+    Methods section and from a structured abstract's Methods part; None
+    when there is neither (see the block comment above)."""
+    if not people_named(quote):
+        return None
+    parts = [("methods", methods_section_text, 0, len(methods_section_text))] if methods_section_text.strip() else []
+    parts += [("abstract", abstract, lo, hi) for lo, hi in abstract_methods(abstract)]
+    if not parts:
+        return None
+    text = "\n\n".join(home[lo:hi] for _, home, lo, hi in parts)
+    if HUMAN_SUBJECTS.search(text):
+        return None
+    said = studied_in(text)
+    classes = [c for c in _NON_HUMAN if c in said]
+    if "animal" in classes and any(c in classes for c in ("mouse", "rat", "primate")):
+        classes.remove("animal")  # "mice and animals" says mice twice
+    if not classes:
+        return None
+    first = classes[0]
+    names = [_NON_HUMAN[c] for c in classes]
+    label = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    found = MethodsSubjects(label=label, species_raw="", evidence_type="in_vitro" if first == "cells" else "in_vivo")
+    # The sentence that says so, shown to the reader as the context sentence,
+    # and the paper's own word for the subjects from it: the first word of the
+    # class's list in meaning_words.yaml that the sentence uses ("mice" before
+    # "c57bl"), as the paper spells it.
+    terms = meaning_words()["studied"][first]
+    for section, home, lo, hi in parts:
+        for sent in split_sentences(home[lo:hi]):
+            if first not in studied_in(sent):
+                continue
+            located = locate_quote(sent, home)
+            if located.status == "failed":
+                continue
+            for term in terms:
+                m = re.search(r"\b" + re.escape(term) + r"\b", located.text, re.I)
+                if m:
+                    found.species_raw = m.group(0)
+                    break
+            found.context, found.context_section = located, section
+            return found
+    return found

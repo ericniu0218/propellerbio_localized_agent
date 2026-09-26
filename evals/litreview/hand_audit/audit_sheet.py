@@ -48,6 +48,8 @@ for k in sample:
             lines.append(f"qualifier: {u.qualifier_quote}")
         if u.naming_quote:
             lines.append(f"naming ({u.naming_section}): {u.naming_quote}")
+        if u.methods_subjects:
+            lines.append(f"methods studied only: {u.methods_subjects} (the quote is a conclusion naming people)")
         if p is not None:
             text = p.sections.get(u.section, "")
             a, b = (u.quote_start or 0), (u.quote_end or 0)

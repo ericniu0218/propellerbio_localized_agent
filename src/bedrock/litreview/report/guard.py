@@ -19,7 +19,14 @@ evidence it cites:
    evidence — or be the thing the question is about.
 4. Who was studied — patients, mice, rats, primates, cells — must be said by
    the cited text itself, not by a label: "in human tissues" citing a quote
-   that says "across skin and spleen tissues" is dropped.
+   that says "across skin and spleen tissues" is dropped. And a conclusion's
+   people must be backed by the paper's Methods: a sentence that says
+   "patients" (or any word for people) is dropped when every cited finding
+   whose text names people is one Stage 5 marked `methods_subjects` - its
+   quote is the authors' conclusion, and the Methods studied only animals or
+   cells ("... in patients with asthma" from a study of BEAS-2B cells and
+   mice only; the shape of asthma S3). Read from that stored field, never
+   from the paper, so a re-check agrees.
 5. Which way a result points must match: a sentence may not claim an effect
    its cited quotes report only as null, drop a negation a quote states, or
    say "decreased" where every cited quote says only "increased". Word-level
@@ -87,6 +94,7 @@ from bedrock.litreview.extract.verify import (
     covered,
     not_a_result_reason,
     not_significant_clause,
+    people_named,
     reports_result,
     split_sentences,
     studied_in,
@@ -255,6 +263,10 @@ class CitationGuard:
                 return GuardResult(False, f"says {word!r} about who was studied, which the cited evidence does not")
 
         cited = [self.units[c] for c in citations]
+        # The cited quote says "patients" because it is the authors'
+        # conclusion; the Methods studied only mice and cells (check 4).
+        if (why := unbacked_people(masked, cited)):
+            return GuardResult(False, why)
         # The paper's next sentence says the result was not significant, and
         # the sentence states it as if it were (obesity S6: "~0.6 kg/week"
         # restated, "did not reach statistical significance (p = 0.09)" gone).
@@ -430,6 +442,23 @@ def drops_not_significant(sentence: str, cited: list[EvidenceUnit]) -> str | Non
     if not restates:
         return None
     return "drops the qualifier the paper states: not significant"
+
+
+def unbacked_people(masked: str, cited: list[EvidenceUnit]) -> str | None:
+    """Why a sentence's people rest only on conclusions the Methods do not
+    back, or None. The second half of check 4 in the module docstring.
+
+    `masked` is the sentence with known names blanked, so "human
+    papillomavirus" is not a claim about people. Kept when any cited finding
+    not marked `methods_subjects` names people in the text shown beside it:
+    the sentence may rest on that one."""
+    word = people_named(masked)
+    marked = [u for u in cited if u.methods_subjects]
+    if not word or not marked:
+        return None
+    if any(not u.methods_subjects and people_named(clean(source_text(u))) for u in cited):
+        return None
+    return f"says {word!r}, but the paper's methods studied only {marked[0].methods_subjects}"
 
 
 def _named(value: str | None, text: str, kb: Knowledge, kind: str | None = None) -> bool:

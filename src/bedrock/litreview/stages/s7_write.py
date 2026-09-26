@@ -164,7 +164,10 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
     is one, is the paper's sentence that names the target or agent the quote
     does not ("about:" would otherwise be a name the writer cannot see in any
     quote); its label says the quote's result stays with what the quote
-    names, which the citation guard enforces (check 9)."""
+    names, which the citation guard enforces (check 9). A finding whose
+    quote is a conclusion naming people the paper's Methods never studied
+    (`methods_subjects`) says so, since the quote's own "patients" would
+    otherwise invite the writer to repeat it, and the guard drops that."""
     lines = []
     for u in units:
         sid = ctx.summary.short_ids[u.id]
@@ -179,6 +182,9 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
         if u.naming_quote:
             context += ("\n    Names (the paper's sentence that names what the quote does not; the quote's result "
                         f'belongs to what the quote itself names - name that too): "{u.naming_quote}"')
+        if u.methods_subjects:
+            context += (f"\n    Subjects: the quote is the authors' conclusion; the paper's Methods studied only "
+                        f"{u.methods_subjects}, not people - do not say patients or people for it")
         lines.append(
             f"[{sid}] about: {u.target_raw or u.target}{drug} · {who}\n"
             f"    Paper: {ctx.labels.get(u.paper_id, u.paper_id)}\n"

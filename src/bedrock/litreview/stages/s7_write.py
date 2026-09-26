@@ -10,6 +10,10 @@ Two kinds of section (layout in config/report.yaml):
               A sentence that repeats one already kept earlier in the report
               is dropped too, even though it came from a different section's
               model call — see `already_kept` in `write_section_text`.
+              With `entailment_check` on (off by default), a sentence the
+              guard kept is then read by the local model against its cited
+              text, and dropped if it is not supported
+              (report/entailment.py).
   generated   written by code: the most relevant source, the gaps, the
               evidence plan, the relevance ranking, the evidence table, the
               method and the excluded papers. These are facts about the run,
@@ -47,7 +51,8 @@ from bedrock.litreview.models import (
     ReportSection,
     Sentence,
 )
-from bedrock.litreview.report.guard import CitationGuard
+from bedrock.litreview.report.entailment import report_stats
+from bedrock.litreview.report.guard import CitationGuard, GuardResult
 from bedrock.litreview.report.layout import SectionSpec, load_layout
 from bedrock.litreview.stages.s6_score import TARGET_ORDER_RULE, best_units
 
@@ -124,6 +129,9 @@ class WriteContext:
     units_per_target: int = 5
     max_units_per_section: int = 14
     sentence_stats: Counter = field(default_factory=Counter)
+    entailment: object = None
+    """A `report.entailment.EntailmentCheck`, or None (the default): the
+    optional model check run on sentences the guard kept. See that module."""
 
     def __post_init__(self) -> None:
         self.rank_of = {r.paper_id: r.rank for r in self.ranked}
@@ -254,6 +262,14 @@ def write_section_text(
             continue
         said.append(words)
         verdict = guard.check(text, citations)
+        if verdict.kept and getattr(ctx, "entailment", None) is not None:
+            # Optional and off by default (report/entailment.py): the local
+            # model's second look at a sentence the guard kept. It can only
+            # remove, and what it removes is stored as dropped like any other
+            # sentence, so the pure-code re-check never needs the model.
+            why = ctx.entailment.review(text, {c: short[c] for c in citations}, ctx.sentence_stats)
+            if why:
+                verdict = GuardResult(False, why)
         if text[-1] not in ".!?":
             # The model often returns a copied clause with no full stop, and
             # several of those run together are unreadable. Punctuation is not
@@ -493,6 +509,15 @@ def _method(ctx: WriteContext) -> str:
         "typography or a word that carries no meaning. Numbers, names and who was studied in each sentence were "
         "checked against the paper's text it cites.",
     ]
+    if getattr(ctx, "entailment", None) is not None:
+        st = ctx.sentence_stats
+        lines.insert(len(lines) - 1, (
+            f"- **Entailment check (optional, not yet measured):** the local model re-read "
+            f"{st.get('entailment_checked', 0)} sentence(s) the citation check kept against the text they cite; "
+            f"{st.get('entailment_dropped', 0)} removed as not supported (included in the removals above), "
+            f"{st.get('entailment_partial', 0)} kept as only partly supported, "
+            f"{st.get('entailment_failed', 0)} left unchecked because the call failed."
+        ))
     return "\n".join(lines)
 
 
@@ -638,6 +663,10 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "sentences_dropped": ctx.sentence_stats.get("dropped", 0),
         "sentences_repeated": ctx.sentence_stats.get("repeated", 0),
     }
+    if getattr(ctx, "entailment", None) is not None:
+        # Only when the check ran, so a report written with it off keeps the
+        # exact bytes it had before the check existed.
+        stats.update(report_stats(ctx.sentence_stats))
     interpretation = {
         "question_type": ctx.spec.question_type,
         "goal": ctx.spec.goal,

@@ -11,7 +11,10 @@ the whole thing:
   fields      every field the model wrote that the report shows was found in
               the paper by `extract/provenance.py`, and is still there
   sentences   every kept sentence passes the citation guard, re-run here
-              against the paper text it cites
+              against the paper text it cites. Pure code: a sentence the
+              optional entailment check (`report/entailment.py`) dropped is
+              stored as not kept, so it is not re-checked and no model is
+              needed to re-prove a report
   flags       no paper lost a review or retraction flag in a merge, and no
               finding comes from a paper flagged either way
   pinned      (for a stored run) the paper bodies still hash to the run's

@@ -63,6 +63,9 @@ from bedrock.litreview.stages.s4_plan import build_plan
 from bedrock.litreview.stages.s5_extract import extract_plan
 from bedrock.litreview.stages.s6_score import summarize
 from bedrock.litreview.stages.s7_write import WriteContext, write_report
+from bedrock.litreview.report.entailment import JOB as ENTAIL_JOB
+from bedrock.litreview.report.entailment import PROMPT as ENTAIL_PROMPT
+from bedrock.litreview.report.entailment import EntailmentCheck
 from bedrock.litreview.report.invariants import check_report
 from bedrock.litreview.stages.s8_render import render, to_json
 
@@ -214,6 +217,13 @@ def answer_question(
         run = Run(id=run_id, question_id=spec.id, started=started)
     run.model_versions = {job: version_of(client, m(job)) for job in ("question", "relevance", "extract", "write")} if client else {}
     run.prompt_versions = {name: load_prompt(name).version for name in ("question", "relevance", "extract", "write_section")}
+    entailment = EntailmentCheck(client, m(ENTAIL_JOB)) if client and settings.entailment_check else None
+    if entailment is not None:
+        # Recorded only when the optional check runs, so a report written with
+        # it off is byte-identical to one written before it existed, and a
+        # stored report says whether its sentences had the model's second look.
+        run.model_versions[ENTAIL_JOB] = version_of(client, entailment.model)
+        run.prompt_versions[ENTAIL_PROMPT] = load_prompt(ENTAIL_PROMPT).version
     _record_inputs(run)
     run.code_version = code_version()
     db.save_question(spec)
@@ -331,6 +341,7 @@ def answer_question(
         max_targets=int(settings.knob("write.max_targets", 6)),
         units_per_target=int(settings.knob("write.units_per_target", 5)),
         max_units_per_section=int(settings.knob("write.max_units_per_section", 14)),
+        entailment=entailment,
     )
     report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions)
     # The integrity check: everything the report shows as the paper's words is

@@ -12,6 +12,12 @@
 > is unchanged by the move. The rules for working on it are in
 > `src/bedrock/litreview/CLAUDE.md`.
 
+> **Open issues (September 2026):** what the deploy-readiness audit found and
+> did not fix — report-accuracy gaps, completeness, retraction freshness,
+> deployment and measurement — is listed in [OPEN_ISSUES.md](OPEN_ISSUES.md).
+> The integration check and what the move gained are in
+> [INTEGRATION_REVIEW.md](INTEGRATION_REVIEW.md).
+
 A local AI system that researches a drug target and writes a cited report —
 running entirely on Propeller Bio's own in-office GPU, so no data ever leaves
 their network.

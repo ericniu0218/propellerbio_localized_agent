@@ -501,3 +501,157 @@ def verify_all(
             kept.append((finding, status))
 
     return kept, tally
+
+
+# --- results reported as the paper's own, when they are someone else's --------
+#
+# A verified quote is not necessarily this paper's own result. Europe PMC's
+# full text strips reference numbers out of the running text but leaves the
+# brackets that held them, so a sentence that cites earlier work through a
+# numbered reference still carries "[]", "[12]", "[3, 4]" or "[5-7]" right
+# where the reference used to be - almost always at the end of the sentence,
+# next to the full stop. Author-year citations ("(Smith et al., 2019)") are
+# left untouched altogether. A sentence that quotes one of these, or that
+# opens by saying in words that it is summarising someone else's work
+# ("Previous studies have shown ..."), is Introduction or Discussion prose
+# about another paper, not a finding of this one - however cleanly it reads
+# as a result and however well it verifies, because verification only checks
+# that the paper wrote the sentence, never who the sentence is about.
+#
+# This is exactly the asthma S9 case
+# (evals/litreview/hand_audit/qwen_asthma.md): a birth-cohort result quoted
+# from the paper's own Introduction, its reference bracket stripped to "[]",
+# reported as if this paper (a paper about MAIT cells and estrogen) had run
+# that birth cohort itself.
+#
+# Each pattern below is deliberately narrow, because a false drop here throws
+# away a real finding just as surely as a missed one lets a fabricated one
+# through:
+#
+# - the bracket pattern only matches brackets that hold nothing but digits,
+#   commas, dashes and spaces (or nothing at all) - a confidence interval
+#   ("[95% CI 1.2-3.4]"), a concentration ("[Ca2+]i") or an isotope label
+#   ("[3H]thymidine") always has a letter or a "%" inside, so none of those
+#   match;
+# - the author-year pattern requires a capitalised name followed by "et al.",
+#   "and <Name>" or a comma, and then a plausible year - so it does not fire
+#   on "(Fig. 2A)", "(Table 1)", "(n = 12)", "(p < 0.05)" or an abbreviation
+#   like "(IL-17A)", none of which is a name-plus-year;
+# - the trailing-superscript pattern only matches raised digits sitting right
+#   at the end of the sentence (before at most one closing punctuation mark) -
+#   a concentration written as "10^6 CFU/mL." has words after the superscript,
+#   so it is never mistaken for a reference mark;
+# - the lead-in phrases are matched only at the very start of the quote, since
+#   that is how a paper actually opens a sentence summarising other work, not
+#   a clause that can appear mid-sentence in a real result.
+#
+# The section check is here for the paper that behaves as its headings say:
+# `parsing/sections.py` folds any heading matching "introduction" or
+# "background" into the canonical section "other" (see its `_HEADING_MAP`),
+# so there is no canonical "introduction" section to check for - checking for
+# "other" is the real equivalent. But the S9 paper did not behave: its
+# Introduction had no "Results" heading above it, so the parser's fallback
+# rule (unlabelled body text becomes "results" when nothing else does) filed
+# it as "results" (`parsing/sections.py` `_Collector.result`). The section
+# check therefore does not catch S9 - only the sentence patterns above do -
+# but it is kept for the well-behaved paper where it works.
+
+# Digits, commas, dashes and spaces only (or nothing): what is left of a
+# numbered reference list once Europe PMC strips the numbers themselves.
+_CITATION_BRACKET = re.compile(r"\[[\d,\s\-‐‑‒–—―−]*\]")
+
+# A run of raised digits immediately at the end of the sentence: a reference
+# mark some extractions render this way instead of a bracket.
+_TRAILING_SUPERSCRIPT = re.compile(r"[¹²³⁰⁴-⁹]+[.,;:)\]]?\s*$")
+
+# "(Smith et al., 2019)", "(Smith and Jones 2019)", "(Smith, 2019a)": a
+# capitalised name, an optional co-author, and a four-digit year.
+_AUTHOR_YEAR = re.compile(
+    r"\([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|and\s+[A-Z][A-Za-z\-]+))?,?\s*(?:19|20)\d{2}[a-z]?\)"
+)
+
+# How a paper's own Introduction or Discussion says "this is somebody else's
+# result", checked only at the start of the quote.
+_OTHER_WORK_LEAD_IN = re.compile(
+    r"^\s*(?:previous studies have shown|a recent study found|another study showed|"
+    r"it has been reported|has been shown to|prior work|earlier studies)\b",
+    re.I,
+)
+
+# The canonical section names a paper's text can carry are exactly
+# `parsing/sections.py` `CANONICAL`. Introduction and Background are not
+# among them - both fold into "other" - so "other" is the real name to check.
+_INTRO_LIKE_SECTIONS = frozenset({"other"})
+
+# A narrow exemption from the citation-marker check, added after running it
+# over 593 real evidence units from stored qwen3:8b reports turned up two of
+# this shape: E257 and E270 (see their tests) are the paper's *own* finding,
+# stated as such, with a citation bracket sitting inside a subordinate clause
+# that only compares the result with earlier work ("...unlike the previously
+# known...", "...are consistent with research demonstrating..."). The bracket
+# there belongs to the comparison, not to the finding.
+#
+# Both conditions below must hold, and neither is enough alone:
+#
+# - the quote must *open* by claiming the result as this paper's own, in the
+#   present tense of reporting it now ("We observed", "Our findings", "Here,
+#   we", "In this study, we"). Past-tense framing of a *prior* paper's own
+#   result reads the same on the surface but is not exempt - "we
+#   demonstrated", "we have found" and "In our studies" are deliberately left
+#   off this list, because the audit's counter-examples used exactly that
+#   framing to introduce a citation to someone else's data anyway (see the
+#   "must stay dropped" tests: AhR/AT2, estrogen, Hinks et al., "these
+#   findings align with");
+# - and every citation marker in the quote must come after some comparison
+#   connective ("unlike", "consistent with", "in line with", "in agreement
+#   with", "similar to", "as previously", "in contrast to", "as reported") -
+#   a marker before any connective is not fenced off from the paper's own
+#   claim, and is not exempted.
+_OWN_WORK_OPENER = re.compile(
+    r"^\s*(?:we\s+(?:also\s+)?(?:observed|found|show(?:ed)?|report)\b"
+    r"|our\s+(?:findings|results|data)\b"
+    r"|here,?\s+we\b"
+    r"|in\s+this\s+study,?\s+we\b)",
+    re.I,
+)
+_COMPARISON_CONNECTIVE = re.compile(
+    r"\b(?:unlike|consistent with|in line with|in agreement with|similar to|"
+    r"as previously|in contrast to|as reported)\b",
+    re.I,
+)
+
+
+def _markers(quote: str) -> list[re.Match[str]]:
+    return [*_CITATION_BRACKET.finditer(quote), *_AUTHOR_YEAR.finditer(quote), *_TRAILING_SUPERSCRIPT.finditer(quote)]
+
+
+def _fenced_by_comparison(quote: str, markers: list[re.Match[str]]) -> bool:
+    """Is every marker in `markers` preceded by a comparison connective, in a
+    quote that opens by claiming the result as this paper's own?"""
+    if not markers or not _OWN_WORK_OPENER.match(quote):
+        return False
+    connectives = [m.start() for m in _COMPARISON_CONNECTIVE.finditer(quote)]
+    if not connectives:
+        return False
+    earliest = min(connectives)
+    return all(m.start() > earliest for m in markers)
+
+
+def other_work_reason(quote: str, section: str) -> str | None:
+    """Why `quote` reports someone else's result rather than this paper's
+    own, or None if nothing here says it does.
+
+    Meant to run on the paper's own verified sentence (`Located.text`), right
+    after quote verification and before every check downstream of it - a
+    finding built on a borrowed result should never reach the entity check
+    or provenance, both of which would happily pass a true sentence about
+    the wrong paper.
+    """
+    if section in _INTRO_LIKE_SECTIONS:
+        return "other_work:section"
+    if _OTHER_WORK_LEAD_IN.match(quote):
+        return "other_work:lead_in"
+    markers = _markers(quote)
+    if markers and not _fenced_by_comparison(quote, markers):
+        return "other_work:citation_marker"
+    return None

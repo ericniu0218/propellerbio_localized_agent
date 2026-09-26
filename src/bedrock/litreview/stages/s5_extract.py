@@ -2,7 +2,9 @@
 
 The order below is the whole design, and it is deliberate:
 
-    model extracts  ->  code verifies quotes  ->  code checks the entity
+    model extracts  ->  code verifies quotes  ->  code checks the quote is
+                        this paper's own result, not someone else's
+                    ->  code checks the entity
                     ->  code checks direction and outcome against the
                         words the model copied  ->  code normalises
                     ->  code dedupes
@@ -11,6 +13,16 @@ The model does one narrow thing — copy findings out of one chunk of one
 section — and every subsequent step is deterministic code that can be read,
 tested and trusted. The model never normalises, never scores quality, and
 never sees a whole paper.
+
+Right after the quote verifies, before anything else: does this paper's own
+sentence actually report this paper's own result? A quote can be word-for-word
+real and still be Introduction or Discussion prose citing earlier work — a
+citation bracket Europe PMC stripped down to "[]" or "[12]", an author-year
+citation, a "Previous studies have shown..." lead-in. `extract/verify.py`
+`other_work_reason` catches this; see it for why each pattern is safe against
+a confidence interval, a concentration or an abbreviation that merely looks
+like one. This runs before the entity check on purpose: a borrowed result can
+still name the right entity, and would otherwise sail through.
 
 Which sections we send, and why (set by the plan, from config/pipeline.yaml):
 
@@ -50,7 +62,7 @@ from bedrock.litreview.extract.normalize import (
     normalize_species,
 )
 from bedrock.litreview.extract.verify import normalize as normalize_text
-from bedrock.litreview.extract.verify import Located, locate_quote, region_of, verify_quote
+from bedrock.litreview.extract.verify import Located, locate_quote, other_work_reason, region_of, verify_quote
 from bedrock.litreview.facets import subject_label
 from bedrock.litreview.knowledge import Knowledge, TermMatcher, load_knowledge
 from bedrock.litreview.lexical import BM25
@@ -451,6 +463,18 @@ def extract_paper(
             # From here on every check reads the paper's own sentence.
             finding = finding.model_copy(update={"quote": located.text})
             status = located.status
+            other_work = other_work_reason(finding.quote, section)
+            if other_work:
+                # A true sentence about someone *else's* result: a citation
+                # bracket Europe PMC stripped down to "[]"/"[12]", an
+                # author-year citation, a "Previous studies have shown..."
+                # lead-in, or a paragraph the parser could only file as
+                # Introduction/Background prose. It verified because the
+                # paper really wrote it - it is dropped because the paper
+                # did not run it.
+                stats[other_work.split(":", 1)[0]] += 1
+                log.debug("finding dropped (%s): paper=%s quote=%r", other_work, paper.id, finding.quote[:80])
+                continue
             drop, match = entity_check(finding, spec, kb)
             if drop:
                 stats[drop.split(":", 1)[0]] += 1

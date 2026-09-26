@@ -461,6 +461,7 @@ def _method(ctx: WriteContext) -> str:
         f"their quote is not in the paper ({s.get('quote_meaning_changed', 0)} of them because the model's copy "
         f"changed a number, a negation or another word that carries meaning); "
         f"{s.get('near_miss', 0) + s.get('other_disease', 0)} discarded as about another entity; "
+        f"{s.get('other_work', 0)} discarded as someone else's result, not this paper's own; "
         f"{s.get('target_unlocated', 0)} discarded because the text the model read never names their target; "
         f"{s.get('duplicates', 0)} duplicates merged; **{len(ctx.summary.units)} verified findings kept**.",
         f"- **Fields the paper does not state:** blanked rather than shown — who was studied on "
@@ -613,6 +614,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         + ctx.extract_stats.get("outcome_corrected", 0),
         "findings_quote_failed": ctx.extract_stats.get("quote_failed", 0),
         "findings_other_entity": ctx.extract_stats.get("near_miss", 0) + ctx.extract_stats.get("other_disease", 0),
+        "findings_other_work": ctx.extract_stats.get("other_work", 0),
         "evidence_units": len(ctx.summary.units),
         "sentences_kept": ctx.sentence_stats.get("kept", 0),
         "sentences_dropped": ctx.sentence_stats.get("dropped", 0),

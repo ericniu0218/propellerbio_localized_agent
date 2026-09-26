@@ -724,16 +724,67 @@ def other_work_reason(quote: str, section: str) -> str | None:
 # "exacerbation" names an asthma event, "exacerbated" reports one. Shared by
 # the citation guard (`report/guard.py`, check 6) and the rule below, so one
 # vocabulary decides what "reports a result" means everywhere.
+#
+# Grouped by what kind of result each word or phrase reports, because a flat
+# wall of words is hard to extend without breaking something else. A hand
+# re-audit of the 179 sentences kept across the three stored benchmark
+# reports (obesity, asthma, migraine) found real results this list missed,
+# one per group below; each was added and checked against every one of those
+# 179 sentences (and the 593 evidence units behind them) before being kept -
+# see tests/litreview/test_result_words.py for the verbatim cases, kept and
+# still dropped:
+#
+# - effect verbs: a treatment, a gene or a knockout did something to a
+#   measurement ("led to weight loss", "results in glucose intolerance",
+#   "potentiated", "normalized body weight", "reversed");
+# - comparisons: two groups were found to differ, or not to. Expression
+#   level is a comparison too ("highly expressed ... compared to",
+#   "overexpressed in") - deliberately not bare "expressed", which only says
+#   where a gene product exists, not what was found (PAR2 "is a G-protein
+#   coupled receptor expressed in meningeal neurons ..." reports nothing).
+#   "similar" is scoped to "similar between/among" (two arms or groups) for
+#   the same reason: bare "is similar in <population> to" is how a trial
+#   states its *aim* ("to confirm the hypothesis that the PK profile ... is
+#   similar in healthy Chinese individuals to that of healthy non-Asian
+#   individuals"; see test_not_a_result.py), not a result. "differences" is
+#   scoped to "no difference(s)" for a sharper reason: E212 of the obesity
+#   report (the MC4R "~0.6 kg/week" sentence, see test_qualifier.py's S6
+#   cases) restates a real group-mean-difference number whose next sentence
+#   says it "did not reach statistical significance" - a stored qualifier in
+#   today's data model, not a word in the quote itself. Reading bare
+#   "differences" as a result would move that sentence from check 6 (no
+#   result cited) to check 8 (drops the qualifier), which only fires when
+#   the qualifier was actually captured - not guaranteed for every unit, and
+#   not for this one in the stored baseline report. Scoping to "no
+#   difference(s)" keeps check 6 the one that catches it, as it does today;
+# - null results: the paper looked and found nothing. Negative results are
+#   first-class here, not a weaker case than a positive one - "no
+#   differences ... indicating that X does not directly regulate Y" reports
+#   a null result exactly as much as "X increased Y" reports a positive one;
+# - safety/PK results: how a trial's safety or pharmacokinetic data came out
+#   ("the most frequent AEs were ...", "elevations ... were observed").
 RESULT_WORDS = re.compile(
-    r"\b(?:reduc(?:ed|es|ing|tion|tions)|decreas(?:ed|es|ing)|lower(?:ed|ing)?|attenuat(?:ed|es|ing)|"
+    r"\b(?:"
+    # -- effect verbs ---------------------------------------------------------
+    r"reduc(?:ed|es|ing|tion|tions)|decreas(?:ed|es|ing)|lower(?:ed|ing)?|attenuat(?:ed|es|ing)|"
     r"ameliorat(?:ed|es)|alleviat(?:ed|es)|diminish(?:ed|es)|abolish(?:ed|es)|abrogat(?:ed|es)|"
     r"mitigat(?:ed|es)|improv(?:ed|es|ing|ement)|prevent(?:ed|s|ing)|protect(?:ed|s|ive|ion)|"
-    r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
+    r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es|ing|ion|ions)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
     r"exacerbat(?:ed|es|ing)|promot(?:ed|es)|accelerat(?:ed|es)|augment(?:ed|s)|amplif(?:ied|ies)|"
     r"suppress(?:ed|es)|inhibit(?:ed|s)|induc(?:ed|es)|enhanc(?:ed|es)|restor(?:ed|es)|rescu(?:ed|es)|"
+    r"potentiat\w*|exaggerat\w*|normali[sz]\w*|revers\w*|led\s+to|result(?:s|ed|ing)?\s+in|"
     r"higher|greater|fewer|less|more|better|worse|significant(?:ly)?|associated|correlat\w*|"
     r"efficac\w*|effective|benefit\w*|remission|response|achieved|rose|fell|declined|lost|gained|"
-    r"upregulat\w*|downregulat\w*|up-regulat\w*|down-regulat\w*|no effect|did not|failed|"
+    r"upregulat\w*|downregulat\w*|up-regulat\w*|down-regulat\w*|"
+    # -- comparisons -----------------------------------------------------------
+    r"no\s+differences?|"
+    r"(?:highly|more|less|over|under)[- ]?express\w*|"
+    r"express(?:ion|ed)\s+(?:was|were)\s+(?:increased|decreased|elevated|reduced)|"
+    r"similar\s+(?:between|among)|"
+    # -- null results ------------------------------------------------------------
+    r"no effect|did not|failed|"
+    # -- safety / PK results --------------------------------------------------
+    r"most\s+(?:frequent|common)|"
     # Base forms ("can reduce", "exacerbate"), change nouns ("no increase"),
     # and how safety results are written ("adverse events were infrequent").
     r"reduce|decrease|increase|lower|improve|prevent|protect|worsen|exacerbate|aggravate|attenuate|"

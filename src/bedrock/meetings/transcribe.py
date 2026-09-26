@@ -24,6 +24,7 @@ matching the AlphaFold adapter next door.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -33,8 +34,20 @@ from bedrock.biotech.errors import ToolIntegrationError
 from bedrock.biotech.process import CommandRunner, SubprocessCommandRunner
 from bedrock.meetings.transcript import Cue, parse_vtt
 
-# Zoom writes per-participant tracks as "audio<digits>_<Display Name>.m4a".
+# Zoom has written per-participant tracks two different ways, and a recording
+# folder tells you which only by what is in it. Older builds separate the
+# display name with an underscore: "audio<digits>_<Display Name>.m4a". The
+# builds seen in 2026 write "audio<Display Name><recording id>.m4a" with no
+# separator at all, into the "Audio Record" subfolder. Matching only the first
+# shape is not a cosmetic miss: the tracks go unrecognised, the meeting falls
+# back to the mixed recording, and the tool advises turning on a Zoom setting
+# that is already on.
 _PARTICIPANT_FILE = re.compile(r"^audio\d+_(?P<name>.+)$", re.IGNORECASE)
+
+# Zoom's own name for the folder holding per-participant tracks.
+_PARTICIPANT_DIR = "audio record"
+
+_AUDIO_PREFIX = "audio"
 
 # Whisper wants 16 kHz mono; anything else is resampled internally and slower.
 TARGET_SAMPLE_RATE = 16_000
@@ -531,13 +544,92 @@ def discover_participant_tracks(folder: Path) -> dict[str, list[Path]]:
     to fall back to the mixed recording.
     """
     tracks: dict[str, list[Path]] = {}
+    unseparated: list[Path] = []
+
     for candidate in _audio_files(folder):
         match = _PARTICIPANT_FILE.match(candidate.stem)
         if match:
             name = match.group("name").strip()
             if name:
                 tracks.setdefault(name, []).append(candidate)
+        elif _in_participant_dir(candidate, folder):
+            unseparated.append(candidate)
+
+    if unseparated:
+        recording_id = _recording_id(folder, [path.stem for path in unseparated])
+        for path in unseparated:
+            name = _name_without_recording_id(path.stem, recording_id)
+            if name:
+                tracks.setdefault(name, []).append(path)
+
     return tracks
+
+
+def _in_participant_dir(path: Path, folder: Path) -> bool:
+    """True when a file sits inside Zoom's per-participant subfolder.
+
+    Location is the only reliable signal for the unseparated layout: the
+    filename alone cannot be told apart from the mixed recording's, which is
+    also "audio<digits>". The mixed track lives at the top level.
+    """
+    parents = path.relative_to(folder).parts[:-1]
+    return any(part.lower() == _PARTICIPANT_DIR for part in parents)
+
+
+def _recording_id(folder: Path, stems: list[str]) -> str:
+    """The trailing digits Zoom appends to every file of one recording.
+
+    With no separator, splitting a name by eye is genuinely ambiguous:
+    "audioGoat11441831751" is "Goat1" followed by the id, or "Goat11" followed
+    by a shorter one, and nothing in the filename decides it. The recording
+    does. `recording.conf` names the mixed track — "audio1441831751.m4a" —
+    whose digits are that id, so anything before it is the display name.
+
+    Without that file, the longest digit run every per-participant track ends
+    with is the same answer whenever two people spoke. It is not, for a
+    one-participant recording: there the trailing digits of a name ("Goat1")
+    are indistinguishable from the id, and such a name loses its last digits.
+    A slightly clipped label beats dropping speaker attribution entirely, and
+    Zoom writes recording.conf, so this is the unlikely path.
+    """
+    config = folder / "recording.conf"
+    if config.is_file():
+        try:
+            items = json.loads(config.read_text(encoding="utf-8")).get("items", [])
+        except (OSError, ValueError, AttributeError):
+            items = []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                mixed = Path(str(item.get("audio") or "")).stem
+                if not mixed.lower().startswith(_AUDIO_PREFIX):
+                    continue
+                digits = mixed[len(_AUDIO_PREFIX) :]
+                if digits.isdigit() and all(stem.endswith(digits) for stem in stems):
+                    return digits
+    return _shared_digit_suffix(stems)
+
+
+def _shared_digit_suffix(stems: list[str]) -> str:
+    """The longest run of digits every stem ends with."""
+    if not stems:
+        return ""
+    shortest = min(stems, key=len)
+    found = ""
+    for size in range(1, len(shortest) + 1):
+        candidate = shortest[-size:]
+        if not candidate.isdigit() or not all(stem.endswith(candidate) for stem in stems):
+            break
+        found = candidate
+    return found
+
+
+def _name_without_recording_id(stem: str, recording_id: str) -> str:
+    name = stem[len(_AUDIO_PREFIX) :] if stem.lower().startswith(_AUDIO_PREFIX) else stem
+    if recording_id and name.endswith(recording_id):
+        name = name[: -len(recording_id)]
+    return name.strip()
 
 
 def find_mixed_audio(folder: Path) -> list[Path]:
@@ -547,7 +639,9 @@ def find_mixed_audio(folder: Path) -> list[Path]:
     recordings, and returning the first would drop everything after it.
     """
     candidates = [
-        path for path in _audio_files(folder) if not _PARTICIPANT_FILE.match(path.stem)
+        path
+        for path in _audio_files(folder)
+        if not _PARTICIPANT_FILE.match(path.stem) and not _in_participant_dir(path, folder)
     ]
     if not candidates:
         return []

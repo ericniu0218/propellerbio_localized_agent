@@ -1,0 +1,24 @@
+{
+  "question_id": "asthma-exacerbation-prevention",
+  "built": "2026-09-25",
+  "papers": 208,
+  "full_text": 71,
+  "reviews": 5,
+  "reference_targets": 73,
+  "queries": [
+    "(TITLE_ABS:\"asthma\" OR TITLE_ABS:\"asthmatic\")",
+    "(TITLE_ABS:\"asthma\" OR TITLE_ABS:\"asthmatic\") AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"deficiency\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibition\" OR TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antagonist\" OR TITLE_ABS:\"neutralizing\" OR TITLE_ABS:\"loss-of-function\" OR TITLE_ABS:\"genetic association\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"randomized\")",
+    "(TITLE_ABS:\"asthma\" OR TITLE_ABS:\"asthmatic\") AND (TITLE_ABS:\"prevention\" OR TITLE_ABS:\"prevents\" OR TITLE_ABS:\"prophylaxis\" OR TITLE_ABS:\"prophylactic\" OR TITLE_ABS:\"relapse\" OR TITLE_ABS:\"recurrence\" OR TITLE_ABS:\"onset\")",
+    "(TITLE_ABS:\"asthma\" OR TITLE_ABS:\"asthmatic\")",
+    "(TITLE_ABS:\"asthma\" OR TITLE_ABS:\"asthmatic\") AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"deficiency\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibition\" OR TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antagonist\" OR TITLE_ABS:\"neutralizing\" OR TITLE_ABS:\"loss-of-function\" OR TITLE_ABS:\"genetic association\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"randomized\")",
+    "(TITLE_ABS:\"asthma\" OR TITLE_ABS:\"asthmatic\") AND (TITLE_ABS:\"prevention\" OR TITLE_ABS:\"prevents\" OR TITLE_ABS:\"prophylaxis\" OR TITLE_ABS:\"prophylactic\" OR TITLE_ABS:\"relapse\" OR TITLE_ABS:\"recurrence\" OR TITLE_ABS:\"onset\")",
+    "(\"asthma\"[tiab] OR \"asthmatic\"[tiab])",
+    "(\"asthma\"[tiab] OR \"asthmatic\"[tiab]) AND (\"knockout\"[tiab] OR \"deficient\"[tiab] OR \"deficiency\"[tiab] OR \"blockade\"[tiab] OR \"inhibition\"[tiab] OR \"inhibitor\"[tiab] OR \"antagonist\"[tiab] OR \"neutralizing\"[tiab] OR \"loss-of-function\"[tiab] OR \"genetic association\"[tiab] OR \"mendelian randomization\"[tiab] OR \"randomized\"[tiab])",
+    "(\"asthma\"[tiab] OR \"asthmatic\"[tiab]) AND (\"prevention\"[tiab] OR \"prevents\"[tiab] OR \"prophylaxis\"[tiab] OR \"prophylactic\"[tiab] OR \"relapse\"[tiab] OR \"recurrence\"[tiab] OR \"onset\"[tiab])"
+  ],
+  "searcher": "literature",
+  "near_miss_queries": [
+    "TITLE:\"chronic obstructive pulmonary disease\" AND TITLE_ABS:\"exacerbation*\" AND TITLE_ABS:\"antibody\" AND OPEN_ACCESS:y AND NOT TITLE_ABS:\"asthma\"",
+    "TITLE:\"allergic rhinitis\" AND (TITLE_ABS:\"antibody\" OR TITLE_ABS:\"inhibitor\") AND OPEN_ACCESS:y AND NOT TITLE_ABS:\"asthma\""
+  ]
+}

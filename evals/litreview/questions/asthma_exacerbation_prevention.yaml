@@ -1,0 +1,23 @@
+# Asthma — immunology & inflammation. Added September 2026 for the
+# deploy-readiness audit. Near-misses COPD and allergic rhinitis share
+# mechanisms and trial designs with asthma, so the gate has real work.
+id: asthma-exacerbation-prevention
+question: "If I want to prevent asthma exacerbations, what should I target?"
+notes: >-
+  Built with the paper searcher (`build-corpus --searcher`). The queries below
+  are the hand-written fallback for a frozen build without the searcher.
+corpus:
+  max_per_query: 25
+  full_text_max: 45
+  queries:
+    - 'TITLE_ABS:"asthma" AND (TITLE_ABS:"exacerbation*") AND (PUB_TYPE:"Randomized Controlled Trial" OR TITLE_ABS:"phase 3") AND PUB_YEAR:[2012 TO 2025]'
+    - 'TITLE_ABS:"asthma" AND (TITLE_ABS:"knockout" OR TITLE_ABS:"deficient" OR TITLE_ABS:"blockade" OR TITLE_ABS:"neutralization") AND (TITLE_ABS:"mice" OR TITLE_ABS:"mouse") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]'
+  near_miss_max: 4
+  near_miss_queries:
+    - 'TITLE:"chronic obstructive pulmonary disease" AND TITLE_ABS:"exacerbation*" AND TITLE_ABS:"antibody" AND OPEN_ACCESS:y AND NOT TITLE_ABS:"asthma"'
+    - 'TITLE:"allergic rhinitis" AND (TITLE_ABS:"antibody" OR TITLE_ABS:"inhibitor") AND OPEN_ACCESS:y AND NOT TITLE_ABS:"asthma"'
+references:
+  reviews_query: 'TITLE:"asthma" AND (TITLE:"biologic*" OR TITLE:"target*" OR TITLE:"exacerbation*") AND PUB_TYPE:"review" AND PUB_YEAR:[2022 TO 2025]'
+  reviews_max: 5
+  open_targets_disease: MONDO_0004979
+  open_targets_min_phase: 3

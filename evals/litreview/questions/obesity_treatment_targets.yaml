@@ -1,0 +1,25 @@
+# Obesity — Propeller focus area. Added September 2026 for the deploy-readiness
+# audit: a treat question (the others are prevent questions), and a disease
+# whose trials enrol "adults with overweight or obesity", while "overweight"
+# is listed as a near-miss.
+id: obesity-treatment-targets
+question: "If I want to treat obesity, which targets should I pursue?"
+notes: >-
+  Built with the paper searcher (`build-corpus --searcher`), so the main papers
+  are what the product would really fetch. The queries below are the hand-written
+  fallback for a frozen build without the searcher.
+corpus:
+  max_per_query: 25
+  full_text_max: 45
+  queries:
+    - 'TITLE_ABS:"obesity" AND (TITLE_ABS:"knockout" OR TITLE_ABS:"deficient" OR TITLE_ABS:"agonist" OR TITLE_ABS:"antagonist" OR TITLE_ABS:"inhibition") AND (TITLE_ABS:"mice" OR TITLE_ABS:"mouse") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]'
+    - 'TITLE_ABS:"obesity" AND (PUB_TYPE:"Randomized Controlled Trial" OR TITLE_ABS:"phase 3") AND (TITLE_ABS:"GLP-1" OR TITLE_ABS:"GIP" OR TITLE_ABS:"amylin" OR TITLE_ABS:"glucagon") AND PUB_YEAR:[2015 TO 2025]'
+  near_miss_max: 4
+  near_miss_queries:
+    - 'TITLE:"cachexia" AND (TITLE_ABS:"inhibitor" OR TITLE_ABS:"antibody") AND OPEN_ACCESS:y AND NOT TITLE_ABS:"obesity"'
+    - 'TITLE:"lipodystrophy" AND (TITLE_ABS:"leptin" OR TITLE_ABS:"treatment") AND OPEN_ACCESS:y AND NOT TITLE_ABS:"obesity"'
+references:
+  reviews_query: 'TITLE:"obesity" AND (TITLE:"target*" OR TITLE:"pharmacotherap*" OR TITLE:"drug*") AND PUB_TYPE:"review" AND PUB_YEAR:[2022 TO 2025]'
+  reviews_max: 5
+  open_targets_disease: MONDO_0011122
+  open_targets_min_phase: 3

@@ -1,0 +1,710 @@
+[
+  {
+    "symbol": "ADORA1",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADORA2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADORA2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADORA3",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRA1A",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRA1B",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRA1D",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRA2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRA2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRA2C",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRB1",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRB2",
+    "max_phase": 4.0,
+    "drugs": [
+      "FORMOTEROL FUMARATE",
+      "SALMETEROL XINAFOATE",
+      "EPHEDRINE HYDROCHLORIDE",
+      "METAPROTERENOL SULFATE",
+      "LEVALBUTEROL HYDROCHLORIDE",
+      "TERBUTALINE SULFATE",
+      "FENOTEROL",
+      "ISOETHARINE",
+      "ALBUTEROL",
+      "PIRBUTEROL",
+      "ALBUTEROL SULFATE",
+      "PROTOKYLOL HYDROCHLORIDE",
+      "BAMBUTEROL",
+      "SALMETEROL",
+      "RIMITEROL",
+      "LEVOSALBUTAMOL",
+      "PIRBUTEROL ACETATE",
+      "VILANTEROL TRIFENATATE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "BITOLTEROL",
+      "VILANTEROL",
+      "PROCATEROL",
+      "FORMOTEROL",
+      "TERBUTALINE",
+      "INDACATEROL",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ADRB3",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE HYDROCHLORIDE",
+      "EPHEDRINE",
+      "EPHEDRINE SULFATE",
+      "EPINEPHRINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ALOX5",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZILEUTON",
+      "ATRELEUTON"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "CHRM1",
+    "max_phase": 4.0,
+    "drugs": [
+      "GLYCOPYRRONIUM TOSYLATE",
+      "GLYCOPYRRONIUM BROMIDE",
+      "GLYCOPYRRONIUM"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "CHRM2",
+    "max_phase": 4.0,
+    "drugs": [
+      "GLYCOPYRRONIUM TOSYLATE",
+      "GLYCOPYRRONIUM"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "CHRM3",
+    "max_phase": 4.0,
+    "drugs": [
+      "TIOTROPIUM BROMIDE",
+      "GLYCOPYRRONIUM TOSYLATE",
+      "GLYCOPYRRONIUM BROMIDE",
+      "IPRATROPIUM",
+      "IPRATROPIUM BROMIDE",
+      "TIOTROPIUM",
+      "GLYCOPYRRONIUM",
+      "UMECLIDINIUM",
+      "METHACHOLINE CHLORIDE",
+      "ACLIDINIUM BROMIDE",
+      "UMECLIDINIUM BROMIDE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "CHRM4",
+    "max_phase": 4.0,
+    "drugs": [
+      "GLYCOPYRRONIUM TOSYLATE",
+      "GLYCOPYRRONIUM"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "CHRM5",
+    "max_phase": 4.0,
+    "drugs": [
+      "GLYCOPYRRONIUM TOSYLATE",
+      "GLYCOPYRRONIUM"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "CYSLTR1",
+    "max_phase": 4.0,
+    "drugs": [
+      "PRANLUKAST",
+      "MONTELUKAST SODIUM",
+      "MONTELUKAST",
+      "ZAFIRLUKAST"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IGHE",
+    "max_phase": 4.0,
+    "drugs": [
+      "OMALIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IL4R",
+    "max_phase": 4.0,
+    "drugs": [
+      "DUPILUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IL5",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEPEMOKIMAB",
+      "RESLIZUMAB",
+      "MEPOLIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IL5RA",
+    "max_phase": 4.0,
+    "drugs": [
+      "BENRALIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "NR3C1",
+    "max_phase": 4.0,
+    "drugs": [
+      "PREDNISONE",
+      "FLUTICASONE PROPIONATE",
+      "PREDNISOLONE SODIUM PHOSPHATE",
+      "DEXAMETHASONE",
+      "TRIAMCINOLONE HEXACETONIDE",
+      "HYDROCORTISONE SODIUM SUCCINATE",
+      "BETAMETHASONE",
+      "BETAMETHASONE ACETATE",
+      "FLUPREDNISOLONE",
+      "FLUNISOLIDE",
+      "METHYLPREDNISOLONE ACETATE",
+      "MOMETASONE FUROATE",
+      "CICLESONIDE",
+      "TRIAMCINOLONE",
+      "PREDNISOLONE",
+      "BETAMETHASONE SODIUM PHOSPHATE",
+      "BECLOMETHASONE DIPROPIONATE",
+      "DEXAMETHASONE SODIUM PHOSPHATE",
+      "BUDESONIDE",
+      "BETAMETHASONE DIPROPIONATE",
+      "METHYLPREDNISOLONE",
+      "FLUTICASONE FUROATE",
+      "TRIAMCINOLONE ACETONIDE",
+      "HYDROCORTISONE",
+      "CORTISONE ACETATE",
+      "METHYLPREDNISOLONE SODIUM SUCCINATE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDE3A",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDE3B",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDE4A",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "ROFLUMILAST",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDE4B",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "ROFLUMILAST",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDE4C",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "ROFLUMILAST",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDE4D",
+    "max_phase": 4.0,
+    "drugs": [
+      "AMINOPHYLLINE",
+      "ROFLUMILAST",
+      "THEOPHYLLINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TRPA1",
+    "max_phase": 4.0,
+    "drugs": [
+      "MENTHOL"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TRPM8",
+    "max_phase": 4.0,
+    "drugs": [
+      "MENTHOL"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TSLP",
+    "max_phase": 4.0,
+    "drugs": [
+      "TEZEPELUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ALOX5AP",
+    "max_phase": 3.0,
+    "drugs": [
+      "VELIFLAPON"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ATP4A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LANSOPRAZOLE",
+      "RABEPRAZOLE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "ATP4B",
+    "max_phase": 3.0,
+    "drugs": [
+      "LANSOPRAZOLE",
+      "RABEPRAZOLE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "DHFR",
+    "max_phase": 3.0,
+    "drugs": [
+      "METHOTREXATE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "FAAH",
+    "max_phase": 3.0,
+    "drugs": [
+      "ACETAMINOPHEN"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "FGFR3",
+    "max_phase": 3.0,
+    "drugs": [
+      "MASITINIB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "HMGCR",
+    "max_phase": 3.0,
+    "drugs": [
+      "SIMVASTATIN"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "HRH1",
+    "max_phase": 3.0,
+    "drugs": [
+      "LEVOCETIRIZINE",
+      "FEXOFENADINE",
+      "LORATADINE",
+      "DESLORATADINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IL12B",
+    "max_phase": 3.0,
+    "drugs": [
+      "GUSELKUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IL13",
+    "max_phase": 3.0,
+    "drugs": [
+      "TRALOKINUMAB",
+      "LEBRIKIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "IL23A",
+    "max_phase": 3.0,
+    "drugs": [
+      "GUSELKUMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "INSR",
+    "max_phase": 3.0,
+    "drugs": [
+      "INSULIN HUMAN"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "KIT",
+    "max_phase": 3.0,
+    "drugs": [
+      "MASITINIB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDGFRA",
+    "max_phase": 3.0,
+    "drugs": [
+      "MASITINIB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PDGFRB",
+    "max_phase": 3.0,
+    "drugs": [
+      "MASITINIB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PTGDR2",
+    "max_phase": 3.0,
+    "drugs": [
+      "TIMAPIPRANT",
+      "FEVIPIPRANT",
+      "SETIPIPRANT"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PTGS1",
+    "max_phase": 3.0,
+    "drugs": [
+      "ASPIRIN",
+      "ACETAMINOPHEN",
+      "IBUPROFEN"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "PTGS2",
+    "max_phase": 3.0,
+    "drugs": [
+      "ASPIRIN",
+      "ACETAMINOPHEN",
+      "IBUPROFEN"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "SELE",
+    "max_phase": 3.0,
+    "drugs": [
+      "RIVIPANSEL"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "SELL",
+    "max_phase": 3.0,
+    "drugs": [
+      "RIVIPANSEL"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "SELP",
+    "max_phase": 3.0,
+    "drugs": [
+      "RIVIPANSEL"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TNF",
+    "max_phase": 3.0,
+    "drugs": [
+      "LENERCEPT",
+      "INFLIXIMAB"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TRPV1",
+    "max_phase": 3.0,
+    "drugs": [
+      "ACETAMINOPHEN"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBA1A",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBA1B",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBA1C",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBA3C",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBA3E",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBA4A",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB1",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB2A",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB2B",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB3",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB4A",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB4B",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB6",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "TUBB8",
+    "max_phase": 3.0,
+    "drugs": [
+      "COLCHICINE"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  },
+  {
+    "symbol": "VDR",
+    "max_phase": 3.0,
+    "drugs": [
+      "ERGOCALCIFEROL",
+      "CHOLECALCIFEROL"
+    ],
+    "source": "Open Targets MONDO_0004979"
+  }
+]

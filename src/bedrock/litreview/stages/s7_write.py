@@ -7,6 +7,9 @@ Two kinds of section (layout in config/report.yaml):
   written     one model call, from one slice of evidence, returning sentences
               that each carry the evidence ids they rely on. Every sentence
               then passes the citation guard (report/guard.py) or is dropped.
+              A sentence that repeats one already kept earlier in the report
+              is dropped too, even though it came from a different section's
+              model call — see `already_kept` in `write_section_text`.
   generated   written by code: the most relevant source, the gaps, the
               evidence plan, the relevance ranking, the evidence table, the
               method and the excluded papers. These are facts about the run,
@@ -162,9 +165,26 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
 
 
 def write_section_text(
-    ctx: WriteContext, spec: SectionSpec, units: list[EvidenceUnit], subsection: str = ""
+    ctx: WriteContext,
+    spec: SectionSpec,
+    units: list[EvidenceUnit],
+    subsection: str = "",
+    already_kept: list[set[str]] | None = None,
 ) -> tuple[list[Sentence], str | None]:
-    """One model call, then the guard. Returns sentences and an optional note."""
+    """One model call, then the guard. Returns sentences and an optional note.
+
+    `already_kept` is the content words of every sentence already kept
+    earlier in this same report (from an earlier section, or an earlier
+    per-target subsection). Each writing call only ever sees its own slice of
+    evidence, so the same finding can be the best evidence for more than one
+    section — the "answer" section and a target's own subsection, say — and
+    the model then drafts the same sentence twice. `already_kept` is threaded
+    through every call by `write_report`, one shared list, so a sentence a
+    later section drafts is checked against it with the exact same repeat
+    test used within one call, and dropped the same way: silently, and
+    without ever becoming a shown or counted "dropped" sentence — a repeat
+    states nothing new, it is not a claim that failed a check.
+    """
     if not units:
         return [], "No evidence for this section in the papers read."
     if ctx.client is None or not ctx.model:
@@ -190,11 +210,18 @@ def write_section_text(
 
     guard = CitationGuard(ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary)
     sentences = []
-    said: list[set[str]] = []
+    # Seeded with the report's earlier kept sentences, so a repeat of one of
+    # those is caught by the very same check that catches a repeat within
+    # this call — `said` just starts non-empty instead of the check running
+    # twice with two thresholds that could drift apart.
+    said: list[set[str]] = list(already_kept) if already_kept is not None else []
+    drafted = 0  # sentences the model actually wrote something for (not blank)
+    repeated = 0  # ... of those, how many were dropped as a repeat
     for draft_sentence in draft.sentences:
         text = draft_sentence.text.strip()
         if not text:
             continue
+        drafted += 1
         citations = list(dict.fromkeys(draft_sentence.citations))
         if len(text) < MIN_SENTENCE_CHARS:
             ctx.sentence_stats["too_short"] += 1
@@ -202,8 +229,11 @@ def write_section_text(
         words = _content_words(text)
         if any(_overlap(words, earlier) >= REPEAT_OVERLAP for earlier in said):
             # Small models loop: the MedGemma run wrote one sentence four times
-            # in a row. A repeat adds nothing and reads as extra evidence.
+            # in a row. A repeat adds nothing and reads as extra evidence. The
+            # same is true of a sentence this report already kept elsewhere —
+            # `said` may hold those too, so this one check covers both.
             ctx.sentence_stats["repeated"] += 1
+            repeated += 1
             continue
         said.append(words)
         verdict = guard.check(text, citations)
@@ -214,9 +244,22 @@ def write_section_text(
             text += "."
         ctx.sentence_stats["kept" if verdict.kept else "dropped"] += 1
         sentences.append(Sentence(text=text, citations=citations, kept=verdict.kept, drop_reason=verdict.reason))
+        if verdict.kept and already_kept is not None:
+            # Recorded for the sections written after this one, not for this
+            # call's own remaining sentences — those are already in `said`.
+            already_kept.append(words)
     note = None
     if sentences and not any(s.kept for s in sentences):
         note = "Every drafted sentence failed the citation check and was removed."
+    elif not sentences and drafted and repeated == drafted:
+        # Nothing too short, nothing that ever reached the guard — every
+        # sentence the model wrote was a repeat, and (because `said` starts
+        # from `already_kept`) that can only happen when it repeated content
+        # already kept earlier in this report. Left silent, this is the
+        # "heading with nothing under it" a scientist has no way to read: a
+        # gap in the papers looks identical to a section whose only content
+        # was already said. Say which one this is.
+        note = "Everything drafted here is already stated in an earlier section."
     return sentences, note
 
 
@@ -486,6 +529,15 @@ def build_references(ctx: WriteContext, sections: list[ReportSection]) -> dict[s
 def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str]) -> Report:
     layout = load_layout(ctx.spec.question_type)
     sections: list[ReportSection] = []
+    # Each written section, and each per-target subsection, sees only its own
+    # slice of evidence and is written by its own model call — that is the
+    # whole point of Stage 7 (see the module docstring). But the same finding
+    # can be the best evidence for two different sections (the answer and
+    # that target's own subsection, most often), and a model then drafts the
+    # same sentence twice. One list, appended to as sections are written in
+    # this order and read by every call after it, is what makes a report-wide
+    # repeat check possible without the sections calling each other.
+    already_kept: list[set[str]] = []
 
     for spec in layout:
         if spec.kind != "written":
@@ -495,7 +547,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             section = ReportSection(id=spec.id, title=spec.title, kind="written")
             for t in ctx.summary.targets[: ctx.max_targets]:
                 units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target)
-                sentences, note = write_section_text(ctx, spec, units, subsection=t.target)
+                sentences, note = write_section_text(ctx, spec, units, subsection=t.target, already_kept=already_kept)
                 names = [n for n in t.names_seen if n != t.target][:3]
                 title = t.target + (f" ({', '.join(names)})" if names else "")
                 section.subsections.append(
@@ -509,7 +561,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             sections.append(section)
             continue
         units = _slice(ctx, spec.source or "all")
-        sentences, note = write_section_text(ctx, spec, units)
+        sentences, note = write_section_text(ctx, spec, units, already_kept=already_kept)
         sections.append(ReportSection(id=spec.id, title=spec.title, kind="written", sentences=sentences, note=note))
 
     refs = build_references(ctx, sections)

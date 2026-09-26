@@ -35,7 +35,7 @@ from bedrock.litreview.config import ConfigError, load_settings
 from bedrock.litreview.sources.corpus import CorpusSearcher
 from bedrock.litreview.sources.literature import SOURCES, LiteratureSearcher, SearchFailed
 from bedrock.litreview.stages.s0_question import QuestionError
-from bedrock.litreview.stages.s1_collect import NoPapers
+from bedrock.litreview.stages.s1_collect import NoPapers, NothingFound
 
 
 def _say(msg: str) -> None:
@@ -110,6 +110,9 @@ def _ask(args) -> int:
 
     try:
         result = asyncio.run(go())
+    except NothingFound as exc:
+        _say(f"ask: {exc}")
+        return 1
     except NoPapers:
         _say("ask: no papers for this question yet — pass --corpus FILE, or --search")
         return 1
@@ -163,19 +166,19 @@ def main(argv: list[str] | None = None) -> int:
     papers_from.add_argument("--corpus", type=Path, help="papers as JSON lines (the searcher's handoff format)")
     papers_from.add_argument("--search", action="store_true", help="search the literature now (needs network)")
     ask.add_argument("--models", help="model set from defaults/models.yaml (office, laptop, medgemma)")
-    ask.add_argument("--out", type=Path, help="output directory (default: out/)")
+    ask.add_argument("--out", type=Path, help="output directory (default: the reports folder in the review data directory)")
     ask.add_argument("--no-model", action="store_true", help="run without any model")
     ask.add_argument("--refresh", action="store_true", help="re-collect papers instead of reusing the frozen set")
     ask.add_argument("--resume", help="resume a run id from the stage it reached")
 
     for p in (search, ask):
-        p.add_argument("--sources", help=f"comma-separated subset of {','.join(SOURCES)} (default: config/pipeline.yaml)")
+        p.add_argument("--sources", help=f"comma-separated subset of {','.join(SOURCES)} (default: defaults/pipeline.yaml)")
         p.add_argument("--no-full-text", action="store_true", help="abstracts only; skip open-access full text")
 
     verify = sub.add_parser("verify-run", help="re-check a stored run's report against the papers it pinned")
     verify.add_argument("run_id", nargs="?", help="the run to check")
     verify.add_argument("--all", action="store_true", help="check every finished run in the database")
-    verify.add_argument("--db", help="database file (default: the configured one; the benchmark uses data/bench.sqlite3)")
+    verify.add_argument("--db", help="database file (default: the configured one; the benchmark uses bench.sqlite3 in the same directory)")
 
     runs = sub.add_parser("runs", help="list the most recent runs")
     runs.add_argument("--limit", type=int, default=20)

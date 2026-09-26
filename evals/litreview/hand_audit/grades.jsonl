@@ -1,0 +1,60 @@
+{"report":"qwen_obesity","s":"S3","grade":"faithful","note":"Answer section uses an expression association, weak for 'strongest evidence'"}
+{"report":"qwen_obesity","s":"S4","grade":"faithful","note":"same sentence repeated as S23 in another section"}
+{"report":"qwen_obesity","s":"S6","grade":"misleading","note":"omits next sentence: difference vs placebo not significant (p = 0.09)"}
+{"report":"qwen_obesity","s":"S9","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S13","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S20","grade":"faithful","note":"minor: sh1109 female 5% was not significant per preceding sentence; numbers exact"}
+{"report":"qwen_obesity","s":"S23","grade":"faithful","note":"duplicate of S4"}
+{"report":"qwen_obesity","s":"S25","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S32","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S34","grade":"faithful","note":"label human_genetic wrong (human tissue), not shown in sentence"}
+{"report":"qwen_obesity","s":"S37","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S41","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S52","grade":"faithful","note":""}
+{"report":"qwen_obesity","s":"S56","grade":"misleading","note":"authors' speculation from mouse work stated as prevention evidence for patients; 'cold exposure' is not a target"}
+{"report":"qwen_obesity","s":"S60","grade":"faithful","note":""}
+{"report":"qwen_asthma","s":"S3","grade":"misleading","note":"copies authors' conclusion 'in patients with asthma'; the work was BEAS-2B cells and mice"}
+{"report":"qwen_asthma","s":"S4","grade":"faithful","note":""}
+{"report":"qwen_asthma","s":"S6","grade":"faithful","note":"minor: drops 'in the colon'"}
+{"report":"qwen_asthma","s":"S9","grade":"misleading","note":"birth-cohort result is another study the paper cites (intro, reference bracket), presented as this paper's finding"}
+{"report":"qwen_asthma","s":"S13","grade":"faithful","note":"label in_vivo wrong (HBECs), sentence correct"}
+{"report":"qwen_asthma","s":"S20","grade":"faithful","note":"framed as authors' suggestion"}
+{"report":"qwen_asthma","s":"S23","grade":"faithful","note":""}
+{"report":"qwen_asthma","s":"S25","grade":"faithful","note":"null result kept"}
+{"report":"qwen_asthma","s":"S32","grade":"weak_citation","note":"cited sentence is a statement of aims ('we investigated'); claim true per abstract"}
+{"report":"qwen_asthma","s":"S34","grade":"misleading","note":"'AHR' = airway hyperresponsiveness filed under target AhR (aryl hydrocarbon receptor)"}
+{"report":"qwen_asthma","s":"S37","grade":"faithful","note":"background ('has been reported'), not a finding"}
+{"report":"qwen_asthma","s":"S41","grade":"unfaithful","note":"invents efficacy: quote gives only enrolment/ages of a PK dose-finding trial; guard kept it (names+numbers in quote, no direction words)"}
+{"report":"qwen_asthma","s":"S52","grade":"faithful","note":"minor: drops 'but not sensitization'; target 'AHR' (airway hyperresponsiveness) is not a target"}
+{"report":"qwen_asthma","s":"S57","grade":"faithful","note":"generic background sentence, no finding (filler in prevention section)"}
+{"report":"qwen_asthma","s":"S60","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S3","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S4","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S6","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S9","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S13","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S20","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S25","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S32","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S34","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S37","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S41","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S52","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S56","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S60","grade":"faithful","note":""}
+{"report":"claude_obesity","s":"S23","grade":"faithful","note":"repeats the CCR1 fact of S4 in another section"}
+{"report":"qwen_migraine","s":"S2","grade":"faithful","note":""}
+{"report":"qwen_migraine","s":"S3","grade":"faithful","note":"n=5 cohort; the preceding sentence gives the 85% of cycles result"}
+{"report":"qwen_migraine","s":"S4","grade":"faithful","note":""}
+{"report":"qwen_migraine","s":"S5","grade":"faithful","note":""}
+{"report":"qwen_migraine","s":"S6","grade":"faithful","note":"case report"}
+{"report":"qwen_migraine","s":"S9","grade":"faithful","note":"keeps 'numerically favored', drops p = 0.099; outcome measure 'MMDs' filed as a target"}
+{"report":"qwen_migraine","s":"S13","grade":"faithful","note":""}
+{"report":"qwen_migraine","s":"S20","grade":"faithful","note":"repeated as S37 in another section"}
+{"report":"qwen_migraine","s":"S23","grade":"faithful","note":"methods sentence, no finding (filler)"}
+{"report":"qwen_migraine","s":"S25","grade":"faithful","note":""}
+{"report":"qwen_migraine","s":"S32","grade":"faithful","note":"demographics only, no finding (filler)"}
+{"report":"qwen_migraine","s":"S34","grade":"faithful","note":"PK study in healthy volunteers; sentence does not claim patients"}
+{"report":"qwen_migraine","s":"S37","grade":"faithful","note":"duplicate of S20"}
+{"report":"qwen_migraine","s":"S41","grade":"faithful","note":"null result kept; drops 'small'"}
+{"report":"qwen_migraine","s":"S49","grade":"faithful","note":""}

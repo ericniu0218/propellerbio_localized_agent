@@ -46,6 +46,10 @@ The status bar shows `● connected` once Ollama is reachable. If it says
 `● disconnected`, start Ollama (`ollama serve`) - the client re-checks every
 10 seconds.
 
+After pulling new code, run `pip install -e ".[dev]"` again: dependencies
+change (the literature review added `pydantic`, `pyyaml`, `lxml` and
+`rapidfuzz`), and an old virtual environment fails with `ModuleNotFoundError`.
+
 ## Commands
 
 | Command          | What it does                     |

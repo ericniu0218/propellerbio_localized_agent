@@ -1,0 +1,23 @@
+# Migraine — CNS. Added September 2026 for the deploy-readiness audit.
+# Near-misses cluster headache and tension-type headache share drugs (CGRP
+# antibodies are tested in both), so exactness matters.
+id: migraine-prevention-targets
+question: "If I want to prevent migraine attacks, what areas should I target?"
+notes: >-
+  Built with the paper searcher (`build-corpus --searcher`). The queries below
+  are the hand-written fallback for a frozen build without the searcher.
+corpus:
+  max_per_query: 25
+  full_text_max: 45
+  queries:
+    - 'TITLE_ABS:"migraine" AND (TITLE_ABS:"prevent*" OR TITLE_ABS:"prophyla*") AND (PUB_TYPE:"Randomized Controlled Trial" OR TITLE_ABS:"phase 3") AND PUB_YEAR:[2012 TO 2025]'
+    - 'TITLE_ABS:"migraine" AND (TITLE_ABS:"knockout" OR TITLE_ABS:"antagonist" OR TITLE_ABS:"blockade") AND (TITLE_ABS:"mice" OR TITLE_ABS:"rat*") AND OPEN_ACCESS:y AND PUB_YEAR:[2012 TO 2025]'
+  near_miss_max: 4
+  near_miss_queries:
+    - 'TITLE:"cluster headache" AND (TITLE_ABS:"prevent*" OR TITLE_ABS:"antibody") AND OPEN_ACCESS:y AND NOT TITLE:"migraine"'
+    - 'TITLE:"tension-type headache" AND TITLE_ABS:"treatment" AND OPEN_ACCESS:y AND NOT TITLE:"migraine"'
+references:
+  reviews_query: 'TITLE:"migraine" AND (TITLE:"prevent*" OR TITLE:"target*" OR TITLE:"CGRP") AND PUB_TYPE:"review" AND PUB_YEAR:[2022 TO 2025]'
+  reviews_max: 5
+  open_targets_disease: MONDO_0005277
+  open_targets_min_phase: 3

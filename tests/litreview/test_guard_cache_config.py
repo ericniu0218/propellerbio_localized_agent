@@ -244,3 +244,75 @@ def test_in_animals_needs_cited_text_about_animals():
     g = CitationGuard(spec, load_knowledge(), {"E1": human, "E2": mouse})
     assert not g.check("ALOX5 expression rose in animals.", ["E1"]).kept
     assert g.check("ALOX5 expression rose in animals.", ["E2"]).kept
+
+
+def _mouse_guard(**quotes: str) -> CitationGuard:
+    spec = parse_question("If I want to prevent psoriasis, what should I target?")
+    units = {cid: unit(id=f"u{cid}", quote=q, target="IL17A", target_raw="IL-17A", intervention=None,
+                       evidence_type="in_vivo", species="mouse", species_raw="mice", effect_detail="", n=None,
+                       outcome="improved", provenance={"target": "quote", "species": "quote"})
+             for cid, q in quotes.items()}
+    return CitationGuard(spec, load_knowledge(), units, paper_labels={"P1": "Smith 2020 J Invest Dermatol"})
+
+
+NULL_QUOTE = "Blocking IL-17A had no significant effect on epidermal thickness in imiquimod-treated mice."
+
+
+@pytest.mark.parametrize("sentence, quote", [
+    ("Blocking IL-17A reduced epidermal thickness in imiquimod-treated mice.", NULL_QUOTE),
+    ("Blocking IL-17A significantly reduced epidermal thickness in mice.",
+     "Blocking IL-17A did not significantly reduce epidermal thickness in mice."),
+    ("IL-36 gamma expression was decreased in lesional skin of imiquimod-treated mice.",
+     "IL-36 gamma expression was increased in lesional skin of imiquimod-treated mice."),
+], ids=["effect-claimed-on-null", "negation-dropped", "direction-flipped"])
+def test_a_sentence_that_reverses_its_cited_result_is_dropped(sentence, quote):
+    """Found by an adversarial probe: every name and number in these is in
+    the quote, and each says the opposite of it. The null result was kept even
+    when the finding was labelled no_effect."""
+    verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
+    assert not verdict.kept
+
+
+@pytest.mark.parametrize("sentence, quotes", [
+    ("Blocking IL-17A had no significant effect on epidermal thickness in mice.", {"E1": NULL_QUOTE}),
+    ("Blocking IL-17A prevented the increase in epidermal thickness in mice.",
+     {"E1": "Blocking IL-17A reduced epidermal thickness in imiquimod-treated mice."}),
+    ("Blocking IL-17A lowered epidermal thickness in mice.",
+     {"E1": "Blocking IL-17A reduced epidermal thickness in imiquimod-treated mice."}),
+    ("Blocking IL-17A reduced ear thickness in mice.",
+     {"E1": "Blocking IL-17A reduced ear thickness but had no effect on scaling in imiquimod-treated mice."}),
+    ("Blocking IL-17A reduced ear thickness in mice.",
+     {"E1": NULL_QUOTE, "E2": "Blocking IL-17A reduced ear thickness in imiquimod-treated mice."}),
+    ("Epidermal thickness was higher in untreated mice than in mice given anti-IL-17A.",
+     {"E1": "Blocking IL-17A reduced epidermal thickness in imiquimod-treated mice."}),
+], ids=["faithful-null", "prevented-the-increase", "synonym", "mixed-quote", "one-positive-citation",
+        "comparison-rephrased"])
+def test_a_faithful_sentence_beside_the_direction_checks_is_kept(sentence, quotes):
+    verdict = _mouse_guard(**quotes).check(sentence, list(quotes))
+    assert verdict.kept, verdict.reason
+
+
+def test_a_result_cited_to_a_sentence_that_reports_none_is_dropped():
+    """Found in a hand audit of an asthma report (qwen3:8b): the quote is a
+    dose-finding trial's enrolment sentence, and the sentence invents an
+    efficacy result while reusing its names and numbers."""
+    quote = ("Key Results: Among 45 participants randomized to montelukast and 44 to placebo, median [IQR] ages "
+             "were 6.6 [5.4, 10] and 6.7 [5.3, 9.9] years, with high-moderate pre-treatment exacerbation severity.")
+    # The question here is psoriasis, so the disease is left out of the sentence.
+    sentence = ("Montelukast reduced exacerbations in children with high-moderate pre-treatment severity, "
+                "as shown in a study of 45 participants randomized to montelukast and 44 to placebo.")
+    verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
+    assert not verdict.kept and "does not report" in verdict.reason
+
+
+@pytest.mark.parametrize("sentence, quote", [
+    ("Adverse events were infrequent and mild in mice treated with anti-IL-17A.",
+     "Adverse events were infrequent and mild in mice given anti-IL-17A."),
+    ("Blocking IL-17A caused no increase in heart rate in mice.",
+     "There was no increase in heart rate at any dose of anti-IL-17A in mice."),
+    ("Anti-IL-17A reduced inflammation in mice.",
+     "Anti-IL-17A can quickly relieve symptoms and reduce the level of inflammation in mice."),
+], ids=["safety-wording", "no-increase", "base-verb-forms"])
+def test_a_result_in_plain_wording_still_counts_as_a_result(sentence, quote):
+    verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
+    assert verdict.kept, verdict.reason

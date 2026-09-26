@@ -1,0 +1,826 @@
+[
+  {
+    "symbol": "ADORA1",
+    "max_phase": 4.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADORA2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADORA2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADORA3",
+    "max_phase": 4.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRA1A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "ERGOTAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRA1B",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "ERGOTAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRA1D",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "ERGOTAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRA2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "ERGOTAMINE",
+      "CLONIDINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRA2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "ERGOTAMINE",
+      "CLONIDINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRA2C",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "ERGOTAMINE",
+      "CLONIDINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRB1",
+    "max_phase": 4.0,
+    "drugs": [
+      "PROPRANOLOL HYDROCHLORIDE",
+      "PROPRANOLOL"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ADRB2",
+    "max_phase": 4.0,
+    "drugs": [
+      "PROPRANOLOL HYDROCHLORIDE",
+      "PROPRANOLOL"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ALDH5A1",
+    "max_phase": 4.0,
+    "drugs": [
+      "DIVALPROEX SODIUM",
+      "VALPROIC ACID"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "CA2",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "CA4",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "CALCA",
+    "max_phase": 4.0,
+    "drugs": [
+      "FREMANEZUMAB",
+      "GALCANEZUMAB",
+      "EPTINEZUMAB"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "CALCB",
+    "max_phase": 4.0,
+    "drugs": [
+      "FREMANEZUMAB",
+      "GALCANEZUMAB",
+      "EPTINEZUMAB"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "CALCRL",
+    "max_phase": 4.0,
+    "drugs": [
+      "ATOGEPANT",
+      "ZAVEGEPANT HYDROCHLORIDE",
+      "TELCAGEPANT",
+      "ERENUMAB",
+      "RIMEGEPANT",
+      "UBROGEPANT",
+      "RIMEGEPANT SULFATE",
+      "ZAVEGEPANT"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "FAAH",
+    "max_phase": 4.0,
+    "drugs": [
+      "ACETAMINOPHEN"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRA1",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRA2",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRA3",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRA4",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRA5",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRA6",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRB1",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRB2",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRB3",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRD",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRE",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRG1",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRG2",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRG3",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRP",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GABRQ",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUTALBITAL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIA1",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIA2",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIA3",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIA4",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIK1",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIK2",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIK3",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIK4",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIK5",
+    "max_phase": 4.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR1A",
+    "max_phase": 4.0,
+    "drugs": [
+      "METHYSERGIDE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR1B",
+    "max_phase": 4.0,
+    "drugs": [
+      "NARATRIPTAN HYDROCHLORIDE",
+      "SUMATRIPTAN",
+      "ZOLMITRIPTAN",
+      "NARATRIPTAN",
+      "ALMOTRIPTAN MALATE",
+      "ELETRIPTAN",
+      "SUMATRIPTAN SUCCINATE",
+      "RIZATRIPTAN BENZOATE",
+      "FROVATRIPTAN",
+      "RIZATRIPTAN",
+      "ALMOTRIPTAN",
+      "ELETRIPTAN HYDROBROMIDE",
+      "FROVATRIPTAN SUCCINATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR1D",
+    "max_phase": 4.0,
+    "drugs": [
+      "ERGOTAMINE TARTRATE",
+      "NARATRIPTAN HYDROCHLORIDE",
+      "SUMATRIPTAN",
+      "ZOLMITRIPTAN",
+      "ERGOTAMINE",
+      "NARATRIPTAN",
+      "ALMOTRIPTAN MALATE",
+      "ELETRIPTAN",
+      "SUMATRIPTAN SUCCINATE",
+      "RIZATRIPTAN BENZOATE",
+      "DIHYDROERGOTAMINE",
+      "FROVATRIPTAN",
+      "DIHYDROERGOTAMINE MESYLATE",
+      "RIZATRIPTAN",
+      "ALMOTRIPTAN",
+      "ELETRIPTAN HYDROBROMIDE",
+      "FROVATRIPTAN SUCCINATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR1F",
+    "max_phase": 4.0,
+    "drugs": [
+      "LASMIDITAN SUCCINATE",
+      "LASMIDITAN",
+      "ALMOTRIPTAN MALATE",
+      "ELETRIPTAN",
+      "ALMOTRIPTAN",
+      "ELETRIPTAN HYDROBROMIDE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "METHYSERGIDE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR2C",
+    "max_phase": 4.0,
+    "drugs": [
+      "METHYSERGIDE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "OPRD1",
+    "max_phase": 4.0,
+    "drugs": [
+      "CODEINE PHOSPHATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "OPRK1",
+    "max_phase": 4.0,
+    "drugs": [
+      "CODEINE PHOSPHATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "OPRM1",
+    "max_phase": 4.0,
+    "drugs": [
+      "CODEINE PHOSPHATE",
+      "FENTANYL CITRATE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "PTGS1",
+    "max_phase": 4.0,
+    "drugs": [
+      "NAPROXEN",
+      "ASPIRIN",
+      "KETOROLAC TROMETHAMINE",
+      "NAPROXEN SODIUM",
+      "ACETAMINOPHEN",
+      "DICLOFENAC",
+      "IBUPROFEN",
+      "KETOPROFEN",
+      "DICLOFENAC POTASSIUM",
+      "LORNOXICAM",
+      "KETOROLAC"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "PTGS2",
+    "max_phase": 4.0,
+    "drugs": [
+      "NAPROXEN",
+      "ASPIRIN",
+      "KETOROLAC TROMETHAMINE",
+      "NAPROXEN SODIUM",
+      "CELECOXIB",
+      "MELOXICAM",
+      "ACETAMINOPHEN",
+      "DICLOFENAC",
+      "IBUPROFEN",
+      "KETOPROFEN",
+      "DICLOFENAC POTASSIUM",
+      "LORNOXICAM",
+      "KETOROLAC"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "RAMP1",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZAVEGEPANT"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN10A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN11A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN1A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN3A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN4A",
+    "max_phase": 4.0,
+    "drugs": [
+      "BUPIVACAINE",
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN5A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN7A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN8A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SCN9A",
+    "max_phase": 4.0,
+    "drugs": [
+      "ZONISAMIDE",
+      "LACOSAMIDE",
+      "LIDOCAINE HYDROCHLORIDE",
+      "TOPIRAMATE",
+      "LIDOCAINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SLC6A2",
+    "max_phase": 4.0,
+    "drugs": [
+      "PSEUDOEPHEDRINE HYDROCHLORIDE",
+      "DIETHYLPROPION"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SLC6A3",
+    "max_phase": 4.0,
+    "drugs": [
+      "DIETHYLPROPION"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "SNAP25",
+    "max_phase": 4.0,
+    "drugs": [
+      "ONABOTULINUMTOXINA",
+      "INCOBOTULINUMTOXINA",
+      "BOTULINUM TOXIN TYPE A"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "TRPV1",
+    "max_phase": 4.0,
+    "drugs": [
+      "ACETAMINOPHEN"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "DRD2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METOCLOPRAMIDE HYDROCHLORIDE",
+      "METOCLOPRAMIDE",
+      "PROCHLORPERAZINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "ESR1",
+    "max_phase": 3.0,
+    "drugs": [
+      "ETHINYL ESTRADIOL"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN1",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN2A",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN2B",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN2C",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN2D",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN3A",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "GRIN3B",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HRH1",
+    "max_phase": 3.0,
+    "drugs": [
+      "DIPHENHYDRAMINE",
+      "PROMETHAZINE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR3A",
+    "max_phase": 3.0,
+    "drugs": [
+      "METOCLOPRAMIDE HYDROCHLORIDE",
+      "METOCLOPRAMIDE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "HTR4",
+    "max_phase": 3.0,
+    "drugs": [
+      "METOCLOPRAMIDE HYDROCHLORIDE",
+      "METOCLOPRAMIDE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "NR3C1",
+    "max_phase": 3.0,
+    "drugs": [
+      "DEXAMETHASONE"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "P2RY12",
+    "max_phase": 3.0,
+    "drugs": [
+      "CLOPIDOGREL"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  },
+  {
+    "symbol": "PGR",
+    "max_phase": 3.0,
+    "drugs": [
+      "LEVONORGESTREL"
+    ],
+    "source": "Open Targets MONDO_0005277"
+  }
+]

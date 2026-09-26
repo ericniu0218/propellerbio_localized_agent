@@ -23,7 +23,8 @@ CORPUS = Path(__file__).resolve().parents[2] / "evals/litreview/corpora-searcher
 
 def _copy(pid: str, source: str, types: list[str] | None = None, **kw) -> Paper:
     signals = kw.pop("signals", None) or PaperSignals(publication_types=list(types or []))
-    return Paper(id=pid, doi="10.1/x", title="IL-17 in psoriasis", abstract="A.",
+    kw.setdefault("title", "IL-17 in psoriasis")
+    return Paper(id=pid, doi="10.1/x", abstract="A.",
                  source=source, signals=signals, **kw)
 
 
@@ -149,3 +150,24 @@ def test_every_real_paper_keeps_a_retraction_on_its_twin():
     out = ingest(papers + twins)
     assert len(out) == len(baseline)
     assert all(p.signals.is_retracted for p in out)
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_a_doi_written_as_a_link_is_the_same_paper(path):
+    a = _copy("a", "europepmc")
+    b = _copy("b", "pubmed", ["Retracted Publication"], title="IL-17 in psoriasis: corrected title")
+    a.doi, b.doi = "10.1/X", "https://doi.org/10.1/x"
+    assert path([a, b]).signals.is_retracted
+
+
+def test_a_duplicate_linked_only_through_a_third_copy_is_merged():
+    """A (DOI) and B (PMID, retracted, a different title) are the same paper,
+    which only C (DOI and PMID) shows. One pass of ingestion kept A and B
+    apart, and A - unflagged - went on to be used as evidence."""
+    a = Paper(id="A", source="europepmc", doi="10.1/y", title="IL-23 in psoriasis", abstract="A.")
+    b = Paper(id="B", source="pubmed", pmid="123", title="IL-23 in psoriasis: a mouse study", abstract="A.",
+              signals=PaperSignals(publication_types=["Retracted Publication"]))
+    c = Paper(id="C", source="pubmed", doi="10.1/y", pmid="123", title="IL-23 in psoriasis", abstract="A.")
+    out = ingest([a, b, c])
+    assert len(out) == 1
+    assert out[0].signals.is_retracted

@@ -1,0 +1,21 @@
+{
+  "question_id": "obesity-treatment-targets",
+  "built": "2026-09-25",
+  "papers": 208,
+  "full_text": 69,
+  "reviews": 5,
+  "reference_targets": 171,
+  "queries": [
+    "(TITLE_ABS:\"obesity\" OR TITLE_ABS:\"obese\" OR TITLE_ABS:\"diet-induced obesity\")",
+    "(TITLE_ABS:\"obesity\" OR TITLE_ABS:\"obese\" OR TITLE_ABS:\"diet-induced obesity\") AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"deficiency\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibition\" OR TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antagonist\" OR TITLE_ABS:\"neutralizing\" OR TITLE_ABS:\"loss-of-function\" OR TITLE_ABS:\"genetic association\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"randomized\")",
+    "(TITLE_ABS:\"obesity\" OR TITLE_ABS:\"obese\" OR TITLE_ABS:\"diet-induced obesity\")",
+    "(TITLE_ABS:\"obesity\" OR TITLE_ABS:\"obese\" OR TITLE_ABS:\"diet-induced obesity\") AND (TITLE_ABS:\"knockout\" OR TITLE_ABS:\"deficient\" OR TITLE_ABS:\"deficiency\" OR TITLE_ABS:\"blockade\" OR TITLE_ABS:\"inhibition\" OR TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antagonist\" OR TITLE_ABS:\"neutralizing\" OR TITLE_ABS:\"loss-of-function\" OR TITLE_ABS:\"genetic association\" OR TITLE_ABS:\"mendelian randomization\" OR TITLE_ABS:\"randomized\")",
+    "(\"obesity\"[tiab] OR \"obese\"[tiab] OR \"diet-induced obesity\"[tiab])",
+    "(\"obesity\"[tiab] OR \"obese\"[tiab] OR \"diet-induced obesity\"[tiab]) AND (\"knockout\"[tiab] OR \"deficient\"[tiab] OR \"deficiency\"[tiab] OR \"blockade\"[tiab] OR \"inhibition\"[tiab] OR \"inhibitor\"[tiab] OR \"antagonist\"[tiab] OR \"neutralizing\"[tiab] OR \"loss-of-function\"[tiab] OR \"genetic association\"[tiab] OR \"mendelian randomization\"[tiab] OR \"randomized\"[tiab])"
+  ],
+  "searcher": "literature",
+  "near_miss_queries": [
+    "TITLE:\"cachexia\" AND (TITLE_ABS:\"inhibitor\" OR TITLE_ABS:\"antibody\") AND OPEN_ACCESS:y AND NOT TITLE_ABS:\"obesity\"",
+    "TITLE:\"lipodystrophy\" AND (TITLE_ABS:\"leptin\" OR TITLE_ABS:\"treatment\") AND OPEN_ACCESS:y AND NOT TITLE_ABS:\"obesity\""
+  ]
+}

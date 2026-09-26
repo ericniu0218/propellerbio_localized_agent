@@ -1,0 +1,1536 @@
+[
+  {
+    "symbol": "ADRA1A",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE",
+      "PHENYLPROPANOLAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRA1B",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRA1D",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRA2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE",
+      "DEXMEDETOMIDINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRA2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE",
+      "DEXMEDETOMIDINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRA2C",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE",
+      "DEXMEDETOMIDINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRB1",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE",
+      "METOPROLOL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRB2",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADRB3",
+    "max_phase": 4.0,
+    "drugs": [
+      "EPHEDRINE",
+      "VIBEGRON"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CNR1",
+    "max_phase": 4.0,
+    "drugs": [
+      "RIMONABANT",
+      "TARANABANT",
+      "OTENABANT"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GIPR",
+    "max_phase": 4.0,
+    "drugs": [
+      "RETATRUTIDE",
+      "TIRZEPATIDE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GLP1R",
+    "max_phase": 4.0,
+    "drugs": [
+      "LIRAGLUTIDE",
+      "EXENATIDE",
+      "RETATRUTIDE",
+      "SEMAGLUTIDE",
+      "EFPEGLENATIDE",
+      "TIRZEPATIDE",
+      "SURVODUTIDE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR1A",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR1B",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR1D",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE",
+      "FENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR1E",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR1F",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR2A",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR2B",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR2C",
+    "max_phase": 4.0,
+    "drugs": [
+      "LORCASERIN",
+      "DEXFENFLURAMINE",
+      "LORCASERIN HYDROCHLORIDE",
+      "FENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR3A",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR3B",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR3C",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR3D",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR3E",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR4",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR5A",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR6",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "HTR7",
+    "max_phase": 4.0,
+    "drugs": [
+      "DEXFENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "LHCGR",
+    "max_phase": 4.0,
+    "drugs": [
+      "CHORIOGONADOTROPIN ALFA"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "LIPF",
+    "max_phase": 4.0,
+    "drugs": [
+      "ORLISTAT",
+      "CETILISTAT"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MC4R",
+    "max_phase": 4.0,
+    "drugs": [
+      "SETMELANOTIDE",
+      "SETMELANOTIDE ACETATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "OPRD1",
+    "max_phase": 4.0,
+    "drugs": [
+      "NALTREXONE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "OPRK1",
+    "max_phase": 4.0,
+    "drugs": [
+      "NALTREXONE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "OPRM1",
+    "max_phase": 4.0,
+    "drugs": [
+      "NALTREXONE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PNLIP",
+    "max_phase": 4.0,
+    "drugs": [
+      "ORLISTAT",
+      "CETILISTAT"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SIGMAR1",
+    "max_phase": 4.0,
+    "drugs": [
+      "FENFLURAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SLC18A2",
+    "max_phase": 4.0,
+    "drugs": [
+      "LISDEXAMFETAMINE",
+      "LISDEXAMFETAMINE DIMESYLATE",
+      "BENZPHETAMINE HYDROCHLORIDE",
+      "BENZPHETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SLC6A2",
+    "max_phase": 4.0,
+    "drugs": [
+      "PHENDIMETRAZINE TARTRATE",
+      "AMPHETAMINE SULFATE",
+      "BUPROPION",
+      "PHENMETRAZINE",
+      "LISDEXAMFETAMINE",
+      "DIETHYLPROPION HYDROCHLORIDE",
+      "DIETHYLPROPION",
+      "MAZINDOL",
+      "LISDEXAMFETAMINE DIMESYLATE",
+      "PHENYLPROPANOLAMINE",
+      "SIBUTRAMINE",
+      "PHENTERMINE HYDROCHLORIDE",
+      "AMITIFADINE",
+      "PHENDIMETRAZINE",
+      "PHENTERMINE",
+      "METHYLPHENIDATE",
+      "BENZPHETAMINE HYDROCHLORIDE",
+      "BENZPHETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SLC6A3",
+    "max_phase": 4.0,
+    "drugs": [
+      "PHENDIMETRAZINE TARTRATE",
+      "AMPHETAMINE SULFATE",
+      "BUPROPION",
+      "ARMODAFINIL",
+      "PHENMETRAZINE",
+      "LISDEXAMFETAMINE",
+      "DIETHYLPROPION HYDROCHLORIDE",
+      "DIETHYLPROPION",
+      "MAZINDOL",
+      "LISDEXAMFETAMINE DIMESYLATE",
+      "SIBUTRAMINE",
+      "AMITIFADINE",
+      "PHENDIMETRAZINE",
+      "METHYLPHENIDATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SLC6A4",
+    "max_phase": 4.0,
+    "drugs": [
+      "MAZINDOL",
+      "SIBUTRAMINE",
+      "AMITIFADINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ACE",
+    "max_phase": 3.0,
+    "drugs": [
+      "RAMIPRIL",
+      "TRANDOLAPRIL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADORA1",
+    "max_phase": 3.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADORA2A",
+    "max_phase": 3.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADORA2B",
+    "max_phase": 3.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ADORA3",
+    "max_phase": 3.0,
+    "drugs": [
+      "CAFFEINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "AR",
+    "max_phase": 3.0,
+    "drugs": [
+      "TESTOSTERONE UNDECANOATE",
+      "TESTOSTERONE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CA2",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CA4",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CACNA1C",
+    "max_phase": 3.0,
+    "drugs": [
+      "FELODIPINE",
+      "VERAPAMIL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CACNA1D",
+    "max_phase": 3.0,
+    "drugs": [
+      "FELODIPINE",
+      "VERAPAMIL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CACNA1F",
+    "max_phase": 3.0,
+    "drugs": [
+      "FELODIPINE",
+      "VERAPAMIL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "CACNA1S",
+    "max_phase": 3.0,
+    "drugs": [
+      "FELODIPINE",
+      "VERAPAMIL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "COXFA4",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "COXFA4L2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "ESR1",
+    "max_phase": 3.0,
+    "drugs": [
+      "ETHINYL ESTRADIOL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRA1",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRA2",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRA3",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRA4",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRA5",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRA6",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRB1",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRB2",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRB3",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRD",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRE",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRG1",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRG2",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRG3",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRP",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GABRQ",
+    "max_phase": 3.0,
+    "drugs": [
+      "PROPOFOL",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GCGR",
+    "max_phase": 3.0,
+    "drugs": [
+      "RETATRUTIDE",
+      "SURVODUTIDE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GHR",
+    "max_phase": 3.0,
+    "drugs": [
+      "SOMATROPIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GPD2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIA1",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIA2",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIA3",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIA4",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIK1",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIK2",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIK3",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIK4",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIK5",
+    "max_phase": 3.0,
+    "drugs": [
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN1",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN2A",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN2B",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN2C",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN2D",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN3A",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "GRIN3B",
+    "max_phase": 3.0,
+    "drugs": [
+      "KETAMINE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "IL12B",
+    "max_phase": 3.0,
+    "drugs": [
+      "MIRIKIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "IL17A",
+    "max_phase": 3.0,
+    "drugs": [
+      "IXEKIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "IL1R1",
+    "max_phase": 3.0,
+    "drugs": [
+      "ANAKINRA"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "IL23A",
+    "max_phase": 3.0,
+    "drugs": [
+      "MIRIKIZUMAB"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "INSR",
+    "max_phase": 3.0,
+    "drugs": [
+      "INSULIN HUMAN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "KCNJ11",
+    "max_phase": 3.0,
+    "drugs": [
+      "DIAZOXIDE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "KCNJ8",
+    "max_phase": 3.0,
+    "drugs": [
+      "DIAZOXIDE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "LEPR",
+    "max_phase": 3.0,
+    "drugs": [
+      "METRELEPTIN",
+      "MIBAVADEMAB"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "METAP2",
+    "max_phase": 3.0,
+    "drugs": [
+      "BELORANIB"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND3",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND4",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND4L",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND5",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MT-ND6",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MTNR1A",
+    "max_phase": 3.0,
+    "drugs": [
+      "MELATONIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "MTNR1B",
+    "max_phase": 3.0,
+    "drugs": [
+      "MELATONIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA10",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA11",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA12",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA13",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA3",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA5",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA6",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA7",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA8",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFA9",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFAB1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFAF1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFAF2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFAF3",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFAF4",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB10",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB11",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB3",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB4",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB5",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB6",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB7",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB8",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFB9",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFC1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFC2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS3",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS4",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS5",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS6",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS7",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFS8",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFV1",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFV2",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NDUFV3",
+    "max_phase": 3.0,
+    "drugs": [
+      "METFORMIN HYDROCHLORIDE",
+      "METFORMIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NPY5R",
+    "max_phase": 3.0,
+    "drugs": [
+      "MK-0557"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "NR3C2",
+    "max_phase": 3.0,
+    "drugs": [
+      "FELODIPINE",
+      "DROSPIRENONE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PDE4A",
+    "max_phase": 3.0,
+    "drugs": [
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PDE4B",
+    "max_phase": 3.0,
+    "drugs": [
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PDE4C",
+    "max_phase": 3.0,
+    "drugs": [
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PDE4D",
+    "max_phase": 3.0,
+    "drugs": [
+      "ROFLUMILAST"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PDE5A",
+    "max_phase": 3.0,
+    "drugs": [
+      "TADALAFIL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "PGR",
+    "max_phase": 3.0,
+    "drugs": [
+      "DROSPIRENONE",
+      "LEVONORGESTREL"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN10A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN11A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN1A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN2A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN3A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN4A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN5A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN7A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN8A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SCN9A",
+    "max_phase": 3.0,
+    "drugs": [
+      "LAMOTRIGINE",
+      "LIDOCAINE",
+      "ZONISAMIDE",
+      "TOPIRAMATE"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "SLC5A2",
+    "max_phase": 3.0,
+    "drugs": [
+      "EMPAGLIFLOZIN"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "THRA",
+    "max_phase": 3.0,
+    "drugs": [
+      "LEVOTHYROXINE",
+      "LIOTHYRONINE SODIUM"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  },
+  {
+    "symbol": "THRB",
+    "max_phase": 3.0,
+    "drugs": [
+      "LEVOTHYROXINE",
+      "LIOTHYRONINE SODIUM"
+    ],
+    "source": "Open Targets MONDO_0011122"
+  }
+]

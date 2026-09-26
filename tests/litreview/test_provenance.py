@@ -291,3 +291,34 @@ def test_extraction_blanks_a_summary_that_dropped_the_negation_and_keeps_the_fin
     assert flipped.where["effect_detail"] == "none" and flipped.values["effect_detail"] == ""
     faithful = _trace(effect_detail="IL-23 blockade did not significantly reduce inflammation in mice.", **kw)
     assert faithful.where["effect_detail"] != "none"
+
+
+@pytest.mark.parametrize("summary, evidence", [
+    ("Treatment reduced ear lesions in IL-23R-deficient mice.",
+     "Treatment reduced ear lesions in wild-type mice but not in IL-23R-deficient mice after imiquimod."),
+    ("Weight loss with the GLP-1 agonist occurred with changes in daily food intake.",
+     "Weight loss with the GLP-1 agonist occurred without changes in daily food intake in obese mice."),
+    ("IL-36 gamma was strongly downregulated in lesional skin.",
+     "Expression of IL-36 gamma was strongly upregulated in lesional skin of patients with psoriasis."),
+    ("IL-17 deficiency altered epidermal thickness.",
+     "Neither IL-17 nor IL-22 deficiency altered epidermal thickness in imiquimod-treated mice."),
+], ids=["dropped-but-not-in", "dropped-without", "flipped-up-down", "dropped-neither"])
+def test_a_summary_that_drops_a_scope_or_flips_a_direction_is_not_supported(summary, evidence):
+    """Found by an adversarial probe: each passed as a restatement before."""
+    from bedrock.litreview.extract.provenance import text_supported
+
+    assert not text_supported(summary, evidence, KB)
+
+
+@pytest.mark.parametrize("summary, evidence", [
+    ("Treatment reduced ear lesions in wild-type mice.",
+     "Treatment reduced ear lesions in wild-type mice but not in IL-23R-deficient mice after imiquimod."),
+    ("Weight loss occurred without changes in daily food intake.",
+     "Weight loss with the GLP-1 agonist occurred without changes in daily food intake in obese mice."),
+    ("Lesion scores improved in patients with psoriasis.",
+     "Lesion scores improved in patients with or without psoriasis of the scalp."),
+], ids=["kept-the-positive-half", "kept-the-without", "with-or-without-negates-nothing"])
+def test_a_faithful_summary_beside_the_new_cues_is_still_supported(summary, evidence):
+    from bedrock.litreview.extract.provenance import text_supported
+
+    assert text_supported(summary, evidence, KB)

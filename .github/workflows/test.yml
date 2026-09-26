@@ -31,7 +31,8 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        # `api` too, or the two HTTP API tests skip silently.
+        run: pip install -e ".[dev,api]"
 
       # The Textual UI tests drive the app through its headless test harness,
       # so no display or TTY is needed.

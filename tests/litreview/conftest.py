@@ -14,6 +14,8 @@ The data directories are already redirected for the whole suite by
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from bedrock.config import settings as bedrock_settings
@@ -22,3 +24,7 @@ from bedrock.config import settings as bedrock_settings
 @pytest.fixture(autouse=True)
 def no_real_bedrock_config(tmp_path, monkeypatch):
     monkeypatch.setattr(bedrock_settings, "DEFAULT_CONFIG_PATH", tmp_path / "no-config.toml")
+    # An exported BEDROCK_API_BASE (or any other override) in the developer's
+    # shell would otherwise reach the tests exactly as a config file would.
+    for name in [k for k in os.environ if k.startswith("BEDROCK_")]:
+        monkeypatch.delenv(name)

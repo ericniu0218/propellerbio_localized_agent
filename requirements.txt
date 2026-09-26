@@ -35,7 +35,17 @@ pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py)
 # concatenated and uncapped, and the exception was swallowed - so whoever spoke
 # most in a meeting got no voice vector and could never be matched to an
 # enrolled name. Voice enrolment only ever worked on short test clips.
-bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@d0aa4dad64fa7e6616fd5620413fbd951615783e
+#
+# Now at the merge of PR #24, which brings two things from a branch of Eric
+# Niu's that had sat unmerged for over a week. Zoom renamed its per-participant
+# tracks in 2026 - "audio<Name><recording id>.m4a" inside an "Audio Record"
+# folder, where it used to be "audio<digits>_<Name>.m4a" - and matching only
+# the old shape meant those tracks went unrecognised and the meeting fell back
+# to the mixed recording, throwing away the best speaker attribution in the
+# whole pipeline. And every decision and action item now carries who said it,
+# read off the transcript at its verified timestamp rather than asked of the
+# model.
+bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@d3e3342737ee921017041c200a4bc4aa831dd627
 
 python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
 

@@ -32,6 +32,16 @@ evidence it cites:
    methods or demographics, with no result in it either. This check is what
    drops those - not what they say, but that their evidence never reports
    anything to say it about.
+7. Aims, methods and predictions are not findings (`extract/verify.py`
+   `not_a_result_reason`). In a findings section a sentence that itself
+   only says how a study was done or what it set out to do ("The study used
+   a ... mouse model to investigate ...") is dropped, however real the
+   result it cites. And a sentence whose every cited quote only states an
+   aim, a prediction or a hope ("we investigated the role of ...", "is
+   predicted to benefit ...") is dropped in a findings section, and
+   anywhere it claims an effect: check 6 reads words, and such quotes often
+   use result words to name a model or a hope ("allergen-induced",
+   "therapeutics to prevent").
 
 The cited evidence is the paper's text, never what the model wrote beside it.
 `effect_detail`, `species_raw` and a sample size the paper does not state are
@@ -48,7 +58,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from bedrock.litreview.extract.verify import covered, split_sentences, studied_in
+from bedrock.litreview.extract.verify import (
+    RESULT_WORDS,
+    covered,
+    not_a_result_reason,
+    reports_result,
+    split_sentences,
+    studied_in,
+)
 from bedrock.litreview.knowledge import Knowledge, TermMatcher, clean, fold
 from bedrock.litreview.models import EvidenceUnit, QuestionSpec
 from bedrock.litreview.negation import drops_negation
@@ -217,6 +234,23 @@ class CitationGuard:
         # sentence to claim an effect first.
         if self.findings and not any(_reports_result(clean(u.quote)) for u in cited):
             return GuardResult(False, "cites no quote that reports a result")
+        # The sentence itself says only how the study was done or what it set
+        # out to do - "The study used a ... mouse model to investigate the
+        # effects of NF-kB inhibition" (migraine S23). It can cite a real
+        # result and still claim nothing. Aim and method cues only: a
+        # sentence that reports a result and then adds "suggesting a
+        # potential role for X" is left alone.
+        if self.findings and (not_a_result_reason(sentence) or "").endswith(":aim"):
+            return GuardResult(False, "is a methods or aims sentence, not a finding")
+        # A sentence resting only on quotes that state an aim, a prediction
+        # or a hope has no result under it, however result-like the quote's
+        # words: "we investigated the role of the AhR in regulating
+        # allergen-induced ROS ..." (asthma S32). Stage 5 no longer keeps such
+        # quotes; this is what catches them in a stored run extracted before
+        # it did, when `verify-run` re-checks it.
+        if (self.findings or _EFFECT.search(sentence)) \
+                and all(not_a_result_reason(clean(u.quote)) for u in cited):
+            return GuardResult(False, "cites only quotes that state an aim, method or prediction, not a result")
         if _NULL_CLAIM.search(sentence) and not any(
             u.outcome in ("no_effect", "mixed") or _NULL_CLAIM.search(clean(u.quote)) for u in cited
         ):
@@ -277,27 +311,11 @@ def _null_only(text: str) -> bool:
     return bool(_NULL_CLAIM.search(text)) and not _EFFECT.search(_NULL_SCOPE.sub(" ", text))
 
 
-# What a quote that reports a result says. Verb and adjective forms only:
-# "exacerbation" names an asthma event, "exacerbated" reports one.
-_RESULT = re.compile(
-    r"\b(?:reduc(?:ed|es|ing|tion|tions)|decreas(?:ed|es|ing)|lower(?:ed|ing)?|attenuat(?:ed|es|ing)|"
-    r"ameliorat(?:ed|es)|alleviat(?:ed|es)|diminish(?:ed|es)|abolish(?:ed|es)|abrogat(?:ed|es)|"
-    r"mitigat(?:ed|es)|improv(?:ed|es|ing|ement)|prevent(?:ed|s|ing)|protect(?:ed|s|ive|ion)|"
-    r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
-    r"exacerbat(?:ed|es|ing)|promot(?:ed|es)|accelerat(?:ed|es)|augment(?:ed|s)|amplif(?:ied|ies)|"
-    r"suppress(?:ed|es)|inhibit(?:ed|s)|induc(?:ed|es)|enhanc(?:ed|es)|restor(?:ed|es)|rescu(?:ed|es)|"
-    r"higher|greater|fewer|less|more|better|worse|significant(?:ly)?|associated|correlat\w*|"
-    r"efficac\w*|effective|benefit\w*|remission|response|achieved|rose|fell|declined|lost|gained|"
-    r"upregulat\w*|downregulat\w*|no effect|did not|failed|"
-    # Base forms ("can reduce", "exacerbate"), change nouns ("no increase"),
-    # and how safety results are written ("adverse events were infrequent").
-    r"reduce|decrease|increase|lower|improve|prevent|protect|worsen|exacerbate|aggravate|attenuate|"
-    r"alleviate|relieve[ds]?|suppress|inhibit|enhance|promote|restore|induce|change[ds]?|difference|"
-    r"adverse|tolerat\w*|infrequent|mild|unchanged)\b|%|\bp\s*[<=>]|\bfold\b", re.I)
-
-
-def _reports_result(text: str) -> bool:
-    return bool(_RESULT.search(text))
+# What a quote that reports a result says: one vocabulary, kept beside quote
+# verification in `extract/verify.py` so Stage 5's "not a result" rule reads
+# results with exactly the same words as this guard.
+_RESULT = RESULT_WORDS
+_reports_result = reports_result
 
 
 _UP = re.compile(r"\b(?:increas|elevat|upregulat|higher|raised|rose)\w*", re.I)

@@ -4,6 +4,8 @@ The order below is the whole design, and it is deliberate:
 
     model extracts  ->  code verifies quotes  ->  code checks the quote is
                         this paper's own result, not someone else's
+                    ->  code checks the quote reports a result at all, not
+                        an aim, a method or a prediction
                     ->  code checks the entity
                     ->  code checks direction and outcome against the
                         words the model copied  ->  code normalises
@@ -23,6 +25,14 @@ citation, a "Previous studies have shown..." lead-in. `extract/verify.py`
 a confidence interval, a concentration or an abbreviation that merely looks
 like one. This runs before the entity check on purpose: a borrowed result can
 still name the right entity, and would otherwise sail through.
+
+Then: does the sentence report a result at all? "In this study, we
+investigated the role of the AhR in ..." is the paper's own sentence about its
+own work, and names the right target, but it is an aim, not a finding - and a
+report cited it for "AhR regulates ...". Aims, methods, predictions ("is
+therefore predicted to benefit patients") and open questions ("remains
+unclear") are dropped by `extract/verify.py` `not_a_result_reason`, which
+keeps a quote that states its aim and then its result.
 
 Which sections we send, and why (set by the plan, from config/pipeline.yaml):
 
@@ -62,7 +72,14 @@ from bedrock.litreview.extract.normalize import (
     normalize_species,
 )
 from bedrock.litreview.extract.verify import normalize as normalize_text
-from bedrock.litreview.extract.verify import Located, locate_quote, other_work_reason, region_of, verify_quote
+from bedrock.litreview.extract.verify import (
+    Located,
+    locate_quote,
+    not_a_result_reason,
+    other_work_reason,
+    region_of,
+    verify_quote,
+)
 from bedrock.litreview.facets import subject_label
 from bedrock.litreview.knowledge import Knowledge, TermMatcher, load_knowledge
 from bedrock.litreview.lexical import BM25
@@ -474,6 +491,18 @@ def extract_paper(
                 # did not run it.
                 stats[other_work.split(":", 1)[0]] += 1
                 log.debug("finding dropped (%s): paper=%s quote=%r", other_work, paper.id, finding.quote[:80])
+                continue
+            not_a_result = not_a_result_reason(finding.quote)
+            if not_a_result:
+                # The paper's own words about its own work, but not a result:
+                # what the study set out to do ("In this study, we
+                # investigated ..."), how ("To assess X, mice were fed ..."),
+                # what it predicts or hopes for ("is therefore predicted to
+                # benefit patients"), or what is still unknown. A quote that
+                # states its aim and then its result is kept; see
+                # `not_a_result_reason` for how the two are told apart.
+                stats[not_a_result.split(":", 1)[0]] += 1
+                log.debug("finding dropped (%s): paper=%s quote=%r", not_a_result, paper.id, finding.quote[:80])
                 continue
             drop, match = entity_check(finding, spec, kb)
             if drop:

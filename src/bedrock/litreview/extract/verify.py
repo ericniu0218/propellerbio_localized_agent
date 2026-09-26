@@ -655,3 +655,197 @@ def other_work_reason(quote: str, section: str) -> str | None:
     if markers and not _fenced_by_comparison(quote, markers):
         return "other_work:citation_marker"
     return None
+
+
+# --- sentences that report no result at all -----------------------------------
+#
+# A verified quote can be the paper's own words, about the paper's own work,
+# and still not be a finding: it says what the study *set out* to do, what it
+# *predicts*, what its results *might one day enable*, or what is still
+# *unknown*. A hand audit of three benchmark reports found each of these cited
+# as evidence (evals/litreview/hand_audit/):
+#
+#   asthma S32   "In this study, we investigated the role of the AhR in
+#                regulating allergen-induced ROS generation ..." - an aim,
+#                cited for "AhR regulates allergen-induced ROS generation".
+#   obesity S56  "... our findings highlight a therapeutic potential for
+#                obese/diabetic postmenopausal patients; cold exposure is
+#                therefore predicted to metabolically benefit those
+#                patients." - a prediction from mouse work, cited as
+#                prevention evidence.
+#   asthma S57   "Identifying key pathophysiological determinants in airway
+#                epithelium enables novel therapeutics to prevent asthma
+#                recurrence." - background, cited as a prevention finding.
+#   migraine S23 the *report sentence* was the methods one: "The study used
+#                a ... mouse model to investigate the effects of NF-kB
+#                inhibition." It claims nothing.
+#
+# `RESULT_WORDS` alone cannot catch these: S32 contains "induced", S57
+# "prevent", both result words used here to name a model or a hope.
+#
+# So the rule is scoped, the way the citation guard's `_null_only` scopes a
+# negation. Each cue below marks a *stretch* of the sentence as aim, method,
+# prediction or open question; that stretch is set aside, and the text is
+# "not a result" only when a cue matched and nothing left outside the
+# stretches reports a result. "To test this, we treated mice with X, which
+# reduced Y by 40%" is a finding: the aim stretch ends at the comma, and
+# "which reduced Y by 40%" is left over.
+#
+# How far a stretch reaches depends on the cue:
+#
+# - an aim or method cue ("we investigated", "to determine whether", "was
+#   designed to") reaches *forward* from the cue to the next clause break
+#   (`_CLAUSE_BREAK`: a comma, semicolon or colon, "which", "and", "but",
+#   "to show" ...), so whatever the sentence says before the cue, and after
+#   the break, is still read for a result;
+# - a prediction, potential or open-question cue ("is predicted to", "may
+#   offer", "remains unclear") covers its *whole clause*, back to the
+#   previous break too, since the thing predicted or unknown is its subject
+#   ("cold exposure is predicted to ..."). The breaks still bound it, so "X
+#   reduced Y and may offer a new therapy" keeps "X reduced Y".
+#
+# Deliberately absent: plain "may", "suggest", "indicate" and "could". "These
+# data suggest IL-23 drives psoriasis" follows a result as often as not, and
+# "X may be mediated by Y" is how results sections hedge. Only the fixed
+# phrases below, which state an aim or a hope rather than hedge a result,
+# are cues. Measured before this was switched on, on the three stored
+# qwen3:8b benchmark reports: 30 of 593 evidence units hit (every one an aim,
+# a method, a prediction or an open question on reading; 3 of them are also
+# someone else's work, which Stage 5 checks first), and 7 of 179 kept
+# sentences would now be dropped by the citation guard. Over all 23,787
+# abstract and results sentences of their papers, 276 hits contain a result
+# word somewhere; a sample of 60, and every hit with a past-tense result verb,
+# were read, and all but one used the word inside the aim ("to determine
+# whether the increased ..."). The one ("... suggests a potential dual-hit
+# mechanism") is why "potential" must be a noun below.
+# tests/litreview/test_not_a_result.py has the real cases, kept and dropped.
+
+# What a text that reports a result says. Verb and adjective forms only:
+# "exacerbation" names an asthma event, "exacerbated" reports one. Shared by
+# the citation guard (`report/guard.py`, check 6) and the rule below, so one
+# vocabulary decides what "reports a result" means everywhere.
+RESULT_WORDS = re.compile(
+    r"\b(?:reduc(?:ed|es|ing|tion|tions)|decreas(?:ed|es|ing)|lower(?:ed|ing)?|attenuat(?:ed|es|ing)|"
+    r"ameliorat(?:ed|es)|alleviat(?:ed|es)|diminish(?:ed|es)|abolish(?:ed|es)|abrogat(?:ed|es)|"
+    r"mitigat(?:ed|es)|improv(?:ed|es|ing|ement)|prevent(?:ed|s|ing)|protect(?:ed|s|ive|ion)|"
+    r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
+    r"exacerbat(?:ed|es|ing)|promot(?:ed|es)|accelerat(?:ed|es)|augment(?:ed|s)|amplif(?:ied|ies)|"
+    r"suppress(?:ed|es)|inhibit(?:ed|s)|induc(?:ed|es)|enhanc(?:ed|es)|restor(?:ed|es)|rescu(?:ed|es)|"
+    r"higher|greater|fewer|less|more|better|worse|significant(?:ly)?|associated|correlat\w*|"
+    r"efficac\w*|effective|benefit\w*|remission|response|achieved|rose|fell|declined|lost|gained|"
+    r"upregulat\w*|downregulat\w*|up-regulat\w*|down-regulat\w*|no effect|did not|failed|"
+    # Base forms ("can reduce", "exacerbate"), change nouns ("no increase"),
+    # and how safety results are written ("adverse events were infrequent").
+    r"reduce|decrease|increase|lower|improve|prevent|protect|worsen|exacerbate|aggravate|attenuate|"
+    r"alleviate|relieve[ds]?|suppress|inhibit|enhance|promote|restore|induce|change[ds]?|difference|"
+    r"adverse|tolerat\w*|infrequent|mild|unchanged)\b|%|\bp\s*[<=>]|\bfold\b", re.I)
+
+
+def reports_result(text: str) -> bool:
+    """Does this text use any word a reported result is written with?
+
+    A wide net on purpose: it is used to decide that a text reports *no*
+    result, and a false "no" throws a real finding away."""
+    return bool(RESULT_WORDS.search(text))
+
+
+# Aim and method cues: what the study set out to do, or how. Each reaches
+# forward to the next clause break.
+_AIM_CUE = re.compile(
+    r"\b(?:"
+    r"we\s+(?:first\s+|further\s+|then\s+|also\s+|therefore\s+|next\s+)?"
+    r"(?:investigated|aimed|sought\s+to|hypothesi[sz]ed|hypothesi[sz]e|examined|assessed|evaluated|explored)"
+    r"|(?:the|our|this)\s+(?:main\s+|primary\s+)?(?:aim|objective|purpose|goal)s?\s+of\s+"
+    r"(?:this|the\s+present|the\s+current|our)\s+(?:study|work|trial|experiment)s?"
+    r"|(?:study|trial|experiment)s?\s+(?:was|were|is)\s+designed\s+to"
+    r"|(?:was|were)\s+(?:investigated|examined|assessed|evaluated|explored)"
+    r"|(?:the|this|our)\s+study\s+used"
+    r"|to\s+(?:further\s+|better\s+)?(?:investigate|examine|determine|assess|evaluate|explore|clarify|test)\s+"
+    r"(?:whether|if|how|the)"
+    r")\b",
+    re.I,
+)
+
+# Prediction, potential and open-question cues: a hope or a gap, not a
+# result. Each covers its whole clause.
+_HOPE_CUE = re.compile(
+    r"\b(?:"
+    r"(?:is|are)\s+(?:therefore\s+|thus\s+)?predicted\s+to"
+    r"|may\s+offer"
+    # "potential" as the thing highlighted ("a therapeutic potential for",
+    # "the potential of", "the potential role of"), not as an adjective: "the
+    # causal link ... suggests a potential dual-hit mechanism" reports a link.
+    r"|(?:highlight|suggest|underscore)(?:s|ed|ing)?\s+(?:a|the)\s+(?:therapeutic\s+)?potential"
+    r"\s+(?:for|of|in|to|role|use|value|benefit)"
+    r"|enables?\s+novel\s+therapeutics"
+    r"|warrants?\s+further\s+(?:investigation|study|studies|research)"
+    r"|could\s+be\s+a\s+(?:potential|promising)\s+(?:therapeutic\s+)?(?:target|strategy)"
+    r"|remain(?:s|ed)?\s+(?:largely\s+|still\s+|poorly\s+)?(?:unknown|unclear|elusive|understood)"
+    r")\b",
+    re.I,
+)
+
+# Where a cued stretch ends: a comma, semicolon or colon; "which"; a
+# conjunction ("and", "but", "whereas", "thus"), since what follows it can be
+# the result ("IL-6 was examined and was significantly elevated", "X reduced
+# Y and may offer a new therapy"); or "to show"/"showing", which introduce
+# what an experiment found ("The study used knockout mice to show that ...").
+_CLAUSE_BREAK = re.compile(
+    r"[,;:]|\s(?=(?:which|and|but|whereas|while|thus|hence|so)\b)"
+    r"|\s(?=(?:to\s+(?:show|demonstrate|reveal|confirm)|showing|demonstrating|revealing)\b)",
+    re.I,
+)
+
+# A model named after what provokes it - "allergen-induced", "(NTG)-induced",
+# "obesity-associated" - names the experiment, not its result. Masked before
+# the left-over text is read, or S32's "allergen-induced" would count.
+_NAMED_MODEL = re.compile(r"(?<=[\w)\]])-(?:induced|associated)\b", re.I)
+
+
+def _stance_spans(sentence: str) -> tuple[list[tuple[int, int]], str | None]:
+    """The stretches of one sentence that state an aim, method, prediction or
+    open question, and the kind of the first cue found ("aim" or "hope")."""
+    spans: list[tuple[int, int]] = []
+    kind = None
+    for m in _AIM_CUE.finditer(sentence):
+        end = next((b.start() for b in _CLAUSE_BREAK.finditer(sentence, m.end())), len(sentence))
+        spans.append((m.start(), end))
+        kind = kind or "aim"
+    for m in _HOPE_CUE.finditer(sentence):
+        start = max((b.end() for b in _CLAUSE_BREAK.finditer(sentence, 0, m.start())), default=0)
+        end = next((b.start() for b in _CLAUSE_BREAK.finditer(sentence, m.end())), len(sentence))
+        spans.append((start, end))
+        kind = kind or "hope"
+    return spans, kind
+
+
+def not_a_result_reason(text: str) -> str | None:
+    """Why `text` states no result - it only says what a study set out to do,
+    how, what it predicts or hopes for, or what is unknown - or None.
+
+    "not_a_result:aim" or "not_a_result:hope", after the first cue that
+    matched. None whenever no cue matches, and whenever anything outside the
+    cued stretches, in any sentence of `text`, reports a result: a quote
+    that opens with its aim and then gives the result is a finding.
+
+    Run on the paper's own verified sentence in Stage 5 (after
+    `other_work_reason`), and by the citation guard on report sentences and
+    on the quotes they cite.
+    """
+    kind = None
+    left: list[str] = []
+    for sentence in split_sentences(text):
+        spans, found = _stance_spans(sentence)
+        kind = kind or found
+        keep, last = [], 0
+        for start, end in sorted(spans):
+            if start > last:
+                keep.append(sentence[last:start])
+            last = max(last, end)
+        keep.append(sentence[last:])
+        left.append(" ".join(keep))
+    if kind is None:
+        return None
+    if reports_result(_NAMED_MODEL.sub(" ", " ".join(left))):
+        return None
+    return f"not_a_result:{kind}"

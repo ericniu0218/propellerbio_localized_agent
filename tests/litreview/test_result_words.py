@@ -121,6 +121,60 @@ def test_non_results_still_report_nothing(quote):
     assert not reports_result(quote)
 
 
+# --- a model or stimulus named after what provokes it is not a result word ----
+
+# obesity E180: a methods sentence naming a NOX blocker and a NOX2 inhibitor,
+# with "Diet-induced" as its only result-shaped word. Verbatim from the
+# stored report (see also test_guard_cache_config.py's
+# APOCYNIN_METHODS_QUOTE, which checks the guard drops a sentence resting
+# only on this quote).
+APOCYNIN_METHODS = (
+    "Diet-induced obesity (DIO) mice and hiPSC-aCMs treated with palmitic acid (PA) were infused with a NOX "
+    "blocker (apocynin) and a NOX2-specific inhibitor, respectively."
+)
+# migraine (real benchmark quote): "fully blocked" is the result; "CGRP-induced"
+# only names the model it was blocked in. Also exercises "block(ed)", added to
+# RESULT_WORDS for exactly this shape - masking "CGRP-induced" must not leave
+# the quote with no result word at all.
+OLCEGEPANT_BLOCKED = (
+    "Pretreatment with the small molecule CGRP-R antagonist, olcegepant, 30 min prior to supradural CGRP fully "
+    "blocked CGRP-induced cutaneous allodynia ( and )."
+)
+# migraine (real benchmark quote): a null safety result stated as an absence,
+# not through "no effect" or "did not". Also exercises the non-ASCII hyphen
+# ("drug‐induced") PDF extraction actually leaves behind - `_NAMED_MODEL`
+# must mask that too, not just an ASCII "-".
+RIMEGEPANT_NO_SIGNAL = "No signal of drug‐induced liver injury due to rimegepant was identified."
+
+
+@pytest.mark.parametrize("quote", [OLCEGEPANT_BLOCKED, RIMEGEPANT_NO_SIGNAL], ids=["blocked", "no-signal-of"])
+def test_a_real_result_survives_masking_the_named_model(quote):
+    assert reports_result(quote)
+
+
+@pytest.mark.parametrize("quote", [
+    APOCYNIN_METHODS,
+    "HDM-induced Bmal1-ko mice were used for the ILC2 memory experiments.",
+    "NTG-induced chronic migraine mouse models were established as previously described.",
+    "CRE-induced c-Myc expression was measured in HBECs by immunostaining.",
+    "OVA-induced airway inflammation mice were sensitized and challenged as described.",
+    "Allergen-induced ROS generation was assessed in bronchial epithelial cells.",
+    "Imiquimod-treated mice were used to study psoriasiform skin inflammation.",
+    "Diet-induced obesity mice were maintained on a high-fat diet for 10 weeks.",
+], ids=["apocynin-methods", "hdm-induced", "ntg-induced", "cre-induced", "ova-induced", "allergen-induced",
+        "imiquimod-treated", "diet-induced"])
+def test_naming_a_model_or_stimulus_is_not_a_result(quote):
+    assert not reports_result(quote)
+
+
+def test_a_real_result_after_the_named_model_still_counts():
+    """The masking is scoped to the compound adjective only: "EN4 ...
+    suppressed CRE-induced c-Myc expression" (the asthma AhR/c-Myc benchmark
+    quote, see test_not_a_result.py) still reports a result, because
+    "suppressed" sits outside the masked span."""
+    assert reports_result("EN4 effectively suppressed CRE-induced c-Myc expression (A,B).")
+
+
 # --- the full guard, on the trickiest of these ------------------------------------
 
 SPEC = parse_question("If I want to treat obesity, which targets should I pursue?")

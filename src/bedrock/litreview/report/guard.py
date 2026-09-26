@@ -27,10 +27,13 @@ evidence it cites:
    cells ("... in patients with asthma" from a study of BEAS-2B cells and
    mice only; the shape of asthma S3). Read from that stored field, never
    from the paper, so a re-check agrees.
-5. Which way a result points must match: a sentence may not claim an effect
-   its cited quotes report only as null, drop a negation a quote states, or
-   say "decreased" where every cited quote says only "increased". Word-level
-   checks, not entailment: they catch the flips a probe found, not every one.
+5. Which way a result points must match: a sentence may not claim no effect
+   unless the cited evidence's own displayed text says so (a unit's
+   `outcome` label is the model's, not the paper's, and is never enough by
+   itself), claim an effect its cited quotes report only as null, drop a
+   negation a quote states, or say "decreased" where every cited quote says
+   only "increased". Word-level checks, not entailment: they catch the flips
+   a probe found, not every one.
 6. In a findings section (`report/layout.py`'s `SectionSpec.findings`, true
    for every written section unless report.yaml says otherwise), at least one
    cited quote must report a result at all. A hand audit found sentences that
@@ -280,9 +283,17 @@ class CitationGuard:
             return GuardResult(False, why)
 
         # Which way a result points. A sentence may say something did not work
-        # only if a cited finding is a null result or its words say so: the
-        # MedGemma run wrote "inhibition of HIF signaling did not improve
-        # outcomes" citing only findings where it did.
+        # only if the paper's own displayed text says so: the MedGemma run
+        # wrote "inhibition of HIF signaling did not improve outcomes" citing
+        # only findings where it did. A unit's `outcome` is never enough by
+        # itself - it is the extraction model's label, not the paper's words,
+        # and a model can mislabel it: a methods sentence naming a NOX
+        # blocker and a NOX2 inhibitor, with nothing else shown beside it,
+        # was labelled `no_effect`, and a sentence citing only that quote
+        # then claimed "did not significantly alter NOX2 activity or prevent
+        # atrial fibrosis" - the opposite of the paper's real result (the
+        # blocker abrogated fibrosis), which the guard would have caught had
+        # it read the paper's words instead of trusting the label.
         # In a findings section, a sentence with nothing to check above can
         # still be filler: it names nothing wrong because it states nothing
         # at all, just methods, demographics or a generic scope line. Every
@@ -311,8 +322,11 @@ class CitationGuard:
             return GuardResult(False, "cites only quotes that state an aim, method or prediction, not a result")
         # A qualifier saying the result was not significant says so too, or
         # the writer, shown it, could never write "did not reach significance".
+        # "The cited evidence" is what the reader is shown beside each unit
+        # (`source_text`: quote, context, qualifier and naming sentences),
+        # never the model-written `outcome` field.
         if _NULL_CLAIM.search(sentence) and not any(
-            u.outcome in ("no_effect", "mixed") or _NULL_CLAIM.search(clean(u.quote)) or _not_significant(u)
+            _NULL_CLAIM.search(clean(source_text(u))) or _not_significant(u)
             for u in cited
         ):
             return GuardResult(False, "claims no effect, which the cited evidence does not")

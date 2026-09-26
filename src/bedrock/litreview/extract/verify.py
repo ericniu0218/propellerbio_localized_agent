@@ -773,9 +773,19 @@ def other_work_reason(quote: str, section: str) -> str | None:
 # - null results: the paper looked and found nothing. Negative results are
 #   first-class here, not a weaker case than a positive one - "no
 #   differences ... indicating that X does not directly regulate Y" reports
-#   a null result exactly as much as "X increased Y" reports a positive one;
+#   a null result exactly as much as "X increased Y" reports a positive one.
+#   "No signal of", "no evidence of" and "no cases of" state an absence just
+#   as plainly ("No signal of drug-induced liver injury due to rimegepant
+#   was identified" - migraine's safety finding, not a non-result);
 # - safety/PK results: how a trial's safety or pharmacokinetic data came out
 #   ("the most frequent AEs were ...", "elevations ... were observed").
+#
+# "block(ed|s|ing)" was added to the effect verbs after masking a
+# model-naming adjective (`_NAMED_MODEL`, below) turned up a real result with
+# no other result word left once the mask ran: "... fully blocked
+# CGRP-induced cutaneous allodynia" (migraine's olcegepant/CGRP-R quote)
+# reports what olcegepant did ("blocked") once "CGRP-induced" - the model,
+# not the result - is masked out.
 RESULT_WORDS = re.compile(
     r"\b(?:"
     # -- effect verbs ---------------------------------------------------------
@@ -785,6 +795,7 @@ RESULT_WORDS = re.compile(
     r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es|ing|ion|ions)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
     r"exacerbat(?:ed|es|ing)|promot(?:ed|es)|accelerat(?:ed|es)|augment(?:ed|s)|amplif(?:ied|ies)|"
     r"suppress(?:ed|es)|inhibit(?:ed|s)|induc(?:ed|es)|enhanc(?:ed|es)|restor(?:ed|es)|rescu(?:ed|es)|"
+    r"block(?:ed|s|ing)?|"
     r"potentiat\w*|exaggerat\w*|normali[sz]\w*|revers\w*|led\s+to|result(?:s|ed|ing)?\s+in|"
     r"higher|greater|fewer|less|more|better|worse|significant(?:ly)?|associated|correlat\w*|"
     r"efficac\w*|effective|benefit\w*|remission|response|achieved|rose|fell|declined|lost|gained|"
@@ -795,7 +806,7 @@ RESULT_WORDS = re.compile(
     r"express(?:ion|ed)\s+(?:was|were)\s+(?:increased|decreased|elevated|reduced)|"
     r"similar\s+(?:between|among)|"
     # -- null results ------------------------------------------------------------
-    r"no effect|did not|failed|"
+    r"no effect|did not|failed|no\s+(?:signal|evidence|cases?)\s+of|"
     # -- safety / PK results --------------------------------------------------
     r"most\s+(?:frequent|common)|"
     # Base forms ("can reduce", "exacerbate"), change nouns ("no increase"),
@@ -805,12 +816,34 @@ RESULT_WORDS = re.compile(
     r"adverse|tolerat\w*|infrequent|mild|unchanged)\b|%|\bp\s*[<=>]|\bfold\b", re.I)
 
 
+# A model or stimulus named after what provokes or receives it -
+# "allergen-induced", "(NTG)-induced", "HDM-induced", "diet-induced",
+# "imiquimod-treated", "obesity-associated" - names the experiment, not a
+# result. Shared by `reports_result` and, through it, by the leftover text in
+# `not_a_result_reason` below, so one rule decides this everywhere: masking
+# only the compound adjective, never a real verb use ("X induced Y",
+# "treated with X reduced Y"), because the lookbehind requires a hyphen stuck
+# to the word before it. The hyphen itself is read the way `_PUNCT` above
+# does: a paper's own text carries the same non-ASCII hyphens PDF extraction
+# leaves behind ("drug‐induced", not "drug-induced"), and this runs on
+# that raw text, never on `normalize`'s output.
+_NAMED_MODEL = re.compile(
+    r"(?<=[\w)\]])[-‐‑‒–—―−](?:induced|treated|challenged|exposed|mediated|driven|associated)\b", re.I)
+
+
 def reports_result(text: str) -> bool:
     """Does this text use any word a reported result is written with?
 
     A wide net on purpose: it is used to decide that a text reports *no*
-    result, and a false "no" throws a real finding away."""
-    return bool(RESULT_WORDS.search(text))
+    result, and a false "no" throws a real finding away. A model or
+    stimulus named after what provokes or receives it is masked first
+    (`_NAMED_MODEL`), or "Diet-induced obesity (DIO) mice ... were infused
+    with a NOX blocker" - a methods sentence - would count as reporting a
+    result just because "induced" is also how a real result is written ("X
+    induced Y"). A real result keeps working: "EN4 effectively suppressed
+    CRE-induced c-Myc expression" still reports one, because "suppressed"
+    sits outside the masked span."""
+    return bool(RESULT_WORDS.search(_NAMED_MODEL.sub(" ", text)))
 
 
 # Aim and method cues: what the study set out to do, or how. Each reaches
@@ -860,15 +893,46 @@ _CLAUSE_BREAK = re.compile(
     re.I,
 )
 
-# A model named after what provokes it - "allergen-induced", "(NTG)-induced",
-# "obesity-associated" - names the experiment, not its result. Masked before
-# the left-over text is read, or S32's "allergen-induced" would count.
-_NAMED_MODEL = re.compile(r"(?<=[\w)\]])-(?:induced|associated)\b", re.I)
+# Hypothesis cues: a guess stated as a guess, not as what happened - a
+# structured abstract's HYPOTHESIS part ("cold exposure might induce enhanced
+# browning/beiging and improve glucose metabolism.", a migraine benchmark
+# case; see tests/litreview/test_not_a_result.py). Each covers its whole
+# clause, like a hope cue.
+#
+# "might <verb>" is read unrestricted: a results section essentially never
+# hedges a genuine finding with "might" (that is what "may" and "could" are
+# for), so any verb after it is read as a guess. "may <verb>" is not given
+# the same latitude, because "may" hedges a real result too ("which may
+# reflect a ceiling effect" must stay a finding) - it is scoped to the same
+# result-shaped verbs RESULT_WORDS already lists, where reading the hedge as
+# a guess costs nothing even on the rare sentence where that reading is
+# wrong. "could induce", "we hypothesize(d) that" and "it is conceivable
+# that" are literal phrases for the same reason.
+_HYPOTHESIS_CUE = re.compile(
+    r"\bwe\s+hypothesi[sz]ed?\s+that\b"
+    r"|\bit\s+is\s+conceivable\s+that\b"
+    r"|\bcould\s+induce\b"
+    r"|\bmight\s+\w+\b"
+    r"|\bmay\s+(?:induce|improve|benefit|enhance|promote|reduce|prevent|protect|"
+    r"ameliorate|attenuate|exacerbate|alleviate|restore|suppress|inhibit)\b",
+    re.I,
+)
+
+# Where a hypothesis clause ends: the same breaks as `_CLAUSE_BREAK`, minus a
+# bare "and" - which a hypothesis's own coordinated verbs use, sharing one
+# modal ("... might induce X and improve Y" is one guess about two things),
+# not a new clause with a result of its own.
+_HYPOTHESIS_BREAK = re.compile(
+    r"[,;:]|\s(?=(?:which|but|whereas|while|thus|hence|so)\b)"
+    r"|\s(?=(?:to\s+(?:show|demonstrate|reveal|confirm)|showing|demonstrating|revealing)\b)",
+    re.I,
+)
 
 
 def _stance_spans(sentence: str) -> tuple[list[tuple[int, int]], str | None]:
-    """The stretches of one sentence that state an aim, method, prediction or
-    open question, and the kind of the first cue found ("aim" or "hope")."""
+    """The stretches of one sentence that state an aim, method, prediction,
+    hypothesis or open question, and the kind of the first cue found ("aim",
+    "hope" or "hypothesis")."""
     spans: list[tuple[int, int]] = []
     kind = None
     for m in _AIM_CUE.finditer(sentence):
@@ -880,17 +944,26 @@ def _stance_spans(sentence: str) -> tuple[list[tuple[int, int]], str | None]:
         end = next((b.start() for b in _CLAUSE_BREAK.finditer(sentence, m.end())), len(sentence))
         spans.append((start, end))
         kind = kind or "hope"
+    for m in _HYPOTHESIS_CUE.finditer(sentence):
+        start = max((b.end() for b in _HYPOTHESIS_BREAK.finditer(sentence, 0, m.start())), default=0)
+        end = next((b.start() for b in _HYPOTHESIS_BREAK.finditer(sentence, m.end())), len(sentence))
+        spans.append((start, end))
+        kind = kind or "hypothesis"
     return spans, kind
 
 
 def not_a_result_reason(text: str) -> str | None:
     """Why `text` states no result - it only says what a study set out to do,
-    how, what it predicts or hopes for, or what is unknown - or None.
+    how, what it predicts, hypothesises or hopes for, or what is unknown - or
+    None.
 
-    "not_a_result:aim" or "not_a_result:hope", after the first cue that
-    matched. None whenever no cue matches, and whenever anything outside the
-    cued stretches, in any sentence of `text`, reports a result: a quote
-    that opens with its aim and then gives the result is a finding.
+    "not_a_result:aim", "not_a_result:hope" or "not_a_result:hypothesis",
+    after the first cue that matched. None whenever no cue matches, and
+    whenever anything outside the cued stretches, in any sentence of `text`,
+    reports a result: a quote that opens with its aim and then gives the
+    result is a finding. `reports_result` does its own masking of a
+    model-naming adjective ("diet-induced"), so that masking happens here
+    too, on exactly the same rule.
 
     Run on the paper's own verified sentence in Stage 5 (after
     `other_work_reason`), and by the citation guard on report sentences and
@@ -910,7 +983,7 @@ def not_a_result_reason(text: str) -> str | None:
         left.append(" ".join(keep))
     if kind is None:
         return None
-    if reports_result(_NAMED_MODEL.sub(" ", " ".join(left))):
+    if reports_result(" ".join(left)):
         return None
     return f"not_a_result:{kind}"
 

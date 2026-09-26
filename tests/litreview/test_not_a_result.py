@@ -48,6 +48,10 @@ S23_SENTENCE = ("The study used a nitroglycerin (NTG)-induced chronic migraine m
                 "effects of NF-κB inhibition.")
 S23_QUOTE = ("targeted blockade of the NF-κB cascade with PDTC recapitulated the protective behavioral and "
              "biochemical effects of FKBP5 deficiency.")
+# migraine (issue #11): a structured abstract's HYPOTHESIS section, stated as
+# a guess, not a finding. "might induce" and "improve" are both governed by
+# the same "might", coordinated with "and" - not a separate reported result.
+HYPOTHESIS_QUOTE = "cold exposure might induce enhanced browning/beiging and improve glucose metabolism."
 
 
 @pytest.mark.parametrize("text, kind", [
@@ -65,6 +69,12 @@ S23_QUOTE = ("targeted blockade of the NF-κB cascade with PDTC recapitulated th
     ("T cells contribute critically to obesity-induced adipose inflammation and insulin resistance, yet the "
      "co-stimulatory signals that govern their activation in adipose tissue remain unclear.", "hope"),
     ("The mechanism of GSDMD in asthma remains unclear.", "hope"),
+    (HYPOTHESIS_QUOTE, "hypothesis"),
+    ("We propose that siLP ST2-KLRG1+IL-17RB+ILC2s might serve as immunological memory cells with great "
+     "potential to induce asthma recurrence.", "hypothesis"),
+    ("Targeting TCF-1 and TOX might be promising for preventing asthma recurrence.", "hypothesis"),
+    ("It is conceivable that this signalling pathway protects against obesity.", "hypothesis"),
+    ("We hypothesize that cold exposure could induce browning of white adipose tissue.", "aim"),
 ])
 def test_aims_methods_and_predictions_are_not_results(text, kind):
     assert not_a_result_reason(text) == f"not_a_result:{kind}"
@@ -102,6 +112,11 @@ def test_aims_methods_and_predictions_are_not_results(text, kind):
     # A conclusion that names what the study found keeps it.
     "Thus, Gq proteins play a critical role in airway remodeling, hence pharmacological inhibition of Gq "
     "signaling represents a promising strategy for the treatment of chronic asthma.",
+    # A "might"/"may" hedge on a real result, not a hypothesis about nothing:
+    # the hedged clause follows a comma and "which", so the hypothesis cue's
+    # backward reach stops there, leaving the real result outside it.
+    "Cold exposure reduced body fat by 12% in mice, which might reflect improved thermogenesis.",
+    "Anti-IL-17A treatment reduced epidermal thickness by 40%, which may reflect a ceiling effect.",
 ])
 def test_results_are_kept_even_beside_an_aim_or_a_hedge(text):
     assert not_a_result_reason(text) is None
@@ -182,7 +197,13 @@ def _check(spec, sentence: str, *units: EvidenceUnit, findings: bool = True):
 def test_guard_drops_the_asthma_s32_sentence_citing_only_an_aim():
     verdict = _check(ASTHMA, S32_SENTENCE, _unit(S32_QUOTE))
     assert not verdict.kept
-    assert verdict.reason == "cites only quotes that state an aim, method or prediction, not a result"
+    # Not check 7's aim-specific reason: "allergen-induced" is S32_QUOTE's
+    # only result-shaped word, and it names the model
+    # (`extract/verify.py` `_NAMED_MODEL`, masked out of `reports_result`
+    # everywhere that function is used, including check 6 below). So the
+    # quote reports no result at all, and the more general check 6 catches
+    # it first.
+    assert verdict.reason == "cites no quote that reports a result"
 
 
 def test_guard_drops_the_obesity_s56_prediction():

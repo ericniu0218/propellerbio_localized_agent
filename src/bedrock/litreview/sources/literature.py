@@ -37,7 +37,7 @@ from typing import Callable
 
 import httpx
 
-from bedrock.litreview.ingest import merge_records
+from bedrock.litreview.ingest import doi_key, merge_records
 from bedrock.litreview.models import Paper
 from bedrock.litreview.sources import europepmc, pubmed
 from bedrock.litreview.sources.base import SearchRequest
@@ -96,7 +96,7 @@ class SearchReport:
 def _keys(paper: Paper) -> list[str]:
     keys = []
     if paper.doi:
-        keys.append(f"doi:{paper.doi.strip().lower()}")
+        keys.append(f"doi:{doi_key(paper.doi)}")
     if paper.pmid:
         keys.append(f"pmid:{paper.pmid.strip()}")
     title = _TITLE_FOLD.sub(" ", (paper.title or "").lower()).strip()

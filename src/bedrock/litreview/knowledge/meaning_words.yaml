@@ -45,6 +45,20 @@ meaning:
   quantity: [all, every, each, both, some, several, most, many, few, half, majority, minority, single,
              once, twice, always, rarely, often, frequently, occasionally, sometimes, partially, completely,
              fully, entirely]
+  # Found by an adversarial probe (September 2026): each of these, swapped
+  # for its opposite in an otherwise exact quote, still matched fuzzily.
+  direction: [up, down, upregulated, upregulation, upregulates, downregulated, downregulation,
+              downregulates, positive, positively, negative, negatively, high, low, rise, rose, fall, fell]
+  timing: [before, after, prior, pre, post, early, late, prophylactic, prophylaxis, therapeutic]
+  sex: [male, males, female, females]
+  condition: [obese, lean, overweight, healthy, diabetic]
+  # A number written as a word is still a number.
+  number: [one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, twenty, hundred,
+           thousand, first, second, third, twofold, threefold, fourfold, fivefold, tenfold, double,
+           doubled, triple, tripled]
+  # "12 weeks" is not "12 days", and "10 mg/kg" is not "10 g/kg".
+  unit: [mg, g, kg, ng, pg, ml, mm, cm, nm, mmol, nmol, mol, iu, h, hr, hrs, hour, hours, day, days,
+         week, weeks, month, months, year, years, min, minute, minutes]
 
 studied:
   # One class per kind of subject. Only words that cannot describe an animal

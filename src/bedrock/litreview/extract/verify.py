@@ -274,14 +274,41 @@ def studied_in(text: str) -> dict[str, str]:
     return found
 
 
+@lru_cache(maxsize=1)
+def entity_words() -> frozenset[str]:
+    """Every one-word name in the knowledge table ("tnf", "semaglutide",
+    "psoriasis"), near-misses included. A quote that swaps one for another
+    names a different molecule, drug or disease: "TNF" is not "TNFR", and
+    semaglutide is not liraglutide, however close the spelling."""
+    from bedrock.litreview.knowledge import load_knowledge
+
+    words = set()
+    for entity in load_knowledge().entities:
+        for term in (entity.canonical, *entity.terms, *entity.near_miss, *entity.context_terms):
+            tokens = _TOKEN.findall(normalize(term))
+            if len(tokens) == 1 and tokens[0].isalpha():
+                words.add(tokens[0])
+    return frozenset(words)
+
+
+def _numbered_name_part(tokens: list[str], k: int) -> bool:
+    """Is tokens[k] the letter after a number, as the "a" in "il-17a"? The
+    tokenizer splits "17a" into "17" and "a", so without this IL-17A and
+    IL-17F compare as the same words."""
+    tok = tokens[k]
+    return k > 0 and tokens[k - 1][0].isdigit() and tok.isalpha() and len(tok) <= 2
+
+
 def meaning_changes(quote_norm: str, source_norm: str) -> list[str]:
     """The meaning-bearing words that differ between two normalised texts.
 
     Empty means the texts differ only in typography or filler ("Moreover"
-    for "Furthermore"). A number, a comparison sign or a listed word on either
-    side of a difference means they do not say the same thing.
+    for "Furthermore"). A number, a comparison sign, a listed word, a name
+    from the knowledge table or the letter of a numbered name ("IL-17A") on
+    either side of a difference means they do not say the same thing.
     """
     listed = meaning_words()["meaning"]
+    names = entity_words()
     a, b = _TOKEN.findall(quote_norm), _TOKEN.findall(source_norm)
     ops = SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
     # Words the source has only at the very edges of the window are alignment
@@ -295,8 +322,10 @@ def meaning_changes(quote_norm: str, source_norm: str) -> list[str]:
     for tag, i1, i2, j1, j2 in ops:
         if tag == "equal":
             continue
-        for tok in [*a[i1:i2], *b[j1:j2]]:
-            if (tok in listed or tok.endswith("n't") or any(c.isdigit() for c in tok) or not tok[0].isalnum()
+        for tokens, k in [*((a, k) for k in range(i1, i2)), *((b, k) for k in range(j1, j2))]:
+            tok = tokens[k]
+            if (tok in listed or tok in names or tok.endswith("n't") or any(c.isdigit() for c in tok)
+                    or not tok[0].isalnum() or _numbered_name_part(tokens, k)
                     or any(c.isalpha() and not c.isascii() for c in tok)):  # α, β, γ, κ …
                 changed.append(tok)
     edge = (ops[0][3], ops[-1][4]) if ops else (0, len(b))

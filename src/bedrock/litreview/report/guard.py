@@ -19,6 +19,10 @@ evidence it cites:
 4. Who was studied — patients, mice, rats, primates, cells — must be said by
    the cited text itself, not by a label: "in human tissues" citing a quote
    that says "across skin and spleen tissues" is dropped.
+5. Which way a result points must match: a sentence may not claim an effect
+   its cited quotes report only as null, drop a negation a quote states, or
+   say "decreased" where every cited quote says only "increased". Word-level
+   checks, not entailment: they catch the flips a probe found, not every one.
 
 The cited evidence is the paper's text, never what the model wrote beside it.
 `effect_detail`, `species_raw` and a sample size the paper does not state are
@@ -35,9 +39,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from bedrock.litreview.extract.verify import covered, studied_in
+from bedrock.litreview.extract.verify import covered, split_sentences, studied_in
 from bedrock.litreview.knowledge import Knowledge, TermMatcher, clean, fold
 from bedrock.litreview.models import EvidenceUnit, QuestionSpec
+from bedrock.litreview.negation import drops_negation
 
 _NUMBER = re.compile(r"(?<![A-Za-z0-9.\-/])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?![A-Za-z0-9])")
 
@@ -192,6 +197,25 @@ class CitationGuard:
             u.outcome in ("no_effect", "mixed") or _NULL_CLAIM.search(clean(u.quote)) for u in cited
         ):
             return GuardResult(False, "claims no effect, which the cited evidence does not")
+        # And the reverse, found by an adversarial probe: "Blocking IL-17A
+        # reduced epidermal thickness", citing only "Blocking IL-17A had no
+        # significant effect on epidermal thickness", was kept - every name
+        # and number in it is in the quote.
+        if not _NULL_CLAIM.search(sentence) and _EFFECT.search(sentence) \
+                and all(_null_only(clean(u.quote)) for u in cited):
+            return GuardResult(False, "claims an effect the cited evidence reports as null")
+        for u in cited:
+            if any(drops_negation(sentence, s) for s in split_sentences(clean(u.quote))):
+                return GuardResult(False, "drops a negation in the cited evidence")
+        # Which way a measurement moved: "was decreased" citing only quotes
+        # that say "was increased" is the opposite finding. Only when the
+        # sentence has one direction and no word that reverses one ("prevented
+        # the increase"), so a paraphrase is not dropped.
+        said = _directions(sentence)
+        if len(said) == 1 and not _REVERSAL.search(sentence):
+            quoted = [_directions(clean(u.quote)) for u in cited]
+            if all(q and not (q & said) for q in quoted):
+                return GuardResult(False, f"says {next(iter(said))}, which the cited evidence does not")
         # "Improved outcomes" is the label talking, not the paper: it adds no
         # fact and was how the same run turned a mouse study into a patient result.
         if _LABEL_TALK.search(sentence) and not _LABEL_TALK.search(clean(blob)):
@@ -204,6 +228,32 @@ _NULL_CLAIM = re.compile(
     r"had no|was not|were not|no difference|unchanged)\b", re.I)
 _LABEL_TALK = re.compile(
     r"\b(?:improved|improve|improves|worsened|better|worse)\s+(?:patient\s+|clinical\s+)?outcomes?\b", re.I)
+# A result a sentence states. Not "block" or "inhibit": those name what was
+# done ("Blocking IL-17A ..."), not what happened.
+_EFFECT = re.compile(
+    r"\b(?:reduc|decreas|lower|attenuat|ameliorat|alleviat|diminish|abolish|abrogat|mitigat|improv|prevent|"
+    r"protect|resolv|increas|elevat|worsen|aggravat|exacerbat|promot|accelerat|augment|amplif)\w*", re.I)
+_NULL_SCOPE = re.compile(r"(?:" + _NULL_CLAIM.pattern + r")(?:\s+[\w-]+){0,4}", re.I)
+
+
+def _null_only(text: str) -> bool:
+    """Does this text report a null result, and no effect outside the reach
+    of its negation? "had no significant effect on epidermal thickness" is;
+    "reduced ear thickness but had no effect on scaling" is not."""
+    return bool(_NULL_CLAIM.search(text)) and not _EFFECT.search(_NULL_SCOPE.sub(" ", text))
+
+
+_UP = re.compile(r"\b(?:increas|elevat|upregulat|higher|raised|rose)\w*", re.I)
+_DOWN = re.compile(r"\b(?:decreas|reduc|lower|downregulat|diminish|declin|fell)\w*", re.I)
+_REVERSAL = re.compile(
+    r"\b(?:prevent|block|inhibit|revers|abrogat|abolish|attenuat|blunt|counteract|normali[sz]|restor|suppress|"
+    r"protect|rescu|than|versus|vs|compared)\w*", re.I)
+
+
+def _directions(text: str) -> set[str]:
+    """Which ways the text says something moved: {"increased"}, {"decreased"},
+    both or neither."""
+    return {name for name, pattern in (("increased", _UP), ("decreased", _DOWN)) if pattern.search(text)}
 
 
 _RANGE = re.compile(r"(\d+(?:\.\d+)?)\s*[\u2013\u2014-]\s*(\d+(?:\.\d+)?)")

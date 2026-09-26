@@ -20,8 +20,17 @@ _RETRACTED = re.compile(r"retract", re.I)
 _TITLE_FOLD = re.compile(r"[^a-z0-9]+")
 
 
+_DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
+
+
 def _norm_title(title: str) -> str:
     return _TITLE_FOLD.sub(" ", (title or "").lower()).strip()
+
+
+def doi_key(doi: str) -> str:
+    """A DOI as a dedupe key: "https://doi.org/10.1/X" and "10.1/x" are the
+    same paper, and a retraction flag on one copy must reach the other."""
+    return _DOI_PREFIX.sub("", doi.strip()).strip().lower()
 
 
 def prepare(paper: Paper) -> Paper:
@@ -143,12 +152,25 @@ def dedupe(papers: list[Paper]) -> list[Paper]:
     the first lacks (identifiers, full text, the queries that found it) and a
     review or retraction flag it carries is kept rather than dropped with it.
     This runs after `prepare`, so each copy's flags are already set from its
-    own publication types; they are OR-ed here."""
+    own publication types; they are OR-ed here.
+
+    Repeated until nothing merges: a copy with only a PMID arrives before the
+    copy that links that PMID to the kept record's DOI, and one pass leaves it
+    standing beside its twin - with the retraction flag only it carried."""
+    kept = _dedupe_once(papers)
+    while True:
+        again = _dedupe_once(kept)
+        if len(again) == len(kept):
+            return again
+        kept = again
+
+
+def _dedupe_once(papers: list[Paper]) -> list[Paper]:
     kept: list[Paper] = []
     index: dict[str, Paper] = {}
     for paper in papers:
         keys = [
-            f"doi:{paper.doi.lower()}" if paper.doi else None,
+            f"doi:{doi_key(paper.doi)}" if paper.doi else None,
             f"pmid:{paper.pmid}" if paper.pmid else None,
             f"title:{_norm_title(paper.title)}" if paper.title else None,
         ]

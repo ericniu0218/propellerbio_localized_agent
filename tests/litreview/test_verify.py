@@ -218,3 +218,47 @@ def test_a_sentence_ending_in_a_single_letter_is_still_an_end():
     source = "Cells were incubated at 37 °C. IL-17A reduced keratinocyte proliferation by 30% in culture. Next."
     located = locate_quote("IL-17A reduced keratinocyte proliferation by 30% in culture", source)
     assert located.text == "IL-17A reduced keratinocyte proliferation by 30% in culture."
+
+
+PROBE_PAD = ("Psoriasis is a chronic inflammatory skin disease affecting millions of people worldwide. "
+             "We therefore designed a series of experiments to examine the pathway. ")
+
+
+@pytest.mark.parametrize("sentence, before, after", [
+    ("Neutralisation of IL-17A reduced neutrophil infiltration into the epidermis of treated animals in this model.",
+     "IL-17A", "IL-17F"),
+    ("Expression of IL-36 gamma was strongly upregulated in lesional skin compared with non-lesional skin from the same patients.",
+     "upregulated", "downregulated"),
+    ("Serum IL-17A concentration was positively correlated with PASI score across the whole cohort of enrolled patients.",
+     "positively", "negatively"),
+    ("Mice that received two doses of the anti-IL-23 antibody before challenge developed markedly thinner ear lesions.",
+     "two doses", "three doses"),
+    ("Imiquimod application produced a twofold rise in epidermal thickness relative to vaseline-treated control skin.",
+     "twofold", "threefold"),
+    ("Weekly semaglutide produced sustained body weight reduction over the full treatment period in adults with obesity.",
+     "semaglutide", "liraglutide"),
+    ("Genetic ablation of TNF in keratinocytes protected the animals from imiquimod-induced psoriasiform dermatitis.",
+     "TNF in", "TNFR in"),
+    ("Anti-IL-23 antibody given before imiquimod challenge reduced ear thickness in the treated group of animals.",
+     "before", "after"),
+    ("The compound lowered fasting glucose in obese mice fed a high-fat diet for twelve consecutive weeks.",
+     "obese", "lean"),
+    ("The effect on body weight was observed only in male mice receiving the highest dose of the compound.",
+     "male", "female"),
+    ("Body weight was reduced by 15% after 12 weeks of daily treatment with the dual agonist in the trial.",
+     "weeks", "days"),
+    ("Knockout mice gained less body weight than littermates when fed a high-fat diet for sixteen consecutive weeks.",
+     "high-fat", "low-fat"),
+    ("Mice were dosed at 10 mg/kg intraperitoneally twice weekly for the whole duration of the imiquimod challenge.",
+     "10 mg/kg", "10 g/kg"),
+], ids=["numbered-name-letter", "up-down", "positive-negative", "number-word", "fold-word", "drug-name",
+        "target-name", "before-after", "obese-lean", "male-female", "time-unit", "high-low", "dose-unit"])
+def test_a_one_word_change_of_meaning_fails_the_fuzzy_match(sentence, before, after):
+    """Each of these matched as 'fuzzy' in an adversarial probe (September
+    2026): one word off a long sentence stays above the threshold, and none
+    of these words was a number, a listed meaning word or a Greek letter."""
+    source = PROBE_PAD + sentence + " Further work is needed to confirm these findings in other models."
+    located = locate_quote(sentence.replace(before, after, 1), source)
+    assert located.status == "failed"
+    assert located.reason.startswith("meaning changed")
+    assert locate_quote(sentence, source).status == "exact"

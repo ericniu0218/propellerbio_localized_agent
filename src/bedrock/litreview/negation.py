@@ -7,10 +7,11 @@ result-summary check (`extract/provenance.py`) and the judge
 (`bench/judge.py`) read negation here, by the same rule.
 
 This is a bounded lexical check over the cues in `_NULL`, not entailment.
-It misses negation it has no cue for ("without", "absence of",
-"neither ... nor", double negation) and reads only the three words after a
-cue. A false "dropped" blanks a faithful summary; a missed one lets the
-opposite claim through, so cues are added only with tests.
+It misses negation it has no cue for ("absence of", "lacking" - left out
+because "mice lacking IL-23" is a faithful "IL-23-deficient mice" - and double
+negation) and reads only the three words after a cue. A false "dropped"
+blanks a faithful summary; a missed one lets the opposite claim through, so
+cues are added only with tests.
 """
 
 from __future__ import annotations
@@ -27,9 +28,14 @@ _WORSE = re.compile(
     r"amplif|sensiti[sz])\w*", re.I)
 # "didn't" as well as "did not": `normalize` keeps contractions, and papers
 # use both apostrophes.
+# "but not in IL-23R-deficient mice" and "without changes in food intake"
+# are cues too: a summary that drops them claims the result where the paper
+# says it was absent. Not "with or without", which negates nothing. The words
+# after a cue are read with their hyphens, so "IL-23R-deficient" is one word.
 _NULL = re.compile(
     r"\b(?:did not|does not|do not|failed to|no significant|not significantly|no effect|no difference|"
-    r"not associated|had no|was not|were not|(?:did|does|do|was|were|had)n['’]t)\b((?:\s+\w+){0,3})", re.I)
+    r"not associated|had no|was not|were not|but not|not in|(?<!or )without|neither|nor|"
+    r"(?:did|does|do|was|were|had)n['’]t)\b((?:\s+[\w-]+){0,3})", re.I)
 
 
 def _stems(pattern: re.Pattern[str], text: str) -> set[str]:

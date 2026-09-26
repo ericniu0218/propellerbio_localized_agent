@@ -896,10 +896,29 @@
   let recordingUI = null;     // live DOM nodes the timer/meter write into
   let readiness = null;       // cached /meetings/readiness answer
 
+  // Only a successful answer is cached. A failure used to be cached too, which
+  // meant one bad moment — a session that had just expired, a server still
+  // starting — disabled recording for the life of the page, and the only way
+  // back was a reload the person had no reason to think would help.
   async function loadReadiness() {
-    if (readiness) return readiness;
-    try { readiness = await api("/meetings/readiness"); }
-    catch { readiness = { ready: false, issues: ["The server did not answer the readiness check."] }; }
+    if (readiness && readiness.ready) return readiness;
+    try {
+      readiness = await api("/meetings/readiness");
+    } catch (err) {
+      // "The server did not answer" was the message for every failure here,
+      // and it sent people to find an administrator. The common cause is not a
+      // broken server: it is a session that has expired, or one belonging to a
+      // previous run whose workspace was reset. api() has already put the login
+      // screen up for that; saying so is what turns this into a two-second fix.
+      const signedOut = err && err.message === "signed out";
+      readiness = {
+        ready: false,
+        signedOut,
+        issues: [signedOut
+          ? "Your session has expired. Sign in again and press Record."
+          : "This server could not be reached. Check that it is still running, then press Record again."],
+      };
+    }
     return readiness;
   }
 
@@ -1100,10 +1119,15 @@
     const body = el("div", { class: "simple-form" });
 
     if (!ready.ready) {
-      body.appendChild(el("p", { class: "muted" },
-        "This server cannot transcribe recordings yet. Ask whoever runs it to fix the following, then reload:"));
+      // Three different problems used to share one message and one title. A
+      // missing whisper model is for whoever runs the server; an expired
+      // session is for the person reading, and takes them ten seconds.
+      const yours = ready.signedOut || !ready.issues.length;
+      body.appendChild(el("p", { class: "muted" }, yours
+        ? "Recording could not start:"
+        : "This server cannot transcribe recordings yet. Ask whoever runs it to fix the following, then press Record again:"));
       body.appendChild(el("ul", { class: "muted small" }, ready.issues.map((i) => el("li", {}, i))));
-      openModal({ title: "Recording is not set up", body });
+      openModal({ title: yours ? "Cannot record just now" : "Recording is not set up", body });
       return;
     }
 

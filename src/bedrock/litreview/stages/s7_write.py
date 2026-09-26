@@ -474,7 +474,8 @@ def _evidence_table(ctx: WriteContext, refs: dict[str, int]) -> str:
     for u in ctx.summary.units:
         n = f" (n={u.n})" if u.n is not None else ""
         rows.append(
-            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)} | {cell(u.intervention or '')} | "
+            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)}{' (measured)' if u.outcome_measure else ''} | "
+            f"{cell(u.intervention or '')} | "
             f"{u.evidence_type}{' · discussion' if u.from_discussion else ''} | "
             f"{cell(u.species_raw) if u.species_raw else 'not stated'}{n} | "
             f"{u.outcome} | {u.setting} | {cell(u.effect_detail)} | {refs.get(u.paper_id, '')} |"
@@ -507,6 +508,9 @@ def _method(ctx: WriteContext) -> str:
         f"{s.get('species_unlocated', 0)} findings (shown as \"not stated\"), sample size on "
         f"{s.get('n_unlocated', 0)}, the result summary on {s.get('effect_detail_unlocated', 0)}, the agent on "
         f"{s.get('intervention_unlocated', 0)}.",
+        f"- **Outcome measures:** {s.get('target_outcome_measure', 0)} findings kept as evidence but given no "
+        f"target row, because what they name is a measurement (airway hyperresponsiveness, monthly migraine days, "
+        f"BMI and the like), judged from the paper's own abbreviation definitions where it gives one.",
         f"- **Written:** {ctx.sentence_stats.get('kept', 0)} sentences kept; {ctx.sentence_stats.get('dropped', 0)} "
         f"removed by the citation check; {ctx.sentence_stats.get('repeated', 0)} removed as repeats; "
         f"{ctx.sentence_stats.get('too_short', 0)} too short to state anything.",

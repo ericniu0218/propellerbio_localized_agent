@@ -476,6 +476,12 @@ class EvidenceUnit(BaseModel):
     combo_with: str | None
     target_is_primary: bool
     facet: str | None = None
+    outcome_measure: bool = False
+    """The 'target' is what the study measured (airway hyperresponsiveness,
+    monthly migraine days), not something one could act on. Decided by code
+    from `knowledge/outcome_measures.yaml` and the paper's own abbreviation
+    definitions (`knowledge/abbreviations.py`). The finding stays in the
+    evidence; Stage 6 gives it no target row."""
 
     # provenance — how this unit came to exist, and how far to trust it
     quote: str
@@ -554,12 +560,14 @@ class EvidenceUnit(BaseModel):
     @model_serializer(mode="wrap")
     def _omit_absent_optional(self, handler):
         """Leave the qualifier, naming-sentence and Methods-subjects fields
-        out of the JSON when there is none.
+        out of the JSON when there is none, and `outcome_measure` when it is
+        False.
 
         They were added after reports were already stored, and a stored run
         is verified by re-serialising its report and comparing the bytes
         (`report/invariants.py` `check_pinned`). Writing `"qualifier_quote":
-        null` into every old unit would make every old run fail that check."""
+        null` or `"outcome_measure": false` into every old unit would make
+        every old run fail that check."""
         data = handler(self)
         if isinstance(data, dict):
             for group in (("qualifier_quote", "qualifier_start", "qualifier_end"),
@@ -568,6 +576,8 @@ class EvidenceUnit(BaseModel):
                 if data.get(group[0]) is None:
                     for name in group:
                         data.pop(name, None)
+            if data.get("outcome_measure") is False:
+                data.pop("outcome_measure")
         return data
 
 

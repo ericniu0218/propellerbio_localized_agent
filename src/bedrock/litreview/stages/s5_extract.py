@@ -8,7 +8,9 @@ The order below is the whole design, and it is deliberate:
                         an aim, a method or a prediction
                     ->  code checks the entity
                     ->  code checks direction and outcome against the
-                        words the model copied  ->  code normalises,
+                        words the model copied  ->  code normalises
+                        (a target through the paper's own abbreviations;
+                        an outcome measure is flagged, never a target row),
                         and sets the evidence type from the quote's own
                         words  ->  code dedupes
 
@@ -129,6 +131,7 @@ from bedrock.litreview.extract.verify import (
 )
 from bedrock.litreview.facets import subject_label
 from bedrock.litreview.knowledge import Knowledge, TermMatcher, load_knowledge
+from bedrock.litreview.knowledge.abbreviations import paper_abbreviations, resolve_target
 from bedrock.litreview.lexical import BM25
 from bedrock.litreview.llm import LLMError, ask_json, load_prompt, strict_schema, version_of
 from bedrock.litreview.models import (
@@ -592,6 +595,9 @@ def extract_paper(
     methods = methods_context(paper, methods_chars)
     query = f"{spec.text} {' '.join(t for e in spec.entities for t in e.exact_terms)}"
     species_filter = [normalize_species(e.text) for e in spec.entities if e.kind == "species"]
+    # The paper's own "long form (ABBR)" definitions, read once per paper, so
+    # its "AHR" is judged by what it says AHR means (`knowledge/abbreviations.py`).
+    abbreviations = paper_abbreviations(paper)
 
     units: list[EvidenceUnit] = []
     for section, chunk_i, text in plan_chunks(paper, job, query, chunk_chars=chunk_chars, max_chunks=max_chunks):
@@ -706,6 +712,12 @@ def extract_paper(
                 facet_ids=[f.id for f in facets], located=located, model_quote=model_quote, prov=prov,
                 qualifier=qualifier, unbacked=unbacked,
             )
+            # The target, read through the paper's own definitions: "AHR" the
+            # paper defines as airway hyperresponsiveness is not the AhR
+            # receptor, and a readout like "MMDs" is kept but flagged, so
+            # Stage 6 never gives it a target row.
+            resolved = resolve_target(finding.target, kb, abbreviations)
+            unit = unit.model_copy(update={"target": resolved.name, "outcome_measure": resolved.outcome_measure})
             # A species the paper states decides. When it states none, the
             # model's own species may still rule a finding out (it said
             # "patients" in a mouse question), never in; unknown is kept and
@@ -718,6 +730,8 @@ def extract_paper(
             # found to be an association is one corrected outcome, not two.
             for field in dict.fromkeys(note.split(":", 1)[0] for note in unit.corrected):
                 stats[f"{field}_corrected"] += 1
+            if unit.outcome_measure:
+                stats["target_outcome_measure"] += 1
             units.append(unit)
 
     kept = dedupe_within_paper(units)

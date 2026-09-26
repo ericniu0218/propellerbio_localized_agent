@@ -44,7 +44,7 @@ it works elsewhere.
 3. `extract/provenance.py` — the same guard, for every other field a finding carries
 4. `report/guard.py` — the same guard, applied to report sentences
 5. `report/invariants.py` — what code proves about a finished report
-6. `knowledge/` — exact terms and near-misses, meaning words, and the matcher
+6. `knowledge/` — exact terms and near-misses, meaning words, outcome measures, a paper's own abbreviations, and the matcher
 7. `docs/litreview/README.md` § The pipeline — what each stage owes the next
 8. `service.py` and `llm/scheduled.py` — how a run reaches the model server
 

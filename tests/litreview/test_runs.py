@@ -241,3 +241,19 @@ def test_two_identical_runs_each_report_the_report_they_wrote(settings, tmp_path
     # Both are listed. Their order is not asserted: two runs started in the same
     # second tie on `started`, and recent_runs then orders them by id.
     assert {r.id for r in db.recent_runs()} == {first.run.id, second.run.id}
+
+
+def test_a_mistyped_resume_id_is_refused_not_started_fresh(settings, tmp_path):
+    from bedrock.litreview.stages.s0_question import QuestionError
+
+    db = Database(tmp_path / "db.sqlite3")
+    with pytest.raises(QuestionError, match="no run 'nope' to resume"):
+        run(settings, db, resume_run_id="nope")
+    assert db.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+
+
+def test_a_search_that_finds_nothing_is_refused_not_reported(settings, tmp_path):
+    from bedrock.litreview.stages.s1_collect import NothingFound
+
+    with pytest.raises(NothingFound, match="no papers were found"):
+        run(settings, Database(tmp_path / "db.sqlite3"), papers=[])

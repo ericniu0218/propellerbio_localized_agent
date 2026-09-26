@@ -125,7 +125,9 @@ def parse_review_command(args: str) -> ReviewCommand:
     return ReviewCommand(
         request=ReviewRequest(
             question=question,
-            corpus=Path(options.corpus).expanduser() if options.corpus else None,
+            # A file dropped onto the terminal pastes as `@/path`, as it does
+            # for chat attachments; the `@` is not part of the name.
+            corpus=Path(options.corpus.removeprefix("@")).expanduser() if options.corpus else None,
             search=options.search,
             refresh=options.refresh,
             resume=options.resume,
@@ -316,7 +318,7 @@ async def run_review_job(
     from bedrock.litreview.service import run_review
     from bedrock.litreview.sources.literature import SearchFailed
     from bedrock.litreview.stages.s0_question import QuestionError
-    from bedrock.litreview.stages.s1_collect import NoPapers
+    from bedrock.litreview.stages.s1_collect import NoPapers, NothingFound
 
     await notify(start_notice(request, settings), "info")
     note = model_swap_note(request, settings, scheduler)
@@ -337,6 +339,9 @@ async def run_review_job(
     except ReviewInterrupted as exc:
         run_id = await asyncio.to_thread(_unfinished_run_id, settings)
         await notify(interrupted_notice(exc, run_id), "error")
+        return False
+    except NothingFound as exc:
+        await notify(safe_line(exc, limit=600), "error")
         return False
     except NoPapers:
         await notify(

@@ -46,6 +46,12 @@ def test_a_quoted_path_with_spaces_survives():
     assert command.request.question == "prevent psoriasis"
 
 
+def test_a_corpus_dropped_onto_the_terminal_loses_its_at_sign():
+    """Dropping a file pastes `@/path`, as it does for chat attachments."""
+    command = parse_review_command("prevent psoriasis --corpus @/tmp/papers.jsonl")
+    assert command.request.corpus == Path("/tmp/papers.jsonl")
+
+
 def test_stop_is_the_one_verb():
     assert parse_review_command("stop").stop is True
     assert parse_review_command("STOP").stop is True

@@ -21,6 +21,11 @@ class NoPapers(ValueError):
     """Nothing to read: no searcher, no papers, and no frozen set."""
 
 
+class NothingFound(NoPapers):
+    """A search or a corpus file was given, and it held no papers. The
+    message says which; a caller shows it as it is."""
+
+
 def search_request(spec: QuestionSpec, max_results: int = 200) -> SearchRequest:
     """What the searcher is asked: the question, and the exact names the
     pipeline will accept for each entity — nothing a model added."""

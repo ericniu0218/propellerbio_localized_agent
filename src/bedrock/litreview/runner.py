@@ -55,8 +55,8 @@ from bedrock.litreview.models import (
 )
 from bedrock.litreview.sources.base import PaperSearcher
 from bedrock.litreview.sources.corpus import file_sha256
-from bedrock.litreview.stages.s0_question import parse_question
-from bedrock.litreview.stages.s1_collect import collect
+from bedrock.litreview.stages.s0_question import QuestionError, parse_question
+from bedrock.litreview.stages.s1_collect import NothingFound, collect
 from bedrock.litreview.stages.s2_gate import gate_papers
 from bedrock.litreview.stages.s3_rank import rank_papers
 from bedrock.litreview.stages.s4_plan import build_plan
@@ -182,6 +182,10 @@ def answer_question(
     m = settings.model_for
 
     run = db.get_run(resume_run_id) if resume_run_id else None
+    if resume_run_id and run is None:
+        # Starting a fresh run instead would look like a resume and silently
+        # redo every stage; a mistyped id should say so.
+        raise QuestionError(f"there is no run {resume_run_id!r} to resume; `bedrock-litreview runs` lists them")
 
     def load(name: str):
         return db.get_artifact(run.id, name) if run else None
@@ -242,6 +246,10 @@ def answer_question(
             say(f"papers: reusing the frozen set of {len(collected)} for this question")
         else:
             collected = collect(spec, searcher=searcher, papers=papers)
+            if not collected:
+                # A report over no papers says nothing and looks like an answer.
+                raise NothingFound("no papers were found for this question: the search returned nothing, "
+                               "or the corpus file is empty")
             manifest = db.save_papers(spec.id, collected)
             corpus_path = getattr(searcher, "path", None) if papers is None else None
             if corpus_path is not None:

@@ -142,6 +142,53 @@ server, it needs most of the laptop's memory. Two things keep it usable on
 On a bigger machine, add `profile = "workstation"` to `config.toml`; on a shared
 company server, IT uses `profile = "server"`.
 
+## Literature reviews (`/review`)
+
+`/review` answers a research question with a report in which every sentence
+cites a checked quote from a paper. It needs more from the machine than chat:
+
+- **A model server with a big enough "context window".** A review sends long
+  passages of papers, so the window must be at least 12,288 tokens. On the
+  office server this is IT's job. On a laptop (16 GB or more), start Ollama
+  with `OLLAMA_CONTEXT_LENGTH=12288` instead of the `8192` above, pull the
+  review's model with `ollama pull qwen3:8b`, and add to `config.toml`:
+
+  ```toml
+  context_window = 12288
+  request_timeout = 600
+  ```
+
+  `request_timeout` matters on a laptop: one extraction step can take several
+  minutes, and the default of 120 seconds stops the review halfway.
+- **A company server name it trusts.** A review sends paper text to the model
+  server, so it refuses any address that is not on this machine or the
+  company network. If your server's address is a name such as
+  `ai.company.com`, IT adds it to `config.toml`:
+
+  ```toml
+  [litreview]
+  allowed_hosts = ["ai.company.com"]
+  ```
+- **Papers.** Either a papers file your team gives you (`/review your question
+  --corpus papers.jsonl`; you can drag the file onto the terminal after
+  `--corpus`), or `--search` to fetch papers from Europe PMC and PubMed now.
+  Searching sends only the words of your question to those two public
+  literature databases, never to an AI service.
+
+The review then runs beside your chat — your own messages always go first — and
+tells you where the finished `report.html` is; open it in your browser.
+`/reviews` lists past reviews. A review takes tens of minutes on a laptop.
+
+If a review stops with a message, it says what to change. The common ones:
+
+| What you see | What to do |
+|---|---|
+| "needs a context window of at least 12,288 tokens" | Set `context_window = 12288` and restart Ollama with `OLLAMA_CONTEXT_LENGTH=12288`, as above. |
+| "does not have 'qwen3:8b'" (or another name) | `ollama pull` that name, or ask IT to serve it on the office server. |
+| "refusing model endpoint ... not a local address" | Ask IT to add the server's name to `allowed_hosts`, as above. |
+| "the model server ... is not answering", or the review stops partway | Start the server, or raise `request_timeout`; then run the same `/review` with `--resume` and the run id it printed. |
+| "no papers were found for this question" | The search found nothing: reword the question, or use a papers file. |
+
 ## Updating to a newer version later
 
 Run the same `uv tool install ...` command from step 4 again — it

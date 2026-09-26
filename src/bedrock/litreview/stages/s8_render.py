@@ -16,7 +16,7 @@ import html
 import re
 from pathlib import Path
 
-from bedrock.litreview.models import Report, ReportSection, Sentence
+from bedrock.litreview.models import EvidenceUnit, Report, ReportSection, Sentence
 
 
 def _ref_map(report: Report) -> tuple[dict[str, int], dict[str, str]]:
@@ -42,6 +42,15 @@ def _attach(text: str, marker: str) -> str:
     if text.endswith((".", "!", "?")):
         return f"{text[:-1]} {marker}{text[-1]}"
     return f"{text} {marker}"
+
+
+def _named(unit: EvidenceUnit) -> str:
+    """The names a unit's naming sentence is shown for ("HDAC6"), from its
+    provenance: the target, agent or partner the quote itself does not name."""
+    values = {"target": unit.target_raw or unit.target, "intervention": unit.intervention,
+              "combo_with": unit.combo_with}
+    names = [v for k, v in values.items() if v and unit.provenance.get(k) == "naming"]
+    return ", ".join(dict.fromkeys(names)) or "the finding's target"
 
 
 def _interpretation_md(report: Report) -> list[str]:
@@ -136,6 +145,8 @@ def to_markdown(report: Report) -> str:
                 out.append(f"  - context ({unit.context_section}): \"{unit.context_quote}\"")
             if unit.qualifier_quote:
                 out.append(f"  - qualifier (next sentence): \"{unit.qualifier_quote}\"")
+            if unit.naming_quote:
+                out.append(f"  - names {_named(unit)} ({unit.naming_section}): \"{unit.naming_quote}\"")
         out.append("")
 
     dropped = [(sec.title, x) for sec in _walk(report.sections) for x in sec.sentences if not x.kept]
@@ -300,6 +311,8 @@ def to_html(report: Report) -> str:
                            f'“{html.escape(u.context_quote)}”</small>' if u.context_quote else "")
                         + (f'<br><small>qualifier (next sentence): “{html.escape(u.qualifier_quote)}”</small>'
                            if u.qualifier_quote else "")
+                        + (f'<br><small>names {html.escape(_named(u))} ({html.escape(u.naming_section or "")}): '
+                           f'“{html.escape(u.naming_quote)}”</small>' if u.naming_quote else "")
                         + "</li>")
         body.append("</ul></details>")
 

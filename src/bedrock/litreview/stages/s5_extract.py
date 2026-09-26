@@ -40,6 +40,12 @@ significance ..."), it is stored beside it as `qualifier_quote`, so the reader,
 the writer and the citation guard all see it (`extract/verify.py`
 `qualifier_after`).
 
+Also by code, while provenance is traced: a target or agent the quote does
+not name, found elsewhere in the passage, is shown to the reader too - in the
+context sentence, the qualifier, or else the passage's sentence that names it,
+stored as `naming_quote` (`extract/provenance.py`). A target that cannot be
+shown drops the finding (`target_not_shown`).
+
 Which sections we send, and why (set by the plan, from config/pipeline.yaml):
 
   abstract    extract from it. Clean sentences, high signal.
@@ -416,6 +422,10 @@ def _to_unit(
         qualifier_quote=qualifier.text if qualifier else None,
         qualifier_start=qualifier.start if qualifier else None,
         qualifier_end=qualifier.end if qualifier else None,
+        naming_quote=prov.naming.text if prov.naming else None,
+        naming_section=prov.naming_section if prov.naming else None,
+        naming_start=prov.naming.start if prov.naming else None,
+        naming_end=prov.naming.end if prov.naming else None,
         from_discussion=(section == "discussion"),
         entity_match=match,  # type: ignore[arg-type]
         corrected=corrected,
@@ -520,7 +530,15 @@ def extract_paper(
                 stats[drop.split(":", 1)[0]] += 1
                 log.debug("finding dropped (%s): paper=%s", drop, paper.id)
                 continue
-            # Every other field the model wrote must be in the text it read.
+            # The paper's next sentence, when it qualifies this one ("Although
+            # this result did not reach statistical significance ..."). Code
+            # finds it, not the model; `extract/verify.py` says what counts.
+            # Found before tracing, because a name it states is shown by it.
+            section_text = paper.sections.get(section, "")
+            qualifier = (qualifier_after(section_text, located.start, located.end)
+                         if section_text[located.start:located.end] == located.text else None)
+            # Every other field the model wrote must be in the text it read,
+            # and every name it gave must be in text the reader is shown.
             prov = trace(
                 quote=finding.quote, chunk=text, methods=methods, section=section,
                 section_text=paper.sections.get(section, ""),
@@ -529,6 +547,7 @@ def extract_paper(
                 disease_raw=finding.disease, species_raw=finding.species,
                 n=finding.n if finding.n is not None else extract_n(finding.quote),
                 effect_detail=finding.effect_detail, kb=kb,
+                qualifier=qualifier.text if qualifier else "", quote_start=located.start,
             )
             if prov.drop:
                 stats[prov.drop] += 1
@@ -537,12 +556,8 @@ def extract_paper(
             for name, where in prov.where.items():
                 if where == NONE:
                     stats[f"{name}_unlocated"] += 1
-            # The paper's next sentence, when it qualifies this one ("Although
-            # this result did not reach statistical significance ..."). Code
-            # finds it, not the model; `extract/verify.py` says what counts.
-            section_text = paper.sections.get(section, "")
-            qualifier = (qualifier_after(section_text, located.start, located.end)
-                         if section_text[located.start:located.end] == located.text else None)
+            if prov.naming is not None:
+                stats["naming_sentence"] += 1
             unit = _to_unit(
                 finding, status=status, match=match, paper=paper, spec=spec, section=section,
                 chunk=chunk_i, model_version=model_version, prompt_version=prompt_version, kb=kb,

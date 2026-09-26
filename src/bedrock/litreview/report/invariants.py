@@ -6,8 +6,8 @@ the exact papers it was built from, and asks whether the guarantees hold for
 the whole thing:
 
   quote       every quote shown is the paper's text at its recorded position,
-              and so is every context sentence and every qualifying next
-              sentence
+              and so is every context sentence, every qualifying next
+              sentence and every sentence shown for naming a target or agent
   fields      every field the model wrote that the report shows was found in
               the paper by `extract/provenance.py`, and is still there
   sentences   every kept sentence passes the citation guard, re-run here
@@ -71,6 +71,8 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"quote: {where}: context sentence {why}")
         if (why := _anchored(u.qualifier_quote, paper, u.section, u.qualifier_start, u.qualifier_end)):
             out.append(f"quote: {where}: qualifying sentence {why}")
+        if (why := _anchored(u.naming_quote, paper, u.naming_section, u.naming_start, u.naming_end)):
+            out.append(f"quote: {where}: naming sentence {why}")
         if paper.is_review or paper.signals.is_retracted:
             out.append(f"flags: {where}: comes from a paper flagged "
                        f"{'retracted' if paper.signals.is_retracted else 'review'}")
@@ -79,8 +81,12 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"fields: {where}: was never traced")
             continue
         seen = f"{u.quote} {u.context_quote or ''}"
+        # Where provenance says each name is. 'chunk' and 'methods' are what
+        # units stored before names had to be shown say; newer units name
+        # the displayed sentence instead, which must then exist.
         homes = {"quote": u.quote, "chunk": paper.sections.get(u.section, ""),
-                 "methods": paper.sections.get("methods", "")}
+                 "methods": paper.sections.get("methods", ""), "context": u.context_quote or "",
+                 "qualifier": u.qualifier_quote or "", "naming": u.naming_quote or ""}
         if u.provenance.get("target", "none") == "none":
             out.append(f"fields: {where}: target {u.target_raw!r} was not found in the paper")
         elif not name_in(u.target_raw, homes.get(u.provenance["target"], ""), kb, "target"):

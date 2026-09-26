@@ -493,7 +493,11 @@ class EvidenceUnit(BaseModel):
     provenance: dict[str, str] = Field(default_factory=dict)
     """Where each model-written field was found in the text the model was
     shown: field -> 'quote' | 'chunk' | 'methods' | 'none'. A field found
-    nowhere is blanked; a target found nowhere drops the unit."""
+    nowhere is blanked; a target found nowhere drops the unit. The target,
+    agent and combination partner record where the reader is shown them
+    instead: 'quote' | 'context' | 'qualifier' | 'naming' (units stored
+    before that say 'chunk' or 'methods'), and 'naming' -> 'chunk' |
+    'methods' says where the naming sentence came from."""
     context_quote: str | None = None
     """The paper's own sentence that supplied the subjects or sample size,
     when that was not the quote itself (usually a Methods sentence)."""
@@ -507,6 +511,17 @@ class EvidenceUnit(BaseModel):
     `extract/verify.py` `qualifier_after`, never by the model."""
     qualifier_start: int | None = None
     qualifier_end: int | None = None
+    naming_quote: str | None = None
+    """The paper's sentence that names the target or agent, when the quote,
+    the context sentence and the qualifier do not ("HDAC6 inhibitors, such as
+    tubastatin A, reduce food intake ..." beside a quote about tubastatin A).
+    From the passage the model read, else the Methods; in `naming_section` at
+    `naming_start:naming_end`. Found by `extract/provenance.py`, never by the
+    model. It shows where a name comes from; it is not evidence the quote's
+    result is about that name (`report/guard.py`, check 9)."""
+    naming_section: str | None = None
+    naming_start: int | None = None
+    naming_end: int | None = None
     from_discussion: bool = False
     """Authors overstate in the Discussion. Kept, but flagged."""
     entity_match: Literal["exact", "paper_context"] = "paper_context"
@@ -527,17 +542,21 @@ class EvidenceUnit(BaseModel):
     of use it is also the only realistic path to fine-tuning anything."""
 
     @model_serializer(mode="wrap")
-    def _omit_absent_qualifier(self, handler):
-        """Leave the qualifier fields out of the JSON when there is none.
+    def _omit_absent_optional(self, handler):
+        """Leave the qualifier and naming-sentence fields out of the JSON
+        when there is none.
 
         They were added after reports were already stored, and a stored run
         is verified by re-serialising its report and comparing the bytes
         (`report/invariants.py` `check_pinned`). Writing `"qualifier_quote":
         null` into every old unit would make every old run fail that check."""
         data = handler(self)
-        if isinstance(data, dict) and data.get("qualifier_quote") is None:
-            for name in ("qualifier_quote", "qualifier_start", "qualifier_end"):
-                data.pop(name, None)
+        if isinstance(data, dict):
+            for group in (("qualifier_quote", "qualifier_start", "qualifier_end"),
+                          ("naming_quote", "naming_section", "naming_start", "naming_end")):
+                if data.get(group[0]) is None:
+                    for name in group:
+                        data.pop(name, None)
         return data
 
 

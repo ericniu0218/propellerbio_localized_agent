@@ -13,8 +13,8 @@ evidence it cites:
    slice that section was given.
 2. Every number in it must appear in the cited evidence: the paper's own
    text (the quote, the context sentence that gave the subjects or sample
-   size, and the next sentence when it qualifies the quote) or the paper's
-   year.
+   size, the next sentence when it qualifies the quote, and the sentence
+   that names a target or agent the quote does not) or the paper's year.
 3. Every drug, target, disease or pathogen it names must appear in the cited
    evidence — or be the thing the question is about.
 4. Who was studied — patients, mice, rats, primates, cells — must be said by
@@ -52,12 +52,24 @@ evidence it cites:
    sentence that restates the qualifier's other clause instead ("weight loss
    from baseline was significantly reduced") is kept. Such a qualifier also
    lets a sentence say the result was not significant (check 5).
+9. A quote's result stays with what the quote names. When a cited finding's
+   target or agent is not named in its quote, but the quote names another
+   target or agent, a sentence that names the finding's one and none the
+   quote names, while stating the quote's result (a number from the quote,
+   or an effect word when its numbers are not another shown sentence's), is
+   dropped: "Blocking IL-17A reduced ear thickness by 60%" citing "Anti-IL-23
+   treatment reduced ear thickness by 60%", in a passage that also names
+   IL-17A. The name itself may be cited - the
+   sentence naming it is shown (`naming_quote`) - so "tubastatin A, acting
+   on HDAC6, reduced food intake" is kept. Kept too when another cited quote
+   names it and reports a result.
 
 The cited evidence is the paper's text, never what the model wrote beside it.
 `effect_detail`, `species_raw` and a sample size the paper does not state are
 the model's words; a sentence resting on them has nothing a reader can check.
 Names the model gave a finding (its target, its agent) count only where
-`extract/provenance.py` found them in the text the model read.
+`extract/provenance.py` found them in the text the model read - since issue
+#6, in a sentence the reader is shown beside the quote.
 
 A sentence that fails any check is dropped and the reason recorded. The
 report shows how many were dropped; the benchmark reads the reasons.
@@ -106,17 +118,25 @@ def _located(unit: EvidenceUnit, name: str) -> bool:
     return unit.provenance.get(name, "none") != "none"
 
 
+def _shown(unit: EvidenceUnit) -> list[str]:
+    """The paper's sentences shown beside a unit: the quote, the context
+    sentence, the qualifying next sentence and the naming sentence."""
+    return [p for p in (unit.quote, unit.context_quote, unit.qualifier_quote, unit.naming_quote) if p]
+
+
 def source_text(unit: EvidenceUnit) -> str:
-    """The paper's own words a sentence citing this unit may rest on: the
-    quote, the context sentence and the qualifying next sentence."""
-    return " | ".join(p for p in (unit.quote, unit.context_quote or "", unit.qualifier_quote or "") if p)
+    """The paper's own words a sentence citing this unit may rest on: every
+    sentence shown beside it."""
+    return " | ".join(_shown(unit))
 
 
 def unit_text(unit: EvidenceUnit, extra: str = "") -> str:
     """Everything a sentence citing this unit may legitimately draw on: the
     paper's text, plus the names provenance located, plus `extra` (the
-    paper's label, so its year is citable)."""
-    parts = [unit.quote, unit.context_quote or "", unit.qualifier_quote or ""]
+    paper's label, so its year is citable). A unit stored before names had
+    to be shown can still say a name was found in the 'chunk'; it counts
+    here, and check 9 is what stops it taking the quote's result."""
+    parts = _shown(unit)
     if _located(unit, "target"):
         parts += [unit.target, unit.target_raw]
     if _located(unit, "intervention"):
@@ -241,6 +261,10 @@ class CitationGuard:
         # Before the result checks below, so a sentence that fails this and
         # another check is reported for this, the more specific reason.
         if (why := drops_not_significant(sentence, cited)):
+            return GuardResult(False, why)
+        # The quote is about one agent and the sentence gives its result to
+        # another the passage named (the IL-23 / IL-17A probe; check 9).
+        if (why := misattributes(sentence, masked, cited, self.kb)):
             return GuardResult(False, why)
 
         # Which way a result points. A sentence may say something did not work
@@ -406,6 +430,71 @@ def drops_not_significant(sentence: str, cited: list[EvidenceUnit]) -> str | Non
     if not restates:
         return None
     return "drops the qualifier the paper states: not significant"
+
+
+def _named(value: str | None, text: str, kb: Knowledge, kind: str | None = None) -> bool:
+    """Is this name in the text, as written or as a listed name of the same
+    entity? The reading provenance uses (`extract/provenance.py` `name_in`),
+    imported here because provenance imports this module."""
+    from bedrock.litreview.extract.provenance import name_in
+
+    return bool(value) and name_in(value, text, kb, kind)
+
+
+def misattributes(sentence: str, masked: str, cited: list[EvidenceUnit], kb: Knowledge) -> str | None:
+    """Why `sentence` gives a cited quote's result to a name the quote does
+    not state, or None. Check 9 in the module docstring.
+
+    For each cited unit whose target or agent is not in its quote, while the
+    quote names a different known target or drug, or states the unit's own
+    other name (its agent, when the target is the missing one): the sentence
+    is dropped if it names the missing one, names nothing the quote names,
+    and states the quote's result - a number from the quote, or an effect
+    word when its numbers are not all from the context, qualifier or naming
+    sentence instead. It is kept when another cited quote names it and
+    reports a result, since the sentence may rest on that one. `masked` is
+    the sentence with known names blanked, so the "23" of "IL-23" is not read
+    as a number from the quote.
+
+    Measured on the three stored qwen3:8b reports: 21 kept sentences name a
+    target or agent their quote does not, and in every one the quote names
+    no other agent ("No patient reported treatment-related adverse events
+    ..." beside rimegepant), so none is dropped - the rule is for the probe's
+    shape, where the quote's result belongs to something else it names.
+    """
+    said_numbers = numbers_in(masked)
+    for u in cited:
+        quote = clean(u.quote)
+        claimed = [(u.target_raw or u.target, (u.target_raw, u.target), "target"),
+                   (u.intervention, (u.intervention,), "drug")]
+        for label, names, kind in claimed:
+            names = tuple(n for n in names if n)
+            if not names or any(_named(n, quote, kb, kind) for n in names):
+                continue
+            if not any(_named(n, sentence, kb, kind) for n in names):
+                continue
+            # What the quote does name: the unit's other name when the quote
+            # states it, and every known target or drug in it that is not
+            # the missing one.
+            other = [n for n in (u.intervention, u.target_raw, u.target)
+                     if n and n not in names and _named(n, quote, kb)]
+            other += [e.canonical for e, m in kb.scan(quote, ("target", "drug"))
+                      if not any(kb.lookup(n) is e or _named(n, m.text, kb, kind) for n in names)]
+            if not other or any(_named(n, sentence, kb) for n in other):
+                continue
+            # Stating the quote's result: a number from the quote, or an
+            # effect word - unless the sentence's numbers come only from
+            # another sentence shown beside it ("IL-17A fell by 40%" from the
+            # naming sentence is that sentence's result, not the quote's).
+            quote_numbers = numbers_in(quote)
+            elsewhere = said_numbers & (numbers_in(" ".join(_shown(u)[1:])) - quote_numbers)
+            if not (said_numbers & quote_numbers or (_EFFECT.search(sentence) and not elsewhere)):
+                continue
+            if any(v is not u and any(_named(n, clean(v.quote), kb, kind) for n in names)
+                   and _reports_result(clean(v.quote)) for v in cited):
+                continue
+            return f"attributes the quote's result to {label}, which the quote does not name"
+    return None
 
 
 _RANGE = re.compile(r"(\d+(?:\.\d+)?)\s*[\u2013\u2014-]\s*(\d+(?:\.\d+)?)")

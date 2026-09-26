@@ -152,7 +152,11 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
     limits the quote ("Although this result did not reach statistical
     significance ..."). Its label says so, because the prompt file only
     explains Quote and Context, and the citation guard drops a sentence that
-    leaves out a "not significant" it states."""
+    leaves out a "not significant" it states. The naming sentence, when there
+    is one, is the paper's sentence that names the target or agent the quote
+    does not ("about:" would otherwise be a name the writer cannot see in any
+    quote); its label says the quote's result stays with what the quote
+    names, which the citation guard enforces (check 9)."""
     lines = []
     for u in units:
         sid = ctx.summary.short_ids[u.id]
@@ -164,6 +168,9 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
         if u.qualifier_quote:
             context += ("\n    Qualifier (the paper's next sentence; it may limit the quote, e.g. \"not "
                         f'significant\" - keep any such limit when you use the quote): "{u.qualifier_quote}"')
+        if u.naming_quote:
+            context += ("\n    Names (the paper's sentence that names what the quote does not; the quote's result "
+                        f'belongs to what the quote itself names - name that too): "{u.naming_quote}"')
         lines.append(
             f"[{sid}] about: {u.target_raw or u.target}{drug} · {who}\n"
             f"    Paper: {ctx.labels.get(u.paper_id, u.paper_id)}\n"

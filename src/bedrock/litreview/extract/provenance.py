@@ -31,6 +31,27 @@ the paper and stored as `context_quote` — the paper's own words, anchored
 like the quote — and only a field present in the quote or in that sentence
 keeps its value. That is what lets the guard check a report sentence's
 "in mice" or "n = 24" against text a reader can see.
+
+Names are held to the same standard: the target, agent and combination
+partner must be in text the reader is shown. Found in the chunk, a name
+counted as located even though the reader saw only the quote - which is how
+"Blocking IL-17A reduced ear thickness by 60%" passed the guard citing a quote
+about anti-IL-23, in a passage that also named IL-17A. So a name found only in
+the chunk or the Methods is looked for, in order, in
+
+    context    the context sentence above
+    qualifier  the paper's next sentence, when it qualifies the quote
+    naming     otherwise, the passage's sentence that names it, nearest the
+               quote and preferring one that also names what the quote
+               names ("HDAC6 inhibitors, such as tubastatin A, ..."). Stored
+               as `naming_quote`, anchored like the context sentence, and
+               shown beside the quote
+
+and that is what the unit's provenance records for it. A target that still
+cannot be shown drops the finding; an agent or partner is blanked. Showing
+the name is not the same as the quote being about it: the citation guard
+still drops a sentence that gives the quote's result to a name the quote does
+not state (`report/guard.py`, check 9).
 """
 
 from __future__ import annotations
@@ -46,6 +67,10 @@ from bedrock.litreview.negation import drops_negation
 from bedrock.litreview.report.guard import numbers_in
 
 QUOTE, CHUNK, METHODS, NONE = "quote", "chunk", "methods", "none"
+# Where a name found outside the quote is shown to the reader.
+CONTEXT, QUALIFIER, NAMING = "context", "qualifier", "naming"
+# The names that must be in displayed text, and the kind each is looked up as.
+_SHOWN_NAMES = (("target", "target"), ("intervention", "drug"), ("combo_with", "target"))
 
 # Words that say a sentence describes who or how many were studied. Also what
 # picks the Methods paragraphs for the extraction prompt (`stages/s5_extract`).
@@ -219,9 +244,67 @@ class Provenance:
     where: dict[str, str] = field(default_factory=dict)
     context: Located | None = None
     context_section: str | None = None
+    naming: Located | None = None
+    """The passage's sentence that names a target or agent the quote, the
+    context sentence and the qualifier do not. In `naming_section`."""
+    naming_section: str | None = None
     values: dict[str, object] = field(default_factory=dict)
     """The field values to store: the model's where located, blanked where not."""
     drop: str | None = None
+
+
+def _quote_names(quote: str, hidden: dict[str, tuple[str, str]], kb: Knowledge) -> list[str]:
+    """Every known target or drug the quote names, other than the hidden
+    names. A sentence naming one of these beside a hidden name is one that
+    says how the two are linked."""
+    return [m.text for _, m in kb.scan(quote, ("target", "drug"))
+            if not any(name_in(value, m.text, kb, kind) for value, kind in hidden.values())]
+
+
+def naming_sentence(
+    hidden: dict[str, tuple[str, str]],
+    *,
+    partners: list[str],
+    quote_names: list[str],
+    quote_start: int | None,
+    chunk: str,
+    methods: str,
+    section: str,
+    section_text: str,
+    methods_section_text: str,
+    kb: Knowledge,
+) -> tuple[Located, str, str] | None:
+    """(sentence, its section, CHUNK or METHODS) that names the `hidden`
+    names ({field: (name, kind)}), or None when no sentence can be placed.
+
+    One sentence is stored, so the best one is picked, in this order: it
+    names the target, if the target is hidden; it names the most hidden
+    names; it also names one of `partners`, the finding's own names that the
+    quote does state ("HDAC6 inhibitors, such as tubastatin A" for a quote
+    about tubastatin A), or failing that another target or drug the quote
+    names; it is in the passage the quote came from rather than the
+    Methods; it is nearest the quote. Every candidate is placed in its
+    section like the context sentence is, and one that cannot be placed is
+    passed over.
+    """
+    best: tuple[tuple, Located, str, str] | None = None
+    for where, text, home, home_section in ((CHUNK, chunk, section_text, section),
+                                            (METHODS, methods, methods_section_text, "methods")):
+        for sent in sentences(text):
+            named = [key for key, (value, kind) in hidden.items() if name_in(value, sent, kb, kind)]
+            if not named:
+                continue
+            located = locate_quote(sent, home)
+            if located.status == "failed":
+                continue
+            near = (abs(located.start - quote_start) if where == CHUNK and quote_start is not None
+                    else len(home))
+            link = (2 if any(name_in(n, sent, kb) for n in partners)
+                    else 1 if any(name_in(n, sent, kb) for n in quote_names) else 0)
+            score = ("target" in named, len(named), link, where == CHUNK, -near)
+            if best is None or score > best[0]:
+                best = (score, located, home_section, where)
+    return None if best is None else best[1:]
 
 
 def trace(
@@ -240,8 +323,14 @@ def trace(
     n: int | None,
     effect_detail: str,
     kb: Knowledge,
+    qualifier: str = "",
+    quote_start: int | None = None,
 ) -> Provenance:
-    """Locate every model-written field. See the module docstring for the rules."""
+    """Locate every model-written field. See the module docstring for the rules.
+
+    `qualifier` is the paper's next sentence when it qualifies the quote, and
+    `quote_start` the quote's offset in `section_text`: both only decide
+    where a name found outside the quote is shown."""
     p = Provenance()
 
     def where_name(value: str | None, kind: str | None) -> str:
@@ -286,6 +375,38 @@ def trace(
                 p.context, p.context_section = located, ("methods" if where == METHODS else section)
                 p.where["context"] = where
     context = p.context.text if p.context else ""
+
+    # A name found only in the passage or the Methods must be shown: in the
+    # context sentence, the qualifier, or a naming sentence stored for it.
+    values = {"target": target, "intervention": intervention, "combo_with": combo_with}
+    hidden: dict[str, tuple[str, str]] = {}
+    for name, kind in _SHOWN_NAMES:
+        if p.where.get(name) not in (CHUNK, METHODS):
+            continue
+        value = values[name] or ""
+        if context and name_in(value, context, kb, kind):
+            p.where[name] = CONTEXT
+        elif qualifier and name_in(value, qualifier, kb, kind):
+            p.where[name] = QUALIFIER
+        else:
+            hidden[name] = (value, kind)
+    if hidden:
+        partners = [values[name] or "" for name, _ in _SHOWN_NAMES if p.where.get(name) == QUOTE]
+        found = naming_sentence(
+            hidden, partners=partners, quote_names=_quote_names(quote, hidden, kb), quote_start=quote_start,
+            chunk=chunk, methods=methods, section=section, section_text=section_text,
+            methods_section_text=methods_section_text, kb=kb,
+        )
+        if found is not None:
+            p.naming, p.naming_section, p.where["naming"] = found
+        for name, (value, kind) in hidden.items():
+            if p.naming is not None and name_in(value, p.naming.text, kb, kind):
+                p.where[name] = NAMING
+            elif name == "target":
+                p.drop = "target_not_shown"
+                return p
+            else:
+                p.where[name] = NONE
 
     if species:
         if species_in(species, quote):

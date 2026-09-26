@@ -208,7 +208,9 @@ def write_section_text(
         log.warning("writing failed for section %s: %s", spec.id, exc)
         return [], "Not written: the model call failed."
 
-    guard = CitationGuard(ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary)
+    guard = CitationGuard(
+        ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary, findings=spec.findings
+    )
     sentences = []
     # Seeded with the report's earlier kept sentences, so a repeat of one of
     # those is caught by the very same check that catches a repeat within

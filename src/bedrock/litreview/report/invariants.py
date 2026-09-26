@@ -99,16 +99,27 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
 
 
 def check_sentences(report: Report, spec: QuestionSpec, kb: Knowledge, papers: dict[str, Paper]) -> list[str]:
+    from bedrock.litreview.report.layout import load_layout
     from bedrock.litreview.stages.s7_write import paper_label  # the labels the writer's guard used
 
     by_id = {u.id: u for u in report.evidence}
     by_short = {short: by_id[uid] for uid, short in report.short_ids.items() if uid in by_id}
     labels = {pid: paper_label(p) for pid, p in papers.items()}
     vocab = sorted({v for u in report.evidence for v in (u.target_raw, u.intervention or "", u.target) if v})
-    guard = CitationGuard(spec, kb, by_short, paper_labels=labels, vocabulary=vocab)
+    # A per-target subsection's id is "spec_id:target_name" (see
+    # `write_report`); `findings` is a property of the section in
+    # report.yaml, so it is looked up by the part before the colon. Two guards
+    # - one per `findings` value - so this re-check applies exactly the rule
+    # the writer applied to that same section, never a looser or stricter one.
+    findings_by_id = {s.id: s.findings for s in load_layout(spec.question_type)}
+    guards = {
+        findings: CitationGuard(spec, kb, by_short, paper_labels=labels, vocabulary=vocab, findings=findings)
+        for findings in (True, False)
+    }
     out = []
     for section_id, s in report.kept_sentences():
-        verdict = guard.check(s.text, s.citations)
+        findings = findings_by_id.get(section_id.split(":", 1)[0], True)
+        verdict = guards[findings].check(s.text, s.citations)
         if not verdict.kept:
             out.append(f"sentences: [{section_id}] {s.text[:80]!r}: {verdict.reason}")
     return out

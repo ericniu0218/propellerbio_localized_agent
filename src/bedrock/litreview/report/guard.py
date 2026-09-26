@@ -23,6 +23,15 @@ evidence it cites:
    its cited quotes report only as null, drop a negation a quote states, or
    say "decreased" where every cited quote says only "increased". Word-level
    checks, not entailment: they catch the flips a probe found, not every one.
+6. In a findings section (`report/layout.py`'s `SectionSpec.findings`, true
+   for every written section unless report.yaml says otherwise), at least one
+   cited quote must report a result at all. A hand audit found sentences that
+   claim nothing wrong and so pass every check above, yet state no finding: a
+   Methods sentence naming the animal model, a trial's enrolment numbers, a
+   review's generic scope statement. Each cited only a quote that is itself
+   methods or demographics, with no result in it either. This check is what
+   drops those - not what they say, but that their evidence never reports
+   anything to say it about.
 
 The cited evidence is the paper's text, never what the model wrote beside it.
 `effect_detail`, `species_raw` and a sample size the paper does not state are
@@ -104,15 +113,21 @@ class CitationGuard:
         *,
         paper_labels: dict[str, str] | None = None,
         vocabulary: list[str] | None = None,
+        findings: bool = True,
     ) -> None:
         """`units`: short id -> unit, for the slice being written.
         `paper_labels`: paper id -> "Author Year Journal", so a year is citable.
         `vocabulary`: extra entity names seen anywhere in this run's evidence
-        (targets, drugs) that the table may not know."""
+        (targets, drugs) that the table may not know.
+        `findings`: whether this section requires every sentence to cite a
+        quote that reports a result (see check 6 in the module docstring).
+        Callers pass the section's own `SectionSpec.findings` so the same
+        section is judged by the same rule everywhere it is checked."""
         self.spec = spec
         self.kb = knowledge
         self.units = units
         self.paper_labels = paper_labels or {}
+        self.findings = findings
         self.allowed = {fold(t) for e in spec.entities for t in [e.canonical, e.text, *e.exact_terms]}
         self.question_numbers = numbers_in(spec.text)
         vocab = sorted({v.strip() for v in (vocabulary or []) if v and len(v.strip()) >= 3})
@@ -193,6 +208,15 @@ class CitationGuard:
         # MedGemma run wrote "inhibition of HIF signaling did not improve
         # outcomes" citing only findings where it did.
         cited = [self.units[c] for c in citations]
+        # In a findings section, a sentence with nothing to check above can
+        # still be filler: it names nothing wrong because it states nothing
+        # at all, just methods, demographics or a generic scope line. Every
+        # sentence in a findings section must rest on a quote that reports a
+        # result, whether or not the sentence itself uses effect language -
+        # unlike the narrower check below, this one does not wait for the
+        # sentence to claim an effect first.
+        if self.findings and not any(_reports_result(clean(u.quote)) for u in cited):
+            return GuardResult(False, "cites no quote that reports a result")
         if _NULL_CLAIM.search(sentence) and not any(
             u.outcome in ("no_effect", "mixed") or _NULL_CLAIM.search(clean(u.quote)) for u in cited
         ):
@@ -207,7 +231,11 @@ class CitationGuard:
         # A result needs a quote that reports one. Found in a hand audit:
         # "Montelukast reduced asthma exacerbations in children ... 45
         # participants randomized to montelukast and 44 to placebo" cited only
-        # the trial's enrolment sentence, and kept every name and number.
+        # the trial's enrolment sentence, and kept every name and number. In a
+        # findings section this is already caught above, whether or not the
+        # sentence uses effect language; this narrower check is what is left
+        # for a section that sets `findings: false`, where a sentence that
+        # explicitly claims an effect should still not get away with it.
         if _EFFECT.search(sentence) and not any(_reports_result(clean(u.quote)) for u in cited):
             return GuardResult(False, "states a result its cited evidence does not report")
         for u in cited:

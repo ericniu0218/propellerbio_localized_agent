@@ -302,7 +302,10 @@ def test_a_result_cited_to_a_sentence_that_reports_none_is_dropped():
     sentence = ("Montelukast reduced exacerbations in children with high-moderate pre-treatment severity, "
                 "as shown in a study of 45 participants randomized to montelukast and 44 to placebo.")
     verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
-    assert not verdict.kept and "does not report" in verdict.reason
+    # In this default findings section, issue #8's broader check (no cited
+    # quote reports any result at all) now catches this before the narrower
+    # "claims a result its evidence does not report" check would.
+    assert not verdict.kept and "reports a result" in verdict.reason
 
 
 @pytest.mark.parametrize("sentence, quote", [

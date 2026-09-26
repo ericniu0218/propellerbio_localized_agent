@@ -26,6 +26,13 @@ class SectionSpec:
     source: str | None = None
     sentences: str = "2 to 5"
     instructions: str = ""
+    findings: bool = True
+    """Whether every sentence in this section must cite a quote that reports
+    a result (`report/guard.py`'s `_reports_result` check). True for every
+    `kind: written` section unless report.yaml says otherwise: every written
+    section draws from extracted findings, so a sentence with nothing that
+    reports one is filler, not an answer. `kind: generated` sections never
+    go through the guard, so this field does nothing for them."""
 
 
 def load_layout(question_type: str, path: Path | None = None) -> list[SectionSpec]:
@@ -40,6 +47,7 @@ def load_layout(question_type: str, path: Path | None = None) -> list[SectionSpe
             source=entry.get("source"),
             sentences=str(entry.get("sentences", "2 to 5")),
             instructions=str(entry.get("instructions", "")).strip(),
+            findings=bool(entry.get("findings", True)),
         )
         if spec.kind == "generated" and spec.id not in GENERATED:
             raise ValueError(f"report.yaml: no generator for section {spec.id!r}")

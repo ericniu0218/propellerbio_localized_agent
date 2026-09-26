@@ -204,6 +204,12 @@ class CitationGuard:
         if not _NULL_CLAIM.search(sentence) and _EFFECT.search(sentence) \
                 and all(_null_only(clean(u.quote)) for u in cited):
             return GuardResult(False, "claims an effect the cited evidence reports as null")
+        # A result needs a quote that reports one. Found in a hand audit:
+        # "Montelukast reduced asthma exacerbations in children ... 45
+        # participants randomized to montelukast and 44 to placebo" cited only
+        # the trial's enrolment sentence, and kept every name and number.
+        if _EFFECT.search(sentence) and not any(_reports_result(clean(u.quote)) for u in cited):
+            return GuardResult(False, "states a result its cited evidence does not report")
         for u in cited:
             if any(drops_negation(sentence, s) for s in split_sentences(clean(u.quote))):
                 return GuardResult(False, "drops a negation in the cited evidence")
@@ -241,6 +247,29 @@ def _null_only(text: str) -> bool:
     of its negation? "had no significant effect on epidermal thickness" is;
     "reduced ear thickness but had no effect on scaling" is not."""
     return bool(_NULL_CLAIM.search(text)) and not _EFFECT.search(_NULL_SCOPE.sub(" ", text))
+
+
+# What a quote that reports a result says. Verb and adjective forms only:
+# "exacerbation" names an asthma event, "exacerbated" reports one.
+_RESULT = re.compile(
+    r"\b(?:reduc(?:ed|es|ing|tion|tions)|decreas(?:ed|es|ing)|lower(?:ed|ing)?|attenuat(?:ed|es|ing)|"
+    r"ameliorat(?:ed|es)|alleviat(?:ed|es)|diminish(?:ed|es)|abolish(?:ed|es)|abrogat(?:ed|es)|"
+    r"mitigat(?:ed|es)|improv(?:ed|es|ing|ement)|prevent(?:ed|s|ing)|protect(?:ed|s|ive|ion)|"
+    r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
+    r"exacerbat(?:ed|es|ing)|promot(?:ed|es)|accelerat(?:ed|es)|augment(?:ed|s)|amplif(?:ied|ies)|"
+    r"suppress(?:ed|es)|inhibit(?:ed|s)|induc(?:ed|es)|enhanc(?:ed|es)|restor(?:ed|es)|rescu(?:ed|es)|"
+    r"higher|greater|fewer|less|more|better|worse|significant(?:ly)?|associated|correlat\w*|"
+    r"efficac\w*|effective|benefit\w*|remission|response|achieved|rose|fell|declined|lost|gained|"
+    r"upregulat\w*|downregulat\w*|no effect|did not|failed|"
+    # Base forms ("can reduce", "exacerbate"), change nouns ("no increase"),
+    # and how safety results are written ("adverse events were infrequent").
+    r"reduce|decrease|increase|lower|improve|prevent|protect|worsen|exacerbate|aggravate|attenuate|"
+    r"alleviate|relieve[ds]?|suppress|inhibit|enhance|promote|restore|induce|change[ds]?|difference|"
+    r"adverse|tolerat\w*|infrequent|mild|unchanged)\b|%|\bp\s*[<=>]|\bfold\b", re.I)
+
+
+def _reports_result(text: str) -> bool:
+    return bool(_RESULT.search(text))
 
 
 _UP = re.compile(r"\b(?:increas|elevat|upregulat|higher|raised|rose)\w*", re.I)

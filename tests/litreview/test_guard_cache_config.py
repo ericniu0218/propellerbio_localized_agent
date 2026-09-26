@@ -290,3 +290,29 @@ def test_a_sentence_that_reverses_its_cited_result_is_dropped(sentence, quote):
 def test_a_faithful_sentence_beside_the_direction_checks_is_kept(sentence, quotes):
     verdict = _mouse_guard(**quotes).check(sentence, list(quotes))
     assert verdict.kept, verdict.reason
+
+
+def test_a_result_cited_to_a_sentence_that_reports_none_is_dropped():
+    """Found in a hand audit of an asthma report (qwen3:8b): the quote is a
+    dose-finding trial's enrolment sentence, and the sentence invents an
+    efficacy result while reusing its names and numbers."""
+    quote = ("Key Results: Among 45 participants randomized to montelukast and 44 to placebo, median [IQR] ages "
+             "were 6.6 [5.4, 10] and 6.7 [5.3, 9.9] years, with high-moderate pre-treatment exacerbation severity.")
+    # The question here is psoriasis, so the disease is left out of the sentence.
+    sentence = ("Montelukast reduced exacerbations in children with high-moderate pre-treatment severity, "
+                "as shown in a study of 45 participants randomized to montelukast and 44 to placebo.")
+    verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
+    assert not verdict.kept and "does not report" in verdict.reason
+
+
+@pytest.mark.parametrize("sentence, quote", [
+    ("Adverse events were infrequent and mild in mice treated with anti-IL-17A.",
+     "Adverse events were infrequent and mild in mice given anti-IL-17A."),
+    ("Blocking IL-17A caused no increase in heart rate in mice.",
+     "There was no increase in heart rate at any dose of anti-IL-17A in mice."),
+    ("Anti-IL-17A reduced inflammation in mice.",
+     "Anti-IL-17A can quickly relieve symptoms and reduce the level of inflammation in mice."),
+], ids=["safety-wording", "no-increase", "base-verb-forms"])
+def test_a_result_in_plain_wording_still_counts_as_a_result(sentence, quote):
+    verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
+    assert verdict.kept, verdict.reason

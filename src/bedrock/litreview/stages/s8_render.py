@@ -134,6 +134,8 @@ def to_markdown(report: Report) -> str:
             out.append(f"- **{short}** [{refs.get(short, '?')}] ({unit.section}, {unit.quote_status} match) \"{unit.quote}\"")
             if unit.context_quote:
                 out.append(f"  - context ({unit.context_section}): \"{unit.context_quote}\"")
+            if unit.qualifier_quote:
+                out.append(f"  - qualifier (next sentence): \"{unit.qualifier_quote}\"")
         out.append("")
 
     dropped = [(sec.title, x) for sec in _walk(report.sections) for x in sec.sentences if not x.kept]
@@ -296,6 +298,8 @@ def to_html(report: Report) -> str:
                         f'({u.section}, {u.quote_status} match) “{html.escape(u.quote)}”'
                         + (f'<br><small>context ({html.escape(u.context_section or "")}): '
                            f'“{html.escape(u.context_quote)}”</small>' if u.context_quote else "")
+                        + (f'<br><small>qualifier (next sentence): “{html.escape(u.qualifier_quote)}”</small>'
+                           if u.qualifier_quote else "")
                         + "</li>")
         body.append("</ul></details>")
 

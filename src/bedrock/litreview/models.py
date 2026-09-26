@@ -46,7 +46,7 @@ import hashlib
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 # --- enums, as literal types so the JSON schema constrains generation -------
 
@@ -500,6 +500,13 @@ class EvidenceUnit(BaseModel):
     context_section: str | None = None
     context_start: int | None = None
     context_end: int | None = None
+    qualifier_quote: str | None = None
+    """The paper's sentence right after the quote, when it qualifies it
+    ("Although this result did not reach statistical significance ...").
+    Same section as the quote, at `qualifier_start:qualifier_end`. Found by
+    `extract/verify.py` `qualifier_after`, never by the model."""
+    qualifier_start: int | None = None
+    qualifier_end: int | None = None
     from_discussion: bool = False
     """Authors overstate in the Discussion. Kept, but flagged."""
     entity_match: Literal["exact", "paper_context"] = "paper_context"
@@ -518,6 +525,20 @@ class EvidenceUnit(BaseModel):
     corrected_fields: list[str] = Field(default_factory=list)
     """Which fields a human changed. This is the safety net, and after months
     of use it is also the only realistic path to fine-tuning anything."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_qualifier(self, handler):
+        """Leave the qualifier fields out of the JSON when there is none.
+
+        They were added after reports were already stored, and a stored run
+        is verified by re-serialising its report and comparing the bytes
+        (`report/invariants.py` `check_pinned`). Writing `"qualifier_quote":
+        null` into every old unit would make every old run fail that check."""
+        data = handler(self)
+        if isinstance(data, dict) and data.get("qualifier_quote") is None:
+            for name in ("qualifier_quote", "qualifier_start", "qualifier_end"):
+                data.pop(name, None)
+        return data
 
 
 class TargetSummary(BaseModel):

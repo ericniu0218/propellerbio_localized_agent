@@ -147,7 +147,12 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
     No model-written text is offered as a source of wording: the old "Result"
     line was the extraction model's summary, and sentences built from it
     carried details no quote contained. The context sentence, when there is
-    one, is the paper's own Methods or Results sentence naming the subjects."""
+    one, is the paper's own Methods or Results sentence naming the subjects.
+    The qualifier, when there is one, is the paper's very next sentence and
+    limits the quote ("Although this result did not reach statistical
+    significance ..."). Its label says so, because the prompt file only
+    explains Quote and Context, and the citation guard drops a sentence that
+    leaves out a "not significant" it states."""
     lines = []
     for u in units:
         sid = ctx.summary.short_ids[u.id]
@@ -156,6 +161,9 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
         who = (f"studied in {_WHO.get(u.evidence_type, u.evidence_type)} ({u.species_raw}{n})"
                if u.species_raw else "who was studied: not stated in the quoted text")
         context = f'\n    Context: "{u.context_quote}"' if u.context_quote else ""
+        if u.qualifier_quote:
+            context += ("\n    Qualifier (the paper's next sentence; it may limit the quote, e.g. \"not "
+                        f'significant\" - keep any such limit when you use the quote): "{u.qualifier_quote}"')
         lines.append(
             f"[{sid}] about: {u.target_raw or u.target}{drug} · {who}\n"
             f"    Paper: {ctx.labels.get(u.paper_id, u.paper_id)}\n"

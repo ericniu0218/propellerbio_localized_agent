@@ -44,6 +44,8 @@ for k in sample:
                   f"quote: {u.quote}"]
         if u.context_quote:
             lines.append(f"context: {u.context_quote}")
+        if u.qualifier_quote:
+            lines.append(f"qualifier: {u.qualifier_quote}")
         if p is not None:
             text = p.sections.get(u.section, "")
             a, b = (u.quote_start or 0), (u.quote_end or 0)

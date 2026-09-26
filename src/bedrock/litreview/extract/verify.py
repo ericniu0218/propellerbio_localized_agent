@@ -849,3 +849,158 @@ def not_a_result_reason(text: str) -> str | None:
     if reports_result(_NAMED_MODEL.sub(" ", " ".join(left))):
         return None
     return f"not_a_result:{kind}"
+
+
+# --- a qualifier in the paper's next sentence ---------------------------------
+#
+# Widening shows the whole sentence a quote sits in, so a qualifier inside it
+# ("but not in controls", "p = 0.099") is on the page. A qualifier in the
+# *next* sentence was not: the obesity hand audit (S6,
+# evals/litreview/hand_audit/qwen_obesity.md) found a report sentence
+# restating
+#
+#     "In the MC4R mutation carriers, placebo subtracted group mean
+#      differences in weight loss (dose 0.01 mg/kg/24 h) of ~0.6 kg/week were
+#      observed ()."
+#
+# faithfully, while the paper's very next sentence reads "Although this result
+# did not reach statistical significance (p = 0.09) when compared to placebo,
+# weight loss from baseline was significantly reduced (p < 0.0001)." Neither
+# the writer nor the guard ever saw it.
+#
+# So when the sentence right after a quote - same section, same paragraph -
+# qualifies it, Stage 5 stores it beside the quote (`EvidenceUnit.
+# qualifier_quote`), anchored like the context sentence. It is shown to the
+# reader, given to the writer and citable, and the citation guard drops a
+# sentence that states the quote's result while leaving out a "not
+# significant" the qualifier says about it (`report/guard.py`, check 8).
+#
+# Everything that decides this is in this block, and it is deliberately
+# narrow. What counts as a qualifier:
+#
+# - it opens with a word that concedes or contrasts: "Although", "However",
+#   "But", "Nevertheless", "Nonetheless", "In contrast". Measured on the three
+#   stored reports this also stores some contrasts about something else ("In
+#   contrast, SCN5A was not significantly changed"). That costs only a line of
+#   the paper's own text shown beside the quote; the guard's drop rule below
+#   never fires on one, because it also needs the sentence to point back;
+# - it says "this/these/the <difference|effect|result|trend|change> was/did
+#   not ...";
+# - it says the result was not significant AND points back at it in its first
+#   clause: "Because the findings for the first secondary efficacy endpoint
+#   were not statistically significant, ..." (migraine S9).
+#
+# A sentence that merely contains "not significant" is not a qualifier: "IL-6
+# was not significantly different" after a TNF result is a separate finding.
+
+_QUALIFIER_OPENER = re.compile(r"^(?:although|however|but|nevertheless|nonetheless|in\s+contrast)\b", re.I)
+# What a sentence calls the result it points back at.
+_RESULT_NOUN = (r"(?:result|difference|effect|finding|change|trend|increase|decrease|reduction|improvement|"
+                r"association|correlation|observation|response|benefit)s?")
+# Words that may open a pointing-back sentence before its subject; stripped
+# before the sentence is split into clauses.
+_LEAD_IN = re.compile(r"^(?:although|though|however|but|nevertheless|nonetheless|in\s+contrast|because|since|"
+                      r"while)\b,?\s*", re.I)
+# "Although this result ...", "Because the findings for the first secondary
+# efficacy endpoint ...": the sentence's subject is the result just reported.
+_POINTS_BACK = re.compile(
+    r"^(?:(?:although|though|however|but|nevertheless|nonetheless|in\s+contrast|because|since|while),?\s+)?"
+    r"(?:this|these|that|such|the)\s+(?:[\w-]+\s+)?" + _RESULT_NOUN + r"\b", re.I)
+_THIS_WAS_NOT = re.compile(
+    r"^(?:this|these|the)\s+(?:difference|effect|result|trend|change)s?\s+(?:was|were|did)\s+not\b", re.I)
+# Saying a result was not statistically significant. "p = 0.05" and above, or
+# "p > ...", count; "p < 0.05" does not.
+NOT_SIGNIFICANT = re.compile(
+    r"\bdid\s+not\s+reach\s+(?:statistical\s+)?significance|\bnot\s+(?:statistically\s+)?significant|"
+    r"\bnon-?significant|\bn\.s\.|\bp\s*=\s*0?\.(?:0[5-9]|[1-9])|\bp\s*>\s*0?\.\d", re.I)
+# What a report sentence says when it has kept that limit: the words above,
+# or a hedge that only fits a non-significant result ("numerically favored",
+# "a trend towards").
+KEEPS_NOT_SIGNIFICANT = re.compile(
+    NOT_SIGNIFICANT.pattern + r"|\binsignificant|\bdid\s+not\s+achieve|\bfailed\s+to\s+reach|\bnumerically|"
+    r"\btrend(?:s|ed)?\b|\btended\b|\bmarginal(?:ly)?\b|\bno\s+(?:statistically\s+)?significant", re.I)
+# Words that carry no subject of their own when comparing a qualifier's
+# subject with the quote's words.
+_FILLER = frozenset({"this", "these", "that", "those", "such", "were", "when", "than", "then", "from", "with",
+                     "also", "into", "over", "after", "before", "their", "there", "which", "while", "both",
+                     "each", "only", "compared", "versus", "group", "groups", "because", "since", "although",
+                     "though", "however", "nevertheless", "nonetheless", "contrast"})
+_CONTENT_WORD = re.compile(r"[^\W\d_][\w-]*")
+
+
+def content_words(text: str) -> set[str]:
+    """The words of `text` that say what it is about: four letters or more,
+    or a name with a digit in it ("IL-6", "MC4R"); plural "s" dropped, filler
+    and result words ("significantly", "reduced") left out."""
+    words = (m.group(0).lower().strip("-") for m in _CONTENT_WORD.finditer(text))
+    return {w[:-1] if w.endswith("s") else w for w in words
+            if (len(w) >= 4 or any(c.isdigit() for c in w)) and w not in _FILLER and not RESULT_WORDS.fullmatch(w)}
+
+
+def _first_clause(sentence: str) -> tuple[str, str]:
+    """(first clause, rest): split at the first comma, semicolon, "but" or
+    "whereas" outside brackets, after any leading "Although"/"However,".
+    "Although this result did not reach statistical significance (p = 0.09)
+    when compared to placebo" | "weight loss from baseline was significantly
+    reduced (p < 0.0001)." """
+    lead = _LEAD_IN.match(sentence)
+    depth = 0
+    for i in range(lead.end() if lead else 0, len(sentence)):
+        c = sentence[i]
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and (c in ",;" or re.match(r"\s(?:but|whereas)\b", sentence[i:], re.I)):
+            return sentence[:i], sentence[i:].lstrip(" ,;")
+    return sentence, ""
+
+
+def not_significant_clause(qualifier: str, quote: str) -> tuple[str, str] | None:
+    """When `qualifier` says the result in `quote` was not significant: its
+    (not-significant clause, the rest of the sentence). Otherwise None.
+
+    Three things must hold. The sentence points back at the quote's result
+    ("this result", "the findings for ..."); its first clause says "not
+    significant"; and any subject it names in that clause is the quote's
+    ("the findings for the first secondary efficacy endpoint" beside a quote
+    about that endpoint), so "The reduction in IL-6 was not significant" is
+    not read as a verdict on a TNF quote before it.
+    """
+    back = _POINTS_BACK.match(qualifier) or _THIS_WAS_NOT.match(qualifier)
+    if back is None:
+        return None
+    first, rest = _first_clause(qualifier)
+    verdict = NOT_SIGNIFICANT.search(first)
+    if verdict is None:
+        return None
+    subject = content_words(qualifier[back.end():verdict.start()])
+    if not subject <= content_words(quote):
+        return None
+    return first, rest
+
+
+def is_qualifier(sentence: str, quote: str) -> bool:
+    """Does `sentence`, the one right after `quote`, qualify it? See above."""
+    return bool(_QUALIFIER_OPENER.match(sentence) or _THIS_WAS_NOT.match(sentence)
+                or not_significant_clause(sentence, quote))
+
+
+def qualifier_after(text: str, start: int, end: int) -> Located | None:
+    """The sentence right after `text[start:end]`, when it qualifies it.
+
+    Same section by construction (`text` is one section); same paragraph,
+    because a blank line between them ends the search: a new paragraph is
+    about something else. The sentence is found with the same boundaries
+    widening uses and returned at its offsets in `text`, like a quote.
+    """
+    k = end
+    while k < len(text) and text[k].isspace():
+        k += 1
+    if k >= len(text) or re.search(r"\n\s*\n", text[end:k]):
+        return None
+    a, b = sentence_bounds(text, k, k + 1)
+    sentence = text[a:b]
+    if a < end or not sentence or not is_qualifier(sentence, text[start:end]):
+        return None
+    return Located("exact", a, b, sentence)

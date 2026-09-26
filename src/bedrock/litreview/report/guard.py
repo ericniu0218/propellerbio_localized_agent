@@ -12,8 +12,9 @@ evidence it cites:
 1. It must cite at least one evidence id, and every id must exist in the
    slice that section was given.
 2. Every number in it must appear in the cited evidence: the paper's own
-   text (the quote, and the context sentence that gave the subjects or sample
-   size) or the paper's year.
+   text (the quote, the context sentence that gave the subjects or sample
+   size, and the next sentence when it qualifies the quote) or the paper's
+   year.
 3. Every drug, target, disease or pathogen it names must appear in the cited
    evidence — or be the thing the question is about.
 4. Who was studied — patients, mice, rats, primates, cells — must be said by
@@ -42,6 +43,15 @@ evidence it cites:
    anywhere it claims an effect: check 6 reads words, and such quotes often
    use result words to name a model or a hope ("allergen-induced",
    "therapeutics to prevent").
+8. A qualifier the paper states is not dropped. When the paper's very next
+   sentence says a cited quote's result was not significant ("Although this
+   result did not reach statistical significance (p = 0.09) ..."; see
+   `extract/verify.py` `qualifier_after`), a sentence restating that result
+   with no "not significant", "numerically", "trend" or the qualifier's own
+   p value is dropped, unless another cited quote reports a result too. A
+   sentence that restates the qualifier's other clause instead ("weight loss
+   from baseline was significantly reduced") is kept. Such a qualifier also
+   lets a sentence say the result was not significant (check 5).
 
 The cited evidence is the paper's text, never what the model wrote beside it.
 `effect_detail`, `species_raw` and a sample size the paper does not state are
@@ -59,9 +69,12 @@ import re
 from dataclasses import dataclass
 
 from bedrock.litreview.extract.verify import (
+    KEEPS_NOT_SIGNIFICANT,
     RESULT_WORDS,
+    content_words,
     covered,
     not_a_result_reason,
+    not_significant_clause,
     reports_result,
     split_sentences,
     studied_in,
@@ -94,15 +107,16 @@ def _located(unit: EvidenceUnit, name: str) -> bool:
 
 
 def source_text(unit: EvidenceUnit) -> str:
-    """The paper's own words a sentence citing this unit may rest on."""
-    return " | ".join(p for p in (unit.quote, unit.context_quote or "") if p)
+    """The paper's own words a sentence citing this unit may rest on: the
+    quote, the context sentence and the qualifying next sentence."""
+    return " | ".join(p for p in (unit.quote, unit.context_quote or "", unit.qualifier_quote or "") if p)
 
 
 def unit_text(unit: EvidenceUnit, extra: str = "") -> str:
     """Everything a sentence citing this unit may legitimately draw on: the
     paper's text, plus the names provenance located, plus `extra` (the
     paper's label, so its year is citable)."""
-    parts = [unit.quote, unit.context_quote or ""]
+    parts = [unit.quote, unit.context_quote or "", unit.qualifier_quote or ""]
     if _located(unit, "target"):
         parts += [unit.target, unit.target_raw]
     if _located(unit, "intervention"):
@@ -220,11 +234,19 @@ class CitationGuard:
             if not covered(kind, said):
                 return GuardResult(False, f"says {word!r} about who was studied, which the cited evidence does not")
 
+        cited = [self.units[c] for c in citations]
+        # The paper's next sentence says the result was not significant, and
+        # the sentence states it as if it were (obesity S6: "~0.6 kg/week"
+        # restated, "did not reach statistical significance (p = 0.09)" gone).
+        # Before the result checks below, so a sentence that fails this and
+        # another check is reported for this, the more specific reason.
+        if (why := drops_not_significant(sentence, cited)):
+            return GuardResult(False, why)
+
         # Which way a result points. A sentence may say something did not work
         # only if a cited finding is a null result or its words say so: the
         # MedGemma run wrote "inhibition of HIF signaling did not improve
         # outcomes" citing only findings where it did.
-        cited = [self.units[c] for c in citations]
         # In a findings section, a sentence with nothing to check above can
         # still be filler: it names nothing wrong because it states nothing
         # at all, just methods, demographics or a generic scope line. Every
@@ -251,8 +273,11 @@ class CitationGuard:
         if (self.findings or _EFFECT.search(sentence)) \
                 and all(not_a_result_reason(clean(u.quote)) for u in cited):
             return GuardResult(False, "cites only quotes that state an aim, method or prediction, not a result")
+        # A qualifier saying the result was not significant says so too, or
+        # the writer, shown it, could never write "did not reach significance".
         if _NULL_CLAIM.search(sentence) and not any(
-            u.outcome in ("no_effect", "mixed") or _NULL_CLAIM.search(clean(u.quote)) for u in cited
+            u.outcome in ("no_effect", "mixed") or _NULL_CLAIM.search(clean(u.quote)) or _not_significant(u)
+            for u in cited
         ):
             return GuardResult(False, "claims no effect, which the cited evidence does not")
         # And the reverse, found by an adversarial probe: "Blocking IL-17A
@@ -329,6 +354,58 @@ def _directions(text: str) -> set[str]:
     """Which ways the text says something moved: {"increased"}, {"decreased"},
     both or neither."""
     return {name for name, pattern in (("increased", _UP), ("decreased", _DOWN)) if pattern.search(text)}
+
+
+def _not_significant(unit: EvidenceUnit) -> tuple[str, str] | None:
+    """The unit's qualifier split into (not-significant clause, rest), when
+    it says the quote's result was not significant."""
+    if not unit.qualifier_quote:
+        return None
+    return not_significant_clause(clean(unit.qualifier_quote), clean(unit.quote))
+
+
+def drops_not_significant(sentence: str, cited: list[EvidenceUnit]) -> str | None:
+    """Why `sentence` drops a "not significant" the paper's next sentence
+    states about a cited quote's result, or None. Check 8 in the module
+    docstring; `extract/verify.py` decides what a qualifier is.
+
+    Built to keep, not to drop, whenever the sentence may be doing something
+    else than restating the qualified result:
+
+    - another cited quote reports a result: the sentence may rest on that one;
+    - it says "not significant", "numerically", "a trend", "did not reach",
+      or claims no effect at all;
+    - it carries a number the qualifier adds, such as its "p = 0.09";
+    - it uses a word or number that only the qualifier's other clause has:
+      "weight loss from baseline was significantly reduced (p < 0.0001)" is
+      the paper's own significant result, and "baseline" or "0.0001" means
+      the sentence is reporting that one;
+    - it does not restate the quote at all (it shares no number with the
+      quote, and fewer than half of its own subject words are the quote's),
+      so there is nothing the qualifier limits.
+    """
+    limited = [(u, parts) for u in cited if (parts := _not_significant(u))]
+    if not limited:
+        return None
+    qualified = {u.id for u, _ in limited}
+    if any(u.id not in qualified and _reports_result(clean(u.quote)) for u in cited):
+        return None
+    if KEEPS_NOT_SIGNIFICANT.search(sentence) or _NULL_CLAIM.search(sentence):
+        return None
+    said_numbers, said_words = numbers_in(sentence), content_words(sentence)
+    restates = False
+    for u, (verdict, rest) in limited:
+        quote = clean(u.quote)
+        quote_numbers, quote_words = numbers_in(quote), content_words(quote)
+        if said_numbers & (numbers_in(verdict) - quote_numbers):
+            return None
+        if said_numbers & (numbers_in(rest) - quote_numbers) or said_words & (content_words(rest) - quote_words):
+            return None
+        if said_numbers & quote_numbers or (said_words and len(said_words & quote_words) * 2 >= len(said_words)):
+            restates = True
+    if not restates:
+        return None
+    return "drops the qualifier the paper states: not significant"
 
 
 _RANGE = re.compile(r"(\d+(?:\.\d+)?)\s*[\u2013\u2014-]\s*(\d+(?:\.\d+)?)")

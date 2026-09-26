@@ -6,7 +6,8 @@ the exact papers it was built from, and asks whether the guarantees hold for
 the whole thing:
 
   quote       every quote shown is the paper's text at its recorded position,
-              and so is every context sentence
+              and so is every context sentence and every qualifying next
+              sentence
   fields      every field the model wrote that the report shows was found in
               the paper by `extract/provenance.py`, and is still there
   sentences   every kept sentence passes the citation guard, re-run here
@@ -68,6 +69,8 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"quote: {where}: quote {why}")
         if (why := _anchored(u.context_quote, paper, u.context_section, u.context_start, u.context_end)):
             out.append(f"quote: {where}: context sentence {why}")
+        if (why := _anchored(u.qualifier_quote, paper, u.section, u.qualifier_start, u.qualifier_end)):
+            out.append(f"quote: {where}: qualifying sentence {why}")
         if paper.is_review or paper.signals.is_retracted:
             out.append(f"flags: {where}: comes from a paper flagged "
                        f"{'retracted' if paper.signals.is_retracted else 'review'}")

@@ -34,6 +34,12 @@ therefore predicted to benefit patients") and open questions ("remains
 unclear") are dropped by `extract/verify.py` `not_a_result_reason`, which
 keeps a quote that states its aim and then its result.
 
+Not a check, but found by code at the end: when the paper's very next
+sentence qualifies the quote ("Although this result did not reach statistical
+significance ..."), it is stored beside it as `qualifier_quote`, so the reader,
+the writer and the citation guard all see it (`extract/verify.py`
+`qualifier_after`).
+
 Which sections we send, and why (set by the plan, from config/pipeline.yaml):
 
   abstract    extract from it. Clean sentences, high signal.
@@ -77,6 +83,7 @@ from bedrock.litreview.extract.verify import (
     locate_quote,
     not_a_result_reason,
     other_work_reason,
+    qualifier_after,
     region_of,
     verify_quote,
 )
@@ -340,6 +347,7 @@ def _to_unit(
     located: Located,
     model_quote: str,
     prov: Provenance,
+    qualifier: Located | None = None,
 ) -> EvidenceUnit:
     # Fields the model wrote, as far as the text it was shown supports them
     # (`extract/provenance.py`). Labels are read from these too: a result
@@ -405,6 +413,9 @@ def _to_unit(
         context_section=prov.context_section,
         context_start=prov.context.start if prov.context else None,
         context_end=prov.context.end if prov.context else None,
+        qualifier_quote=qualifier.text if qualifier else None,
+        qualifier_start=qualifier.start if qualifier else None,
+        qualifier_end=qualifier.end if qualifier else None,
         from_discussion=(section == "discussion"),
         entity_match=match,  # type: ignore[arg-type]
         corrected=corrected,
@@ -526,10 +537,17 @@ def extract_paper(
             for name, where in prov.where.items():
                 if where == NONE:
                     stats[f"{name}_unlocated"] += 1
+            # The paper's next sentence, when it qualifies this one ("Although
+            # this result did not reach statistical significance ..."). Code
+            # finds it, not the model; `extract/verify.py` says what counts.
+            section_text = paper.sections.get(section, "")
+            qualifier = (qualifier_after(section_text, located.start, located.end)
+                         if section_text[located.start:located.end] == located.text else None)
             unit = _to_unit(
                 finding, status=status, match=match, paper=paper, spec=spec, section=section,
                 chunk=chunk_i, model_version=model_version, prompt_version=prompt_version, kb=kb,
                 facet_ids=[f.id for f in facets], located=located, model_quote=model_quote, prov=prov,
+                qualifier=qualifier,
             )
             # A species the paper states decides. When it states none, the
             # model's own species may still rule a finding out (it said

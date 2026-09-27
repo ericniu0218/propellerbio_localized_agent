@@ -75,6 +75,7 @@ from bedrock.litreview.extract.verify import (
     normalize,
     people_named,
     split_sentences,
+    strip_leading_label,
     studied_in,
 )
 from bedrock.litreview.knowledge import Knowledge, TermMatcher
@@ -312,6 +313,14 @@ def naming_sentence(
             located = locate_quote(sent, home)
             if located.status == "failed":
                 continue
+            if home_section == "abstract":
+                # Same fix as the quote itself (`extract/verify.py`
+                # `strip_leading_label`): a naming sentence taken from a
+                # structured abstract can open on its own label ("Results:
+                # H2L5186303 suppressed ...").
+                stripped_text, stripped_start = strip_leading_label(located.text, located.start)
+                if stripped_text != located.text:
+                    located = Located(located.status, stripped_start, located.end, stripped_text, located.reason)
             near = (abs(located.start - quote_start) if where == CHUNK and quote_start is not None
                     else len(home))
             link = (2 if any(name_in(n, sent, kb) for n in partners)
@@ -387,7 +396,17 @@ def trace(
             home = methods_section_text if where == METHODS else section_text
             located = locate_quote(sent, home)
             if located.status != "failed":
-                p.context, p.context_section = located, ("methods" if where == METHODS else section)
+                context_section = "methods" if where == METHODS else section
+                if context_section == "abstract":
+                    # The context sentence (usually the one stating sample
+                    # size or subjects) can itself be a structured abstract's
+                    # own opening label ("Background and Purpose: Children
+                    # with acute asthma exacerbations ...").
+                    stripped_text, stripped_start = strip_leading_label(located.text, located.start)
+                    if stripped_text != located.text:
+                        located = Located(located.status, stripped_start, located.end, stripped_text,
+                                          located.reason)
+                p.context, p.context_section = located, context_section
                 p.where["context"] = where
     context = p.context.text if p.context else ""
 

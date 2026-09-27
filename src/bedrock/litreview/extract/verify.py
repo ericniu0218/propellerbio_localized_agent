@@ -1062,6 +1062,49 @@ def abstract_labels(abstract: str) -> list[tuple[str, int, int]]:
     return out
 
 
+# A structured-abstract label is sometimes not the very first word: Europe
+# PMC's own text has "Key Results: Among 45 participants ..." and
+# "Background and Purpose: Children with acute asthma ...". `ABSTRACT_LABEL`
+# (built for `conclusion_reason`, which only needs to know *that* a label is
+# there, not trim it) matches just "Results:" and "Purpose:" in those two -
+# the bare word from `_LABELS` that sits right before the colon. What comes
+# before it ("Key ", "Background and ") is plain words with no digits or
+# punctuation, never real sentence content, so it is swept up with the label.
+# A real sentence reaching a colon this early would almost always have a
+# number or punctuation before it; this is what tells the two apart.
+_LABEL_LEAD_IN = re.compile(r"^(?:[A-Za-z]+\s+){0,3}$")
+
+
+def strip_leading_label(text: str, start: int) -> tuple[str, int]:
+    """If `text` opens with a structured-abstract label ("Background and
+    Purpose:", or the glued form "...p<0.001.ConclusionDPL combined..."),
+    return (text with the label removed, start advanced by the same
+    amount). Otherwise (text, start) unchanged.
+
+    `start` is `text`'s offset in whatever section text it was found in
+    (the paper's own text, at fixed character positions). Only `start` moves
+    and only forward, by exactly the number of characters cut from the front
+    of `text` - never `end`, which the caller keeps - so
+    `section_text[start:end] == text` still holds after the strip, the same
+    invariant `report/invariants.py`'s `_anchored()` checks on every run.
+    """
+    labels = abstract_labels(text)
+    if not labels:
+        return text, start
+    _, lab_start, lab_end = labels[0]
+    if lab_start > 0 and not _LABEL_LEAD_IN.match(text[:lab_start]):
+        return text, start
+    cut = lab_end
+    while cut < len(text) and text[cut].isspace():
+        cut += 1
+    if cut == 0 or cut >= len(text):
+        # Nothing to cut, or the span is nothing but a label: an empty quote
+        # would be worse than a labelled one, so leave it for the checks
+        # downstream to reject on their own terms.
+        return text, start
+    return text[cut:], start + cut
+
+
 def abstract_methods(abstract: str) -> list[tuple[int, int]]:
     """Where a structured abstract's Methods part is: (start, end) of the
     text after each Methods-type label, up to the next label. Empty for an

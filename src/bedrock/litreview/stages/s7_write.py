@@ -277,6 +277,17 @@ def write_section_text(
         if len(text) < MIN_SENTENCE_CHARS:
             ctx.sentence_stats["too_short"] += 1
             continue
+        if _garbled_start(text):
+            # A small-model drafting glitch, the same family as the two
+            # checks above: the writer duplicates and truncates its own
+            # first word ("Hypoth, hypothalamic Sik3 mRNA levels were
+            # significantly increased ..." - obesity S13, evals/litreview/
+            # hand_audit/qwen_obesity_after.md). Not a guard failure - the
+            # words are the paper's own, just mangled in the retelling - so
+            # it is dropped the same silent way as `too_short` and
+            # `repeated`, not surfaced as a citation-guard drop reason.
+            ctx.sentence_stats["garbled"] += 1
+            continue
         words = _content_words(text)
         if any(_overlap(words, earlier) >= REPEAT_OVERLAP for earlier in said):
             # Small models loop: the MedGemma run wrote one sentence four times
@@ -296,6 +307,16 @@ def write_section_text(
             why = ctx.entailment.review(text, {c: short[c] for c in citations}, ctx.sentence_stats)
             if why:
                 verdict = GuardResult(False, why)
+        if verdict.kept:
+            # A leftover connective from the source sentence the model
+            # paraphrased ("However, weight loss was observed ..." lifting a
+            # paper's own "However, X"), never something the writer meant
+            # relative to a preceding sentence it cannot see - the prompt
+            # asks for standalone report sentences, never connected
+            # discourse. Safe to do only now, after the guard has judged the
+            # model's real words - stripping first would let the guard judge
+            # a sentence the model never actually wrote.
+            text = _strip_leading_connective(text)
         if text[-1] not in ".!?":
             # The model often returns a copied clause with no full stop, and
             # several of those run together are unreadable. Punctuation is not
@@ -342,9 +363,71 @@ REPEAT_OVERLAP = 0.8
 MIN_SENTENCE_CHARS = 25
 _WORD = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
 
+# A short alphabetic fragment, a comma, then a longer word straight after -
+# only ever checked at the very start of the sentence. Deliberately not "any
+# word is a prefix of the next word" (that fires constantly on ordinary
+# English: "an animal", "over overexpressed"); anchoring to the opening of
+# the sentence is what keeps this safe, because a real sentence essentially
+# never opens "Word, longerword-starting-with-word ...".
+_GARBLED_START = re.compile(r"^([a-zA-Z]{3,12}),\s+([a-zA-Z]+)")
+
+
+def _garbled_start(text: str) -> bool:
+    """A small model's drafting glitch: it duplicates and truncates its own
+    first word ("Hypoth, hypothalamic Sik3 mRNA levels were significantly
+    increased ..." - the real obesity S13 sentence in evals/litreview/
+    hand_audit/qwen_obesity_after.md). Scoped tightly to that shape: the
+    fragment must be a case-insensitive prefix of the word right after the
+    comma, and strictly shorter than it."""
+    m = _GARBLED_START.match(text)
+    if not m:
+        return False
+    fragment, word = m.group(1), m.group(2)
+    return len(word) > len(fragment) and word.lower().startswith(fragment.lower())
+
 
 def _content_words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if len(w) > 2}
+
+
+# Only "However," - deliberately not "Moreover,". See the docstring below:
+# "however" is already in `extract/verify.py`'s `_FILLER`, so removing it
+# cannot change `content_words()` and cannot change a guard verdict.
+# "moreover" is not filtered, and removing it provably can.
+_LEADING_CONNECTIVE = re.compile(r"^however,\s+", re.IGNORECASE)
+
+
+def _strip_leading_connective(text: str) -> str:
+    """Drop a leading "However, " (case-insensitive) from an already-kept
+    sentence, and capitalize the letter now at the start.
+
+    Real example, obesity S29 (evals/litreview/hand_audit/
+    qwen_obesity_after.md): "However, fasting plasma levels of FFAs and
+    β-hydroxybutyrate were higher and lower, respectively, in ob/ob HKO mice
+    ..." - the model paraphrased the paper's own qualifier sentence,
+    connective included. The writer is asked for standalone report
+    sentences, never connected discourse, so a leading "However" is always a
+    leftover from the source, never something the writer meant relative to a
+    preceding sentence it cannot see.
+
+    Why only "However," and not "Moreover," too: this runs *after* the
+    citation guard, so the stored text differs from the text the guard
+    judged - and `report/invariants.py` `check_sentences` re-runs that same
+    guard over the stored text on every `verify-run`. The two must therefore
+    always agree. They do for "however", which `extract/verify.py`'s
+    `_FILLER` already excludes from `content_words()`, so removing it cannot
+    move guard check 8's or check 10's word arithmetic. "moreover" is not
+    filtered: removing it changes the denominator of check 8's overlap ratio
+    and was measured flipping a real verdict, which would report a correctly
+    written sentence as a violation forever. Making it safe means adding
+    "moreover" to `_FILLER`, which moves those checks for every sentence in
+    every report - an accuracy change that needs its own measurement, not a
+    side effect of a cosmetic fix."""
+    match = _LEADING_CONNECTIVE.match(text)
+    if not match:
+        return text
+    rest = text[match.end():]
+    return rest[:1].upper() + rest[1:] if rest else text
 
 
 def _overlap(a: set[str], b: set[str]) -> float:
@@ -620,7 +703,8 @@ def _method(ctx: WriteContext) -> str:
         f"BMI and the like), judged from the paper's own abbreviation definitions where it gives one.",
         f"- **Written:** {ctx.sentence_stats.get('kept', 0)} sentences kept; {ctx.sentence_stats.get('dropped', 0)} "
         f"removed by the citation check; {ctx.sentence_stats.get('repeated', 0)} removed as repeats; "
-        f"{ctx.sentence_stats.get('too_short', 0)} too short to state anything.",
+        f"{ctx.sentence_stats.get('too_short', 0)} too short to state anything; "
+        f"{ctx.sentence_stats.get('garbled', 0)} removed as a corrupted, duplicated-fragment draft.",
         "- Every sentence cites the findings it relies on. Every quote shown is the paper's own sentence, taken "
         "from a recorded position in the paper; a \"fuzzy\" match means the model's copy differed from it only in "
         "typography or a word that carries no meaning. Numbers, names and who was studied in each sentence were "

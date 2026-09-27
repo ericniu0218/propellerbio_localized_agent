@@ -5,6 +5,130 @@
 > and `evals/` is `evals/litreview/`; the numbers are unaffected. The to-do
 > list in § Next steps is still the to-do list.
 
+# Benchmark results — the mechanical fix batch (27 September 2026)
+
+Run after the eight-item fix batch `5373d99..de1915b` (see
+[FIX_BATCH_PROGRESS.md](FIX_BATCH_PROGRESS.md)). qwen3:8b at temperature 0,
+`--models laptop`, the three frozen searcher corpora in
+`evals/litreview/corpora-searcher`, the file judge in
+`evals/litreview/judge/answers.jsonl`.
+
+**This run earned its keep.** It found a false drop in a rule that this
+branch had just added and whose unit tests were all green, and it found that
+one of the gates the previous write-up called passing had never actually run.
+Neither was visible from `pytest`.
+
+| | before (26 Sep) | this run | gates |
+|---|---|---|---|
+| obesity | 66.6 | 68.3, then 67.9 | 7 of 9 |
+| asthma | 68.2 | 69.4, then 69.2 | 9 of 9 (8 of 9 on one pass) |
+| migraine | 80.0 | 70.0 | 9 of 9 |
+
+## Read these numbers with three caveats, or not at all
+
+**The file judge is keyed by claim text, so this batch invalidated its own
+comparison.** Items 4, 5 and 6 change which sentences are written and how they
+are worded, and a reworded or new claim has no answer on file. The migraine run
+logged 8 cache misses and reports "judged 30/42" then "40/42" pipeline claims;
+its 70.0 against the earlier 80.0 is substantially unjudged claims, not
+measured regression. A before/after score difference in this table cannot be
+attributed to the pipeline.
+
+**One gate is non-deterministic on identical input.** The asthma report
+`3367ba2e60f434df` was scored three times: 69.4, 69.2, 69.2, and 9 of 9, 8 of
+9, 9 of 9 gates. Same report id, so the pipeline output was byte-identical and
+the variation is entirely in judging. `judge catches flipped effects` also went
+FAIL then PASS across two runs of identical *pre-batch* code
+(`20260927T004710Z`, `20260927T004749Z`). This is OPEN_ISSUES item 25, and it
+is large enough to swamp the differences in the table above.
+
+**Asthma and obesity numbers before tonight were produced without a verified
+context window.** `bench/run.py` builds its own `Settings` and calls
+`runner.answer_question` directly, never `service.preflight`, so unlike the
+employee-facing path it has no check on the 12,288-token minimum in
+`defaults/models.yaml`. The default `laptop` profile is 8,192, and
+`inference/openai_compatible.py` never sends `num_ctx`, so the real limit is
+whatever `ollama serve` was started with. `OLLAMA_CONTEXT_LENGTH` was unset
+before this run. It was set to 12,288 and verified in the running server's own
+environment and in `ollama ps` for every run reported here.
+
+## Where the pipeline lost points
+
+**The hedge rule fired once, and the firing was wrong.** Obesity, section
+`targets:TMEM135`, evidence unit E189 (PMID37773161). The cited qualifier
+sentence states a fact and then speculates about its cause: "high fat feeding
+in male mice did not elicit a significant body weight difference between the
+genotypes, presumably because the already rapid diet-induced weight gain in
+male C57BL/6J mice could not be further increased by the TMEM135
+inactivation". The report sentence — "TMEM135 knockout in mice led to glucose
+intolerance, hyperinsulinemia, and insulin resistance, while high fat feeding
+in male mice did not elicit a significant body weight difference between
+genotypes" — repeated only the fact and never asserted the guess. Nothing was
+unhedged, and a legitimate finding was deleted. Fixed in `0a2822f`, with both
+narrowings tested from these real sentences; the asthma S25 case the rule
+exists for is still caught.
+
+**Confirmed by re-running obesity after the fix** (`20260927T082510Z`). The
+writer drafted the same sentence again, and the guard now keeps it: the
+identical text citing E189 is `"kept": true, "drop_reason": null`, where in
+`20260927T070944Z` it was `"kept": false` with `"drops a hedge the cited
+evidence carries"`. The hedge reason appears zero times in the whole report,
+`sentences_kept` is 32 against 31, and `sentences_dropped` is 14 against 15 -
+one sentence recovered, and nothing else changed hands. `integrity check
+passes` and `claims supported by citations` still PASS. Overall 67.90.
+
+Two other things that rerun settles. `judge catches flipped effects` came back
+PASS on the same corpus where it had FAILed twice, which is further evidence it
+is the flaky gate of item 25 rather than a property of the pipeline. And `no
+distractor leaked` FAILs again at exactly 0.40, unchanged by the hedge fix,
+which is what a genuinely pre-existing weakness should do.
+
+**Obesity leaks 2 of 5 distractor papers, and always did.** `no distractor
+leaked` FAILs at a 0.40 leak rate, where the two pre-batch runs PASSed — but
+their `distractors.json` is `{}`. No distractors were ever made, so that gate
+passed vacuously and the earlier write-up's "every gate passes on all three"
+was not a measurement. This run made 5 and 2 leaked, both graded 3 and about
+the exact entity. Migraine made 5 and leaked 0, so the machinery works and the
+obesity result is real. **This is a pre-existing weakness this batch exposed,
+not one it caused.**
+
+## What the batch demonstrably fixed, on real data
+
+Read from the obesity report `cb23593c148f1697` against the pre-batch
+`20260927T004749Z` claims:
+
+- **Item 8, other-work lead-ins.** "Human genetic studies have identified
+  GPR75 loss-of-function variants to be strongly protective against obesity"
+  was a claim before and is gone now. `evidence_units` 206 to 205.
+- **Item 4, garbled drafts.** "Hypoth, hypothalamic Sik3 mRNA levels were
+  significantly increased ..." was a claim before and is gone now. The
+  report's own methods line reads "1 removed as a corrupted,
+  duplicated-fragment draft" — the counter fired exactly once, on exactly the
+  sentence it was built for. Migraine: 0, asthma: unchanged behaviour.
+- **Item 5, leftover connective.** "However, when challenged with chronic
+  positive energy balance through 10 weeks of HFD feeding, NPY cre/+ ,SIK3
+  lox/lox mice exhibited significantly reduced body weight gain ..." is
+  replaced by the same sentence without the connective. The guard still judged
+  the model's original words.
+- **Item 3, abstract labels.** `integrity check passes` PASSes on all three
+  corpora and `quote_validity` is 1.00, so advancing `start` alongside the
+  stripped text did not break the `section[start:end] == text` invariant that
+  `verify_run` re-checks. This was the failure mode with the worst blast
+  radius and it did not happen.
+
+## What this run cannot measure
+
+**Item 7 is unreachable through any stored corpus.** `ingest.prepare()` sets
+`paper.full_text = None` after the one-time section split at corpus-build
+time, and re-splits only when `sections` is empty. All three corpora were
+built 2026-09-25, before `de1915b`, so every one of their 208 papers carries
+sections frozen from the old parser with no raw text left to re-split. This is
+not confined to PMID41596081 and PMID41858165: no stored corpus can exercise
+the new "unknown" bucket at all. **An unchanged number here is not evidence
+that the fix is inert.** Measuring it needs a corpus rebuilt from source, which
+also means the numbered-heading gap in `parsing/sections.py` should be fixed
+first, or the rebuild will simply file both papers as "unknown" again.
+
 # Completeness and integrity branch — what was and was not measured (26 September 2026)
 
 Branch `litreview/completeness-integrity-11-15`, rebased onto `995d193` (OPEN_ISSUES

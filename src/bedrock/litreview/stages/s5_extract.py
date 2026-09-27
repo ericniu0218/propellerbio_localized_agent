@@ -127,6 +127,7 @@ from bedrock.litreview.extract.verify import (
     other_work_reason,
     qualifier_after,
     region_of,
+    strip_leading_label,
     verify_quote,
 )
 from bedrock.litreview.facets import subject_label
@@ -654,6 +655,17 @@ def extract_paper(
                 log.debug("unverified quote discarded (%s): paper=%s quote=%r",
                           located.reason, paper.id, finding.quote[:80])
                 continue
+            if section == "abstract":
+                # Europe PMC's structured abstracts keep their own headings
+                # ("Key Results:", "Background and Purpose:") glued onto the
+                # sentence text. Verification is against the paper's real
+                # characters, so this only trims the label off the front and
+                # slides `start` forward by the same count - `end` is
+                # untouched, so the paper[start:end] == text anchor
+                # `report/invariants.py` checks still holds.
+                stripped_text, stripped_start = strip_leading_label(located.text, located.start)
+                if stripped_text != located.text:
+                    located = Located(located.status, stripped_start, located.end, stripped_text, located.reason)
             model_quote = finding.quote
             # From here on every check reads the paper's own sentence.
             finding = finding.model_copy(update={"quote": located.text})
@@ -694,6 +706,15 @@ def extract_paper(
             section_text = paper.sections.get(section, "")
             qualifier = (qualifier_after(section_text, located.start, located.end)
                          if section_text[located.start:located.end] == located.text else None)
+            if qualifier is not None and section == "abstract":
+                # The qualifying sentence is shown to the reader exactly like
+                # the quote, so it gets the same label strip - e.g. a quote
+                # ending a Results part whose qualifying next sentence opens
+                # "Conclusion and Implications: ...".
+                stripped_text, stripped_start = strip_leading_label(qualifier.text, qualifier.start)
+                if stripped_text != qualifier.text:
+                    qualifier = Located(qualifier.status, stripped_start, qualifier.end, stripped_text,
+                                        qualifier.reason)
             # Every other field the model wrote must be in the text it read,
             # and every name it gave must be in text the reader is shown.
             prov = trace(

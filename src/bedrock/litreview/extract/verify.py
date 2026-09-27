@@ -598,16 +598,47 @@ _AUTHOR_YEAR = re.compile(
 
 # How a paper's own Introduction or Discussion says "this is somebody else's
 # result", checked only at the start of the quote.
+#
+# "human genetic studies have identified", "have been shown to" (the plural of
+# "has been shown to" above), "genetic studies have shown" and "genome-wide
+# association studies have identified" were added for the new obesity report's
+# target section, which opens "Human genetic studies have identified GPR75
+# loss-of-function variants to be strongly protective against obesity,
+# establishing GPR75 as a compelling therapeutic target" (OPEN_ISSUES.md item
+# 7; verbatim in evals/litreview/hand_audit/qwen_obesity_after.md and
+# claude_obesity.md) - other people's human genetics, quoted in the background
+# of a mouse paper, with no citation bracket for the marker check to catch.
+# The other three are the same shape found while re-reading
+# evals/litreview/corpora/psoriasis-prevention-targets/papers.jsonl: "Genetic
+# studies have shown that polymorphisms in the IL-23 pathway are associated
+# with an increased risk of developing psoriasis" and "Genome-wide association
+# studies have identified SOCS1 as a susceptibility locus in psoriasis" both
+# open a background sentence citing someone else's genetic-association work;
+# "have been shown to" itself only ever occurs there mid-sentence ("KCs have
+# been shown to be closely associated with psoriasis pathogenesis"), so it is
+# kept narrow the same way "has been shown to" already is - see
+# tests/litreview/test_verify.py's "only matters at the start of the
+# sentence" test.
 _OTHER_WORK_LEAD_IN = re.compile(
     r"^\s*(?:previous studies have shown|a recent study found|another study showed|"
-    r"it has been reported|has been shown to|prior work|earlier studies)\b",
+    r"it has been reported|has been shown to|have been shown to|prior work|earlier studies|"
+    r"human genetic studies have identified|genetic studies have shown|"
+    r"genome-wide association studies have identified)\b",
     re.I,
 )
 
 # The canonical section names a paper's text can carry are exactly
 # `parsing/sections.py` `CANONICAL`. Introduction and Background are not
 # among them - both fold into "other" - so "other" is the real name to check.
-_INTRO_LIKE_SECTIONS = frozenset({"other"})
+# "unknown" belongs here for the same reason, not a different one: it is what
+# `_Collector.result()` files a paper's leftover text under when not even
+# Methods, Results or Discussion was recognised anywhere in the body - which
+# means Introduction and Discussion are in that blob too, unseparated from
+# anything else. A quote pulled from text the parser could not place is
+# exactly as likely to be someone else's result, restated, as one pulled from
+# "other" - not naming the section is not evidence that the section was
+# Results, so it earns the same citation-marker scrutiny rather than a pass.
+_INTRO_LIKE_SECTIONS = frozenset({"other", "unknown"})
 
 # A narrow exemption from the citation-marker check, added after running it
 # over 593 real evidence units from stored qwen3:8b reports turned up two of
@@ -1073,6 +1104,49 @@ def abstract_labels(abstract: str) -> list[tuple[str, int, int]]:
         label = m.group("a") or m.group("b") or m.group("c")
         out.append((re.sub(r"\s+", " ", label), m.start(), m.end()))
     return out
+
+
+# A structured-abstract label is sometimes not the very first word: Europe
+# PMC's own text has "Key Results: Among 45 participants ..." and
+# "Background and Purpose: Children with acute asthma ...". `ABSTRACT_LABEL`
+# (built for `conclusion_reason`, which only needs to know *that* a label is
+# there, not trim it) matches just "Results:" and "Purpose:" in those two -
+# the bare word from `_LABELS` that sits right before the colon. What comes
+# before it ("Key ", "Background and ") is plain words with no digits or
+# punctuation, never real sentence content, so it is swept up with the label.
+# A real sentence reaching a colon this early would almost always have a
+# number or punctuation before it; this is what tells the two apart.
+_LABEL_LEAD_IN = re.compile(r"^(?:[A-Za-z]+\s+){0,3}$")
+
+
+def strip_leading_label(text: str, start: int) -> tuple[str, int]:
+    """If `text` opens with a structured-abstract label ("Background and
+    Purpose:", or the glued form "...p<0.001.ConclusionDPL combined..."),
+    return (text with the label removed, start advanced by the same
+    amount). Otherwise (text, start) unchanged.
+
+    `start` is `text`'s offset in whatever section text it was found in
+    (the paper's own text, at fixed character positions). Only `start` moves
+    and only forward, by exactly the number of characters cut from the front
+    of `text` - never `end`, which the caller keeps - so
+    `section_text[start:end] == text` still holds after the strip, the same
+    invariant `report/invariants.py`'s `_anchored()` checks on every run.
+    """
+    labels = abstract_labels(text)
+    if not labels:
+        return text, start
+    _, lab_start, lab_end = labels[0]
+    if lab_start > 0 and not _LABEL_LEAD_IN.match(text[:lab_start]):
+        return text, start
+    cut = lab_end
+    while cut < len(text) and text[cut].isspace():
+        cut += 1
+    if cut == 0 or cut >= len(text):
+        # Nothing to cut, or the span is nothing but a label: an empty quote
+        # would be worse than a labelled one, so leave it for the checks
+        # downstream to reject on their own terms.
+        return text, start
+    return text[cut:], start + cut
 
 
 def abstract_methods(abstract: str) -> list[tuple[int, int]]:

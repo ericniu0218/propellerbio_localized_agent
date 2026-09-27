@@ -31,9 +31,13 @@ evidence it cites:
    unless the cited evidence's own displayed text says so (a unit's
    `outcome` label is the model's, not the paper's, and is never enough by
    itself), claim an effect its cited quotes report only as null, drop a
-   negation a quote states, or say "decreased" where every cited quote says
-   only "increased". Word-level checks, not entailment: they catch the flips
-   a probe found, not every one.
+   negation a quote states, drop a hedge the paper's shown text carries
+   ("potentially due to X" restated as "X is associated with ..."; asthma
+   S25 - checked against the quote, context, qualifier and naming
+   sentences together, since the hedge is as often in a qualifier as in the
+   quote itself), or say "decreased" where every cited quote says only
+   "increased". Word-level checks, not entailment: they catch the flips a
+   probe found, not every one.
 6. In a findings section (`report/layout.py`'s `SectionSpec.findings`, true
    for every written section unless report.yaml says otherwise), at least one
    cited quote must report a result at all. A hand audit found sentences that
@@ -116,7 +120,7 @@ from bedrock.litreview.extract.verify import (
 )
 from bedrock.litreview.knowledge import Knowledge, TermMatcher, clean, fold
 from bedrock.litreview.models import EvidenceUnit, QuestionSpec
-from bedrock.litreview.negation import drops_negation
+from bedrock.litreview.negation import drops_hedge, drops_negation
 
 _NUMBER = re.compile(r"(?<![A-Za-z0-9.\-/])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?![A-Za-z0-9])")
 
@@ -369,6 +373,13 @@ class CitationGuard:
         for u in cited:
             if any(drops_negation(sentence, s) for s in split_sentences(clean(u.quote))):
                 return GuardResult(False, "drops a negation in the cited evidence")
+        # A hedge can live in the quote itself (asthma S25's "potentially due
+        # to leukotriene mediated airway inflammation" is the quote) or in the
+        # qualifier next to it (the obesity TMEM135 "presumably ... weight
+        # gain" case), so this reads all the shown text, not only the quote.
+        for u in cited:
+            if any(drops_hedge(sentence, s) for s in split_sentences(clean(source_text(u)))):
+                return GuardResult(False, "drops a hedge the cited evidence carries")
         # Which way a measurement moved: "was decreased" citing only quotes
         # that say "was increased" is the opposite finding. Only when the
         # sentence has one direction and no word that reverses one ("prevented

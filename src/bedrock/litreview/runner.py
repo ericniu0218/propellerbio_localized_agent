@@ -354,7 +354,9 @@ def answer_question(
     paths = render(report, target_dir)
     run.finished = _now()
     run.report_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    (target_dir / "run.json").write_text(run.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    run_json = target_dir / "run.json"
+    run_json.write_text(run.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    run_json.chmod(0o600)  # as the three report files are; see `s8_render.render`
     done(8)
     say(f"report: {paths['html']}")
 

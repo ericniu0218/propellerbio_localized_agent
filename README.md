@@ -239,6 +239,8 @@ the same papers produces a byte-identical report.
 /review stop                      # stop the running one; it stays resumable
 /reviews                          # the 20 most recent runs
 /reviews verify 4b66f48fec0a      # re-prove a report against the papers it pinned
+/reviews check                    # can this machine run a review? what to change
+/reviews forget 4b66f48fec0a      # delete one run's report and working notes
 ```
 
 A review runs **beside the chat**: keep asking questions while it works. Its
@@ -249,8 +251,9 @@ On a laptop that can be a minute or two, because an extraction call may write
 On a machine that holds one model at a time (the `laptop` profile's Ollama
 settings), chat with the review's model while it runs. Otherwise every chat
 message makes the server unload one model and load the other; `/review` says
-so when it starts. Conversation titles also wait until the review finishes,
-because they only run when the server is idle.
+so when it starts. Conversation titles wait until the review finishes: the
+scheduler treats a review's calls as work somebody is waiting for, so the gaps
+between them do not count as idle time.
 
 **What it needs.** A 16 GB machine or better, and a context window of at least
 12,288 tokens — extraction sends about 4,300 tokens of prompt and allows a
@@ -268,10 +271,14 @@ contact_email = "research@example.com"   # sent to NCBI with PubMed searches
 
 and, where Ollama is started, `OLLAMA_CONTEXT_LENGTH=12288`. On a vLLM server
 this is `--max-model-len`. Then pull the models the set names, for example
-`ollama pull qwen3:8b` or `ollama pull medgemma1.5:4b`. `/review` checks all of
-this before it starts and says exactly what to change, rather than failing
-forty minutes in. The `workstation` and `server` profiles already have a large
-enough window.
+`ollama pull qwen3:8b` or `ollama pull medgemma1.5:4b`. The `workstation` and
+`server` profiles already have a large enough window.
+
+`bedrock-litreview doctor` (or `/reviews check` in the app) checks all of this
+whenever you ask, and reports everything at once — window, timeout, free disk,
+whether the server has the models the set names, and which `models.yaml` it
+read. `/review` runs the same checks before it starts and says exactly what to
+change, rather than failing forty minutes in.
 
 **What leaves this machine.** Only `--search` sends anything anywhere, and only
 search terms and paper identifiers, only to Europe PMC (`www.ebi.ac.uk`) and
@@ -282,18 +289,26 @@ reads a JSON-lines file you already have and touches no network at all.
 **Where files go.** `~/.local/share/bedrock/litreview/` (change it with
 `BEDROCK_LITREVIEW_DIR` or `data_dir`): the SQLite database, the model-call
 cache and `reports/`, each run's `report.json`, `report.md` and a
-self-contained `report.html`. The directory is 0700 and the database 0600 —
-research questions are sensitive. Model names live in
-`src/bedrock/litreview/defaults/models.yaml`; to change them on one machine,
-put a whole replacement file at `~/.config/bedrock/litreview/models.yaml`.
+self-contained `report.html`. Directories are 0700 and every file 0600 —
+research questions are sensitive, and so is which target you are asking about.
+Model names live in `src/bedrock/litreview/defaults/models.yaml`; to change them
+on one machine, put a whole replacement file at
+`~/.config/bedrock/litreview/models.yaml`.
+
+`/reviews forget <run-id>` (or `bedrock-litreview forget <run-id>`) deletes one
+run: its record, its working notes and its report files. It cannot be undone.
+The question and its papers stay, so the same question can be asked again, and a
+report that a second identical run also produced is kept for that run.
 
 **From a shell.** `bedrock-litreview` does the same things without the app:
 
 ```bash
+bedrock-litreview doctor
 bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
 bedrock-litreview ask "..." --corpus papers.jsonl --models laptop
 bedrock-litreview runs
 bedrock-litreview verify-run <run-id>
+bedrock-litreview forget <run-id>
 ```
 
 **Over HTTP.** There is an optional FastAPI front door — `POST /ask`,

@@ -1,11 +1,13 @@
 """Command line.
 
+    bedrock-litreview doctor                # can this machine run a review? what to change
     bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
     bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
     bedrock-litreview runs                  # the most recent runs
     bedrock-litreview verify-run RUN_ID     # re-prove a stored report
+    bedrock-litreview forget RUN_ID         # delete one run's report and working notes
     bedrock-litreview rate REPORT_ID 4 --rater jd --comment "missed IL-36"
 
 The same reviews run inside the terminal app as `/review`; this is the shell
@@ -99,6 +101,12 @@ def _ask(args) -> int:
             return run_review(
                 request, settings=settings, scheduler=scheduler,
                 progress=_say, cancel=threading.Event(),
+                # Preflight's non-blocking findings - the disk warning, mainly.
+                # `timeout_floor_applied` because `standalone_scheduler` below
+                # has already raised this process's timeout to 600, so warning
+                # about the configured 120 would be a false alarm here.
+                warn=lambda message: _say(f"ask: {message}"),
+                timeout_floor_applied=True,
             )
 
         # A run without a model never reaches a server, so none is opened: the
@@ -134,6 +142,142 @@ def _ask(args) -> int:
         _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
              "it opens with a warning")
         return 1
+    return 0
+
+
+def _forget(args) -> int:
+    """`forget RUN_ID`: delete one run's output, after saying what will go.
+
+    Confirmed by default, unlike `/digest forget`, because there is no trash to
+    recover from and a report can be hours of a machine's work. `--yes` is for
+    scripts. Naming the question first matters: run ids are hashes, and the way
+    this goes wrong is deleting a neighbour of the intended one.
+    """
+    from bedrock.litreview.api import forget_run
+    from bedrock.litreview.db import Database
+
+    settings = _db_settings()
+    db = Database(settings.db_path)
+    run = db.get_run(args.run_id)
+    if run is None:
+        _say(f"forget: no run {args.run_id!r}. `bedrock-litreview runs` lists them.")
+        return 1
+
+    if not args.yes:
+        question = db.get_question(run.question_id)
+        report_id = db.report_id_for(args.run_id)
+        _say(f"Run {args.run_id}, started {run.started}")
+        _say(f"  question: {question.text if question else '(not stored)'}")
+        _say(f"  report:   {report_id or 'none (the run did not finish)'}")
+        _say("This deletes the run, its stage artifacts and its report files. The question and "
+             "its papers stay, so the same question can be asked again. It cannot be undone.")
+        try:
+            if input("Delete it? [y/N] ").strip().lower() not in {"y", "yes"}:
+                _say("forget: left alone.")
+                return 1
+        except EOFError:  # piped input with no answer is not a yes
+            _say("forget: no answer, so nothing was deleted. Use --yes in a script.")
+            return 1
+
+    result = forget_run(args.run_id, db=db, settings=settings)
+    if result is None:  # deleted between the look-up and the delete
+        _say(f"forget: no run {args.run_id!r}.")
+        return 1
+
+    deleted = result.deleted
+    print(f"Deleted run {deleted.run_id} and {deleted.artifacts} stage artifact(s).")
+    if deleted.report_deleted:
+        print(f"Deleted report {deleted.report_id} and {len(result.files_removed)} file(s).")
+        if result.report_dir is not None and not result.files_removed:
+            # The database row went, but the rendered copy was somewhere else.
+            print(f"No files were found in {result.report_dir}. A report written with "
+                  "--out elsewhere has to be deleted by hand.")
+        if deleted.ratings:
+            print(f"Deleted {deleted.ratings} rating(s) of that report.")
+    elif deleted.report_shared_with:
+        print(f"Kept report {deleted.report_id}: run(s) {', '.join(deleted.report_shared_with)} "
+              "produced the identical report and still point at it.")
+    else:
+        print("The run wrote no report, so there was none to delete.")
+    return 0
+
+
+def _doctor(args) -> int:
+    """`doctor`: every setup check at once, and what was read to decide them.
+
+    The first-run banner (`bedrock.doctor`) runs only while there is no config
+    file, which is the one moment a machine is guaranteed *not* to be set up
+    yet. This is the re-runnable version: run it after changing a setting, after
+    IT changes the server, or when a review refuses to start and the message is
+    about something you cannot see.
+
+    Every check runs even when an earlier one failed, because a machine that is
+    new to this usually has more than one thing to fix and one-error-per-attempt
+    is a slow way to find that out. Exit status 1 means at least one finding
+    would stop a review.
+    """
+    from bedrock.litreview.config import config_file
+    from bedrock.litreview.service import Finding, config_findings, findings, standalone_scheduler
+
+    def show(items) -> None:
+        for finding in items:
+            first, *rest = finding.detail.splitlines() or [""]
+            print(f"[{finding.mark}] {finding.title}: {first}")
+            for line in rest:
+                print(f"       {line}")
+
+    try:
+        settings = load_settings(model_set=args.models)
+    except ConfigError as exc:
+        # A bad [litreview] table, an unknown model set, or a model endpoint
+        # that is not on the local network. All three stop every review, and all
+        # three are exactly what someone runs this to find out.
+        show([Finding(title="configuration", ok=False, blocking=True, detail=str(exc))])
+        return 1
+
+    print("Literature review — setup check\n")
+    for label, value in (
+        ("model set", settings.model_set),
+        ("models.yaml", config_file("models.yaml")),
+        ("pipeline.yaml", config_file("pipeline.yaml")),
+        ("report.yaml", config_file("report.yaml")),
+        ("model server", settings.base_url),
+        ("machine profile", settings.profile_name),
+        ("data directory", settings.data_dir),
+        ("database", settings.db_path),
+        ("reports", settings.out_dir),
+    ):
+        print(f"  {label + ':':<17}{value}")
+    print()
+
+    if args.no_server:
+        found = config_findings(settings)
+    else:
+        async def go():
+            from bedrock.config import load_settings as load_bedrock_settings
+
+            async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+                return await findings(settings, scheduler.backend)
+
+        try:
+            found = asyncio.run(go())
+        except OSError as exc:
+            found = config_findings(settings) + [
+                Finding(title="model server", ok=False, blocking=True,
+                        detail=f"could not be reached at all: {exc}")
+            ]
+
+    show(found)
+    blocking = [f for f in found if f.blocking]
+    warnings = [f for f in found if not f.ok and not f.blocking]
+    print()
+    if blocking:
+        print(f"{len(blocking)} thing(s) would stop a review. Fix those and run this again.")
+        return 1
+    if warnings:
+        print(f"A review can run. {len(warnings)} thing(s) above are worth knowing first.")
+        return 0
+    print("Ready. `bedrock-litreview ask \"<question>\" --corpus <papers.jsonl>` runs one.")
     return 0
 
 
@@ -183,6 +327,16 @@ def main(argv: list[str] | None = None) -> int:
     runs = sub.add_parser("runs", help="list the most recent runs")
     runs.add_argument("--limit", type=int, default=20)
 
+    forget = sub.add_parser("forget", help="delete one run's report and working notes (cannot be undone)")
+    forget.add_argument("run_id")
+    forget.add_argument("--yes", action="store_true", dest="yes",
+                        help="do not ask for confirmation (for scripts)")
+
+    doctor = sub.add_parser("doctor", help="check this machine can run a review, and say what to change")
+    doctor.add_argument("--models", help="check a particular model set instead of this machine's default")
+    doctor.add_argument("--no-server", action="store_true", dest="no_server",
+                        help="skip the checks that need the model server running")
+
     rate = sub.add_parser("rate", help="record a scientist's rating of a report")
     rate.add_argument("report_id")
     rate.add_argument("score", type=int, choices=range(1, 6))
@@ -231,6 +385,9 @@ def _run(args) -> int:
     if args.command == "ask":
         return _ask(args)
 
+    if args.command == "doctor":
+        return _doctor(args)
+
     if args.command == "runs":
         from bedrock.litreview.db import Database
 
@@ -263,6 +420,9 @@ def _run(args) -> int:
                 print(f"  - {v}")
             failed += bool(violations)
         return 1 if failed else 0
+
+    if args.command == "forget":
+        return _forget(args)
 
     if args.command == "rate":
         from bedrock.litreview.api import rate_report

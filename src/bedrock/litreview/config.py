@@ -8,9 +8,12 @@ adds on top is the part that is specific to a literature review: which model
 name does which job, how big a context window a run needs, where its database
 and reports live, and the pipeline knobs.
 
-Three things come from bedrock's own settings and are never restated here:
-`base_url` (its `api_base`), `context_window` (the machine profile's), and the
-API key and timeout the backend uses.
+Four things are copied from bedrock's own settings rather than configured here:
+`base_url` (its `api_base`), `context_window` and `profile_name` (the machine
+profile's), and `request_timeout`. They are copied, not restated: nothing in
+`[litreview]` can set them, and they are here only so a review can check them
+and say what to change. The API key stays with the backend, which is the only
+thing that needs it.
 
 Model names come from `defaults/models.yaml`, shipped inside the package. A
 site that needs different names drops a whole replacement file into
@@ -148,6 +151,15 @@ class Settings:
     jobs: dict[str, str]
     context_window: int
     min_context_window: int
+    request_timeout: float
+    """bedrock's own `request_timeout`, carried here so a review can say when it
+    is too short. Not a setting of this package: the shell command and the HTTP
+    API raise the timeout to `REVIEW_TIMEOUT_FLOOR` for their own backend, and
+    `/review` in the app shares the chat's, so this is the number the app will
+    actually use."""
+    profile_name: str
+    """The machine profile's name (`laptop`, `workstation`, `server`), for
+    messages that differ by machine. The window itself is `context_window`."""
     data_dir: Path
     cache_dir: Path
     out_dir: Path
@@ -258,6 +270,8 @@ def load_settings(
         jobs=dict(models_cfg.get("jobs", {}) or {}),
         context_window=int(bedrock_settings.profile.context_window),
         min_context_window=int(models_cfg.get("min_context_window", 12288)),
+        request_timeout=float(bedrock_settings.request_timeout),
+        profile_name=str(bedrock_settings.profile.name),
         data_dir=data_dir,
         cache_dir=data_dir / "cache" / "llm",
         out_dir=data_dir / "reports",

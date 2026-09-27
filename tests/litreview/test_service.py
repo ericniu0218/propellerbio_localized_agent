@@ -146,6 +146,103 @@ async def test_preflight_passes_when_the_machine_can_run_a_review(settings):
     await preflight(settings, ScriptedBackend())
 
 
+async def test_preflight_returns_advisories_rather_than_refusing_over_them(settings):
+    """A short timeout is worth saying and must not stop a run: the review
+    survives it by stopping between calls and resuming."""
+    settings.request_timeout = 120.0
+    advisories = await preflight(settings, ScriptedBackend())
+    assert [f.title for f in advisories] == ["request timeout"]
+    assert not any(f.blocking for f in advisories)
+    assert "request_timeout = 600" in advisories[0].detail
+
+
+async def test_a_front_end_that_raised_its_own_timeout_is_not_warned_about_it(settings):
+    """`bedrock-litreview` and the HTTP API build their own backend through
+    `standalone_scheduler`, which floors the timeout at 600. Warning them about
+    the configured 120 would be telling them to fix something already fixed —
+    while `/review` in the app, which shares the chat's backend, does need it."""
+    settings.request_timeout = 120.0
+    assert await preflight(settings, ScriptedBackend(), timeout_floor_applied=True) == []
+
+    floored = [f for f in service.config_findings(settings, timeout_floor_applied=True)
+               if f.title == "request timeout"]
+    assert floored[0].ok
+    assert "raised to 600s for this process" in floored[0].detail
+    # ...and it still says the app needs the config change, because that is true.
+    assert "request_timeout = 600" in floored[0].detail
+
+
+# ---------------------------------------------------------------------------
+# findings: what `doctor` and `/reviews check` report
+# ---------------------------------------------------------------------------
+
+
+async def test_findings_report_everything_not_just_the_first_problem(settings):
+    """`preflight` stops a run at the first blocker; a person fixing a machine
+    wants the whole list, or setting it up is one error per attempt."""
+    settings.context_window = 8192
+    settings.request_timeout = 120.0
+    found = await service.findings(settings, ScriptedBackend(models=["something-else"]))
+
+    by_title = {f.title: f for f in found}
+    assert by_title["context window"].blocking
+    assert by_title["models"].blocking
+    assert not by_title["request timeout"].ok and not by_title["request timeout"].blocking
+    assert by_title["model server"].ok  # reachable, just without the right model
+    assert "free disk" in by_title
+
+
+async def test_findings_without_a_server_still_check_the_configuration(settings):
+    """The normal state of a machine on the day somebody installs this."""
+    found = await service.findings(settings, None)
+    assert [f.title for f in found] == ["context window", "request timeout", "free disk"]
+    assert all(not f.blocking for f in found)
+
+
+async def test_a_missing_model_names_the_override_file_and_what_the_server_has(settings):
+    """Issue 16's practical half. Nobody can be told the office server's real
+    model names in advance, so the message has to say what this server calls its
+    models and which file to write them into."""
+    with pytest.raises(ConfigError) as exc:
+        await preflight(settings, ScriptedBackend(models=["Qwen/Qwen3-30B-A3B-Instruct-2507"]))
+    message = str(exc.value)
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in message, "it must say what the server does offer"
+    assert "models.yaml" in message and "--served-model-name" in message
+
+
+async def test_a_nearly_full_disk_is_a_warning_not_a_refusal(settings, monkeypatch):
+    """Item 21: a review keeps a model resident for hours, and on a 16 GB
+    machine that has filled a disk through swap. Still a warning — the disk this
+    check looks at is not what a review itself fills."""
+    import shutil
+
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _p: type("U", (), {"free": 2 * 1024**3, "total": 0, "used": 0})
+    )
+    disk = [f for f in service.config_findings(settings) if f.title == "free disk"][0]
+    assert not disk.ok and not disk.blocking
+    assert "2.0 GB free" in disk.detail
+    assert await preflight(settings, ScriptedBackend()), "a warning, so the run still starts"
+
+
+def test_a_company_server_name_is_explained_rather_than_assumed_obvious(settings):
+    """`allowed_hosts` is the one piece of review configuration nobody finds by
+    accident, and the first-run banner has been known to suggest exactly such a
+    host."""
+    settings.base_url = "http://ai.company.internal:8000/v1"
+    settings.allowed_hosts = ("ai.company.internal",)
+    note = [f for f in service.config_findings(settings) if f.title == "model server address"][0]
+    assert note.ok and "allowed_hosts" in note.detail
+
+    settings.allowed_hosts = ()
+    note = [f for f in service.config_findings(settings) if f.title == "model server address"][0]
+    assert 'allowed_hosts = ["ai.company.internal"]' in note.detail
+
+    # Nothing to explain about a local address.
+    settings.base_url = "http://localhost:11434/v1"
+    assert not [f for f in service.config_findings(settings) if f.title == "model server address"]
+
+
 async def test_a_run_without_a_model_never_touches_the_server(settings, tmp_path):
     backend = ScriptedBackend(models=[])  # would fail preflight if it ran
     result = await go(review(corpus=_corpus_file(tmp_path), use_model=False), settings, backend)

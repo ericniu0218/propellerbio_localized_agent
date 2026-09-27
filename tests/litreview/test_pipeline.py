@@ -102,6 +102,18 @@ def test_renderers_write_all_three_formats(settings, tmp_path):
     assert json.loads(result.paths["json"].read_text())["question"] == QUESTION
 
 
+def test_the_report_files_are_readable_only_by_this_account(settings, tmp_path):
+    """A report quotes unpublished papers, and which target a company is
+    considering is itself the strategy. `--out` may point at a shared drive, so
+    the mode goes on the files rather than resting on the parent directory."""
+    result = run(settings, tmp_path)
+    for name, path in result.paths.items():
+        assert path.stat().st_mode & 0o777 == 0o600, f"{name} is world-readable"
+    run_json = result.paths["json"].parent / "run.json"
+    assert run_json.stat().st_mode & 0o777 == 0o600
+    assert result.paths["json"].parent.stat().st_mode & 0o777 == 0o700
+
+
 def test_without_a_model_the_pipeline_still_ranks_and_plans(settings, tmp_path):
     result = answer_question(
         QUESTION, settings=settings, use_model=False, papers=corpus(), db=Database(tmp_path / "db2.sqlite3")

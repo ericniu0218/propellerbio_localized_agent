@@ -175,9 +175,18 @@ cites a checked quote from a paper. It needs more from the machine than chat:
   Searching sends only the words of your question to those two public
   literature databases, never to an AI service.
 
+**Check all of this before you start.** `/reviews check` in the app, or
+`bedrock-litreview doctor` in a terminal, goes through every item above and
+prints what is right, what is worth knowing, and what would stop a review —
+including whether the server has the model, how much disk is free, and which
+settings file it read. Run it whenever something changes; it starts nothing and
+costs a second.
+
 The review then runs beside your chat — your own messages always go first — and
 tells you where the finished `report.html` is; open it in your browser.
-`/reviews` lists past reviews. A review takes tens of minutes on a laptop.
+`/reviews` lists past reviews, and `/reviews forget <run-id>` deletes one
+(permanently — the question stays, so you can ask it again). A review takes tens
+of minutes on a laptop.
 
 If a review stops with a message, it says what to change. The common ones:
 
@@ -188,6 +197,8 @@ If a review stops with a message, it says what to change. The common ones:
 | "refusing model endpoint ... not a local address" | Ask IT to add the server's name to `allowed_hosts`, as above. |
 | "the model server ... is not answering", or the review stops partway | Start the server, or raise `request_timeout`; then run the same `/review` with `--resume` and the run id it printed. |
 | "no papers were found for this question" | The search found nothing: reword the question, or use a papers file. |
+| "The literature review is not installed in this environment" | The app was updated without its new parts. Run the `uv tool install ...` command from step 4 again, then restart. |
+| Anything else, or nothing obvious | Run `/reviews check` — it lists everything that is wrong at once. |
 
 ## Updating to a newer version later
 

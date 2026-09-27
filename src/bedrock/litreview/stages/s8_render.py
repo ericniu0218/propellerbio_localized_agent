@@ -16,6 +16,7 @@ import html
 import re
 from pathlib import Path
 
+from bedrock.litreview.config import private_dir
 from bedrock.litreview.models import Report, ReportSection, Sentence
 
 
@@ -319,14 +320,23 @@ def to_json(report: Report) -> str:
 
 
 def render(report: Report, out_dir: Path) -> dict[str, Path]:
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """Write the three files, readable only by this account.
+
+    A report quotes unpublished papers and answers a question that is itself
+    confidential — which target a company is considering is the strategy. The
+    default reports directory is already 0700 (`config.private_dir`, applied by
+    `service.run_review`), but `--out` and `/review --out` may point anywhere,
+    including a shared drive or /tmp, so the permissions go on the files
+    themselves rather than resting on whichever parent they happen to land in.
+    """
+    out_dir = private_dir(Path(out_dir))
     paths = {
         "json": out_dir / "report.json",
         "md": out_dir / "report.md",
         "html": out_dir / "report.html",
     }
-    paths["json"].write_text(to_json(report), encoding="utf-8")
-    paths["md"].write_text(to_markdown(report), encoding="utf-8")
-    paths["html"].write_text(to_html(report), encoding="utf-8")
+    bodies = {"json": to_json(report), "md": to_markdown(report), "html": to_html(report)}
+    for name, path in paths.items():
+        path.write_text(bodies[name], encoding="utf-8")
+        path.chmod(0o600)
     return paths

@@ -130,6 +130,31 @@ def test_an_override_replaces_the_packaged_file_and_the_run_records_which_was_re
         del os.environ["BEDROCK_LITREVIEW_CONFIG_DIR"]
 
 
+def test_the_office_model_names_can_be_corrected_without_a_release(tmp_path):
+    """The `office` set's names are guesses until IT says what the vLLM server
+    serves (OPEN_ISSUES item 16), and a vLLM name is usually the full path.
+
+    This is the escape hatch for the day that is discovered: one file, no code
+    change, no release — and the run still records which file it read, so a
+    report can be matched back to the names it was written under.
+    """
+    (tmp_path / "models.yaml").write_text(
+        "min_context_window: 12288\n"
+        "model_sets:\n"
+        "  office:\n"
+        "    small:  {name: 'Qwen/Qwen3-8B', thinking: false}\n"
+        "    medium: {name: 'Qwen/Qwen3-30B-A3B-Instruct-2507', thinking: false}\n"
+        "jobs:\n  relevance: small\n  extract: medium\n"
+        "defaults: {temperature: 0.0, seed: 0, max_tokens: 2048}\n"
+    )
+    env = {"BEDROCK_LITREVIEW_CONFIG_DIR": str(tmp_path)}
+    settings = load_settings(bedrock(), model_set="office", env=env)
+
+    assert settings.model_for("extract") == "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    assert settings.model_for("relevance") == "Qwen/Qwen3-8B"
+    assert config_file("models.yaml", env) == tmp_path / "models.yaml"
+
+
 def test_the_knowledge_tables_cannot_be_overridden(tmp_path):
     """They decide what counts as the exact entity, so a change is code review."""
     (tmp_path / "entities.yaml").write_text("entities: {}\n")

@@ -96,7 +96,12 @@ a violation is a bug, written on the report (warning banner) and makes
 `/reviews verify` re-check a stored run.
 Runs record the exact paper versions they read (`paper_versions`,
 `papers_manifest`); never read a past run's papers from the question's
-current set. Merging duplicate papers never loses a review or retraction flag
+current set. **`paper_versions` is append-only, and deleting from it is how
+that guarantee breaks silently** — a run that loses a paper version keeps
+looking finished until somebody runs `verify-run` on it, possibly months later.
+`db.delete_run` therefore removes one run and never a paper version, and drops a
+report row only when `runs_for_report` says no other run points at it.
+Merging duplicate papers never loses a review or retraction flag
 (`ingest.merge_records`).
 
 **The model copies; code normalises.** The model returns "C57BL/6 mice"; code
@@ -159,10 +164,19 @@ as `improved`. Models skip these unless explicitly told not to.
   HTTP to a model server
 - Nothing else in this package imports `bedrock.inference`: only
   `llm/scheduled.py` and `service.py` do. Everything else depends on the
-  `LLMClient` protocol, so tests use `FakeLLMClient`
+  `LLMClient` protocol, so tests use `FakeLLMClient`.
+  `tests/litreview/test_inference_boundary.py` fails on a new import
 - A model-using review starts through `service.run_review` and nothing else.
   It is what runs `preflight`, builds the client and puts the blocking pipeline
   on a worker thread
+- Every setup check lives once, in `service.config_findings` /
+  `service.server_findings`. `preflight` raises on the first blocking one for a
+  run; `findings` returns all of them for `bedrock-litreview doctor` and
+  `/reviews check`. Add a check there, never to one caller — a check that exists
+  in the doctor and not in preflight is a review that starts and should not have
+- Any file the package reads at run time and is not `.py` needs a glob in
+  `[tool.setuptools.package-data]`. Editable installs hide a miss;
+  `tests/test_package_data.py` catches it
 - A server that goes away raises `ReviewInterrupted`, which no stage catches, so
   the run stops and can be resumed. `LLMError` still means "skip this one item"
 - Prompts live in `llm/prompts/*.md` with a `version` in front matter.
@@ -180,6 +194,9 @@ as `improved`. Models skip these unless explicitly told not to.
 | Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
 | Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
 | Front ends | `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. All three call `service.run_review` |
+| Setup check | Built. `bedrock-litreview doctor`, `/reviews check`; same checks as a run's preflight |
+| Deleting a run | Built. `bedrock-litreview forget`, `/reviews forget`; the run's own output only |
+| `office` model names | **Unconfirmed.** `defaults/models.yaml` names two guesses; a vLLM server answers to its `--served-model-name`. `doctor` reports what the server really offers. Needs IT, then ship the real names |
 | Stage 9 (chat), PPTX, patents, drop folder | Not started |
 
 Working and tested today, with no GPU and no network: everything above except

@@ -247,6 +247,132 @@ async def test_reviews_does_not_need_the_configured_model_set_to_exist(review_di
 
 
 # ---------------------------------------------------------------------------
+# /reviews check and /reviews forget
+# ---------------------------------------------------------------------------
+
+
+async def test_reviews_check_reports_every_setup_problem_at_once(review_dir, models_yaml):
+    """The point of `check` over the error a review raises: a machine that is new
+    to this usually has more than one thing wrong, and finding them one failed
+    `/review` at a time is slow."""
+    backend = ReviewBackend()
+    # The laptop profile's 8,192-token window is too small, and its 120-second
+    # timeout is too short — two findings from one command.
+    app = make_app(backend, profile=PROFILES["laptop"], request_timeout=120.0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, "/reviews check")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        report = notices(app)[-1]
+        assert "context window" in report and "12,288" in report
+        assert "request timeout" in report
+        assert "would stop a review" in report
+
+
+async def test_reviews_check_passes_on_a_machine_that_is_set_up(review_dir, models_yaml):
+    app = make_app(ReviewBackend(), profile=PROFILES["workstation"], request_timeout=600.0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, "/reviews check")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        report = notices(app)[-1]
+        assert "A review can run." in report
+        assert "model server" in report, "it should have asked the server too"
+
+
+async def test_reviews_forget_deletes_the_run_and_says_what_went(
+    corpus_file, review_dir, models_yaml
+):
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        run_id = _run_id(notices(app))
+        assert list((review_dir / "reports").glob("*/*/report.html"))
+
+        await run(app, f"/reviews forget {run_id}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        notice = notices(app)[-1]
+        assert "Deleted review run" in notice and run_id in notice
+        assert "stage artifact(s) removed" in notice
+        assert "question and its papers were not touched" in notice
+        assert not list((review_dir / "reports").glob("*/*/report.html"))
+
+        # ...and it is gone from the list, not merely hidden.
+        await run(app, "/reviews")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert "No literature reviews on this machine yet" in notices(app)[-1]
+
+
+async def test_review_warns_about_a_short_timeout_before_it_starts(
+    corpus_file, review_dir, models_yaml
+):
+    """`/review` in the app uses the configured `request_timeout` — it shares the
+    chat's connection, so unlike the shell command it cannot raise it for itself.
+    INSTALL.md says to set 600; until now nothing said so when it mattered.
+
+    Before the run, not after: the point is to go and change it.
+    """
+    app = make_app(ReviewBackend(), profile=PROFILES["workstation"], request_timeout=120.0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        shown = notices(app)
+        warning = [n for n in shown if "request_timeout" in n]
+        assert warning, shown
+        assert "request_timeout = 600" in warning[0]
+        finished = [i for i, n in enumerate(shown) if "Literature review finished" in n]
+        assert finished and shown.index(warning[0]) < finished[0], "the warning comes first"
+
+
+async def test_no_timeout_warning_when_it_is_already_long_enough(
+    corpus_file, review_dir, models_yaml
+):
+    app = make_app(ReviewBackend(), profile=PROFILES["workstation"], request_timeout=600.0)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert not [n for n in notices(app) if "request_timeout" in n]
+
+
+async def test_reviews_forget_without_a_run_id_explains_rather_than_guessing(review_dir, models_yaml):
+    """Deleting "the last one" because no id was given is how the wrong report
+    disappears."""
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, "/reviews forget")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        notice = notices(app)[-1]
+        assert "name a run id" in notice
+        assert "cannot be undone" in notice
+
+
+async def test_reviews_forget_an_unknown_run_id_says_so(review_dir, models_yaml):
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, "/reviews forget 0123456789abcdef")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert "no run" in notices(app)[-1]
+
+
+# ---------------------------------------------------------------------------
 # Chatting during a review on a machine that holds one model
 # ---------------------------------------------------------------------------
 
@@ -336,6 +462,31 @@ async def test_a_chat_message_is_answered_while_a_review_is_held_open(
             str(m.source) for m in app.query(AssistantMessage)
         )
         assert "Literature review finished" in "\n".join(notices(app))
+
+
+async def test_a_stale_install_says_to_reinstall_instead_of_showing_a_traceback(monkeypatch):
+    """A virtual environment from before the review was added lacks pydantic,
+    lxml, PyYAML and rapidfuzz. The pipeline is imported lazily, so that turns
+    up on the first `/review` — as a full-screen traceback, until now.
+
+    Patched at `parse_review_command` because that is the first thing to import
+    the pipeline (`litreview.service`, for `ReviewRequest`), earlier than
+    `start_review`'s own import of `litreview.config`.
+    """
+    def missing(_args):
+        raise ImportError("No module named 'pydantic'")
+
+    monkeypatch.setattr("bedrock.app.parse_review_command", missing)
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, "/review does a stale venv crash the app?")
+        await pilot.pause()
+        notice = notices(app)[-1]
+        assert "not installed in this environment" in notice
+        assert 'pip install -e ".[dev]"' in notice
+        assert "pydantic" in notice
+        assert not app._review_running, "nothing should be marked as running"
 
 
 async def test_a_second_review_while_one_runs_is_refused(corpus_file, review_dir, models_yaml):

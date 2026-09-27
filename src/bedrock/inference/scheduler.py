@@ -23,9 +23,12 @@ scheduler decides when it runs. The rules:
   goes next.
 * **Background waits for quiet.** With ``profile.background == "idle"``, a
   background call starts only when nothing else is running or waiting, and
-  ``profile.idle_seconds`` have passed since the last chat reply finished.
-  With ``"concurrent"`` (a shared server that batches requests), background
-  calls simply run at the lowest priority.
+  ``profile.idle_seconds`` have passed since the last call somebody was
+  waiting for - a chat reply or a ``USER_JOB`` - finished. A long job made of
+  many short calls, such as a literature review, therefore counts as busy in
+  the gaps between its calls rather than looking idle in each one. With
+  ``"concurrent"`` (a shared server that batches requests), background calls
+  simply run at the lowest priority.
 * **Background uses the loaded model.** A background call made with
   ``model=None`` uses the model that last answered a chat - the one already
   in the server's memory - so a title never makes the server swap gigabytes
@@ -101,7 +104,7 @@ class Scheduler:
         self._waiting: list[_Ticket] = []
         self._running: set[_Ticket] = set()
         self._numbers = itertools.count()
-        self._last_chat_finished = float("-inf")
+        self._last_foreground_finished = float("-inf")
         self._wake: asyncio.TimerHandle | None = None
 
     @property
@@ -237,7 +240,7 @@ class Scheduler:
             if ticket.priority is Priority.BACKGROUND and self.profile.background == "idle":
                 if self._running:
                     return
-                quiet_left = self.profile.idle_seconds - (time.monotonic() - self._last_chat_finished)
+                quiet_left = self.profile.idle_seconds - (time.monotonic() - self._last_foreground_finished)
                 if quiet_left > 0:
                     self._wake = asyncio.get_running_loop().call_later(quiet_left, self._dispatch)
                     return
@@ -256,8 +259,15 @@ class Scheduler:
             await asyncio.wait([ticket.pump])
         if ticket in self._running:
             self._running.discard(ticket)
-            if ticket.priority is Priority.CHAT:
-                self._last_chat_finished = time.monotonic()
+            # Any call somebody is waiting for restarts the idle clock, not just
+            # a chat reply. A literature review is hundreds of ``USER_JOB``
+            # calls with short gaps between them, and counting only ``CHAT``
+            # meant the machine looked idle in every one of those gaps: a title
+            # would slot in between two review calls, and on a laptop holding
+            # one model that unloads the review's model and loads the chat's,
+            # gigabytes each way. "Idle" has to mean nobody is waiting.
+            if ticket.priority is not Priority.BACKGROUND:
+                self._last_foreground_finished = time.monotonic()
         self._dispatch()
 
     # ---- Talking to the backend --------------------------------------------

@@ -72,7 +72,7 @@ from bedrock.ui.fold_command import (
 )
 from bedrock.ui.local_commands import LocalCommandsMixin
 from bedrock.ui.prompt_queue import PromptQueuePanel
-from bedrock.ui.review_command import parse_review_command, run_review_job
+from bedrock.ui.review_command import REVIEW_STALE_INSTALL, parse_review_command, run_review_job
 from bedrock.ui.rendering import markdown_text
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.widgets import (
@@ -386,6 +386,14 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         except CommandUsageError as exc:
             await self.post_notice(str(exc), kind="error")
             return
+        except ImportError as exc:
+            # The review pipeline is imported lazily (see below), so a virtual
+            # environment left behind by an older checkout - one without
+            # pydantic, lxml, PyYAML or rapidfuzz - fails here, on the first
+            # `/review` rather than at start-up. Raw, that is a traceback over
+            # the whole screen for something a reinstall fixes.
+            await self.post_notice(REVIEW_STALE_INSTALL.format(detail=markdown_text(str(exc))), kind="error")
+            return
         if command.stop:
             await self.stop_review()
             return
@@ -397,7 +405,11 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # Imported here, not at the top: the pipeline pulls in pydantic and the
         # whole of sources/ and stages/, which is 115 ms of start-up for a
         # feature most sessions never use. See ui/review_command.py.
-        from bedrock.litreview.config import ConfigError as LitReviewConfigError
+        try:
+            from bedrock.litreview.config import ConfigError as LitReviewConfigError
+        except ImportError as exc:  # as above
+            await self.post_notice(REVIEW_STALE_INSTALL.format(detail=markdown_text(str(exc))), kind="error")
+            return
 
         try:
             settings = await asyncio.to_thread(self._review_settings, command.request.model_set)

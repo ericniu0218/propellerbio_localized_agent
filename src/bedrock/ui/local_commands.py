@@ -139,9 +139,17 @@ class LocalCommandsMixin:
 
         await run_reviews_command(
             args,
-            # Listing and verifying need the database, not a model set.
+            # Listing, verifying and forgetting need the database, not a model set.
             settings_for=lambda: load_review_settings(self.settings, check_endpoint=False, require_models=False),
+            # `check` is the one verb that does need the model set and the
+            # endpoint rule, because what it reports is whether a review could
+            # actually start.
+            full_settings_for=lambda: load_review_settings(self.settings),
             notify=self.post_notice,
+            # The agent-pack app has no scheduler, and neither app has one before
+            # it finishes starting; `check` then reports the configuration half
+            # and says the server was not asked.
+            backend=getattr(getattr(self, "scheduler", None), "backend", None),
         )
 
     @work(group="history")

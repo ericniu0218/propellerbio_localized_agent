@@ -667,6 +667,8 @@ The same review runs inside the terminal app, beside the chat:
 /review If I want to prevent psoriasis, what should I target? --corpus papers.jsonl
 /reviews
 /reviews verify <run-id>
+/reviews check
+/reviews forget <run-id>
 ```
 
 **Before the first run with a model,** the server needs a context window of at
@@ -675,6 +677,23 @@ least 12,288 tokens: `context_window = 12288` in `~/.config/bedrock/config.toml`
 where Ollama is started. Extraction sends about 4,300 tokens of prompt and
 allows a 4,096-token reply, and a smaller window silently truncates it.
 `bedrock-litreview ask` says so before it starts rather than after.
+
+`bedrock-litreview doctor` (`/reviews check` in the app) runs the whole check
+whenever you ask, and reports every finding rather than stopping at the first:
+the window, `request_timeout`, free disk, whether the server offers the models
+the set names — and, when it does not, what it does offer and which
+`models.yaml` to write the right names into. `--no-server` checks the
+configuration alone, which is what a machine looks like before Ollama is
+started. One implementation, shared with the preflight a run does
+(`service.findings` / `service.preflight`), so a check cannot exist in one and
+not the other.
+
+`bedrock-litreview forget <run-id>` (`/reviews forget` in the app) deletes one
+run: its record, its stage artifacts and its rendered report. Not reversible,
+and deliberately narrow — the question, its frozen paper set and every stored
+paper version stay, because `paper_versions` is append-only and is what lets
+*other* runs be re-proved against the exact bytes they read. A report that a
+second identical run also produced is kept for that run.
 
 The server itself is bedrock's: `api_base` in `~/.config/bedrock/config.toml`,
 or `BEDROCK_API_BASE`. Only the model *names* live here, in

@@ -33,13 +33,15 @@ works before any scientist has rated anything.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
 from bedrock.litreview.config import Settings, load_settings
-from bedrock.litreview.db import Database
+from bedrock.litreview.db import Database, DeletedRun
 from bedrock.litreview.models import Paper, Rating
 from bedrock.litreview.runner import RunResult, answer_question
 from bedrock.litreview.sources.base import PaperSearcher
@@ -126,6 +128,86 @@ def rate_report(
     return rating
 
 
+REPORT_FILES = ("report.json", "report.md", "report.html", "run.json")
+"""What `s8_render.render` and the runner write into a report's directory."""
+
+
+@dataclass(frozen=True)
+class Forgotten:
+    """What deleting one run removed, from the database and from disk."""
+
+    deleted: DeletedRun
+    files_removed: tuple[Path, ...]
+    report_dir: Path | None
+    """Where the rendered files were looked for, or None if the run wrote none."""
+
+
+def forget_run(
+    run_id: str,
+    *,
+    db: Database | None = None,
+    settings: Settings | None = None,
+) -> Forgotten | None:
+    """Delete one run's own output. Returns None when there is no such run.
+
+    This is the review's half of `/forget`, and it is deliberately narrower: it
+    removes the run, the working notes of its stages and its rendered report,
+    and it leaves the question and the papers alone. The papers are shared —
+    `paper_versions` is append-only, and it is what lets every *other* run be
+    re-proved against the exact text it read — so a tidy-up after one run must
+    not touch them.
+
+    Not reversible. There is no trash: on an air-gapped machine a second copy of
+    a confidential report is a liability rather than a safety net.
+
+    One honest limit: a run's rendered files are found at the default reports
+    location. A report written with `--out` elsewhere is not recorded anywhere
+    (`Run` has no such field), so the database entry goes and that copy of the
+    files has to be deleted by hand. The result says which files were removed,
+    so a caller can tell the difference rather than promising too much.
+    """
+    settings = settings or load_settings(check_endpoint=False, require_models=False)
+    db = db or Database(settings.db_path)
+    deleted = db.delete_run(run_id)
+    if deleted is None:
+        return None
+
+    report_dir: Path | None = None
+    removed: list[Path] = []
+    # Only when this run's report row really went. Two identical runs share one
+    # report and one directory, so deleting the files with the first would take
+    # away the second run's report while leaving that run looking finished.
+    if deleted.report_deleted and deleted.report_id:
+        report_dir = Path(settings.out_dir) / deleted.question_id / deleted.report_id
+        removed = _remove_report_files(report_dir)
+    return Forgotten(deleted=deleted, files_removed=tuple(removed), report_dir=report_dir)
+
+
+def _remove_report_files(directory: Path) -> list[Path]:
+    """Delete the files a run rendered, then the directory if it is left empty.
+
+    Named files rather than `shutil.rmtree`: this path is built from a question
+    id and a report id that came out of the database, and a recursive delete
+    driven by stored values is not worth writing at all. Anything a person put in
+    that directory by hand therefore survives, and the directory survives with
+    it.
+    """
+    if not directory.is_dir():
+        return []
+    removed = []
+    for name in REPORT_FILES:
+        path = directory / name
+        if path.is_file():
+            path.unlink()
+            removed.append(path)
+    for empty in (directory, directory.parent):
+        try:
+            empty.rmdir()  # refuses a directory that still holds anything
+        except OSError:
+            break
+    return removed
+
+
 def create_app(settings: Settings | None = None, *, bedrock_settings=None, backend=None):
     """The FastAPI app, with one backend and one `Scheduler` per server process.
 
@@ -180,6 +262,9 @@ def create_app(settings: Settings | None = None, *, bedrock_settings=None, backe
                 scheduler=app.state.scheduler,
                 progress=lambda msg: None,
                 cancel=threading.Event(),
+                # This process's scheduler came from `standalone_scheduler`,
+                # which already raised the timeout for it.
+                timeout_floor_applied=True,
             )
         except QuestionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

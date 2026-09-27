@@ -15,6 +15,19 @@
 min_context_window: 12288
 
 model_sets:
+  # UNCONFIRMED: these two names are guesses and have never been checked against
+  # the client's server. A vLLM server answers to whatever it was started with
+  # (--served-model-name), which by default is the full path, such as
+  # "Qwen/Qwen3-30B-A3B-Instruct-2507" — not a short name like these.
+  #
+  # Nothing silently goes wrong if they are wrong: `service.preflight` asks the
+  # server what it has before a run starts, and refuses with the names it really
+  # offers. `bedrock-litreview doctor` asks the same question without starting a
+  # run, and is the quickest way to find out on the day the office GPU exists.
+  #
+  # To fix without waiting for a release, copy this whole file to
+  # ~/.config/bedrock/litreview/models.yaml and correct the names there; the run
+  # records which file it read. To fix properly, correct them here and ship it.
   office:      # the client's GPU, served by vLLM
     small:  {name: qwen3-8b-instruct, thinking: false}
     medium: {name: qwen3-30b-a3b-instruct, thinking: false}

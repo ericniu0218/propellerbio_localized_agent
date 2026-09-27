@@ -261,3 +261,40 @@ async def test_a_server_without_api_tags_reports_no_digest():
 
     [model] = await make_backend(handler).list_models()
     assert model.digest is None
+
+
+async def test_an_observer_sees_both_attempts_as_hashes_and_never_the_messages_or_the_key():
+    """The determinism experiment needs the payload the server actually got:
+    a server that refuses `reasoning_effort` gets a second, different one."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "reasoning_effort" in json.loads(request.content):
+            return httpx.Response(400, json={"error": {"message": "reasoning_effort: bad value"}})
+        return streaming(sse(["fi", "ne"]))
+
+    backend = OpenAICompatibleBackend("http://fake/v1", api_key="sk-secret", transport=httpx.MockTransport(handler))
+    events: list[dict] = []
+    backend.add_request_observer(events.append)
+    backend.add_request_observer(lambda event: 1 / 0)  # a broken observer must not break the call
+    options = RequestOptions(reasoning=False, max_tokens=4, temperature=0.0, seed=3)
+    messages = [{"role": "user", "content": "confidential question"}]
+    assert [f async for f in backend.stream_chat("m", messages, options=options)] == ["fi", "ne"]
+
+    assert [(e["event"], e["attempt"]) for e in events] == [
+        ("request", 1), ("rejected", 1), ("request", 2), ("response", 2)]
+    first, second = events[0], events[2]
+    assert first["resolved"]["reasoning_effort"] == "none" and second["resolved"]["reasoning_effort"] is None
+    assert first["payload_sha256"] != second["payload_sha256"]
+    assert second["resolved"]["seed"] == 3 and second["resolved"]["max_tokens"] == 4
+    assert events[1] == {"event": "rejected", "attempt": 1, "status": 400, "retrying": True}
+    import hashlib
+
+    assert events[3]["raw_sha256"] == hashlib.sha256(b"fine").hexdigest()
+    dumped = json.dumps(events)
+    assert "confidential" not in dumped and "sk-secret" not in dumped
+
+
+async def test_without_an_observer_nothing_is_hashed_or_recorded():
+    backend = make_backend(lambda request: streaming(sse(["ok"])))
+    assert [f async for f in backend.stream_chat("m", [], options=RequestOptions(max_tokens=2))] == ["ok"]
+    assert backend._observers == []

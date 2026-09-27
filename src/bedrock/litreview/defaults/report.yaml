@@ -13,8 +13,9 @@
 #   negative      no-effect / worse / mixed results, and conflicts
 #   all           the strongest evidence overall
 #
-# generated sections: best_source, gaps, plan, ranking, evidence_table,
-# method, excluded.
+# generated sections: best_source, background, gaps, plan, ranking,
+# evidence_table, method, excluded. `background` quotes review articles for
+# context; they are never counted as evidence.
 #
 # findings (written sections only, default true): every sentence must cite at
 # least one quote that reports a result, not just mention the subject - a
@@ -79,6 +80,7 @@ target_identification:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise the adverse effects and risks reported for acting on these targets.
+  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}
@@ -133,6 +135,7 @@ intervention_efficacy:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise adverse events and risks reported.
+  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}
@@ -160,6 +163,7 @@ default:
     source: negative
     sentences: "1 to 4"
     instructions: Report results that disagree with the others or show no effect.
+  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}

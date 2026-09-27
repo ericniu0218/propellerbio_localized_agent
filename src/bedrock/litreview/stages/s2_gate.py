@@ -85,9 +85,35 @@ def gate_paper(paper: Paper, spec: QuestionSpec, matchers: dict[str, TermMatcher
     return GateResult(paper_id=paper.id, status="pass", reason=f"names {reason}", exact_hits=hits, near_miss_hits=near_hits)
 
 
-def gate_papers(papers: list[Paper], spec: QuestionSpec) -> dict[str, GateResult]:
+def gate_papers(
+    papers: list[Paper], spec: QuestionSpec, retracted: dict[str, str] | None = None,
+    added_back: dict[str, dict] | None = None,
+) -> dict[str, GateResult]:
+    """`retracted`: paper id -> the notice, for papers the run's publication-
+    integrity snapshot shows retracted (`publication_integrity.retracted_in`).
+    Excluded like a paper whose own record says so; the paper is not changed.
+
+    `added_back`: paper id -> a person's decision, for papers that were
+    retracted, later reinstated, and then added back by a scientist
+    (`bedrock-litreview integrity include`, `/reviews reinstate`). They are
+    gated like any other paper; nothing is ever added back automatically."""
     matchers = {
         e.canonical: TermMatcher(e.exact_terms, e.near_miss_terms, e.near_miss_patterns)
         for e in spec.required_entities
     }
-    return {p.id: gate_paper(p, spec, matchers) for p in papers}
+    retracted = retracted or {}
+    added_back = added_back or {}
+    out = {}
+    for p in papers:
+        if p.id in retracted and not p.signals.is_retracted:
+            out[p.id] = GateResult(paper_id=p.id, status="retracted",
+                                   reason=f"retracted according to recorded notices: {retracted[p.id]}")
+        elif p.id in added_back:
+            unflagged = p.model_copy(update={"signals": p.signals.model_copy(update={"is_retracted": False})})
+            result = gate_paper(unflagged, spec, matchers)
+            who = added_back[p.id].get("decided_by", "a scientist")
+            out[p.id] = result.model_copy(update={
+                "reason": f"{result.reason} (retracted, later reinstated; added back by {who})"})
+        else:
+            out[p.id] = gate_paper(p, spec, matchers)
+    return out

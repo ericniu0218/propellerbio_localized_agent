@@ -40,19 +40,29 @@ _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 SOURCE_HOSTS = frozenset({"www.ebi.ac.uk", "eutils.ncbi.nlm.nih.gov"})
 """The only hosts a literature search may reach. See the module docstring."""
 
+INTEGRITY_HOSTS = SOURCE_HOSTS | {"api.crossref.org"}
+"""The retraction check may also ask Crossref (approved by the project owner,
+26 September 2026). Only publication identifiers go there, in the URL path,
+never search terms - and the literature search itself still cannot reach it."""
+
 
 class SourceError(RuntimeError):
     """A source could not answer, after retries."""
 
 
-def _only_source_hosts(request: httpx.Request) -> None:
-    """Refuse any request, redirect included, to a host that is not a source."""
-    host = (request.url.host or "").lower()
-    if host not in SOURCE_HOSTS:
-        raise SourceError(
-            f"refusing to send {request.method} to {host or request.url!r}: "
-            f"a literature search may only reach {', '.join(sorted(SOURCE_HOSTS))}"
-        )
+def _only_hosts(hosts: frozenset[str]):
+    def check(request: httpx.Request) -> None:
+        """Refuse any request, redirect included, to a host not on the list."""
+        host = (request.url.host or "").lower()
+        if host not in hosts:
+            raise SourceError(
+                f"refusing to send {request.method} to {host or request.url!r}: "
+                f"this client may only reach {', '.join(sorted(hosts))}"
+            )
+    return check
+
+
+_only_source_hosts = _only_hosts(SOURCE_HOSTS)
 
 
 class SourceHTTP:
@@ -65,11 +75,14 @@ class SourceHTTP:
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         user_agent: str = USER_AGENT,
+        hosts: frozenset[str] = SOURCE_HOSTS,
     ) -> None:
+        if not hosts <= INTEGRITY_HOSTS:
+            raise ValueError(f"hosts outside the approved lists: {sorted(hosts - INTEGRITY_HOSTS)}")
         self.client = httpx.Client(
             timeout=timeout, transport=transport, headers={"User-Agent": user_agent},
             follow_redirects=True,
-            event_hooks={"request": [_only_source_hosts]},
+            event_hooks={"request": [_only_hosts(frozenset(hosts))]},
         )
         self.min_interval = min_interval
         self.retries = max(1, retries)

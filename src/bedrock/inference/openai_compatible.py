@@ -43,9 +43,10 @@ OpenAI; the base URL is whatever the company configures.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -81,6 +82,30 @@ class OpenAICompatibleBackend:
         )
         # Set once the server has refused ``reasoning_effort``; see the module docstring.
         self._skip_reasoning_effort = False
+        self._observers: list[Callable[[dict[str, Any]], None]] = []
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def add_request_observer(self, observer: Callable[[dict[str, Any]], None]) -> None:
+        """Be told, for every attempt, what was actually sent and what came back.
+
+        For audit and the determinism experiment: the request that reaches the
+        server can differ from the one asked for (a server that refuses
+        ``reasoning_effort`` gets a second attempt without it), and only the
+        wire payload says which. Observers receive hashes and the non-message
+        fields only - never the messages, never a header, so never a key. An
+        observer that raises is ignored: auditing must not break a call.
+        """
+        self._observers.append(observer)
+
+    def _observe(self, event: dict[str, Any]) -> None:
+        for observer in self._observers:
+            try:
+                observer(event)
+            except Exception:  # noqa: BLE001 - see add_request_observer
+                pass
 
     async def check_connection(self) -> bool:
         try:
@@ -164,18 +189,26 @@ class OpenAICompatibleBackend:
         on_usage: Callable[[Usage], None] | None = None,
     ) -> AsyncIterator[str]:
         payload = self._payload(model, messages, options)
+        observed = bool(self._observers)
         try:
             for attempt in (1, 2):
+                if observed:
+                    self._observe({"event": "request", "attempt": attempt, **wire_summary(payload)})
                 async with self._client.stream("POST", "/chat/completions", json=payload) as response:
                     if response.status_code >= 400:
                         body = (await response.aread()).decode(errors="replace")
-                        if attempt == 1 and _rejects_reasoning_effort(response.status_code, body, payload):
+                        retry = attempt == 1 and _rejects_reasoning_effort(response.status_code, body, payload)
+                        if observed:
+                            self._observe({"event": "rejected", "attempt": attempt,
+                                           "status": response.status_code, "retrying": retry})
+                        if retry:
                             self._skip_reasoning_effort = True
                             payload = self._payload(model, messages, options)
                             continue
                         raise InferenceError(_http_error_message(response.status_code, body))
 
                     usage: Usage | None = None
+                    raw = hashlib.sha256() if observed else None
                     async for line in response.aiter_lines():
                         fragment, reported = _parse_sse_chunk(line)
                         if reported is not None:
@@ -183,9 +216,20 @@ class OpenAICompatibleBackend:
                         if fragment is None:
                             break
                         if fragment:
+                            if raw is not None:
+                                raw.update(fragment.encode("utf-8"))
                             yield fragment
                     if usage is not None and on_usage is not None:
                         on_usage(usage)
+                    if raw is not None:
+                        # The generated text as the server sent it, before any
+                        # thinking trace is stripped: SSE ids and timestamps
+                        # are transport, not output, and are not part of it.
+                        self._observe({
+                            "event": "response", "attempt": attempt, "raw_sha256": raw.hexdigest(),
+                            "completion_tokens": usage.completion_tokens if usage else None,
+                            "prompt_tokens": usage.prompt_tokens if usage else None,
+                        })
                     return
         except httpx.HTTPError as exc:
             raise InferenceError(f"Request failed: {_describe(exc)}", unavailable=True) from exc
@@ -221,6 +265,27 @@ class OpenAICompatibleBackend:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+def wire_summary(payload: dict) -> dict[str, Any]:
+    """What an audit may keep of a request body: a hash of all of it, and the
+    fields that steer generation - never the messages themselves."""
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    schema = (payload.get("response_format") or {}).get("json_schema", {}).get("schema")
+    return {
+        "payload_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "resolved": {
+            "model": payload.get("model"),
+            "max_tokens": payload.get("max_tokens"),
+            "temperature": payload.get("temperature"),
+            "seed": payload.get("seed"),
+            "stop": payload.get("stop"),
+            "reasoning_effort": payload.get("reasoning_effort"),
+            "chat_template_kwargs": payload.get("chat_template_kwargs"),
+            "schema_sha256": hashlib.sha256(
+                json.dumps(schema, sort_keys=True).encode("utf-8")).hexdigest() if schema is not None else None,
+        },
+    }
 
 
 def _parse_sse_line(line: str) -> str | None:

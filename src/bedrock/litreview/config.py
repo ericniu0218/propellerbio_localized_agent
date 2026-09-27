@@ -55,7 +55,7 @@ DEFAULT_CONFIG_DIR = Path.home() / ".config" / "bedrock" / "litreview"
 # test ever touches a real home directory.
 
 #: Every key the `[litreview]` table in bedrock's config.toml may contain.
-KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email", "entailment_check")
+KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email", "entailment_check", "integrity_checks")
 
 #: Which model set a machine profile gets when nothing says otherwise.
 PROFILE_MODEL_SETS = {"server": "office"}
@@ -165,6 +165,11 @@ class Settings:
     """Run the optional local entailment check in Stage 7
     (`report/entailment.py`). Off by default: it is unmeasured, and a false
     drop loses real evidence."""
+    integrity_checks: str = "auto"
+    """`auto`: each new review asks PubMed and Crossref about retractions and
+    other notices for its papers (identifiers only). `manual`: only
+    `bedrock-litreview integrity refresh` does. Set in the app with
+    `/reviews settings`; see `preferences.py`."""
 
     def model_for(self, job: str) -> str:
         tier = self.jobs.get(job, "medium")
@@ -276,6 +281,12 @@ def load_settings(
         entailment_check=_flag(env.get("BEDROCK_LITREVIEW_ENTAILMENT_CHECK"), table.get("entailment_check", False),
                                "entailment_check"),
     )
+    from bedrock.litreview.preferences import PreferenceError, integrity_mode
+
+    try:
+        settings.integrity_checks = integrity_mode(data_dir, table, env)
+    except PreferenceError as exc:
+        raise ConfigError(str(exc)) from exc
     if check_endpoint:
         assert_local_url(settings.base_url, allowed)
         for spec in models.values():

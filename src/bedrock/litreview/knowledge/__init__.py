@@ -22,6 +22,7 @@ Three details carry most of the weight:
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -170,8 +171,12 @@ class KnownEntity:
 class Knowledge:
     """The entity table, loaded once, with lookups over it."""
 
-    def __init__(self, entities: list[KnownEntity]) -> None:
+    def __init__(self, entities: list[KnownEntity], *, source_sha256: str | None = None) -> None:
         self.entities = entities
+        self.source_sha256 = source_sha256
+        """Hash of the table's bytes when it was loaded from a file; None for a
+        table built in memory. A verification that used this table can then
+        say which one it used, not which file is on disk now."""
         self._by_canonical = {e.canonical: e for e in entities}
         self._fold_index: dict[str, list[KnownEntity]] = {}
         for entity in entities:
@@ -185,7 +190,9 @@ class Knowledge:
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Knowledge":
-        raw = yaml.safe_load(Path(path or TABLE).read_text(encoding="utf-8")) or {}
+        data = Path(path or TABLE).read_bytes()
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        raw = yaml.safe_load(text) or {}
         entities = []
         for section, kind in KIND_BY_SECTION.items():
             for canonical, body in (raw.get(section) or {}).items():
@@ -200,7 +207,7 @@ class Knowledge:
                         context_terms=tuple(str(t) for t in body.get("context_terms", [])),
                     )
                 )
-        return cls(entities)
+        return cls(entities, source_sha256=hashlib.sha256(data).hexdigest())
 
     def get(self, canonical: str) -> KnownEntity | None:
         return self._by_canonical.get(canonical)

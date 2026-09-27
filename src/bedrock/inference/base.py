@@ -79,9 +79,16 @@ class RequestOptions:
     straight away. ``None`` leaves the server's default."""
 
     seed: int | None = None
-    """The random seed the server should start from. With ``temperature=0`` a
-    fixed seed is what makes the same prompt give back the same words, which the
-    literature review depends on. ``None`` leaves it to the server."""
+    """The random seed the server should start from. ``None`` leaves it to the
+    server.
+
+    A seed fixes the sampler's random numbers, nothing more. With
+    ``temperature=0`` it removes one source of variation, but it does not make
+    a reply repeatable on its own: batching, kernel choice, parallelism and
+    quantisation can change floating-point results, and near-tied tokens can
+    then flip. vLLM documents no default reproducibility guarantee. Whether a
+    given deployment repeats itself is an empirical question for that
+    deployment, not a property of this field."""
 
 
 @dataclass(frozen=True)

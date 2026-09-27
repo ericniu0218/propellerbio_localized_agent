@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import threading
 from typing import Any
 
@@ -40,6 +41,8 @@ from bedrock.inference.tokens import estimate_tokens
 from bedrock.litreview.llm.client import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
+    GENERATION_CONTEXT_VERSION,
+    NORMALIZATION_VERSION,
     LLMError,
     strip_thinking,
 )
@@ -154,6 +157,48 @@ class SchedulerClient:
         """
         digest = self._digest(model)
         return f"{model}@{digest}" if digest else model
+
+    # Identity keys an operator may declare per model in models.yaml. They
+    # are recorded as declared - the server is not asked to confirm them.
+    DECLARED = ("revision", "tokenizer", "chat_template", "deployment")
+
+    def generation_context(self, model: str) -> dict[str, Any]:
+        """Everything this client knows that decides what `model` writes, apart
+        from the prompt and the per-call settings the cache key already holds.
+
+        Part of the call-cache key, so a reply is replayed only to a call that
+        would have been made the same way: same seed, same thinking policy,
+        same weights where the server reports them, same server. What is not
+        known is written as None, never assumed: a vLLM model *name* does not
+        pin weights, so a vLLM context has `weights: None` unless the operator
+        declares a `revision` in models.yaml. Stable for the client's
+        lifetime - it asks the server for digests once, like `version_of`.
+        """
+        options = self._options.get(model, {})
+        backend = getattr(self._scheduler, "backend", None)
+        base_url = getattr(backend, "base_url", None)
+        return {
+            "schema": GENERATION_CONTEXT_VERSION,
+            "model": model,
+            "weights": self._digest(model) or None,
+            **{key: (str(options[key]) if options.get(key) is not None else None) for key in self.DECLARED},
+            "backend": type(backend).__name__ if backend is not None else None,
+            "endpoint_sha256": hashlib.sha256(str(base_url).encode("utf-8")).hexdigest()[:16] if base_url else None,
+            "seed": self._seed,
+            "reasoning": "off" if options.get("thinking") is False else "server_default",
+            "other_sampling": "server_default",
+            "normalization": NORMALIZATION_VERSION,
+        }
+
+    def add_request_observer(self, observer) -> bool:
+        """Ask the backend to report each wire attempt (payload and reply
+        hashes; see `OpenAICompatibleBackend.add_request_observer`). False when
+        the backend cannot. For audits and the determinism experiment."""
+        add = getattr(getattr(self._scheduler, "backend", None), "add_request_observer", None)
+        if add is None:
+            return False
+        add(observer)
+        return True
 
     # ---- Bridging the worker thread to the event loop ------------------------
 

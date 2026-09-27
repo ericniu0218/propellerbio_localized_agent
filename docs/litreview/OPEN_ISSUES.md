@@ -180,15 +180,31 @@ What is left:
        sentence that says "**potentially due to** leukotriene mediated
        airway inflammation" — the hedge is dropped and the speculation is
        filed under mechanism.
-   - *Fix:* require a kept sentence's claim to rest on the **quote**; the
-     context, qualifier and naming sentences may add a name, a limit or a
-     subject, never be the sole source. A cheap version: the sentence must
-     share content with the quote (the same measure, or one of its numbers)
-     and not only with the other displayed sentences. Two independent
-     auditors picked this out as the single highest-value fix. Also strip a
-     leading "However,"/"Moreover," from a lifted sentence, and never drop a
-     hedge the source sentence carries.
-   - *Size:* medium.
+   - *Fixed, after the measurement above.* Guard check 10
+     (`report/guard.py` `rests_on_quote`) compares what a sentence takes
+     from the quote alone with what it takes from the other displayed
+     sentences alone, so a word both of them use — usually the target's
+     name — decides nothing. A sentence that takes essentially nothing
+     distinctive from the quote is dropped: "restates the context,
+     qualifier or naming sentence, not the quote it cites". One cited quote
+     the sentence really does rest on is enough to keep it, because it may
+     be citing the others only for a name.
+   - *Measured on the three new reports:* 8 of 133 kept sentences are
+     dropped, all read — the four above, the two Ccl2/Ccr2 knockout
+     sentences that cite a neutralizing-antibody quote, a MAIT IFN-γ
+     sentence taken from its context, and the MEDI0618 binding half the
+     judge had already called unsupported. On the three older reports it
+     adds two, both genuine mis-citations. Tuning it caught two false drops
+     first (a sentence that states the quote's result *and* the qualifier's
+     limit, and one that adds the context's population to the quote's
+     result); both are kept and both are tests.
+   - *What is left:* the benchmark was **not** re-run after this check, so
+     the accuracy numbers above predate it — they would rise a little, since
+     five of the eight are sentences the judge marked down. Still open from
+     the same audit: strip a leading "However,"/"Moreover," from a lifted
+     sentence, and never drop a hedge the source sentence carries (asthma
+     S25's "potentially due to").
+   - *Size:* the rule is done; re-measuring is a benchmark run.
 4. **Two evidence labels are still wrong on purpose.** *Mostly fixed.* The
    evidence type now comes from the quote's own words (cells in a dish are
    `in_vitro` even when the context names mice; human tissue is

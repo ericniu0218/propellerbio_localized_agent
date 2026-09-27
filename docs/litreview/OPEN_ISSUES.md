@@ -28,6 +28,21 @@ and a hypothesis reported as a finding) and one flaw in the benchmark itself
 (item 25). **Run the benchmark after changing an accuracy rule, not only the
 tests.**
 
+**27 September 2026, the mechanical fix batch.** Eight more items, all
+structural or reusing a mechanism already trusted elsewhere, are done:
+commits `5373d99..de1915b` plus the correction in `0a2822f`. Six more rows are
+in the section A table below, and items 3, 6, 7, 9, 13 and 24 are rewritten
+with what is left. The rule held again, twice over. The benchmark found that
+the new hedge rule's only firing was a **false drop** that deleted a faithful
+sentence, with every unit test green before and after; and that obesity's "no
+distractor leaked" gate had been passing because no distractor was ever built,
+so "every gate passes on all three" above was not a measurement. Three new
+measurement items (26, 27, 28) record why the scores in this document cannot
+be compared across runs: the benchmark never checks its context window, a gate
+can pass on absent input, and the file judge is keyed by claim text so
+rewording sentences leaves claims unjudged. See
+[BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
+
 Each item says what goes wrong, the evidence, where in the code, and a
 suggested fix. "Size" is a rough guide: small is a day or less, medium is a
 few days, big is a week or more, or needs a decision first.
@@ -111,6 +126,11 @@ does not quietly undo one:
 | Aims, hypotheses and predictions become findings | `extract/verify.py` `not_a_result_reason` (aim, hope and hypothesis cues, each scoped to its clause) plus guard checks 6 and 7 |
 | The same sentence in two sections | `stages/s7_write.py`, one `already_kept` list threaded through every section |
 | Filler in findings sections | a per-section `findings` flag in `defaults/report.yaml`; guard check 6 requires a result-bearing quote |
+| A structured-abstract label inside the quote ("Key Results: Among 45 participants ...") | `extract/verify.py` `strip_leading_label`, applied to abstract-section spans in `stages/s5_extract.py` and `extract/provenance.py`, advancing `start` so `section[start:end] == text` still holds; `integrity check passes` and `quote_validity` 1.00 on all three corpora after it |
+| A duplicated, truncated first word reaching the reader ("Hypoth, hypothalamic Sik3 mRNA ...") | `stages/s7_write.py` `_garbled_start`, anchored to the sentence opening; counted as `garbled` on the methods "Written:" line. Fired exactly once on the obesity rerun, on exactly that sentence |
+| A leftover "However," on a lifted sentence | `stages/s7_write.py` `_strip_leading_connective`, after the guard has judged the model's real words. Confirmed on the obesity rerun's SIK3 sentence |
+| Other people's human genetics read as the paper's own finding | `extract/verify.py` `_OTHER_WORK_LEAD_IN`, four more phrases, each with a recorded occurrence. The GPR75 sentence was a claim before the batch and is gone after it |
+| Unlabelled text in a paper with no recognised structure filed as "results" | `parsing/sections.py` files it under a new "unknown" bucket when none of methods/results/discussion was recognised, and `extract/verify.py` `_INTRO_LIKE_SECTIONS` treats "unknown" like "other". **Not measurable on any stored corpus** - see item 6 |
 
 Three more were fixed while re-running the benchmark: a disease-model
 adjective ("Diet-induced obesity … were infused with") no longer counts as a
@@ -198,13 +218,36 @@ What is left:
      first (a sentence that states the quote's result *and* the qualifier's
      limit, and one that adds the context's population to the quote's
      result); both are kept and both are tests.
-   - *What is left:* the benchmark was **not** re-run after this check, so
-     the accuracy numbers above predate it — they would rise a little, since
-     five of the eight are sentences the judge marked down. Still open from
-     the same audit: strip a leading "However,"/"Moreover," from a lifted
-     sentence, and never drop a hedge the source sentence carries (asthma
-     S25's "potentially due to").
-   - *Size:* the rule is done; re-measuring is a benchmark run.
+   - *Both leftovers are now done, and the second one is the cautionary tale
+     of this branch.* A kept sentence's leading "However, " is stripped in
+     `stages/s7_write.py` after the guard has judged the model's real words.
+     A hedge the cited evidence carries may no longer be dropped
+     (`negation.py` `drops_hedge`, wired into guard check 5 over the quote,
+     context, qualifier and naming sentences together).
+   - *"Moreover," is deliberately NOT stripped.* `report/invariants.py`
+     `check_sentences` re-runs the guard over the *stored* sentence on every
+     `verify-run`, so a post-guard rewrite must be verdict-neutral. "however"
+     is in `extract/verify.py`'s `_FILLER` and so never reaches
+     `content_words()`; "moreover" is not, and removing it was measured
+     flipping guard check 8's overlap ratio and its verdict - which would
+     report a correctly written sentence as a violation forever. Making it
+     safe means putting "moreover" in `_FILLER`, which moves checks 8 and 10
+     for every sentence of every report and needs its own measurement. No
+     kept sentence in the three hand audits opens with "Moreover,".
+   - *The hedge rule shipped with a false drop, and only the benchmark found
+     it.* Its single firing on the obesity rerun deleted a faithful sentence:
+     obesity E189's qualifier states a fact and then speculates about its
+     cause ("... did not elicit a significant body weight difference between
+     the genotypes, presumably because the already rapid diet-induced weight
+     gain ..."), and the report sentence repeated only the fact. Every unit
+     test was green before and after. Narrowed in `0a2822f`: a word appearing
+     before the cue belongs to the stated fact, not the guess, and a claim
+     carrying any hedge of its own is left alone. That second narrowing is
+     the cautious side of the trade on purpose - a claim hedging one clause
+     while unhedging another is now missed, because a missed hedge leaves a
+     claim slightly too firm where a false drop deletes a faithful sentence.
+   - *Size:* done. Obesity should be re-run once to confirm the false drop is
+     gone; the fix has a test from the real sentences either way.
 4. **Two evidence labels are still wrong on purpose.** *Mostly fixed.* The
    evidence type now comes from the quote's own words (cells in a dish are
    `in_vitro` even when the context names mice; human tissue is
@@ -236,20 +279,57 @@ What is left:
    asthma papers in the corpus are like this (PMID41858165, PMID41596081).
    This is why the section rule in the someone-else's-result check cannot
    catch intro text, and why the citation-marker rule has to do that work.
-   - *Fix:* when a paper has no headings, do not claim it is results: mark
-     the section "unknown" and treat it as discussion for flagging.
-   - *Size:* small to medium.
+   *Fixed in code, and not measurable.* `parsing/sections.py` files the
+   leftover text under a new "unknown" bucket when none of methods, results
+   or discussion was recognised anywhere, and `extract/verify.py`
+   `_INTRO_LIKE_SECTIONS` treats "unknown" like "other".
+   - *What the fix taught us:* both named papers DO have headings. They are
+     numbered - "1. Introduction", "2. Materials and Methods", "3. Results" -
+     and every pattern in `_HEADING_MAP` anchors at `^\s*`, so none of them
+     matched and only the unnumbered back matter did. "No heading matched at
+     all" is therefore the wrong test: `parts` is not empty for these papers.
+     The signal used is that none of methods/results/discussion was
+     recognised; "abstract" cannot count (its own XML tag) and neither can
+     "other" (it holds a real Introduction heading and pure boilerplate
+     indistinguishably).
+   - *What is left, and it is the real fix:* **`_HEADING_MAP` never matches a
+     numbered heading.** Tolerating a numeral prefix would file both papers
+     correctly instead of merely refusing to guess. Until then they are
+     abstract-only: `Paper.has_full_text` is now False for them, so the
+     planner asks only for their abstracts - less coverage, and no longer
+     presenting Introduction prose as findings.
+   - *What no stored corpus can measure:* `ingest.prepare()` sets
+     `paper.full_text = None` after the one-time split at corpus-build time
+     and re-splits only when `sections` is empty. All three corpora were built
+     2026-09-25, so all 208 of their papers carry old-parser sections with no
+     raw text left. The "unknown" bucket is unreachable through them, for
+     every paper, not just these two. An unchanged benchmark number is not
+     evidence the fix is inert. Measuring it needs a corpus rebuilt from
+     source, and the numbered-heading fix should land first or the rebuild
+     will file both papers as "unknown" again.
+   - *Size:* small (the numbered headings); medium (a corpus rebuild).
 7. **Background from another study with no citation marker is still taken as
    the paper's own.** The new obesity report opens a target section with
    "Human genetic studies have identified GPR75 loss-of-function variants to
    be strongly protective against obesity" — true, but it is other people's
    human genetics quoted in the background of a mouse paper, and its abstract
    carries no reference brackets for the rule to see.
-   - *Fix:* treat "Human genetic studies have identified", "It is well
-     established", "have been shown to" and the like as reported-other-work
-     lead-ins wherever they start a sentence in an abstract's background, not
-     only at the start of the quote.
-   - *Size:* small.
+   *Fixed.* `extract/verify.py` `_OTHER_WORK_LEAD_IN` gained "human genetic
+   studies have identified", the plural "have been shown to", "genetic
+   studies have shown" and "genome-wide association studies have identified",
+   each with an occurrence recorded in the comment above the pattern.
+   - *Evidence:* the GPR75 sentence was a claim in the pre-batch obesity
+     report and is gone from the rerun; `evidence_units` 206 to 205, and no
+     other claim was lost to these phrases.
+   - *Deliberately not added:* "it is well established". Its only occurrence
+     in the corpora is mid-sentence and means something else entirely ("we
+     selected the BALB/c mouse model because it is well established in our
+     laboratory"). The value of this list is that every entry is evidenced,
+     so an unevidenced phrase stays out even when this document named it.
+   - *Checked, and not a gap:* `other_work_reason` is called only on
+     `finding.quote`, never on the context, qualifier or naming sentences. No
+     currently-kept unit in any hand audit has one of those carrying a lead-in
+     or a citation bracket, so the check was not widened speculatively.
 8. **The result vocabulary is a word list, and will keep having holes.** It
    decides whether a quote reports a result at all, so a missing word throws
    real evidence away and a word in the wrong place keeps filler. Both
@@ -264,13 +344,23 @@ What is left:
    - *Size:* medium, or big if folded into item 5.
 9. **Smaller things the after-audit saw, each small on its own.** All are in
    `grades_after.jsonl` with the sentence that shows them.
-   - A **corrupted sentence reaches the reader**: obesity S13 begins
-     "Hypoth, hypothalamic Sik3 mRNA levels …". Nothing checks a sentence for
-     a dangling fragment or a repeated stem.
-   - A **structured-abstract label sits inside a quote**: asthma E1's quote
-     starts "Background and Purpose: Children with acute asthma…". The
-     splitter does not strip `Background and Purpose:` / `Key Results:` /
-     `Conclusion and Implications:`, which also defeats any section filter.
+   - ~~A **corrupted sentence reaches the reader**~~ *Fixed.* Obesity S13's
+     "Hypoth, hypothalamic Sik3 mRNA levels …" is dropped by
+     `stages/s7_write.py` `_garbled_start` and counted as `garbled` on the
+     methods "Written:" line. It fired exactly once on the obesity rerun, on
+     exactly that sentence, and on no sentence in migraine.
+   - ~~A **structured-abstract label sits inside a quote**~~ *Fixed.*
+     `extract/verify.py` `strip_leading_label` removes it from abstract-section
+     quote, context, qualifier and naming spans, advancing `start` by the same
+     number of characters so `section[start:end] == text` still holds - the
+     invariant `report/invariants.py` `_anchored()` re-checks on every run.
+     `integrity check passes` and `quote_validity` 1.00 on all three corpora
+     after it.
+     - *Left:* `extract/provenance.py` `methods_subjects()` still stores its
+       context sentence with the label attached ("METHODS: ..."), and
+       `tests/litreview/test_methods_subjects.py` currently asserts that text.
+       Same defect, separate code path, deliberately not changed together with
+       an assertion that encodes it.
    - **Context selection is by proximity, not relevance**: obesity E74's
      context sentence is "Mice were excluded from experiments if they showed
      any sign of morbidity."; E190's is about transgenic overexpressing mice
@@ -285,8 +375,9 @@ What is left:
      target slot.
    - **A direction label can contradict its own quote**: migraine E4 is
      `direction=activate` for MEDI0618, an antibody that blocks PAR2.
-   - *Size:* small each; the sentence-sanity check and the abstract-label
-     strip are the two worth doing first.
+   - *Size:* small each. The two that were worth doing first - the
+     sentence-sanity check and the abstract-label strip - are done; the
+     remaining four are untouched.
 
 ## B. Completeness
 
@@ -312,12 +403,19 @@ What is left:
       (not an exclusion), and add the outside retraction-refresh lane (old
       step 54).
     - *Size:* medium.
-13. **`verify-run` does not say the rules changed.**
-    - It re-checks an old run under today's code and knowledge tables, and
-      does not say when those changed since the run (`report/invariants.py`
-      `verify_run`). The run records input hashes, so this is available.
-    - *Fix:* print a note when a hash differs.
-    - *Size:* small.
+13. **`verify-run` does not say the rules changed.** *Fixed.*
+    `runner.stale_reasons()` compares a run's recorded `code_version` and
+    `input_hashes` against today's and returns plain-English notes ("code
+    changed: ... -> ...", "pipeline.yaml changed since this run"). Both
+    `verify-run` and `/reviews --verify` print them as indented notes.
+    - They are never counted as violations and cannot change the exit code:
+      "no violations" means the report is still sound, and that is a
+      different question from whether it is still current. A run written
+      before `code_version` existed returns no notes rather than a false
+      alarm.
+    - *Evidence:* `tests/litreview/test_runner_staleness.py` - a fresh run
+      reports nothing, and a mutated `code_version` or `input_hashes` entry
+      each produce their note.
 14. **Determinism on vLLM is unproven** (old step 36). Every benchmark run here
     re-ran identically, but through the call cache.
 
@@ -378,9 +476,13 @@ What is left:
     the benchmark measuring its own blind spot.
     - *Fix, done:* `_unit_evidence` now shows every sentence
       `report/guard.py` `_shown` displays.
-    - *Left:* nothing enforces it. A test that fails when a displayed field
-      is added to `_shown` but not to the judge's evidence would.
-    - *Size:* small.
+    - *Now enforced:* `tests/litreview/test_judge_parity.py` puts a distinct
+      marker in all four displayed fields and asserts every sentence
+      `_shown` returns also appears in `_unit_evidence`. It reads the list
+      from `_shown`'s own output rather than retyping the field names, so a
+      second copy cannot drift; asserting that `_shown` returns exactly four
+      is the other half of the tripwire, so adding a fifth displayed field
+      forces a deliberate decision about whether the judge sees it.
 25. **Judge answers on file come from more than one judge.** The scores above
     mix answers written by an earlier strong judge (the 25–26 September runs)
     with answers written later for the claims this branch changed. Both were
@@ -390,10 +492,52 @@ What is left:
     - *Fix:* re-judge a fixed sample of both runs with one rater in one
       sitting, or store the judge's identity beside each answer and report
       per-rater agreement.
+    - *Measured on 27 September, and it is worse than "indicative".* The same
+      asthma report `3367ba2e60f434df` scored 69.4, 69.2, 69.2 across three
+      passes, with 9, 8 and 9 of 9 gates. Same report id, so the pipeline
+      output was byte-identical and all of that is the judge. `judge catches
+      flipped effects` also went FAIL then PASS across two runs of identical
+      pre-batch code. The variation is larger than the before/after
+      differences anyone has been reading off these tables.
     - *Size:* small to medium.
+
+26. **`bench/run.py` never calls `preflight`, so a run can be silently
+    undersized.** `service.run_review` refuses to start below
+    `defaults/models.yaml`'s `min_context_window` of 12,288, but the benchmark
+    builds its own `Settings` and calls `runner.answer_question` directly with
+    no such check. The default `laptop` profile is 8,192, and
+    `inference/openai_compatible.py` never sends `num_ctx`, so the real limit
+    is whatever `ollama serve` was started with.
+    `OLLAMA_CONTEXT_LENGTH` was unset before the 27 September run, which means
+    every benchmark number written before it was produced at an unverified
+    context window.
+    - *Fix:* call `service.preflight` from `bench/run.py`, and have the
+      scorecard record the context window it actually ran at.
+    - *Size:* small, and it invalidates measurements until it is done.
+
+27. **A gate can pass because its input was never built.** Obesity's "no
+    distractor leaked" PASSed on 26 September with `distractors.json` equal to
+    `{}` - no distractor papers were made, so there was nothing to leak. The
+    27 September run made 5 and 2 leaked (rate 0.40, both graded 3 and about
+    the exact entity), so the gate now FAILs on a real, pre-existing weakness
+    that the earlier "every gate passes on all three" had never measured.
+    Migraine made 5 and leaked 0, so the machinery itself works.
+    - *Fix:* a gate with no input must report "not measured", never PASS. Then
+      look at the obesity leak on its own merits.
+    - *Size:* small for the gate; the leak itself is unknown until read.
+
+28. **The file judge is keyed by claim text, so changing the writer
+    invalidates the comparison.** Any change that rewords or replaces
+    sentences leaves claims with no answer on file: the 27 September migraine
+    run logged 8 cache misses and judged 30, then 40, of 42 pipeline claims,
+    and its 70.0 against the earlier 80.0 is substantially unjudged claims
+    rather than measured regression.
+    - *Fix:* report the judged fraction beside every score and refuse to
+      compare two runs whose judged fractions differ materially.
+    - *Size:* small.
 
 ## Long-term
 
-26. **Semantic retrieval.** Ranking is keyword-based (BM25), so a paper that
+29. **Semantic retrieval.** Ranking is keyword-based (BM25), so a paper that
     says "pH" is not found for "acidity". This is blocked on a deployed
     embedding model; the plan is in `NEXT_STEPS.md` §6.

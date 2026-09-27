@@ -1,0 +1,122 @@
+# Outcome measures: what a study measured, never something one could target.
+# Written by hand; no model writes here. Read by `knowledge/abbreviations.py`.
+#
+# Extraction copies whatever the paper acted on *or measured* into a
+# finding's `target`, and a readout's abbreviation is shaped exactly like a
+# gene symbol: "AHR" (airway hyperresponsiveness) reads like AhR (the aryl
+# hydrocarbon receptor), "MMDs" (monthly migraine days) like a protein. A
+# finding whose target is one of these keeps its result - "GRI977143 reduced
+# AHR" is real prevention evidence - but it never becomes a row of targets.
+#
+# `measures`       long names, matched in any case. A hyphen or space written
+#                  here is optional in the text, so "airway
+#                  hyper-responsiveness" also matches "airway hyper
+#                  responsiveness" and "airway hyperresponsiveness" (write
+#                  the hyphen; the unhyphenated entry would not match the
+#                  hyphenated text). A last word of four letters or more
+#                  matches its plural too. A name that contains one of these
+#                  is a measure only if nothing target-shaped is left beside
+#                  it: "moderate to severe MMDs" is, "IL-33-driven
+#                  exacerbation" is not.
+# `abbreviations`  short forms, matched CASE-SENSITIVELY - "AHR" never matches
+#                  "AhR", "IGA" never matches "IgA" - with the long name each
+#                  stands for. A trailing plural "s" matches too ("MMDs",
+#                  "AEs"). (Case-sensitive means two capitals or more:
+#                  "Penh", with one, matches in any case - nothing else is
+#                  spelled "penh".)
+# `ambiguous_abbreviations`  short forms that are ALSO the name of something
+#                  one could target, so they count as a measure only when
+#                  the paper itself defines them as one. "AHR" is the
+#                  official gene symbol of the aryl hydrocarbon receptor: a
+#                  Mendelian randomisation paper in the asthma corpus lists
+#                  "PPI-related genes (AHR, DDAH1, MAPT)" and never spells it
+#                  out, and that AHR is a real target.
+#
+# The paper's own definition always wins over every list here: a paper that
+# writes "aryl hydrocarbon receptor (AHR)" means the receptor, and its "AHR"
+# is a target; one that writes "Vaseline (VAS)" does not mean a visual
+# analogue scale. The lists' meaning is assumed only for an abbreviation the
+# paper never defines. An abbreviation too short or too overloaded to trust
+# is left out altogether ("ACT" is also adoptive cell therapy, "WC" and "MD"
+# mean too many things): a missing entry costs a stray target row, a wrong
+# one hides a real target.
+
+measures:
+  # airways
+  - airway hyper-responsiveness
+  - airway hyper-reactivity
+  - bronchial hyper-responsiveness
+  - bronchial hyper-reactivity
+  - enhanced pause
+  - forced expiratory volume
+  - forced vital capacity
+  - peak expiratory flow
+  - fractional exhaled nitric oxide
+  - fraction of exhaled nitric oxide
+  - fraction exhaled nitric oxide
+  - Asthma Control Questionnaire
+  - Asthma Control Test
+  - ACT score
+  - exacerbation
+  # headache
+  - monthly migraine days
+  - monthly headache days
+  - migraine days
+  - headache days
+  - Migraine Disability Assessment
+  - Headache Impact Test
+  - Headache Impact Test-6
+  # skin
+  - Psoriasis Area and Severity Index
+  - Eczema Area and Severity Index
+  - Area and Severity Index
+  - Area Severity Index
+  - Activity Severity Index
+  - Investigator's Global Assessment
+  - Investigator Global Assessment
+  - Dermatology Life Quality Index
+  - SCORing Atopic Dermatitis
+  # metabolic
+  - body mass index
+  - body weight
+  - weight gain
+  - weight loss
+  - waist circumference
+  - glycated hemoglobin
+  - glycated haemoglobin
+  - hemoglobin A1c
+  - haemoglobin A1c
+  # general
+  - adverse event
+  - serious adverse event
+  - treatment-emergent adverse event
+  - visual analogue scale
+  - visual analog scale
+
+abbreviations:
+  BHR: bronchial hyperresponsiveness
+  Penh: enhanced pause
+  FEV1: forced expiratory volume in one second
+  FVC: forced vital capacity
+  PEF: peak expiratory flow
+  PEFR: peak expiratory flow rate
+  FeNO: fractional exhaled nitric oxide
+  ACQ: Asthma Control Questionnaire
+  MMD: monthly migraine days
+  MHD: monthly headache days
+  MIDAS: Migraine Disability Assessment
+  HIT-6: Headache Impact Test
+  PASI: Psoriasis Area and Severity Index
+  EASI: Eczema Area and Severity Index
+  DLQI: Dermatology Life Quality Index
+  SCORAD: SCORing Atopic Dermatitis
+  BMI: body mass index
+  HbA1c: glycated hemoglobin
+  AE: adverse event
+  SAE: serious adverse event
+  TEAE: treatment-emergent adverse event
+  VAS: visual analogue scale
+
+ambiguous_abbreviations:
+  AHR: airway hyperresponsiveness        # also the gene symbol of the aryl hydrocarbon receptor
+  IGA: Investigator's Global Assessment  # also immunoglobulin A, written in capitals

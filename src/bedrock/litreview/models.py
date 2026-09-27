@@ -46,7 +46,7 @@ import hashlib
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 # --- enums, as literal types so the JSON schema constrains generation -------
 
@@ -476,6 +476,12 @@ class EvidenceUnit(BaseModel):
     combo_with: str | None
     target_is_primary: bool
     facet: str | None = None
+    outcome_measure: bool = False
+    """The 'target' is what the study measured (airway hyperresponsiveness,
+    monthly migraine days), not something one could act on. Decided by code
+    from `knowledge/outcome_measures.yaml` and the paper's own abbreviation
+    definitions (`knowledge/abbreviations.py`). The finding stays in the
+    evidence; Stage 6 gives it no target row."""
 
     # provenance — how this unit came to exist, and how far to trust it
     quote: str
@@ -493,19 +499,51 @@ class EvidenceUnit(BaseModel):
     provenance: dict[str, str] = Field(default_factory=dict)
     """Where each model-written field was found in the text the model was
     shown: field -> 'quote' | 'chunk' | 'methods' | 'none'. A field found
-    nowhere is blanked; a target found nowhere drops the unit."""
+    nowhere is blanked; a target found nowhere drops the unit. The target,
+    agent and combination partner record where the reader is shown them
+    instead: 'quote' | 'context' | 'qualifier' | 'naming' (units stored
+    before that say 'chunk' or 'methods'), and 'naming' -> 'chunk' |
+    'methods' says where the naming sentence came from."""
     context_quote: str | None = None
     """The paper's own sentence that supplied the subjects or sample size,
     when that was not the quote itself (usually a Methods sentence)."""
     context_section: str | None = None
     context_start: int | None = None
     context_end: int | None = None
+    qualifier_quote: str | None = None
+    """The paper's sentence right after the quote, when it qualifies it
+    ("Although this result did not reach statistical significance ...").
+    Same section as the quote, at `qualifier_start:qualifier_end`. Found by
+    `extract/verify.py` `qualifier_after`, never by the model."""
+    qualifier_start: int | None = None
+    qualifier_end: int | None = None
+    naming_quote: str | None = None
+    """The paper's sentence that names the target or agent, when the quote,
+    the context sentence and the qualifier do not ("HDAC6 inhibitors, such as
+    tubastatin A, reduce food intake ..." beside a quote about tubastatin A).
+    From the passage the model read, else the Methods; in `naming_section` at
+    `naming_start:naming_end`. Found by `extract/provenance.py`, never by the
+    model. It shows where a name comes from; it is not evidence the quote's
+    result is about that name (`report/guard.py`, check 9)."""
+    naming_section: str | None = None
+    naming_start: int | None = None
+    naming_end: int | None = None
+    methods_subjects: str | None = None
+    """Set when the quote is the authors' conclusion and names people ("...
+    in patients with asthma"), but the paper's Methods name no human
+    subjects, only animals or cells: what they do name, "mice and cells".
+    The finding's subjects and evidence type then come from the Methods, not
+    the quote, the Methods sentence is its context sentence, and the citation
+    guard lets no sentence resting only on such findings say "patients"
+    (`report/guard.py`, check 4). Found by `extract/provenance.py`
+    `methods_subjects`, never by the model."""
     from_discussion: bool = False
     """Authors overstate in the Discussion. Kept, but flagged."""
     entity_match: Literal["exact", "paper_context"] = "paper_context"
     corrected: list[str] = Field(default_factory=list)
-    """Fields code overruled because the model's own copied words said
-    otherwise, e.g. 'outcome: improved -> worsened ("aggravated")'."""
+    """Fields code overruled because the model's own copied words, or the
+    quote's own words, said otherwise, e.g. 'outcome: improved -> worsened
+    ("aggravated")' or 'evidence_type: in_vivo -> in_vitro ("HBECs")'."""
     """`exact`: the finding itself names the asked-about entity. `paper_context`:
     it does not, but the paper passed the gate, so the context supplies it."""
 
@@ -518,6 +556,29 @@ class EvidenceUnit(BaseModel):
     corrected_fields: list[str] = Field(default_factory=list)
     """Which fields a human changed. This is the safety net, and after months
     of use it is also the only realistic path to fine-tuning anything."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_optional(self, handler):
+        """Leave the qualifier, naming-sentence and Methods-subjects fields
+        out of the JSON when there is none, and `outcome_measure` when it is
+        False.
+
+        They were added after reports were already stored, and a stored run
+        is verified by re-serialising its report and comparing the bytes
+        (`report/invariants.py` `check_pinned`). Writing `"qualifier_quote":
+        null` or `"outcome_measure": false` into every old unit would make
+        every old run fail that check."""
+        data = handler(self)
+        if isinstance(data, dict):
+            for group in (("qualifier_quote", "qualifier_start", "qualifier_end"),
+                          ("naming_quote", "naming_section", "naming_start", "naming_end"),
+                          ("methods_subjects",)):
+                if data.get(group[0]) is None:
+                    for name in group:
+                        data.pop(name, None)
+            if data.get("outcome_measure") is False:
+                data.pop("outcome_measure")
+        return data
 
 
 class TargetSummary(BaseModel):

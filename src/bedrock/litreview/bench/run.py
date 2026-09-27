@@ -68,8 +68,18 @@ def _near_misses(text: str, spec: QuestionSpec) -> list[str]:
 def _unit_evidence(u: EvidenceUnit) -> str:
     """What the judge is shown for a cited unit: the paper's words only. It
     used to see the extraction model's "Result" and "subjects" too, and judged
-    "in human tissues" supported because the model had written "human"."""
-    return f"{u.quote} (Context: {u.context_quote})" if u.context_quote else u.quote
+    "in human tissues" supported because the model had written "human".
+
+    Every sentence the *reader* is shown beside the quote is shown to the
+    judge too, and no more. The report now displays, besides the quote, the
+    context sentence, the qualifying next sentence and the sentence that
+    names the target or the agent (`report/guard.py` `_shown`). A judge shown
+    less than the reader marks a claim unsupported for a drug name that is
+    printed right under the quote, which measures the benchmark's own blind
+    spot rather than the report's accuracy.
+    """
+    rest = [p for p in (u.context_quote, u.qualifier_quote, u.naming_quote) if p]
+    return f"{u.quote} (Context: {' '.join(rest)})" if rest else u.quote
 
 
 def pipeline_answer_text(report: Report) -> str:

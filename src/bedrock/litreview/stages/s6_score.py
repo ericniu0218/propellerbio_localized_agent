@@ -62,7 +62,12 @@ _CELL_LINES = re.compile(
 def _is_subject(unit: EvidenceUnit, spec: QuestionSpec) -> bool:
     """A 'target' that is the disease or virus itself, a cell line, or a word that
     names nothing one could act on ("dropout", "participants"), says nothing
-    about what to target. Its findings stay in the evidence; it gets no row."""
+    about what to target. Its findings stay in the evidence; it gets no row.
+    Nor does an outcome measure: Stage 5 flags "AHR" that the paper defines
+    as airway hyperresponsiveness, and "MMDs", so neither joins a receptor's
+    row by its letters (`knowledge/abbreviations.py`)."""
+    if unit.outcome_measure:
+        return True
     if unit.target.strip().lower() in _GENERIC_TARGETS or _CELL_LINES.search(unit.target):
         return True
     if not looks_like_target(unit.target) and not load_knowledge().lookup(unit.target):

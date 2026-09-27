@@ -15,6 +15,15 @@
 #
 # generated sections: best_source, gaps, plan, ranking, evidence_table,
 # method, excluded.
+#
+# findings (written sections only, default true): every sentence must cite at
+# least one quote that reports a result, not just mention the subject - a
+# methods, demographics or generic-background sentence that states no finding
+# is dropped even though it names nothing wrong (report/guard.py). Every
+# written section below draws its evidence from extracted findings and exists
+# to state some of them, so none sets this to false today; it is here so a
+# future section that is genuinely not about a result (a scope note, say) can
+# opt out without weakening the check everywhere else.
 
 target_identification:
   - id: answer

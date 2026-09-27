@@ -86,6 +86,20 @@ def test_every_kept_sentence_cites_existing_evidence(settings, tmp_path):
         assert sentence.citations and set(sentence.citations) <= known
 
 
+def test_a_sentence_kept_in_one_section_never_repeats_in_another(settings, tmp_path):
+    """A hand audit of a real run found the same sentence kept twice: once in
+    the "answer" section, once in a "targets:<name>" subsection - the same
+    finding was the strongest evidence for both, and each section is written
+    by its own model call that never sees what the other one wrote. This
+    fixture's IL-23 finding is exactly that shape: it is the best evidence for
+    the "answer" section, its own "targets:IL23A" subsection, and the
+    "prevention" section, and the fake model drafts the same sentence for all
+    three when asked. It must still only be kept once."""
+    report = run(settings, tmp_path).report
+    texts = [s.text for _, s in report.kept_sentences()]
+    assert len(texts) == len(set(texts)), f"a sentence was kept in more than one section: {texts}"
+
+
 def test_the_same_question_gives_byte_identical_reports(settings, tmp_path):
     first = run(settings, tmp_path)
     second = run(settings, tmp_path)

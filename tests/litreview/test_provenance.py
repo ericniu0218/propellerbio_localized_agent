@@ -39,7 +39,11 @@ def _trace(**kw):
 
 def test_subjects_and_sample_size_come_from_an_anchored_methods_sentence():
     p = _trace()
-    assert p.where["target"] == "chunk"
+    # IL-23 is not in the quote: it is shown by the passage's sentence that
+    # names it (`naming_quote`), and provenance says so.
+    assert p.where["target"] == "naming" and p.where["naming"] == "chunk"
+    assert p.naming is not None and RESULTS[p.naming.start:p.naming.end] == p.naming.text
+    assert p.naming.text.startswith("Mice lacking IL-23")
     assert p.where["species"] == "methods" and p.where["n"] == "methods"
     assert p.context is not None and p.context.text == METHODS
     assert METHODS[p.context.start:p.context.end] == p.context.text

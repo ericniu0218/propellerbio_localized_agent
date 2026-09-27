@@ -302,7 +302,10 @@ def test_a_result_cited_to_a_sentence_that_reports_none_is_dropped():
     sentence = ("Montelukast reduced exacerbations in children with high-moderate pre-treatment severity, "
                 "as shown in a study of 45 participants randomized to montelukast and 44 to placebo.")
     verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
-    assert not verdict.kept and "does not report" in verdict.reason
+    # In this default findings section, issue #8's broader check (no cited
+    # quote reports any result at all) now catches this before the narrower
+    # "claims a result its evidence does not report" check would.
+    assert not verdict.kept and "reports a result" in verdict.reason
 
 
 @pytest.mark.parametrize("sentence, quote", [
@@ -316,3 +319,65 @@ def test_a_result_cited_to_a_sentence_that_reports_none_is_dropped():
 def test_a_result_in_plain_wording_still_counts_as_a_result(sentence, quote):
     verdict = _mouse_guard(E1=quote).check(sentence, ["E1"])
     assert verdict.kept, verdict.reason
+
+
+# --- check 5: a null claim needs the paper's own words, not just the model's label ---
+
+# The obesity benchmark's E180 (evals/litreview/results/obesity-treatment-targets/
+# 20260926T021514Z/pipeline/08874d59f09d8ca6/7ddbe892a9a8ba68/report.json): a
+# DIO-mice/apocynin methods sentence, with no context, qualifier or naming
+# sentence stored on it, extracted with outcome="no_effect" - the model's
+# label, not the paper's. The paper's real result (a different evidence unit
+# in the same report) is that apocynin abrogated fibrosis.
+APOCYNIN_METHODS_QUOTE = (
+    "Diet-induced obesity (DIO) mice and hiPSC-aCMs treated with palmitic acid (PA) were infused with a NOX "
+    "blocker (apocynin) and a NOX2-specific inhibitor, respectively."
+)
+
+
+def test_a_null_claim_is_dropped_when_only_the_outcome_label_says_no_effect():
+    """Trusting `outcome` alone let a sentence claim apocynin "did not ...
+    alter NOX2 activity or prevent atrial fibrosis" - the opposite of the
+    paper - citing only the methods quote above, whose own displayed text
+    (`source_text`: just the quote itself here) says nothing about an effect
+    either way. Check 5 must read the paper's words, not the label.
+
+    `findings=False` isolates check 5 from check 6 ("cites no quote that
+    reports a result"): this quote's only result-shaped word is
+    "Diet-induced" (bug #1's own fix masks it out of `reports_result`
+    everywhere), so in a findings section check 6 would drop the sentence
+    first - also correctly, but for a different reason than the one this
+    test is about."""
+    spec = parse_question("If I want to treat obesity, which targets should I pursue?")
+    u = unit(
+        target="NOX2", target_raw="NOX2", intervention="apocynin", disease="obesity", disease_raw="obesity",
+        evidence_type="in_vivo", species="mouse", species_raw="mice", quote=APOCYNIN_METHODS_QUOTE,
+        outcome="no_effect", effect_detail="", provenance={"target": "quote", "species": "quote",
+                                                            "intervention": "quote"},
+    )
+    guard = CitationGuard(spec, load_knowledge(), {"E1": u}, paper_labels={"P1": "Wang 2024 Circulation"},
+                          findings=False)
+    sentence = ("In DIO mice and hiPSC-aCMs treated with palmitic acid, infusion with a NOX blocker (apocynin) "
+                "did not significantly alter NOX2 activity or prevent atrial fibrosis.")
+    verdict = guard.check(sentence, ["E1"])
+    assert not verdict.kept
+    assert verdict.reason == "claims no effect, which the cited evidence does not"
+
+
+def test_a_null_claim_is_dropped_in_a_findings_section_too():
+    """The same sentence in a findings section (the default): check 6 fires
+    first, since the quote's only result-shaped word names the model, not a
+    result - but the sentence is still, correctly, dropped."""
+    spec = parse_question("If I want to treat obesity, which targets should I pursue?")
+    u = unit(
+        target="NOX2", target_raw="NOX2", intervention="apocynin", disease="obesity", disease_raw="obesity",
+        evidence_type="in_vivo", species="mouse", species_raw="mice", quote=APOCYNIN_METHODS_QUOTE,
+        outcome="no_effect", effect_detail="", provenance={"target": "quote", "species": "quote",
+                                                            "intervention": "quote"},
+    )
+    guard = CitationGuard(spec, load_knowledge(), {"E1": u}, paper_labels={"P1": "Wang 2024 Circulation"})
+    sentence = ("In DIO mice and hiPSC-aCMs treated with palmitic acid, infusion with a NOX blocker (apocynin) "
+                "did not significantly alter NOX2 activity or prevent atrial fibrosis.")
+    verdict = guard.check(sentence, ["E1"])
+    assert not verdict.kept
+    assert verdict.reason == "cites no quote that reports a result"

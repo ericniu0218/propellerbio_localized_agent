@@ -6,11 +6,17 @@ the exact papers it was built from, and asks whether the guarantees hold for
 the whole thing:
 
   quote       every quote shown is the paper's text at its recorded position,
-              and so is every context sentence
+              and so is every context sentence, every qualifying next
+              sentence and every sentence shown for naming a target or agent
   fields      every field the model wrote that the report shows was found in
-              the paper by `extract/provenance.py`, and is still there
+              the paper by `extract/provenance.py`, and is still there; and
+              no finding whose conclusion names people its paper's Methods
+              never studied is labelled human
   sentences   every kept sentence passes the citation guard, re-run here
-              against the paper text it cites
+              against the paper text it cites. Pure code: a sentence the
+              optional entailment check (`report/entailment.py`) dropped is
+              stored as not kept, so it is not re-checked and no model is
+              needed to re-prove a report
   flags       no paper lost a review or retraction flag in a merge, and no
               finding comes from a paper flagged either way
   pinned      (for a stored run) the paper bodies still hash to the run's
@@ -68,6 +74,10 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"quote: {where}: quote {why}")
         if (why := _anchored(u.context_quote, paper, u.context_section, u.context_start, u.context_end)):
             out.append(f"quote: {where}: context sentence {why}")
+        if (why := _anchored(u.qualifier_quote, paper, u.section, u.qualifier_start, u.qualifier_end)):
+            out.append(f"quote: {where}: qualifying sentence {why}")
+        if (why := _anchored(u.naming_quote, paper, u.naming_section, u.naming_start, u.naming_end)):
+            out.append(f"quote: {where}: naming sentence {why}")
         if paper.is_review or paper.signals.is_retracted:
             out.append(f"flags: {where}: comes from a paper flagged "
                        f"{'retracted' if paper.signals.is_retracted else 'review'}")
@@ -76,8 +86,12 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"fields: {where}: was never traced")
             continue
         seen = f"{u.quote} {u.context_quote or ''}"
+        # Where provenance says each name is. 'chunk' and 'methods' are what
+        # units stored before names had to be shown say; newer units name
+        # the displayed sentence instead, which must then exist.
         homes = {"quote": u.quote, "chunk": paper.sections.get(u.section, ""),
-                 "methods": paper.sections.get("methods", "")}
+                 "methods": paper.sections.get("methods", ""), "context": u.context_quote or "",
+                 "qualifier": u.qualifier_quote or "", "naming": u.naming_quote or ""}
         if u.provenance.get("target", "none") == "none":
             out.append(f"fields: {where}: target {u.target_raw!r} was not found in the paper")
         elif not name_in(u.target_raw, homes.get(u.provenance["target"], ""), kb, "target"):
@@ -95,20 +109,36 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"fields: {where}: sample size {u.n} is shown but not in the quote or context")
         if u.effect_detail and u.provenance.get("effect_detail", "none") == "none":
             out.append(f"fields: {where}: a result summary is shown that the paper does not support")
+        # A conclusion's people the Methods do not back never make a finding
+        # human evidence (`extract/provenance.py` `methods_subjects`).
+        if u.methods_subjects and (u.species == "human" or u.evidence_type.startswith("human")):
+            out.append(f"fields: {where}: is labelled human, but its paper's methods studied only "
+                       f"{u.methods_subjects}")
     return out
 
 
 def check_sentences(report: Report, spec: QuestionSpec, kb: Knowledge, papers: dict[str, Paper]) -> list[str]:
+    from bedrock.litreview.report.layout import load_layout
     from bedrock.litreview.stages.s7_write import paper_label  # the labels the writer's guard used
 
     by_id = {u.id: u for u in report.evidence}
     by_short = {short: by_id[uid] for uid, short in report.short_ids.items() if uid in by_id}
     labels = {pid: paper_label(p) for pid, p in papers.items()}
     vocab = sorted({v for u in report.evidence for v in (u.target_raw, u.intervention or "", u.target) if v})
-    guard = CitationGuard(spec, kb, by_short, paper_labels=labels, vocabulary=vocab)
+    # A per-target subsection's id is "spec_id:target_name" (see
+    # `write_report`); `findings` is a property of the section in
+    # report.yaml, so it is looked up by the part before the colon. Two guards
+    # - one per `findings` value - so this re-check applies exactly the rule
+    # the writer applied to that same section, never a looser or stricter one.
+    findings_by_id = {s.id: s.findings for s in load_layout(spec.question_type)}
+    guards = {
+        findings: CitationGuard(spec, kb, by_short, paper_labels=labels, vocabulary=vocab, findings=findings)
+        for findings in (True, False)
+    }
     out = []
     for section_id, s in report.kept_sentences():
-        verdict = guard.check(s.text, s.citations)
+        findings = findings_by_id.get(section_id.split(":", 1)[0], True)
+        verdict = guards[findings].check(s.text, s.citations)
         if not verdict.kept:
             out.append(f"sentences: [{section_id}] {s.text[:80]!r}: {verdict.reason}")
     return out

@@ -262,3 +262,143 @@ def test_a_one_word_change_of_meaning_fails_the_fuzzy_match(sentence, before, af
     assert located.status == "failed"
     assert located.reason.startswith("meaning changed")
     assert locate_quote(sentence, source).status == "exact"
+
+
+# --- results reported as the paper's own, when they are someone else's --------
+
+from bedrock.litreview.extract.verify import other_work_reason  # noqa: E402
+
+# Verbatim, from evals/litreview/hand_audit/qwen_asthma.md "## S9": a
+# birth-cohort finding the paper quotes from its own Introduction, its
+# reference number stripped by Europe PMC down to the bracket that held it.
+S9_QUOTE = (
+    "In a birth cohort study, MAIT cell frequency at 1 year of age was associated with a decreased risk of "
+    "asthma by age 7, suggesting that increased MAIT cells early in life could be protective, potentially "
+    "reflecting immune programing to T helper 1 (Th1) responses []."
+)
+
+
+def test_the_asthma_s9_quote_is_dropped():
+    assert other_work_reason(S9_QUOTE, "results") is not None
+
+
+@pytest.mark.parametrize("quote", [
+    "In a birth cohort study, MAIT cell frequency at 1 year of age was associated with a decreased risk of "
+    "asthma by age 7 [].",
+    "MAIT cells may modulate asthmatic responses [12].",
+    "MAIT cells may modulate asthmatic responses [3, 4].",
+    "MAIT cells may modulate asthmatic responses [5-7].",
+    "MAIT cells may modulate asthmatic responses [, ].",
+    "MAIT cells may modulate asthmatic responses [–].",  # en dash: "[–]"
+])
+def test_stripped_reference_brackets_are_dropped(quote):
+    assert other_work_reason(quote, "results") is not None
+
+
+@pytest.mark.parametrize("quote", [
+    "IL-23 blockade reduced ear thickness in mice, consistent with earlier work (Smith et al., 2019).",
+    "IL-23 blockade reduced ear thickness in mice, consistent with earlier work (Smith and Jones 2019).",
+    "IL-23 blockade reduced ear thickness in mice, consistent with earlier work (Smith, 2019a).",
+])
+def test_author_year_citations_are_dropped(quote):
+    assert other_work_reason(quote, "results") is not None
+
+
+@pytest.mark.parametrize("quote", [
+    "Previous studies have shown that MAIT cells may modulate asthmatic responses.",
+    "A recent study found that cold exposure increases brown fat activity in mice.",
+    "Another study showed that IL-23 blockade reduces psoriasiform inflammation.",
+    "It has been reported that IL-17A drives keratinocyte proliferation in psoriasis.",
+    "Prior work has linked MAIT cell frequency to a decreased risk of asthma.",
+    "Earlier studies have linked MAIT cell frequency to a decreased risk of asthma.",
+])
+def test_a_reported_other_work_lead_in_is_dropped(quote):
+    assert other_work_reason(quote, "results") is not None
+
+
+def test_the_lead_in_only_matters_at_the_start_of_the_sentence():
+    """"has been shown to" is on the lead-in list, but a real result routinely
+    contains the words mid-sentence ("X has been shown to...") - only a quote
+    that opens with it is someone else's work."""
+    assert other_work_reason("IL-23 has been shown to drive psoriasis in treated mice.", "results") is None
+
+
+@pytest.mark.parametrize("quote", [
+    # A confidence interval: letters and a percent sign inside the brackets.
+    "The nirsevimab acceptance rate was 91.6% [95% CI 89.1-94.2%] in the treated cohort.",
+    # A figure or table reference: parentheses, not a stripped citation.
+    "Anti-IL-17A treatment reduced PASI scores compared with vehicle (Fig. 2A) in treated animals.",
+    "The full dose-response data are given in (Table 1) for the treated cohort.",
+    # A concentration, not a citation bracket: letters and a plus sign inside.
+    "Intracellular [Ca2+]i rose sharply within minutes of ionomycin treatment in the stimulated cells.",
+    # A sample size or a p-value: parentheses, and no capitalised name at all.
+    "Anti-IL-23 treatment did not significantly reduce ear thickening compared with vehicle control (n = 12).",
+    "Anti-IL-23 treatment did not significantly reduce ear thickening compared with vehicle control (p < 0.05).",
+    # An abbreviation in parentheses, not an author and year.
+    "Levels of the cytokine (IL-17A) were markedly elevated in lesional skin of the treated animals.",
+    # An ordinary result with no bracket, citation or lead-in at all.
+    "Anti-IL-23 antibody given before imiquimod challenge reduced ear thickness by 60% in treated mice.",
+])
+def test_findings_with_no_citation_marker_are_kept(quote):
+    assert other_work_reason(quote, "results") is None
+
+
+def test_a_section_the_parser_could_only_call_other_is_dropped():
+    """parsing/sections.py folds an Introduction or Background heading into
+    the canonical section "other" - there is no canonical "introduction" to
+    check for, so "other" is the real name of the rule the audit asked for."""
+    assert other_work_reason("A perfectly ordinary sentence with no bracket or lead-in at all here.", "other") \
+        == "other_work:section"
+
+
+def test_a_results_section_with_no_marker_is_not_dropped_by_section_alone():
+    assert other_work_reason("A perfectly ordinary sentence with no bracket or lead-in at all here.", "results") \
+        is None
+
+
+# --- a comparison to earlier work is not the same as reporting it -------------
+#
+# Found by running other_work_reason over 593 real evidence units from stored
+# qwen3:8b reports: two units (E257, E270) are the paper's own finding, with a
+# citation marker sitting inside a clause that only compares the result with
+# earlier work, not the finding itself. Both quotes below are verbatim from
+# those units. The four "must stay dropped" quotes are the audit's own
+# counter-examples: each opens as if it were the same shape, but is actually
+# summarising someone else's result, not fencing off a comparison next to the
+# paper's own.
+
+E257_QUOTE = (
+    "We also observed that the LPA 2 agonist GRI977143 was effective in suppressing allergic responses only "
+    "in treatment before antigen challenge, unlike the previously known negative regulation of dendritic "
+    "cell activation by LPA 2 [,"
+)
+
+E270_QUOTE = (
+    "Our findings of exacerbated allergic inflammation upon transfer of G36‐treated MAIT cells are "
+    "consistent with research demonstrating the role of GPER‐1 in regulating immune responses []."
+)
+
+
+@pytest.mark.parametrize("quote", [E257_QUOTE, E270_QUOTE])
+def test_a_comparison_clause_beside_the_papers_own_result_is_kept(quote):
+    assert other_work_reason(quote, "results") is None
+
+
+@pytest.mark.parametrize("quote", [
+    # "we demonstrated" is past-tense prior-work framing, not this paper
+    # reporting its own result now - deliberately not on the opener list.
+    "Furthermore, we demonstrated that AhR in type II alveolar epithelial (AT2) cells preserves autophagic "
+    "flux, preventing epithelial damage in the model [].",
+    # "In our studies we have found" reads like the opener list but is not on
+    # it: "we have found" (not "we found"), "our studies" (not "this study").
+    "In our studies we have found that steady levels of estrogen decreased type 2 inflammation in the "
+    "airway [].",
+    # A citation to someone else's study by name, with no own-work opener at all.
+    "For instance, a study by Hinks et al. [] observed increased AhR expression in bronchial epithelium.",
+    # "These findings" is not "Our findings" - a real difference: the sentence
+    # is summarising someone else's emerging data, not this paper's result.
+    "These findings align with emerging data demonstrating that environmental pollutants such as diesel "
+    "exhaust exacerbate airway hyperresponsiveness in asthma via AhR-dependent pathways [].",
+])
+def test_prior_work_framing_that_only_looks_like_the_papers_own_stays_dropped(quote):
+    assert other_work_reason(quote, "results") is not None

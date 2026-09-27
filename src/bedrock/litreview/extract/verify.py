@@ -274,6 +274,19 @@ def studied_in(text: str) -> dict[str, str]:
     return found
 
 
+# Words that name no people where they stand: the adjective "human", and a
+# word joined to the next by a hyphen ("adult-onset deletion", "maternal-fetal").
+_NOT_PEOPLE = re.compile(r"\bhuman\b|\b[^\W\d_]+-(?=[^\W\d_])", re.I)
+
+
+def people_named(text: str) -> str | None:
+    """The first word in `text` that says people were studied ("patients",
+    "participants", "children"), or None. `studied_in`'s human class, less
+    words that name no people where they stand: "human bronchial epithelial
+    cells" are cells, and "adult-onset Gpr75 deletion" was done in mice."""
+    return studied_in(_NOT_PEOPLE.sub(" ", text)).get("human")
+
+
 @lru_cache(maxsize=1)
 def entity_words() -> frozenset[str]:
     """Every one-word name in the knowledge table ("tnf", "semaglutide",
@@ -501,3 +514,736 @@ def verify_all(
             kept.append((finding, status))
 
     return kept, tally
+
+
+# --- results reported as the paper's own, when they are someone else's --------
+#
+# A verified quote is not necessarily this paper's own result. Europe PMC's
+# full text strips reference numbers out of the running text but leaves the
+# brackets that held them, so a sentence that cites earlier work through a
+# numbered reference still carries "[]", "[12]", "[3, 4]" or "[5-7]" right
+# where the reference used to be - almost always at the end of the sentence,
+# next to the full stop. Author-year citations ("(Smith et al., 2019)") are
+# left untouched altogether. A sentence that quotes one of these, or that
+# opens by saying in words that it is summarising someone else's work
+# ("Previous studies have shown ..."), is Introduction or Discussion prose
+# about another paper, not a finding of this one - however cleanly it reads
+# as a result and however well it verifies, because verification only checks
+# that the paper wrote the sentence, never who the sentence is about.
+#
+# This is exactly the asthma S9 case
+# (evals/litreview/hand_audit/qwen_asthma.md): a birth-cohort result quoted
+# from the paper's own Introduction, its reference bracket stripped to "[]",
+# reported as if this paper (a paper about MAIT cells and estrogen) had run
+# that birth cohort itself.
+#
+# Each pattern below is deliberately narrow, because a false drop here throws
+# away a real finding just as surely as a missed one lets a fabricated one
+# through:
+#
+# - the bracket pattern only matches brackets that hold nothing but digits,
+#   commas, dashes and spaces (or nothing at all) - a confidence interval
+#   ("[95% CI 1.2-3.4]"), a concentration ("[Ca2+]i") or an isotope label
+#   ("[3H]thymidine") always has a letter or a "%" inside, so none of those
+#   match;
+# - the author-year pattern requires a capitalised name followed by "et al.",
+#   "and <Name>" or a comma, and then a plausible year - so it does not fire
+#   on "(Fig. 2A)", "(Table 1)", "(n = 12)", "(p < 0.05)" or an abbreviation
+#   like "(IL-17A)", none of which is a name-plus-year;
+# - the trailing-superscript pattern only matches raised digits sitting right
+#   at the end of the sentence (before at most one closing punctuation mark) -
+#   a concentration written as "10^6 CFU/mL." has words after the superscript,
+#   so it is never mistaken for a reference mark;
+# - the lead-in phrases are matched only at the very start of the quote, since
+#   that is how a paper actually opens a sentence summarising other work, not
+#   a clause that can appear mid-sentence in a real result.
+#
+# The section check is here for the paper that behaves as its headings say:
+# `parsing/sections.py` folds any heading matching "introduction" or
+# "background" into the canonical section "other" (see its `_HEADING_MAP`),
+# so there is no canonical "introduction" section to check for - checking for
+# "other" is the real equivalent. But the S9 paper did not behave: its
+# Introduction had no "Results" heading above it, so the parser's fallback
+# rule (unlabelled body text becomes "results" when nothing else does) filed
+# it as "results" (`parsing/sections.py` `_Collector.result`). The section
+# check therefore does not catch S9 - only the sentence patterns above do -
+# but it is kept for the well-behaved paper where it works.
+
+# Digits, commas, dashes and spaces only (or nothing): what is left of a
+# numbered reference list once Europe PMC strips the numbers themselves.
+_CITATION_BRACKET = re.compile(r"\[[\d,\s\-‐‑‒–—―−]*\]")
+
+# A run of raised digits immediately at the end of the sentence: a reference
+# mark some extractions render this way instead of a bracket.
+_TRAILING_SUPERSCRIPT = re.compile(r"[¹²³⁰⁴-⁹]+[.,;:)\]]?\s*$")
+
+# "(Smith et al., 2019)", "(Smith and Jones 2019)", "(Smith, 2019a)": a
+# capitalised name, an optional co-author, and a four-digit year.
+_AUTHOR_YEAR = re.compile(
+    r"\([A-Z][A-Za-z\-]+(?:\s+(?:et\s+al\.?|and\s+[A-Z][A-Za-z\-]+))?,?\s*(?:19|20)\d{2}[a-z]?\)"
+)
+
+# How a paper's own Introduction or Discussion says "this is somebody else's
+# result", checked only at the start of the quote.
+_OTHER_WORK_LEAD_IN = re.compile(
+    r"^\s*(?:previous studies have shown|a recent study found|another study showed|"
+    r"it has been reported|has been shown to|prior work|earlier studies)\b",
+    re.I,
+)
+
+# The canonical section names a paper's text can carry are exactly
+# `parsing/sections.py` `CANONICAL`. Introduction and Background are not
+# among them - both fold into "other" - so "other" is the real name to check.
+_INTRO_LIKE_SECTIONS = frozenset({"other"})
+
+# A narrow exemption from the citation-marker check, added after running it
+# over 593 real evidence units from stored qwen3:8b reports turned up two of
+# this shape: E257 and E270 (see their tests) are the paper's *own* finding,
+# stated as such, with a citation bracket sitting inside a subordinate clause
+# that only compares the result with earlier work ("...unlike the previously
+# known...", "...are consistent with research demonstrating..."). The bracket
+# there belongs to the comparison, not to the finding.
+#
+# Both conditions below must hold, and neither is enough alone:
+#
+# - the quote must *open* by claiming the result as this paper's own, in the
+#   present tense of reporting it now ("We observed", "Our findings", "Here,
+#   we", "In this study, we"). Past-tense framing of a *prior* paper's own
+#   result reads the same on the surface but is not exempt - "we
+#   demonstrated", "we have found" and "In our studies" are deliberately left
+#   off this list, because the audit's counter-examples used exactly that
+#   framing to introduce a citation to someone else's data anyway (see the
+#   "must stay dropped" tests: AhR/AT2, estrogen, Hinks et al., "these
+#   findings align with");
+# - and every citation marker in the quote must come after some comparison
+#   connective ("unlike", "consistent with", "in line with", "in agreement
+#   with", "similar to", "as previously", "in contrast to", "as reported") -
+#   a marker before any connective is not fenced off from the paper's own
+#   claim, and is not exempted.
+_OWN_WORK_OPENER = re.compile(
+    r"^\s*(?:we\s+(?:also\s+)?(?:observed|found|show(?:ed)?|report)\b"
+    r"|our\s+(?:findings|results|data)\b"
+    r"|here,?\s+we\b"
+    r"|in\s+this\s+study,?\s+we\b)",
+    re.I,
+)
+_COMPARISON_CONNECTIVE = re.compile(
+    r"\b(?:unlike|consistent with|in line with|in agreement with|similar to|"
+    r"as previously|in contrast to|as reported)\b",
+    re.I,
+)
+
+
+def _markers(quote: str) -> list[re.Match[str]]:
+    return [*_CITATION_BRACKET.finditer(quote), *_AUTHOR_YEAR.finditer(quote), *_TRAILING_SUPERSCRIPT.finditer(quote)]
+
+
+def _fenced_by_comparison(quote: str, markers: list[re.Match[str]]) -> bool:
+    """Is every marker in `markers` preceded by a comparison connective, in a
+    quote that opens by claiming the result as this paper's own?"""
+    if not markers or not _OWN_WORK_OPENER.match(quote):
+        return False
+    connectives = [m.start() for m in _COMPARISON_CONNECTIVE.finditer(quote)]
+    if not connectives:
+        return False
+    earliest = min(connectives)
+    return all(m.start() > earliest for m in markers)
+
+
+def other_work_reason(quote: str, section: str) -> str | None:
+    """Why `quote` reports someone else's result rather than this paper's
+    own, or None if nothing here says it does.
+
+    Meant to run on the paper's own verified sentence (`Located.text`), right
+    after quote verification and before every check downstream of it - a
+    finding built on a borrowed result should never reach the entity check
+    or provenance, both of which would happily pass a true sentence about
+    the wrong paper.
+    """
+    if section in _INTRO_LIKE_SECTIONS:
+        return "other_work:section"
+    if _OTHER_WORK_LEAD_IN.match(quote):
+        return "other_work:lead_in"
+    markers = _markers(quote)
+    if markers and not _fenced_by_comparison(quote, markers):
+        return "other_work:citation_marker"
+    return None
+
+
+# --- sentences that report no result at all -----------------------------------
+#
+# A verified quote can be the paper's own words, about the paper's own work,
+# and still not be a finding: it says what the study *set out* to do, what it
+# *predicts*, what its results *might one day enable*, or what is still
+# *unknown*. A hand audit of three benchmark reports found each of these cited
+# as evidence (evals/litreview/hand_audit/):
+#
+#   asthma S32   "In this study, we investigated the role of the AhR in
+#                regulating allergen-induced ROS generation ..." - an aim,
+#                cited for "AhR regulates allergen-induced ROS generation".
+#   obesity S56  "... our findings highlight a therapeutic potential for
+#                obese/diabetic postmenopausal patients; cold exposure is
+#                therefore predicted to metabolically benefit those
+#                patients." - a prediction from mouse work, cited as
+#                prevention evidence.
+#   asthma S57   "Identifying key pathophysiological determinants in airway
+#                epithelium enables novel therapeutics to prevent asthma
+#                recurrence." - background, cited as a prevention finding.
+#   migraine S23 the *report sentence* was the methods one: "The study used
+#                a ... mouse model to investigate the effects of NF-kB
+#                inhibition." It claims nothing.
+#
+# `RESULT_WORDS` alone cannot catch these: S32 contains "induced", S57
+# "prevent", both result words used here to name a model or a hope.
+#
+# So the rule is scoped, the way the citation guard's `_null_only` scopes a
+# negation. Each cue below marks a *stretch* of the sentence as aim, method,
+# prediction or open question; that stretch is set aside, and the text is
+# "not a result" only when a cue matched and nothing left outside the
+# stretches reports a result. "To test this, we treated mice with X, which
+# reduced Y by 40%" is a finding: the aim stretch ends at the comma, and
+# "which reduced Y by 40%" is left over.
+#
+# How far a stretch reaches depends on the cue:
+#
+# - an aim or method cue ("we investigated", "to determine whether", "was
+#   designed to") reaches *forward* from the cue to the next clause break
+#   (`_CLAUSE_BREAK`: a comma, semicolon or colon, "which", "and", "but",
+#   "to show" ...), so whatever the sentence says before the cue, and after
+#   the break, is still read for a result;
+# - a prediction, potential or open-question cue ("is predicted to", "may
+#   offer", "remains unclear") covers its *whole clause*, back to the
+#   previous break too, since the thing predicted or unknown is its subject
+#   ("cold exposure is predicted to ..."). The breaks still bound it, so "X
+#   reduced Y and may offer a new therapy" keeps "X reduced Y".
+#
+# Deliberately absent: plain "may", "suggest", "indicate" and "could". "These
+# data suggest IL-23 drives psoriasis" follows a result as often as not, and
+# "X may be mediated by Y" is how results sections hedge. Only the fixed
+# phrases below, which state an aim or a hope rather than hedge a result,
+# are cues. Measured before this was switched on, on the three stored
+# qwen3:8b benchmark reports: 30 of 593 evidence units hit (every one an aim,
+# a method, a prediction or an open question on reading; 3 of them are also
+# someone else's work, which Stage 5 checks first), and 7 of 179 kept
+# sentences would now be dropped by the citation guard. Over all 23,787
+# abstract and results sentences of their papers, 276 hits contain a result
+# word somewhere; a sample of 60, and every hit with a past-tense result verb,
+# were read, and all but one used the word inside the aim ("to determine
+# whether the increased ..."). The one ("... suggests a potential dual-hit
+# mechanism") is why "potential" must be a noun below.
+# tests/litreview/test_not_a_result.py has the real cases, kept and dropped.
+
+# What a text that reports a result says. Verb and adjective forms only:
+# "exacerbation" names an asthma event, "exacerbated" reports one. Shared by
+# the citation guard (`report/guard.py`, check 6) and the rule below, so one
+# vocabulary decides what "reports a result" means everywhere.
+#
+# Grouped by what kind of result each word or phrase reports, because a flat
+# wall of words is hard to extend without breaking something else. A hand
+# re-audit of the 179 sentences kept across the three stored benchmark
+# reports (obesity, asthma, migraine) found real results this list missed,
+# one per group below; each was added and checked against every one of those
+# 179 sentences (and the 593 evidence units behind them) before being kept -
+# see tests/litreview/test_result_words.py for the verbatim cases, kept and
+# still dropped:
+#
+# - effect verbs: a treatment, a gene or a knockout did something to a
+#   measurement ("led to weight loss", "results in glucose intolerance",
+#   "potentiated", "normalized body weight", "reversed");
+# - comparisons: two groups were found to differ, or not to. Expression
+#   level is a comparison too ("highly expressed ... compared to",
+#   "overexpressed in") - deliberately not bare "expressed", which only says
+#   where a gene product exists, not what was found (PAR2 "is a G-protein
+#   coupled receptor expressed in meningeal neurons ..." reports nothing).
+#   "similar" is scoped to "similar between/among" (two arms or groups) for
+#   the same reason: bare "is similar in <population> to" is how a trial
+#   states its *aim* ("to confirm the hypothesis that the PK profile ... is
+#   similar in healthy Chinese individuals to that of healthy non-Asian
+#   individuals"; see test_not_a_result.py), not a result. "differences" is
+#   scoped to "no difference(s)" for a sharper reason: E212 of the obesity
+#   report (the MC4R "~0.6 kg/week" sentence, see test_qualifier.py's S6
+#   cases) restates a real group-mean-difference number whose next sentence
+#   says it "did not reach statistical significance" - a stored qualifier in
+#   today's data model, not a word in the quote itself. Reading bare
+#   "differences" as a result would move that sentence from check 6 (no
+#   result cited) to check 8 (drops the qualifier), which only fires when
+#   the qualifier was actually captured - not guaranteed for every unit, and
+#   not for this one in the stored baseline report. Scoping to "no
+#   difference(s)" keeps check 6 the one that catches it, as it does today;
+# - null results: the paper looked and found nothing. Negative results are
+#   first-class here, not a weaker case than a positive one - "no
+#   differences ... indicating that X does not directly regulate Y" reports
+#   a null result exactly as much as "X increased Y" reports a positive one.
+#   "No signal of", "no evidence of" and "no cases of" state an absence just
+#   as plainly ("No signal of drug-induced liver injury due to rimegepant
+#   was identified" - migraine's safety finding, not a non-result);
+# - safety/PK results: how a trial's safety or pharmacokinetic data came out
+#   ("the most frequent AEs were ...", "elevations ... were observed").
+#
+# "block(ed|s|ing)" was added to the effect verbs after masking a
+# model-naming adjective (`_NAMED_MODEL`, below) turned up a real result with
+# no other result word left once the mask ran: "... fully blocked
+# CGRP-induced cutaneous allodynia" (migraine's olcegepant/CGRP-R quote)
+# reports what olcegepant did ("blocked") once "CGRP-induced" - the model,
+# not the result - is masked out.
+RESULT_WORDS = re.compile(
+    r"\b(?:"
+    # -- effect verbs ---------------------------------------------------------
+    r"reduc(?:ed|es|ing|tion|tions)|decreas(?:ed|es|ing)|lower(?:ed|ing)?|attenuat(?:ed|es|ing)|"
+    r"ameliorat(?:ed|es)|alleviat(?:ed|es)|diminish(?:ed|es)|abolish(?:ed|es)|abrogat(?:ed|es)|"
+    r"mitigat(?:ed|es)|improv(?:ed|es|ing|ement)|prevent(?:ed|s|ing)|protect(?:ed|s|ive|ion)|"
+    r"resolv(?:ed|es)|increas(?:ed|es|ing)|elevat(?:ed|es|ing|ion|ions)|worsen(?:ed|s|ing)|aggravat(?:ed|es)|"
+    r"exacerbat(?:ed|es|ing)|promot(?:ed|es)|accelerat(?:ed|es)|augment(?:ed|s)|amplif(?:ied|ies)|"
+    r"suppress(?:ed|es)|inhibit(?:ed|s)|induc(?:ed|es)|enhanc(?:ed|es)|restor(?:ed|es)|rescu(?:ed|es)|"
+    r"block(?:ed|s|ing)?|"
+    r"potentiat\w*|exaggerat\w*|normali[sz]\w*|revers\w*|led\s+to|result(?:s|ed|ing)?\s+in|"
+    r"higher|greater|fewer|less|more|better|worse|significant(?:ly)?|associated|correlat\w*|"
+    r"efficac\w*|effective|benefit\w*|remission|response|achieved|rose|fell|declined|lost|gained|"
+    r"upregulat\w*|downregulat\w*|up-regulat\w*|down-regulat\w*|"
+    # -- comparisons -----------------------------------------------------------
+    r"no\s+differences?|"
+    r"(?:highly|more|less|over|under)[- ]?express\w*|"
+    r"express(?:ion|ed)\s+(?:was|were)\s+(?:increased|decreased|elevated|reduced)|"
+    r"similar\s+(?:between|among)|"
+    # -- null results ------------------------------------------------------------
+    r"no effect|did not|failed|no\s+(?:signal|evidence|cases?)\s+of|"
+    # -- safety / PK results --------------------------------------------------
+    r"most\s+(?:frequent|common)|"
+    # Base forms ("can reduce", "exacerbate"), change nouns ("no increase"),
+    # and how safety results are written ("adverse events were infrequent").
+    r"reduce|decrease|increase|lower|improve|prevent|protect|worsen|exacerbate|aggravate|attenuate|"
+    r"alleviate|relieve[ds]?|suppress|inhibit|enhance|promote|restore|induce|change[ds]?|difference|"
+    r"adverse|tolerat\w*|infrequent|mild|unchanged)\b|%|\bp\s*[<=>]|\bfold\b", re.I)
+
+
+# A model or stimulus named after what provokes or receives it -
+# "allergen-induced", "(NTG)-induced", "HDM-induced", "diet-induced",
+# "imiquimod-treated", "obesity-associated" - names the experiment, not a
+# result. Shared by `reports_result` and, through it, by the leftover text in
+# `not_a_result_reason` below, so one rule decides this everywhere: masking
+# only the compound adjective, never a real verb use ("X induced Y",
+# "treated with X reduced Y"), because the lookbehind requires a hyphen stuck
+# to the word before it. The hyphen itself is read the way `_PUNCT` above
+# does: a paper's own text carries the same non-ASCII hyphens PDF extraction
+# leaves behind ("drug‐induced", not "drug-induced"), and this runs on
+# that raw text, never on `normalize`'s output.
+_NAMED_MODEL = re.compile(
+    r"(?<=[\w)\]])[-‐‑‒–—―−](?:induced|treated|challenged|exposed|mediated|driven|associated)\b", re.I)
+
+
+def reports_result(text: str) -> bool:
+    """Does this text use any word a reported result is written with?
+
+    A wide net on purpose: it is used to decide that a text reports *no*
+    result, and a false "no" throws a real finding away. A model or
+    stimulus named after what provokes or receives it is masked first
+    (`_NAMED_MODEL`), or "Diet-induced obesity (DIO) mice ... were infused
+    with a NOX blocker" - a methods sentence - would count as reporting a
+    result just because "induced" is also how a real result is written ("X
+    induced Y"). A real result keeps working: "EN4 effectively suppressed
+    CRE-induced c-Myc expression" still reports one, because "suppressed"
+    sits outside the masked span."""
+    return bool(RESULT_WORDS.search(_NAMED_MODEL.sub(" ", text)))
+
+
+# Aim and method cues: what the study set out to do, or how. Each reaches
+# forward to the next clause break.
+_AIM_CUE = re.compile(
+    r"\b(?:"
+    r"we\s+(?:first\s+|further\s+|then\s+|also\s+|therefore\s+|next\s+)?"
+    r"(?:investigated|aimed|sought\s+to|hypothesi[sz]ed|hypothesi[sz]e|examined|assessed|evaluated|explored)"
+    r"|(?:the|our|this)\s+(?:main\s+|primary\s+)?(?:aim|objective|purpose|goal)s?\s+of\s+"
+    r"(?:this|the\s+present|the\s+current|our)\s+(?:study|work|trial|experiment)s?"
+    r"|(?:study|trial|experiment)s?\s+(?:was|were|is)\s+designed\s+to"
+    r"|(?:was|were)\s+(?:investigated|examined|assessed|evaluated|explored)"
+    r"|(?:the|this|our)\s+study\s+used"
+    r"|to\s+(?:further\s+|better\s+)?(?:investigate|examine|determine|assess|evaluate|explore|clarify|test)\s+"
+    r"(?:whether|if|how|the)"
+    r")\b",
+    re.I,
+)
+
+# Prediction, potential and open-question cues: a hope or a gap, not a
+# result. Each covers its whole clause.
+_HOPE_CUE = re.compile(
+    r"\b(?:"
+    r"(?:is|are)\s+(?:therefore\s+|thus\s+)?predicted\s+to"
+    r"|may\s+offer"
+    # "potential" as the thing highlighted ("a therapeutic potential for",
+    # "the potential of", "the potential role of"), not as an adjective: "the
+    # causal link ... suggests a potential dual-hit mechanism" reports a link.
+    r"|(?:highlight|suggest|underscore)(?:s|ed|ing)?\s+(?:a|the)\s+(?:therapeutic\s+)?potential"
+    r"\s+(?:for|of|in|to|role|use|value|benefit)"
+    r"|enables?\s+novel\s+therapeutics"
+    r"|warrants?\s+further\s+(?:investigation|study|studies|research)"
+    r"|could\s+be\s+a\s+(?:potential|promising)\s+(?:therapeutic\s+)?(?:target|strategy)"
+    r"|remain(?:s|ed)?\s+(?:largely\s+|still\s+|poorly\s+)?(?:unknown|unclear|elusive|understood)"
+    r")\b",
+    re.I,
+)
+
+# Where a cued stretch ends: a comma, semicolon or colon; "which"; a
+# conjunction ("and", "but", "whereas", "thus"), since what follows it can be
+# the result ("IL-6 was examined and was significantly elevated", "X reduced
+# Y and may offer a new therapy"); or "to show"/"showing", which introduce
+# what an experiment found ("The study used knockout mice to show that ...").
+_CLAUSE_BREAK = re.compile(
+    r"[,;:]|\s(?=(?:which|and|but|whereas|while|thus|hence|so)\b)"
+    r"|\s(?=(?:to\s+(?:show|demonstrate|reveal|confirm)|showing|demonstrating|revealing)\b)",
+    re.I,
+)
+
+# Hypothesis cues: a guess stated as a guess, not as what happened - a
+# structured abstract's HYPOTHESIS part ("cold exposure might induce enhanced
+# browning/beiging and improve glucose metabolism.", a migraine benchmark
+# case; see tests/litreview/test_not_a_result.py). Each covers its whole
+# clause, like a hope cue.
+#
+# "might <verb>" is read unrestricted: a results section essentially never
+# hedges a genuine finding with "might" (that is what "may" and "could" are
+# for), so any verb after it is read as a guess. "may <verb>" is not given
+# the same latitude, because "may" hedges a real result too ("which may
+# reflect a ceiling effect" must stay a finding) - it is scoped to the same
+# result-shaped verbs RESULT_WORDS already lists, where reading the hedge as
+# a guess costs nothing even on the rare sentence where that reading is
+# wrong. "could induce", "we hypothesize(d) that" and "it is conceivable
+# that" are literal phrases for the same reason.
+_HYPOTHESIS_CUE = re.compile(
+    r"\bwe\s+hypothesi[sz]ed?\s+that\b"
+    r"|\bit\s+is\s+conceivable\s+that\b"
+    r"|\bcould\s+induce\b"
+    r"|\bmight\s+\w+\b"
+    r"|\bmay\s+(?:induce|improve|benefit|enhance|promote|reduce|prevent|protect|"
+    r"ameliorate|attenuate|exacerbate|alleviate|restore|suppress|inhibit)\b",
+    re.I,
+)
+
+# Where a hypothesis clause ends: the same breaks as `_CLAUSE_BREAK`, minus a
+# bare "and" - which a hypothesis's own coordinated verbs use, sharing one
+# modal ("... might induce X and improve Y" is one guess about two things),
+# not a new clause with a result of its own.
+_HYPOTHESIS_BREAK = re.compile(
+    r"[,;:]|\s(?=(?:which|but|whereas|while|thus|hence|so)\b)"
+    r"|\s(?=(?:to\s+(?:show|demonstrate|reveal|confirm)|showing|demonstrating|revealing)\b)",
+    re.I,
+)
+
+
+def _stance_spans(sentence: str) -> tuple[list[tuple[int, int]], str | None]:
+    """The stretches of one sentence that state an aim, method, prediction,
+    hypothesis or open question, and the kind of the first cue found ("aim",
+    "hope" or "hypothesis")."""
+    spans: list[tuple[int, int]] = []
+    kind = None
+    for m in _AIM_CUE.finditer(sentence):
+        end = next((b.start() for b in _CLAUSE_BREAK.finditer(sentence, m.end())), len(sentence))
+        spans.append((m.start(), end))
+        kind = kind or "aim"
+    for m in _HOPE_CUE.finditer(sentence):
+        start = max((b.end() for b in _CLAUSE_BREAK.finditer(sentence, 0, m.start())), default=0)
+        end = next((b.start() for b in _CLAUSE_BREAK.finditer(sentence, m.end())), len(sentence))
+        spans.append((start, end))
+        kind = kind or "hope"
+    for m in _HYPOTHESIS_CUE.finditer(sentence):
+        start = max((b.end() for b in _HYPOTHESIS_BREAK.finditer(sentence, 0, m.start())), default=0)
+        end = next((b.start() for b in _HYPOTHESIS_BREAK.finditer(sentence, m.end())), len(sentence))
+        spans.append((start, end))
+        kind = kind or "hypothesis"
+    return spans, kind
+
+
+def not_a_result_reason(text: str) -> str | None:
+    """Why `text` states no result - it only says what a study set out to do,
+    how, what it predicts, hypothesises or hopes for, or what is unknown - or
+    None.
+
+    "not_a_result:aim", "not_a_result:hope" or "not_a_result:hypothesis",
+    after the first cue that matched. None whenever no cue matches, and
+    whenever anything outside the cued stretches, in any sentence of `text`,
+    reports a result: a quote that opens with its aim and then gives the
+    result is a finding. `reports_result` does its own masking of a
+    model-naming adjective ("diet-induced"), so that masking happens here
+    too, on exactly the same rule.
+
+    Run on the paper's own verified sentence in Stage 5 (after
+    `other_work_reason`), and by the citation guard on report sentences and
+    on the quotes they cite.
+    """
+    kind = None
+    left: list[str] = []
+    for sentence in split_sentences(text):
+        spans, found = _stance_spans(sentence)
+        kind = kind or found
+        keep, last = [], 0
+        for start, end in sorted(spans):
+            if start > last:
+                keep.append(sentence[last:start])
+            last = max(last, end)
+        keep.append(sentence[last:])
+        left.append(" ".join(keep))
+    if kind is None:
+        return None
+    if reports_result(" ".join(left)):
+        return None
+    return f"not_a_result:{kind}"
+
+
+# --- a conclusion sentence ------------------------------------------------------
+#
+# Authors' conclusions generalise, and the most common way they do is by who
+# was studied. The asthma hand audit (S3, evals/litreview/hand_audit/
+# qwen_asthma.md) found a report sentence copying an abstract's conclusion,
+# "MUC1-CT reduces NLRP3 inflammasome-mediated pyroptosis ... thereby
+# attenuating neutrophil airway inflammation in patients with asthma", when
+# the mechanism was shown in a cell line and in mice. The sentence is the
+# paper's own and verifies; what it overstates is its subjects.
+#
+# This block only says which sentences are conclusions. What is done about
+# one that names people is `extract/provenance.py` `methods_subjects`: its
+# people are checked against the paper's Methods. That catches the plain
+# case - a conclusion naming people in a paper whose Methods studied none.
+# It does not reach S3 itself: that paper also recruited patients (for
+# induced sputum), and which of a paper's experiments backs which clause of
+# its conclusion is beyond a word rule.
+#
+# A sentence is a conclusion when
+#
+# - it opens with a concluding phrase ("In conclusion", "Taken together",
+#   "Collectively", "Overall,", "Our findings demonstrate", "This study
+#   revealed", "These data suggest"). Not a bare "The results show": in a
+#   Results section that opens a result, not a conclusion. And "Overall",
+#   "Together" and "Altogether" only with a comma: "Overall survival was ..."
+#   is a result;
+# - in an abstract, it sits under a "Conclusion(s)" or "Interpretation"
+#   label ("CONCLUSIONS:", or glued on as Europe PMC often leaves it:
+#   "...p<0.001.ConclusionDPL combined with BUD ..."); or, in an abstract with
+#   no labels, a concluding phrase opened an earlier sentence of its
+#   paragraph. That is S3: "This study revealed that MUC1 downregulation ...
+#   MUC1-CT reduces ...". In a labelled abstract the label decides, so a
+#   "Our results show" under RESULTS does not make the rest of that part a
+#   conclusion.
+
+CONCLUSION_CUE = re.compile(
+    r"^\W*(?:"
+    r"in\s+(?:summary|conclusion|sum|short)\b"
+    r"|to\s+(?:conclude|summari[sz]e)\b"
+    r"|taken\s+together\b|collectively\b"
+    r"|(?:overall|together|altogether|conclusively)\s*,"
+    r"|(?:our|these|this|the\s+present|the\s+current|present)\s+(?:present\s+|current\s+|combined\s+)?"
+    r"(?:findings|results|data|study|work|observations|analyses|experiments)\s+(?:\w+\s+){0,2}?"
+    r"(?:show|suggest|indicat|demonstrat|reveal|support|highlight|provid|confirm|establish|impl|identif|"
+    r"uncover|point)\w*"
+    r")",
+    re.I,
+)
+
+# Structured-abstract labels, in the three forms the corpora show: "LABEL:"
+# (any case), glued to the previous sentence and the next word
+# ("...unclear.MethodsKidney samples ...", Title case only, so ordinary
+# prose never matches), and alone on a line.
+_LABELS = (r"Background|Introduction|Objectives?|Aims?|Purpose|Materials\s+and\s+methods|Patients\s+and\s+methods|"
+           r"Subjects\s+and\s+methods|Methods?|Design|Participants|Results|Findings|Conclusions?|Interpretation")
+ABSTRACT_LABEL = re.compile(
+    r"\b(?P<a>" + _LABELS + r")\s*:"
+    r"|(?:(?<=[a-z0-9.%)\]\s])|^)(?-i:(?P<b>" + _LABELS + r"))(?-i:(?=[A-Z]))"
+    r"|(?:^|(?<=\n))[ \t]*(?P<c>" + _LABELS + r")[ \t]*(?=\n|$)",
+    re.I,
+)
+_CONCLUSION_LABEL = re.compile(r"^(?:conclusions?|interpretation)$", re.I)
+_METHODS_LABEL = re.compile(r"^(?:(?:materials|patients|subjects)\s+and\s+methods|methods?|design|participants)$", re.I)
+
+
+def abstract_labels(abstract: str) -> list[tuple[str, int, int]]:
+    """(label, start, end) of each structured-abstract label, in order."""
+    out = []
+    for m in ABSTRACT_LABEL.finditer(abstract or ""):
+        label = m.group("a") or m.group("b") or m.group("c")
+        out.append((re.sub(r"\s+", " ", label), m.start(), m.end()))
+    return out
+
+
+def abstract_methods(abstract: str) -> list[tuple[int, int]]:
+    """Where a structured abstract's Methods part is: (start, end) of the
+    text after each Methods-type label, up to the next label. Empty for an
+    abstract with no such label - an unlabelled paragraph is not guessed at."""
+    labels = abstract_labels(abstract)
+    spans = []
+    for i, (label, _, end) in enumerate(labels):
+        if _METHODS_LABEL.match(label):
+            stop = labels[i + 1][1] if i + 1 < len(labels) else len(abstract)
+            spans.append((end, stop))
+    return spans
+
+
+def conclusion_reason(section_text: str, start: int, end: int, section: str) -> str | None:
+    """Why the sentence at `section_text[start:end]` is the authors'
+    conclusion - "conclusion:cue", "conclusion:label" or
+    "conclusion:paragraph" - or None. See the block comment above."""
+    quote = section_text[start:end]
+    if any(CONCLUSION_CUE.search(s) for s in split_sentences(quote)):
+        return "conclusion:cue"
+    if section != "abstract":
+        return None
+    labels = [lab for lab in abstract_labels(section_text) if lab[2] <= start]
+    if labels:
+        return "conclusion:label" if _CONCLUSION_LABEL.match(labels[-1][0]) else None
+    paragraph = section_text.rfind("\n\n", 0, start)
+    head = section_text[paragraph + 2 if paragraph >= 0 else 0 : start]
+    if any(CONCLUSION_CUE.search(s) for s in split_sentences(head)):
+        return "conclusion:paragraph"
+    return None
+
+
+# --- a qualifier in the paper's next sentence ---------------------------------
+#
+# Widening shows the whole sentence a quote sits in, so a qualifier inside it
+# ("but not in controls", "p = 0.099") is on the page. A qualifier in the
+# *next* sentence was not: the obesity hand audit (S6,
+# evals/litreview/hand_audit/qwen_obesity.md) found a report sentence
+# restating
+#
+#     "In the MC4R mutation carriers, placebo subtracted group mean
+#      differences in weight loss (dose 0.01 mg/kg/24 h) of ~0.6 kg/week were
+#      observed ()."
+#
+# faithfully, while the paper's very next sentence reads "Although this result
+# did not reach statistical significance (p = 0.09) when compared to placebo,
+# weight loss from baseline was significantly reduced (p < 0.0001)." Neither
+# the writer nor the guard ever saw it.
+#
+# So when the sentence right after a quote - same section, same paragraph -
+# qualifies it, Stage 5 stores it beside the quote (`EvidenceUnit.
+# qualifier_quote`), anchored like the context sentence. It is shown to the
+# reader, given to the writer and citable, and the citation guard drops a
+# sentence that states the quote's result while leaving out a "not
+# significant" the qualifier says about it (`report/guard.py`, check 8).
+#
+# Everything that decides this is in this block, and it is deliberately
+# narrow. What counts as a qualifier:
+#
+# - it opens with a word that concedes or contrasts: "Although", "However",
+#   "But", "Nevertheless", "Nonetheless", "In contrast". Measured on the three
+#   stored reports this also stores some contrasts about something else ("In
+#   contrast, SCN5A was not significantly changed"). That costs only a line of
+#   the paper's own text shown beside the quote; the guard's drop rule below
+#   never fires on one, because it also needs the sentence to point back;
+# - it says "this/these/the <difference|effect|result|trend|change> was/did
+#   not ...";
+# - it says the result was not significant AND points back at it in its first
+#   clause: "Because the findings for the first secondary efficacy endpoint
+#   were not statistically significant, ..." (migraine S9).
+#
+# A sentence that merely contains "not significant" is not a qualifier: "IL-6
+# was not significantly different" after a TNF result is a separate finding.
+
+_QUALIFIER_OPENER = re.compile(r"^(?:although|however|but|nevertheless|nonetheless|in\s+contrast)\b", re.I)
+# What a sentence calls the result it points back at.
+_RESULT_NOUN = (r"(?:result|difference|effect|finding|change|trend|increase|decrease|reduction|improvement|"
+                r"association|correlation|observation|response|benefit)s?")
+# Words that may open a pointing-back sentence before its subject; stripped
+# before the sentence is split into clauses.
+_LEAD_IN = re.compile(r"^(?:although|though|however|but|nevertheless|nonetheless|in\s+contrast|because|since|"
+                      r"while)\b,?\s*", re.I)
+# "Although this result ...", "Because the findings for the first secondary
+# efficacy endpoint ...": the sentence's subject is the result just reported.
+_POINTS_BACK = re.compile(
+    r"^(?:(?:although|though|however|but|nevertheless|nonetheless|in\s+contrast|because|since|while),?\s+)?"
+    r"(?:this|these|that|such|the)\s+(?:[\w-]+\s+)?" + _RESULT_NOUN + r"\b", re.I)
+_THIS_WAS_NOT = re.compile(
+    r"^(?:this|these|the)\s+(?:difference|effect|result|trend|change)s?\s+(?:was|were|did)\s+not\b", re.I)
+# Saying a result was not statistically significant. "p = 0.05" and above, or
+# "p > ...", count; "p < 0.05" does not.
+NOT_SIGNIFICANT = re.compile(
+    r"\bdid\s+not\s+reach\s+(?:statistical\s+)?significance|\bnot\s+(?:statistically\s+)?significant|"
+    r"\bnon-?significant|\bn\.s\.|\bp\s*=\s*0?\.(?:0[5-9]|[1-9])|\bp\s*>\s*0?\.\d", re.I)
+# What a report sentence says when it has kept that limit: the words above,
+# or a hedge that only fits a non-significant result ("numerically favored",
+# "a trend towards").
+KEEPS_NOT_SIGNIFICANT = re.compile(
+    NOT_SIGNIFICANT.pattern + r"|\binsignificant|\bdid\s+not\s+achieve|\bfailed\s+to\s+reach|\bnumerically|"
+    r"\btrend(?:s|ed)?\b|\btended\b|\bmarginal(?:ly)?\b|\bno\s+(?:statistically\s+)?significant", re.I)
+# Words that carry no subject of their own when comparing a qualifier's
+# subject with the quote's words.
+_FILLER = frozenset({"this", "these", "that", "those", "such", "were", "when", "than", "then", "from", "with",
+                     "also", "into", "over", "after", "before", "their", "there", "which", "while", "both",
+                     "each", "only", "compared", "versus", "group", "groups", "because", "since", "although",
+                     "though", "however", "nevertheless", "nonetheless", "contrast"})
+_CONTENT_WORD = re.compile(r"[^\W\d_][\w-]*")
+
+
+def content_words(text: str) -> set[str]:
+    """The words of `text` that say what it is about: four letters or more,
+    or a name with a digit in it ("IL-6", "MC4R"); plural "s" dropped, filler
+    and result words ("significantly", "reduced") left out."""
+    words = (m.group(0).lower().strip("-") for m in _CONTENT_WORD.finditer(text))
+    return {w[:-1] if w.endswith("s") else w for w in words
+            if (len(w) >= 4 or any(c.isdigit() for c in w)) and w not in _FILLER and not RESULT_WORDS.fullmatch(w)}
+
+
+def _first_clause(sentence: str) -> tuple[str, str]:
+    """(first clause, rest): split at the first comma, semicolon, "but" or
+    "whereas" outside brackets, after any leading "Although"/"However,".
+    "Although this result did not reach statistical significance (p = 0.09)
+    when compared to placebo" | "weight loss from baseline was significantly
+    reduced (p < 0.0001)." """
+    lead = _LEAD_IN.match(sentence)
+    depth = 0
+    for i in range(lead.end() if lead else 0, len(sentence)):
+        c = sentence[i]
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and (c in ",;" or re.match(r"\s(?:but|whereas)\b", sentence[i:], re.I)):
+            return sentence[:i], sentence[i:].lstrip(" ,;")
+    return sentence, ""
+
+
+def not_significant_clause(qualifier: str, quote: str) -> tuple[str, str] | None:
+    """When `qualifier` says the result in `quote` was not significant: its
+    (not-significant clause, the rest of the sentence). Otherwise None.
+
+    Three things must hold. The sentence points back at the quote's result
+    ("this result", "the findings for ..."); its first clause says "not
+    significant"; and any subject it names in that clause is the quote's
+    ("the findings for the first secondary efficacy endpoint" beside a quote
+    about that endpoint), so "The reduction in IL-6 was not significant" is
+    not read as a verdict on a TNF quote before it.
+    """
+    back = _POINTS_BACK.match(qualifier) or _THIS_WAS_NOT.match(qualifier)
+    if back is None:
+        return None
+    first, rest = _first_clause(qualifier)
+    verdict = NOT_SIGNIFICANT.search(first)
+    if verdict is None:
+        return None
+    subject = content_words(qualifier[back.end():verdict.start()])
+    if not subject <= content_words(quote):
+        return None
+    return first, rest
+
+
+def is_qualifier(sentence: str, quote: str) -> bool:
+    """Does `sentence`, the one right after `quote`, qualify it? See above."""
+    return bool(_QUALIFIER_OPENER.match(sentence) or _THIS_WAS_NOT.match(sentence)
+                or not_significant_clause(sentence, quote))
+
+
+def qualifier_after(text: str, start: int, end: int) -> Located | None:
+    """The sentence right after `text[start:end]`, when it qualifies it.
+
+    Same section by construction (`text` is one section); same paragraph,
+    because a blank line between them ends the search: a new paragraph is
+    about something else. The sentence is found with the same boundaries
+    widening uses and returned at its offsets in `text`, like a quote.
+    """
+    k = end
+    while k < len(text) and text[k].isspace():
+        k += 1
+    if k >= len(text) or re.search(r"\n\s*\n", text[end:k]):
+        return None
+    a, b = sentence_bounds(text, k, k + 1)
+    sentence = text[a:b]
+    if a < end or not sentence or not is_qualifier(sentence, text[start:end]):
+        return None
+    return Located("exact", a, b, sentence)

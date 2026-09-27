@@ -7,6 +7,13 @@ Two kinds of section (layout in config/report.yaml):
   written     one model call, from one slice of evidence, returning sentences
               that each carry the evidence ids they rely on. Every sentence
               then passes the citation guard (report/guard.py) or is dropped.
+              A sentence that repeats one already kept earlier in the report
+              is dropped too, even though it came from a different section's
+              model call — see `already_kept` in `write_section_text`.
+              With `entailment_check` on (off by default), a sentence the
+              guard kept is then read by the local model against its cited
+              text, and dropped if it is not supported
+              (report/entailment.py).
   generated   written by code: the most relevant source, the gaps, the
               evidence plan, the relevance ranking, the evidence table, the
               method and the excluded papers. These are facts about the run,
@@ -44,7 +51,8 @@ from bedrock.litreview.models import (
     ReportSection,
     Sentence,
 )
-from bedrock.litreview.report.guard import CitationGuard
+from bedrock.litreview.report.entailment import report_stats
+from bedrock.litreview.report.guard import CitationGuard, GuardResult
 from bedrock.litreview.report.layout import SectionSpec, load_layout
 from bedrock.litreview.stages.s6_score import TARGET_ORDER_RULE, best_units
 
@@ -121,6 +129,9 @@ class WriteContext:
     units_per_target: int = 5
     max_units_per_section: int = 14
     sentence_stats: Counter = field(default_factory=Counter)
+    entailment: object = None
+    """A `report.entailment.EntailmentCheck`, or None (the default): the
+    optional model check run on sentences the guard kept. See that module."""
 
     def __post_init__(self) -> None:
         self.rank_of = {r.paper_id: r.rank for r in self.ranked}
@@ -144,7 +155,19 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
     No model-written text is offered as a source of wording: the old "Result"
     line was the extraction model's summary, and sentences built from it
     carried details no quote contained. The context sentence, when there is
-    one, is the paper's own Methods or Results sentence naming the subjects."""
+    one, is the paper's own Methods or Results sentence naming the subjects.
+    The qualifier, when there is one, is the paper's very next sentence and
+    limits the quote ("Although this result did not reach statistical
+    significance ..."). Its label says so, because the prompt file only
+    explains Quote and Context, and the citation guard drops a sentence that
+    leaves out a "not significant" it states. The naming sentence, when there
+    is one, is the paper's sentence that names the target or agent the quote
+    does not ("about:" would otherwise be a name the writer cannot see in any
+    quote); its label says the quote's result stays with what the quote
+    names, which the citation guard enforces (check 9). A finding whose
+    quote is a conclusion naming people the paper's Methods never studied
+    (`methods_subjects`) says so, since the quote's own "patients" would
+    otherwise invite the writer to repeat it, and the guard drops that."""
     lines = []
     for u in units:
         sid = ctx.summary.short_ids[u.id]
@@ -153,6 +176,15 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
         who = (f"studied in {_WHO.get(u.evidence_type, u.evidence_type)} ({u.species_raw}{n})"
                if u.species_raw else "who was studied: not stated in the quoted text")
         context = f'\n    Context: "{u.context_quote}"' if u.context_quote else ""
+        if u.qualifier_quote:
+            context += ("\n    Qualifier (the paper's next sentence; it may limit the quote, e.g. \"not "
+                        f'significant\" - keep any such limit when you use the quote): "{u.qualifier_quote}"')
+        if u.naming_quote:
+            context += ("\n    Names (the paper's sentence that names what the quote does not; the quote's result "
+                        f'belongs to what the quote itself names - name that too): "{u.naming_quote}"')
+        if u.methods_subjects:
+            context += (f"\n    Subjects: the quote is the authors' conclusion; the paper's Methods studied only "
+                        f"{u.methods_subjects}, not people - do not say patients or people for it")
         lines.append(
             f"[{sid}] about: {u.target_raw or u.target}{drug} · {who}\n"
             f"    Paper: {ctx.labels.get(u.paper_id, u.paper_id)}\n"
@@ -162,9 +194,26 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
 
 
 def write_section_text(
-    ctx: WriteContext, spec: SectionSpec, units: list[EvidenceUnit], subsection: str = ""
+    ctx: WriteContext,
+    spec: SectionSpec,
+    units: list[EvidenceUnit],
+    subsection: str = "",
+    already_kept: list[set[str]] | None = None,
 ) -> tuple[list[Sentence], str | None]:
-    """One model call, then the guard. Returns sentences and an optional note."""
+    """One model call, then the guard. Returns sentences and an optional note.
+
+    `already_kept` is the content words of every sentence already kept
+    earlier in this same report (from an earlier section, or an earlier
+    per-target subsection). Each writing call only ever sees its own slice of
+    evidence, so the same finding can be the best evidence for more than one
+    section — the "answer" section and a target's own subsection, say — and
+    the model then drafts the same sentence twice. `already_kept` is threaded
+    through every call by `write_report`, one shared list, so a sentence a
+    later section drafts is checked against it with the exact same repeat
+    test used within one call, and dropped the same way: silently, and
+    without ever becoming a shown or counted "dropped" sentence — a repeat
+    states nothing new, it is not a claim that failed a check.
+    """
     if not units:
         return [], "No evidence for this section in the papers read."
     if ctx.client is None or not ctx.model:
@@ -188,13 +237,22 @@ def write_section_text(
         log.warning("writing failed for section %s: %s", spec.id, exc)
         return [], "Not written: the model call failed."
 
-    guard = CitationGuard(ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary)
+    guard = CitationGuard(
+        ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary, findings=spec.findings
+    )
     sentences = []
-    said: list[set[str]] = []
+    # Seeded with the report's earlier kept sentences, so a repeat of one of
+    # those is caught by the very same check that catches a repeat within
+    # this call — `said` just starts non-empty instead of the check running
+    # twice with two thresholds that could drift apart.
+    said: list[set[str]] = list(already_kept) if already_kept is not None else []
+    drafted = 0  # sentences the model actually wrote something for (not blank)
+    repeated = 0  # ... of those, how many were dropped as a repeat
     for draft_sentence in draft.sentences:
         text = draft_sentence.text.strip()
         if not text:
             continue
+        drafted += 1
         citations = list(dict.fromkeys(draft_sentence.citations))
         if len(text) < MIN_SENTENCE_CHARS:
             ctx.sentence_stats["too_short"] += 1
@@ -202,11 +260,22 @@ def write_section_text(
         words = _content_words(text)
         if any(_overlap(words, earlier) >= REPEAT_OVERLAP for earlier in said):
             # Small models loop: the MedGemma run wrote one sentence four times
-            # in a row. A repeat adds nothing and reads as extra evidence.
+            # in a row. A repeat adds nothing and reads as extra evidence. The
+            # same is true of a sentence this report already kept elsewhere —
+            # `said` may hold those too, so this one check covers both.
             ctx.sentence_stats["repeated"] += 1
+            repeated += 1
             continue
         said.append(words)
         verdict = guard.check(text, citations)
+        if verdict.kept and getattr(ctx, "entailment", None) is not None:
+            # Optional and off by default (report/entailment.py): the local
+            # model's second look at a sentence the guard kept. It can only
+            # remove, and what it removes is stored as dropped like any other
+            # sentence, so the pure-code re-check never needs the model.
+            why = ctx.entailment.review(text, {c: short[c] for c in citations}, ctx.sentence_stats)
+            if why:
+                verdict = GuardResult(False, why)
         if text[-1] not in ".!?":
             # The model often returns a copied clause with no full stop, and
             # several of those run together are unreadable. Punctuation is not
@@ -214,9 +283,22 @@ def write_section_text(
             text += "."
         ctx.sentence_stats["kept" if verdict.kept else "dropped"] += 1
         sentences.append(Sentence(text=text, citations=citations, kept=verdict.kept, drop_reason=verdict.reason))
+        if verdict.kept and already_kept is not None:
+            # Recorded for the sections written after this one, not for this
+            # call's own remaining sentences — those are already in `said`.
+            already_kept.append(words)
     note = None
     if sentences and not any(s.kept for s in sentences):
         note = "Every drafted sentence failed the citation check and was removed."
+    elif not sentences and drafted and repeated == drafted:
+        # Nothing too short, nothing that ever reached the guard — every
+        # sentence the model wrote was a repeat, and (because `said` starts
+        # from `already_kept`) that can only happen when it repeated content
+        # already kept earlier in this report. Left silent, this is the
+        # "heading with nothing under it" a scientist has no way to read: a
+        # gap in the papers looks identical to a section whose only content
+        # was already said. Say which one this is.
+        note = "Everything drafted here is already stated in an earlier section."
     return sentences, note
 
 
@@ -392,7 +474,8 @@ def _evidence_table(ctx: WriteContext, refs: dict[str, int]) -> str:
     for u in ctx.summary.units:
         n = f" (n={u.n})" if u.n is not None else ""
         rows.append(
-            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)} | {cell(u.intervention or '')} | "
+            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)}{' (measured)' if u.outcome_measure else ''} | "
+            f"{cell(u.intervention or '')} | "
             f"{u.evidence_type}{' · discussion' if u.from_discussion else ''} | "
             f"{cell(u.species_raw) if u.species_raw else 'not stated'}{n} | "
             f"{u.outcome} | {u.setting} | {cell(u.effect_detail)} | {refs.get(u.paper_id, '')} |"
@@ -416,12 +499,18 @@ def _method(ctx: WriteContext) -> str:
         f"their quote is not in the paper ({s.get('quote_meaning_changed', 0)} of them because the model's copy "
         f"changed a number, a negation or another word that carries meaning); "
         f"{s.get('near_miss', 0) + s.get('other_disease', 0)} discarded as about another entity; "
+        f"{s.get('other_work', 0)} discarded as someone else's result, not this paper's own; "
+        f"{s.get('not_a_result', 0)} discarded because their quote states an aim, a method, a prediction or an "
+        f"open question rather than a result; "
         f"{s.get('target_unlocated', 0)} discarded because the text the model read never names their target; "
         f"{s.get('duplicates', 0)} duplicates merged; **{len(ctx.summary.units)} verified findings kept**.",
         f"- **Fields the paper does not state:** blanked rather than shown — who was studied on "
         f"{s.get('species_unlocated', 0)} findings (shown as \"not stated\"), sample size on "
         f"{s.get('n_unlocated', 0)}, the result summary on {s.get('effect_detail_unlocated', 0)}, the agent on "
         f"{s.get('intervention_unlocated', 0)}.",
+        f"- **Outcome measures:** {s.get('target_outcome_measure', 0)} findings kept as evidence but given no "
+        f"target row, because what they name is a measurement (airway hyperresponsiveness, monthly migraine days, "
+        f"BMI and the like), judged from the paper's own abbreviation definitions where it gives one.",
         f"- **Written:** {ctx.sentence_stats.get('kept', 0)} sentences kept; {ctx.sentence_stats.get('dropped', 0)} "
         f"removed by the citation check; {ctx.sentence_stats.get('repeated', 0)} removed as repeats; "
         f"{ctx.sentence_stats.get('too_short', 0)} too short to state anything.",
@@ -430,6 +519,15 @@ def _method(ctx: WriteContext) -> str:
         "typography or a word that carries no meaning. Numbers, names and who was studied in each sentence were "
         "checked against the paper's text it cites.",
     ]
+    if getattr(ctx, "entailment", None) is not None:
+        st = ctx.sentence_stats
+        lines.insert(len(lines) - 1, (
+            f"- **Entailment check (optional, not yet measured):** the local model re-read "
+            f"{st.get('entailment_checked', 0)} sentence(s) the citation check kept against the text they cite; "
+            f"{st.get('entailment_dropped', 0)} removed as not supported (included in the removals above), "
+            f"{st.get('entailment_partial', 0)} kept as only partly supported, "
+            f"{st.get('entailment_failed', 0)} left unchecked because the call failed."
+        ))
     return "\n".join(lines)
 
 
@@ -486,6 +584,15 @@ def build_references(ctx: WriteContext, sections: list[ReportSection]) -> dict[s
 def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str]) -> Report:
     layout = load_layout(ctx.spec.question_type)
     sections: list[ReportSection] = []
+    # Each written section, and each per-target subsection, sees only its own
+    # slice of evidence and is written by its own model call — that is the
+    # whole point of Stage 7 (see the module docstring). But the same finding
+    # can be the best evidence for two different sections (the answer and
+    # that target's own subsection, most often), and a model then drafts the
+    # same sentence twice. One list, appended to as sections are written in
+    # this order and read by every call after it, is what makes a report-wide
+    # repeat check possible without the sections calling each other.
+    already_kept: list[set[str]] = []
 
     for spec in layout:
         if spec.kind != "written":
@@ -495,7 +602,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             section = ReportSection(id=spec.id, title=spec.title, kind="written")
             for t in ctx.summary.targets[: ctx.max_targets]:
                 units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target)
-                sentences, note = write_section_text(ctx, spec, units, subsection=t.target)
+                sentences, note = write_section_text(ctx, spec, units, subsection=t.target, already_kept=already_kept)
                 names = [n for n in t.names_seen if n != t.target][:3]
                 title = t.target + (f" ({', '.join(names)})" if names else "")
                 section.subsections.append(
@@ -509,7 +616,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             sections.append(section)
             continue
         units = _slice(ctx, spec.source or "all")
-        sentences, note = write_section_text(ctx, spec, units)
+        sentences, note = write_section_text(ctx, spec, units, already_kept=already_kept)
         sections.append(ReportSection(id=spec.id, title=spec.title, kind="written", sentences=sentences, note=note))
 
     refs = build_references(ctx, sections)
@@ -556,14 +663,21 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "chunks_failed": ctx.extract_stats.get("chunk_failed", 0),
         "findings_proposed": ctx.extract_stats.get("findings", 0),
         "labels_corrected": ctx.extract_stats.get("direction_corrected", 0)
-        + ctx.extract_stats.get("outcome_corrected", 0),
+        + ctx.extract_stats.get("outcome_corrected", 0)
+        + ctx.extract_stats.get("evidence_type_corrected", 0),
         "findings_quote_failed": ctx.extract_stats.get("quote_failed", 0),
         "findings_other_entity": ctx.extract_stats.get("near_miss", 0) + ctx.extract_stats.get("other_disease", 0),
+        "findings_other_work": ctx.extract_stats.get("other_work", 0),
+        "findings_not_a_result": ctx.extract_stats.get("not_a_result", 0),
         "evidence_units": len(ctx.summary.units),
         "sentences_kept": ctx.sentence_stats.get("kept", 0),
         "sentences_dropped": ctx.sentence_stats.get("dropped", 0),
         "sentences_repeated": ctx.sentence_stats.get("repeated", 0),
     }
+    if getattr(ctx, "entailment", None) is not None:
+        # Only when the check ran, so a report written with it off keeps the
+        # exact bytes it had before the check existed.
+        stats.update(report_stats(ctx.sentence_stats))
     interpretation = {
         "question_type": ctx.spec.question_type,
         "goal": ctx.spec.goal,

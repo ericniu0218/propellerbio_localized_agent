@@ -31,6 +31,32 @@ the paper and stored as `context_quote` — the paper's own words, anchored
 like the quote — and only a field present in the quote or in that sentence
 keeps its value. That is what lets the guard check a report sentence's
 "in mice" or "n = 24" against text a reader can see.
+
+Names are held to the same standard: the target, agent and combination
+partner must be in text the reader is shown. Found in the chunk, a name
+counted as located even though the reader saw only the quote - which is how
+"Blocking IL-17A reduced ear thickness by 60%" passed the guard citing a quote
+about anti-IL-23, in a passage that also named IL-17A. So a name found only in
+the chunk or the Methods is looked for, in order, in
+
+    context    the context sentence above
+    qualifier  the paper's next sentence, when it qualifies the quote
+    naming     otherwise, the passage's sentence that names it, nearest the
+               quote and preferring one that also names what the quote
+               names ("HDAC6 inhibitors, such as tubastatin A, ..."). Stored
+               as `naming_quote`, anchored like the context sentence, and
+               shown beside the quote
+
+and that is what the unit's provenance records for it. A target that still
+cannot be shown drops the finding; an agent or partner is blanked. Showing
+the name is not the same as the quote being about it: the citation guard
+still drops a sentence that gives the quote's result to a name the quote does
+not state (`report/guard.py`, check 9).
+
+One more check reads beyond the text the model was shown, because the
+quote itself can be what overstates: a conclusion sentence that names
+people, in a paper whose Methods studied only animals or cells
+(`methods_subjects`, at the end of this file).
 """
 
 from __future__ import annotations
@@ -40,12 +66,26 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 from bedrock.litreview.extract.normalize import normalize_species
-from bedrock.litreview.extract.verify import Located, covered, locate_quote, meaning_words, normalize, split_sentences, studied_in
+from bedrock.litreview.extract.verify import (
+    Located,
+    abstract_methods,
+    covered,
+    locate_quote,
+    meaning_words,
+    normalize,
+    people_named,
+    split_sentences,
+    studied_in,
+)
 from bedrock.litreview.knowledge import Knowledge, TermMatcher
 from bedrock.litreview.negation import drops_negation
 from bedrock.litreview.report.guard import numbers_in
 
 QUOTE, CHUNK, METHODS, NONE = "quote", "chunk", "methods", "none"
+# Where a name found outside the quote is shown to the reader.
+CONTEXT, QUALIFIER, NAMING = "context", "qualifier", "naming"
+# The names that must be in displayed text, and the kind each is looked up as.
+_SHOWN_NAMES = (("target", "target"), ("intervention", "drug"), ("combo_with", "target"))
 
 # Words that say a sentence describes who or how many were studied. Also what
 # picks the Methods paragraphs for the extraction prompt (`stages/s5_extract`).
@@ -219,9 +259,67 @@ class Provenance:
     where: dict[str, str] = field(default_factory=dict)
     context: Located | None = None
     context_section: str | None = None
+    naming: Located | None = None
+    """The passage's sentence that names a target or agent the quote, the
+    context sentence and the qualifier do not. In `naming_section`."""
+    naming_section: str | None = None
     values: dict[str, object] = field(default_factory=dict)
     """The field values to store: the model's where located, blanked where not."""
     drop: str | None = None
+
+
+def _quote_names(quote: str, hidden: dict[str, tuple[str, str]], kb: Knowledge) -> list[str]:
+    """Every known target or drug the quote names, other than the hidden
+    names. A sentence naming one of these beside a hidden name is one that
+    says how the two are linked."""
+    return [m.text for _, m in kb.scan(quote, ("target", "drug"))
+            if not any(name_in(value, m.text, kb, kind) for value, kind in hidden.values())]
+
+
+def naming_sentence(
+    hidden: dict[str, tuple[str, str]],
+    *,
+    partners: list[str],
+    quote_names: list[str],
+    quote_start: int | None,
+    chunk: str,
+    methods: str,
+    section: str,
+    section_text: str,
+    methods_section_text: str,
+    kb: Knowledge,
+) -> tuple[Located, str, str] | None:
+    """(sentence, its section, CHUNK or METHODS) that names the `hidden`
+    names ({field: (name, kind)}), or None when no sentence can be placed.
+
+    One sentence is stored, so the best one is picked, in this order: it
+    names the target, if the target is hidden; it names the most hidden
+    names; it also names one of `partners`, the finding's own names that the
+    quote does state ("HDAC6 inhibitors, such as tubastatin A" for a quote
+    about tubastatin A), or failing that another target or drug the quote
+    names; it is in the passage the quote came from rather than the
+    Methods; it is nearest the quote. Every candidate is placed in its
+    section like the context sentence is, and one that cannot be placed is
+    passed over.
+    """
+    best: tuple[tuple, Located, str, str] | None = None
+    for where, text, home, home_section in ((CHUNK, chunk, section_text, section),
+                                            (METHODS, methods, methods_section_text, "methods")):
+        for sent in sentences(text):
+            named = [key for key, (value, kind) in hidden.items() if name_in(value, sent, kb, kind)]
+            if not named:
+                continue
+            located = locate_quote(sent, home)
+            if located.status == "failed":
+                continue
+            near = (abs(located.start - quote_start) if where == CHUNK and quote_start is not None
+                    else len(home))
+            link = (2 if any(name_in(n, sent, kb) for n in partners)
+                    else 1 if any(name_in(n, sent, kb) for n in quote_names) else 0)
+            score = ("target" in named, len(named), link, where == CHUNK, -near)
+            if best is None or score > best[0]:
+                best = (score, located, home_section, where)
+    return None if best is None else best[1:]
 
 
 def trace(
@@ -240,8 +338,14 @@ def trace(
     n: int | None,
     effect_detail: str,
     kb: Knowledge,
+    qualifier: str = "",
+    quote_start: int | None = None,
 ) -> Provenance:
-    """Locate every model-written field. See the module docstring for the rules."""
+    """Locate every model-written field. See the module docstring for the rules.
+
+    `qualifier` is the paper's next sentence when it qualifies the quote, and
+    `quote_start` the quote's offset in `section_text`: both only decide
+    where a name found outside the quote is shown."""
     p = Provenance()
 
     def where_name(value: str | None, kind: str | None) -> str:
@@ -287,6 +391,38 @@ def trace(
                 p.where["context"] = where
     context = p.context.text if p.context else ""
 
+    # A name found only in the passage or the Methods must be shown: in the
+    # context sentence, the qualifier, or a naming sentence stored for it.
+    values = {"target": target, "intervention": intervention, "combo_with": combo_with}
+    hidden: dict[str, tuple[str, str]] = {}
+    for name, kind in _SHOWN_NAMES:
+        if p.where.get(name) not in (CHUNK, METHODS):
+            continue
+        value = values[name] or ""
+        if context and name_in(value, context, kb, kind):
+            p.where[name] = CONTEXT
+        elif qualifier and name_in(value, qualifier, kb, kind):
+            p.where[name] = QUALIFIER
+        else:
+            hidden[name] = (value, kind)
+    if hidden:
+        partners = [values[name] or "" for name, _ in _SHOWN_NAMES if p.where.get(name) == QUOTE]
+        found = naming_sentence(
+            hidden, partners=partners, quote_names=_quote_names(quote, hidden, kb), quote_start=quote_start,
+            chunk=chunk, methods=methods, section=section, section_text=section_text,
+            methods_section_text=methods_section_text, kb=kb,
+        )
+        if found is not None:
+            p.naming, p.naming_section, p.where["naming"] = found
+        for name, (value, kind) in hidden.items():
+            if p.naming is not None and name_in(value, p.naming.text, kb, kind):
+                p.where[name] = NAMING
+            elif name == "target":
+                p.drop = "target_not_shown"
+                return p
+            else:
+                p.where[name] = NONE
+
     if species:
         if species_in(species, quote):
             p.where["species"] = QUOTE
@@ -318,3 +454,119 @@ def trace(
         "effect_detail": keep("effect_detail", detail) or "",
     }
     return p
+
+
+# --- a conclusion's people, against the Methods ---------------------------------
+#
+# The model copies "patients" from a conclusion sentence, and the species check
+# above finds "patients" in the quote: the field is the paper's word, so it is
+# kept. But an abstract's conclusion can generalise from a cell line and mice
+# to "patients with asthma" (the shape of asthma S3). The Methods say who was
+# actually studied. So when a conclusion sentence (`extract/verify.py`
+# `conclusion_reason`) names people, Stage 5 reads the paper's Methods - the
+# Methods section, and a structured abstract's METHODS part - and if they name
+# no human subjects but do name animals or cells, the finding is not human
+# evidence, whatever the quote says (`stages/s5_extract.py` `_to_unit`), and
+# the citation guard will not let a sentence resting on it say "patients"
+# (`report/guard.py`, check 4).
+#
+# A paper with no Methods text at all - common, since only open-access papers
+# come with full text - is left alone. An abstract-only paper says nothing
+# about its Methods beyond what its abstract says, and guessing from nothing
+# would drop real human findings.
+#
+# Built to leave a finding alone whenever the Methods might describe people:
+# any word below counts, including some that also occur in animal work
+# ("cells from donors", "individuals"). A false "people were studied" only
+# means the conclusion keeps its word, which is where things stood before.
+# S3's own paper is such a case: its Methods recruited patients for induced
+# sputum, so its conclusion keeps "patients", though the mechanism it states
+# was shown in cells and mice.
+#
+# Measured on the three stored qwen3:8b corpora (every sentence of every
+# abstract, Results and Discussion): 164 conclusion sentences name people, 100
+# of them in papers with Methods text, and 7 are marked - all in mouse or rat
+# papers generalising to "individuals", "infants" or "patients". Of the 593
+# stored findings, 7 are conclusions naming people and one is marked
+# (PMID31616172, a mouse paper: "... a therapeutic potential for obese/
+# diabetic postmenopausal patients").
+# Not "cohort" or "subjects": `knowledge/meaning_words.yaml` keeps those out
+# of the human class because mouse studies use them ("two cohorts of mice"),
+# and a mouse paper was the one stored case this check exists for.
+
+HUMAN_SUBJECTS = re.compile(
+    r"\b(?:enrol(?:l)?(?:ed|ment)|recruit(?:ed|ment)|participants?|patients?|volunteers?|donors?|individuals|"
+    r"children|women|men|infants|informed\s+consent|declaration\s+of\s+helsinki|"
+    r"institutional\s+review\s+board|questionnaires?|case[- ]control|clinical\s+trials?|"
+    r"healthy\s+(?:controls?|subjects)|"
+    r"(?:human|patient)\s+(?:subjects?|samples?|biops(?:y|ies)|tissues?|specimens?|sera|serum|blood|sputum)|"
+    r"biops(?:y|ies)\s+(?:from|of|were|was))\b",
+    re.I,
+)
+# The non-human classes of `knowledge/meaning_words.yaml` `studied`, in the
+# order one is picked to describe the finding: an animal before cells, since
+# a paper with both put its claim to the test in the animal. How each is said.
+_NON_HUMAN = {"mouse": "mice", "rat": "rats", "primate": "primates", "animal": "animals", "cells": "cells"}
+
+
+@dataclass
+class MethodsSubjects:
+    """Who a paper's Methods studied, when they name no people."""
+
+    label: str
+    """What the Methods name, for the reader: "mice and cells"."""
+    species_raw: str
+    """The paper's own word for the first of them ("mice"), from `context`."""
+    evidence_type: str
+    """in_vivo for an animal, in_vitro for cells."""
+    context: Located | None = None
+    """The Methods sentence that names it, anchored in `context_section`."""
+    context_section: str | None = None
+
+
+def methods_subjects(quote: str, *, methods_section_text: str, abstract: str) -> MethodsSubjects | None:
+    """Who the Methods studied, when `quote` names people and the Methods
+    name no human subjects but do name animals or cells; else None.
+
+    The caller decides the quote is a conclusion first. Read from the
+    Methods section and from a structured abstract's Methods part; None
+    when there is neither (see the block comment above)."""
+    if not people_named(quote):
+        return None
+    parts = [("methods", methods_section_text, 0, len(methods_section_text))] if methods_section_text.strip() else []
+    parts += [("abstract", abstract, lo, hi) for lo, hi in abstract_methods(abstract)]
+    if not parts:
+        return None
+    text = "\n\n".join(home[lo:hi] for _, home, lo, hi in parts)
+    if HUMAN_SUBJECTS.search(text):
+        return None
+    said = studied_in(text)
+    classes = [c for c in _NON_HUMAN if c in said]
+    if "animal" in classes and any(c in classes for c in ("mouse", "rat", "primate")):
+        classes.remove("animal")  # "mice and animals" says mice twice
+    if not classes:
+        return None
+    first = classes[0]
+    names = [_NON_HUMAN[c] for c in classes]
+    label = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    found = MethodsSubjects(label=label, species_raw="", evidence_type="in_vitro" if first == "cells" else "in_vivo")
+    # The sentence that says so, shown to the reader as the context sentence,
+    # and the paper's own word for the subjects from it: the first word of the
+    # class's list in meaning_words.yaml that the sentence uses ("mice" before
+    # "c57bl"), as the paper spells it.
+    terms = meaning_words()["studied"][first]
+    for section, home, lo, hi in parts:
+        for sent in split_sentences(home[lo:hi]):
+            if first not in studied_in(sent):
+                continue
+            located = locate_quote(sent, home)
+            if located.status == "failed":
+                continue
+            for term in terms:
+                m = re.search(r"\b" + re.escape(term) + r"\b", located.text, re.I)
+                if m:
+                    found.species_raw = m.group(0)
+                    break
+            found.context, found.context_section = located, section
+            return found
+    return found

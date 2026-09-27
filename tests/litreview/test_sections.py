@@ -43,6 +43,25 @@ def test_jats_without_a_results_heading_treats_descriptive_sections_as_results()
     assert sections["results"] == "Knockout mice developed disease."
 
 
+def test_jats_with_no_recognisable_headings_at_all_is_filed_as_unknown_not_results():
+    # No <title> anywhere - not even Methods or Discussion matched, unlike the
+    # test above where "Methods" is recognised. This is the real shape of two
+    # asthma papers in the corpus (PMID41858165, PMID41596081): every heading
+    # there carries a numeral ("1. Introduction", "3. Results") that the
+    # patterns don't expect, so nothing but boilerplate (Acknowledgments,
+    # Author Contributions) is ever recognised in the whole body.
+    xml = """<article><body>
+      <sec><p>Asthma affects millions and its causes remain unclear.</p></sec>
+      <sec><p>Mice were sensitised with allergen and monitored for six weeks.</p></sec>
+      <sec><p>Treated mice showed a 40% reduction in airway inflammation.</p></sec>
+      <sec><p>These findings suggest a new therapeutic avenue worth pursuing.</p></sec>
+      </body></article>"""
+    sections = from_jats(xml)
+    assert "results" not in sections
+    assert "40% reduction in airway inflammation" in sections["unknown"]
+    assert "causes remain unclear" in sections["unknown"], "the unrecognised 'Introduction' text is in here too"
+
+
 def test_grobid_subsections_inherit_their_section():
     tei = """<TEI xmlns="http://www.tei-c.org/ns/1.0"><teiHeader><profileDesc>
       <abstract><p>Abstract text here.</p></abstract></profileDesc></teiHeader>

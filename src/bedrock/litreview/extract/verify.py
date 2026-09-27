@@ -617,7 +617,15 @@ _OTHER_WORK_LEAD_IN = re.compile(
 # The canonical section names a paper's text can carry are exactly
 # `parsing/sections.py` `CANONICAL`. Introduction and Background are not
 # among them - both fold into "other" - so "other" is the real name to check.
-_INTRO_LIKE_SECTIONS = frozenset({"other"})
+# "unknown" belongs here for the same reason, not a different one: it is what
+# `_Collector.result()` files a paper's leftover text under when not even
+# Methods, Results or Discussion was recognised anywhere in the body - which
+# means Introduction and Discussion are in that blob too, unseparated from
+# anything else. A quote pulled from text the parser could not place is
+# exactly as likely to be someone else's result, restated, as one pulled from
+# "other" - not naming the section is not evidence that the section was
+# Results, so it earns the same citation-marker scrutiny rather than a pass.
+_INTRO_LIKE_SECTIONS = frozenset({"other", "unknown"})
 
 # A narrow exemption from the citation-marker check, added after running it
 # over 593 real evidence units from stored qwen3:8b reports turned up two of

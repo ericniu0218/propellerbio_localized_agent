@@ -585,9 +585,32 @@ _AUTHOR_YEAR = re.compile(
 
 # How a paper's own Introduction or Discussion says "this is somebody else's
 # result", checked only at the start of the quote.
+#
+# "human genetic studies have identified", "have been shown to" (the plural of
+# "has been shown to" above), "genetic studies have shown" and "genome-wide
+# association studies have identified" were added for the new obesity report's
+# target section, which opens "Human genetic studies have identified GPR75
+# loss-of-function variants to be strongly protective against obesity,
+# establishing GPR75 as a compelling therapeutic target" (OPEN_ISSUES.md item
+# 7; verbatim in evals/litreview/hand_audit/qwen_obesity_after.md and
+# claude_obesity.md) - other people's human genetics, quoted in the background
+# of a mouse paper, with no citation bracket for the marker check to catch.
+# The other three are the same shape found while re-reading
+# evals/litreview/corpora/psoriasis-prevention-targets/papers.jsonl: "Genetic
+# studies have shown that polymorphisms in the IL-23 pathway are associated
+# with an increased risk of developing psoriasis" and "Genome-wide association
+# studies have identified SOCS1 as a susceptibility locus in psoriasis" both
+# open a background sentence citing someone else's genetic-association work;
+# "have been shown to" itself only ever occurs there mid-sentence ("KCs have
+# been shown to be closely associated with psoriasis pathogenesis"), so it is
+# kept narrow the same way "has been shown to" already is - see
+# tests/litreview/test_verify.py's "only matters at the start of the
+# sentence" test.
 _OTHER_WORK_LEAD_IN = re.compile(
     r"^\s*(?:previous studies have shown|a recent study found|another study showed|"
-    r"it has been reported|has been shown to|prior work|earlier studies)\b",
+    r"it has been reported|has been shown to|have been shown to|prior work|earlier studies|"
+    r"human genetic studies have identified|genetic studies have shown|"
+    r"genome-wide association studies have identified)\b",
     re.I,
 )
 

@@ -245,6 +245,7 @@ def _run(args) -> int:
     if args.command == "verify-run":
         from bedrock.litreview.db import Database
         from bedrock.litreview.report.invariants import verify_run
+        from bedrock.litreview.runner import stale_reasons
 
         db = Database(args.db or _db_settings().db_path)
         if args.all:
@@ -261,6 +262,13 @@ def _run(args) -> int:
             print(f"{run_id}: {'OK' if not violations else f'{len(violations)} violation(s)'}")
             for v in violations:
                 print(f"  - {v}")
+            # Informational only: never added to `failed`, so a sound report
+            # can never be reported as a violation just because the code or
+            # knowledge tables have since moved on.
+            run = db.get_run(run_id)
+            if run is not None:
+                for note in stale_reasons(run):
+                    print(f"  (note: {note})")
             failed += bool(violations)
         return 1 if failed else 0
 

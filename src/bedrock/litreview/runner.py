@@ -159,6 +159,39 @@ def code_version() -> str | None:
         return None
 
 
+def stale_reasons(run: Run) -> list[str]:
+    """Why this run's report might no longer match today's code and
+    knowledge tables — informational, never a violation. Empty when
+    nothing has changed since the run, or when the run predates this
+    check (no code_version/input_hashes recorded).
+
+    `verify-run` re-proves that a stored report is still faithful to the
+    papers it pinned — that check is unaffected by any of this and stays
+    a pass/fail invariant. But "no violations" only means the report is
+    internally sound; it says nothing about whether a prompt, a knowledge
+    table or the code that writes reports has since changed, so re-running
+    the same question today might write a different one. This function
+    answers that separate question, in plain English, so a reader does not
+    mistake "still sound" for "still current". A run written before
+    `code_version` existed has nothing recorded to compare against, so it
+    stays silent rather than guessing.
+    """
+    if run.code_version is None:
+        return []
+    reasons: list[str] = []
+    current_code = code_version()
+    if current_code is not None and current_code != run.code_version:
+        reasons.append(f"code changed: {run.code_version} -> {current_code}")
+    current_inputs = {_rel(p): file_sha256(p) for p in input_files() if p.exists()}
+    for name, old_hash in sorted(run.input_hashes.items()):
+        if name.startswith("resumed:"):
+            continue  # a resume-time snapshot of a file already changed by then, not a fresh comparison
+        new_hash = current_inputs.get(name)
+        if new_hash is not None and new_hash != old_hash:
+            reasons.append(f"{name} changed since this run")
+    return reasons
+
+
 def answer_question(
     question: str,
     *,

@@ -478,21 +478,29 @@ async def _verify(argument: str, settings: "ReviewSettings", notify: Notify) -> 
 
     lines = ["**Verification**", ""]
     failed = False
-    for run_id, violations in results:
+    for run_id, violations, stale in results:
         if violations:
             failed = True
             lines.append(f"- {as_code(run_id)}: **{len(violations)} violation(s)**")
             lines.extend(f"  - {safe_line(v, limit=200)}" for v in violations[:5])
         else:
             lines.append(f"- {as_code(run_id)}: OK")
+        # Informational note, never folded into `failed`: a sound report
+        # (no violations) can still have been written under an older prompt,
+        # knowledge table or code version, and a reader should know that
+        # without it being reported as a bug.
+        lines.extend(f"  - note: {safe_line(s, limit=200)}" for s in stale)
     if failed:
         lines += ["", "A violation is a bug in the pipeline, not a judgement about the papers."]
     await notify("\n".join(lines), "error" if failed else "info")
 
 
-def _verify_runs(settings: ReviewSettings, run_id: str | None, all_runs: bool) -> list[tuple[str, list[str]]]:
+def _verify_runs(
+    settings: ReviewSettings, run_id: str | None, all_runs: bool
+) -> list[tuple[str, list[str], list[str]]]:
     from bedrock.litreview.db import Database
     from bedrock.litreview.report.invariants import verify_run
+    from bedrock.litreview.runner import stale_reasons
 
     if not Path(settings.db_path).exists():
         return []
@@ -503,9 +511,12 @@ def _verify_runs(settings: ReviewSettings, run_id: str | None, all_runs: bool) -
         out = []
         for one in run_ids:
             try:
-                out.append((one, verify_run(db, one)))
+                violations = verify_run(db, one)
+                run = db.get_run(one)
+                stale = stale_reasons(run) if run is not None else []
             except Exception as exc:  # noqa: BLE001 - an unreadable run is a failure too
-                out.append((one, [f"cannot be verified: {type(exc).__name__}: {exc}"]))
+                violations, stale = [f"cannot be verified: {type(exc).__name__}: {exc}"], []
+            out.append((one, violations, stale))
         return out
     finally:
         db.conn.close()

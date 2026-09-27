@@ -36,6 +36,7 @@ Two rules keep a fuzzy match honest:
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from collections import Counter
@@ -218,10 +219,22 @@ _TOKEN = re.compile(r"\d+(?:[.,]\d+)*|\w+n't|\w+|[<>=±≤≥]")
 
 
 @lru_cache(maxsize=1)
+def _meaning_words_bytes() -> bytes:
+    return _WORDS_FILE.read_bytes()
+
+
+def meaning_words_sha256() -> str:
+    """Hash of the word lists this process loaded - the ones every check in
+    it uses - which can differ from the file on disk if it changed since."""
+    return hashlib.sha256(_meaning_words_bytes()).hexdigest()
+
+
+@lru_cache(maxsize=1)
 def meaning_words() -> dict:
     """The hand-written word lists: {'meaning': set of words, 'studied':
     {class: [terms]}, 'ambiguous_human': [terms]}."""
-    data = yaml.safe_load(_WORDS_FILE.read_text(encoding="utf-8")) or {}
+    text = _meaning_words_bytes().decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    data = yaml.safe_load(text) or {}
     studied = {k: [t.lower() for t in v] for k, v in (data.get("studied") or {}).items()}
     ambiguous = [t.lower() for t in data.get("ambiguous_human") or []]
     words = {w.lower() for group in (data.get("meaning") or {}).values() for w in group}

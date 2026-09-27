@@ -32,7 +32,12 @@ from bedrock.litreview.bench.models import (
     SystemScore,
 )
 from bedrock.litreview.bench.perturb import perturbations
-from bedrock.litreview.bench.references import load_reference_targets, reachable_targets, target_recall
+from bedrock.litreview.bench.references import (
+    coverage_metrics,
+    load_reference_targets,
+    reachable_targets,
+    target_recall,
+)
 from bedrock.litreview.config import EVALS_DIR, Settings
 from bedrock.litreview.db import Database
 from bedrock.litreview.extract.verify import verify_quote
@@ -185,6 +190,14 @@ def overall(score: SystemScore) -> float | None:
     return round(100 * sum(v * w for v, w in parts) / sum(w for _, w in parts), 1)
 
 
+def _same_report_gate(pipeline: dict) -> str:
+    """The gate's name says what the re-run could show: through the call cache
+    it is cached replay, which is not fresh-inference repeatability."""
+    if pipeline.get("determinism_mode") == "cached_replay":
+        return "same report twice (cached replay, not fresh inference)"
+    return "same report twice"
+
+
 def evaluate(
     bq: BenchQuestion,
     *,
@@ -323,12 +336,21 @@ def evaluate(
             f"{len(ref_targets)} reference targets (Open Targets); {len(reach)} named in the collected papers. "
             f"Pipeline raw recall against all of them: {raw:.2f}." if raw is not None else ""
         )
+        # Stage-by-stage coverage, each with its own denominator. Beside the
+        # scores above, never folded into `overall`.
+        ledger_body = db.get_artifact(result.run.id, "coverage.v1")
+        coverage_rows = coverage_metrics(
+            ref_targets, reach, report, kb, json.loads(ledger_body) if ledger_body else None)
+        coverage_rows["cov_raw_mention_recall"] = round(raw, 4) if raw is not None else None
+        coverage_rows["cov_conditional_mention_recall"] = systems["pipeline"].target_recall
 
     for score in systems.values():
         score.overall = overall(score)
 
     # --- pipeline-only checks -------------------------------------------------------------
     pipeline: dict[str, float | int | str | None] = {}
+    if ref_targets:
+        pipeline.update(coverage_rows)
     papers_all = {p.id: p for p in result.papers}
     # Re-verified independently of extraction: against the section the unit
     # says it came from, then the whole paper. `all_text()` alone leaves out
@@ -402,6 +424,17 @@ def evaluate(
             out_dir=out_dir / "pipeline_rerun", progress=lambda m: None,
         )
         pipeline["deterministic"] = "yes" if again.report_id == result.report_id else "no"
+        # What that re-run proves depends on the client. Through the call
+        # cache it replays stored replies: identical bytes then show the
+        # pipeline is deterministic over the same model outputs, not that the
+        # server would write them again. Fresh-inference repeatability is
+        # measured only by `bench determinism --mode fresh`.
+        cache = getattr(client, "cache", None)
+        reads = getattr(client, "_read", False)
+        pipeline["determinism_mode"] = "cached_replay" if cache is not None and reads else "same_client_uncached"
+        if pipeline["determinism_mode"] == "cached_replay":
+            notes.append("\"Same report twice\" re-ran the pipeline through the call cache: it shows cached "
+                         "replay and rendering are deterministic, not that fresh inference repeats.")
 
     gates = {
         "quotes all verified (1.00)": pipeline.get("quote_validity") in (None, 1.0),
@@ -409,7 +442,7 @@ def evaluate(
         "no near-miss claims": systems["pipeline"].near_miss_claims == 0,
         "numbers all in cited evidence": systems["pipeline"].numeric_fidelity in (None, 1.0),
         "no distractor leaked": pipeline.get("distractor_leak_rate") in (None, 0.0),
-        "same report twice": pipeline["deterministic"] == "yes",
+        _same_report_gate(pipeline): pipeline["deterministic"] == "yes",
         "integrity check passes": not result.report.integrity,
         "claims supported by citations >= 0.85": (systems["pipeline"].cited_support or 0) >= 0.85,
         "judge catches flipped effects >= 0.7 (benchmark validity)": (
@@ -417,7 +450,7 @@ def evaluate(
         ),
     }
     if from_run:
-        gates.pop("same report twice")
+        gates.pop(_same_report_gate(pipeline))
     if judge_client is None:
         notes.append(
             f"The judge is {settings.model_for('judge')}, the same model family that wrote the report; "

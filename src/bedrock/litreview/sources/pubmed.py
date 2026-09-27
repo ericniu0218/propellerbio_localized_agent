@@ -129,11 +129,23 @@ def paper_from_article(article: ET.Element, query: str) -> Paper | None:
             journal=journal,
             year=_year(article),
             is_preprint=any(t.lower() == "preprint" for t in types),
+            is_retracted=retracted_by_own_record(article),
             publication_types=types,
         ),
         found_by_queries=[query],
         source="pubmed",
     )
+
+
+def retracted_by_own_record(article: ET.Element) -> bool:
+    """True when the article's own record links a retraction *of it*
+    (`RetractionIn`). A retracted paper can carry that link without a
+    "Retracted Publication" type; `RetractionOf` marks the notice, which is
+    not itself a retracted study. Direction is `publication_integrity`'s rule."""
+    from bedrock.litreview.publication_integrity import parse_pubmed_article
+
+    _, events, _ = parse_pubmed_article(article)
+    return any(e.status == "retracted" and e.asserted_on == "subject_record" for e in events)
 
 
 def parse_articles(xml_text: str, query: str) -> list[Paper]:

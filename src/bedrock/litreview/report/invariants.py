@@ -22,6 +22,11 @@ the whole thing:
   pinned      (for a stored run) the paper bodies still hash to the run's
               manifest, and the stored report re-serialises to its own bytes
 
+`assess_run` returns the same checks split into separate answers, and adds
+a comparison of the environment the run recorded with the one checking it now
+(`report/verification_context.py`) - so "passes today's rules" is never read
+as "passes the rules it was written under". `verify_run` keeps its list.
+
 None of these can fail if the code is right. So a violation is not a finding
 about the literature, it is a bug, and it is loud: the runner writes it on the
 report (`Report.integrity`), the rendered report opens with a warning banner,
@@ -37,12 +42,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from bedrock.litreview.extract.provenance import n_in, name_in, species_in, text_supported
 from bedrock.litreview.extract.verify import normalize
 from bedrock.litreview.knowledge import Knowledge
 from bedrock.litreview.models import EvidenceUnit, Paper, QuestionSpec, Report
 from bedrock.litreview.report.guard import CitationGuard
+
+if TYPE_CHECKING:
+    from bedrock.litreview.report.verification_context import Comparison
 
 # Model-written fields a report can show, and what each is checked against.
 _NAME_FIELDS = (("intervention", "intervention"), ("combo_with", "combo_with"), ("disease_raw", "disease_raw"))
@@ -62,7 +72,9 @@ def _anchored(text: str | None, paper: Paper, section: str | None, start: int | 
     return None
 
 
-def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowledge) -> list[str]:
+def check_units(
+    units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowledge, added_back: frozenset[str] = frozenset()
+) -> list[str]:
     out: list[str] = []
     for u in units:
         paper = papers.get(u.paper_id)
@@ -78,7 +90,9 @@ def check_units(units: list[EvidenceUnit], papers: dict[str, Paper], kb: Knowled
             out.append(f"quote: {where}: qualifying sentence {why}")
         if (why := _anchored(u.naming_quote, paper, u.naming_section, u.naming_start, u.naming_end)):
             out.append(f"quote: {where}: naming sentence {why}")
-        if paper.is_review or paper.signals.is_retracted:
+        # A paper a scientist added back after a recorded reinstatement is the
+        # one retracted paper that may carry findings (`added_back`).
+        if paper.is_review or (paper.signals.is_retracted and paper.id not in added_back):
             out.append(f"flags: {where}: comes from a paper flagged "
                        f"{'retracted' if paper.signals.is_retracted else 'review'}")
 
@@ -176,18 +190,38 @@ def check_best_source(report: Report, papers: dict[str, Paper], kb: Knowledge) -
 
     for section in walk(report.sections):
         for line in (section.body_markdown or "").splitlines():
-            if line.startswith("> ") and normalize(line[2:]) not in normalize(head):
+            # The background section quotes reviews, not the best source;
+            # `check_background` holds those quotes to their own papers.
+            if section.id != "background" and line.startswith("> ") and normalize(line[2:]) not in normalize(head):
                 out.append(f"quote: [{section.id}] the most relevant source's quote is not in its title or abstract")
             if line.startswith("Why it ranks first: ") and not text_supported(line[20:], head, kb):
                 out.append(f"fields: [{section.id}] the ranking reason shown is not supported by the abstract")
     return out
 
 
-def check_report(report: Report, papers: list[Paper], spec: QuestionSpec, kb: Knowledge) -> list[str]:
-    """Every violation in a report built from `papers`. Empty on a sound report."""
+def check_background(report: Report, papers: dict[str, Paper]) -> list[str]:
+    """Every quote in the background-from-reviews section is a review's own
+    words, and no finding in the report comes from a review."""
+    heads = [normalize(p.head_text()) for p in papers.values()]
+    out = []
+    for section in report.sections:
+        if section.id != "background":
+            continue
+        for line in (section.body_markdown or "").splitlines():
+            if line.startswith("> ") and not any(normalize(line[2:]) in h for h in heads):
+                out.append(f"quote: [background] {line[2:][:80]!r} is not in any collected paper's title or abstract")
+    return out
+
+
+def check_report(
+    report: Report, papers: list[Paper], spec: QuestionSpec, kb: Knowledge, added_back: frozenset[str] = frozenset()
+) -> list[str]:
+    """Every violation in a report built from `papers`. Empty on a sound report.
+    `added_back`: the run's reinstated papers a person added back (from its
+    publication-integrity snapshot)."""
     by_id = {p.id: p for p in papers}
-    return [*check_units(report.evidence, by_id, kb), *check_sentences(report, spec, kb, by_id),
-            *check_best_source(report, by_id, kb), *check_flags(papers)]
+    return [*check_units(report.evidence, by_id, kb, added_back), *check_sentences(report, spec, kb, by_id),
+            *check_best_source(report, by_id, kb), *check_background(report, by_id), *check_flags(papers)]
 
 
 def check_pinned(db, run_id: str) -> list[str]:
@@ -226,4 +260,141 @@ def verify_run(db, run_id: str, kb: Knowledge | None = None) -> list[str]:
     kb = kb or load_knowledge()
     result = load_result(db, run_id)
     report = result.report.model_copy(update={"integrity": []})
-    return [*check_pinned(db, run_id), *check_report(report, result.papers, result.spec, kb)]
+    return [*check_pinned(db, run_id), *check_report(report, result.papers, result.spec, kb, _added_back(db, run_id))]
+
+
+def _added_back(db, run_id: str) -> frozenset[str]:
+    from bedrock.litreview.publication_integrity import SNAPSHOT_ARTIFACT, added_back_in
+
+    body = db.get_artifact(run_id, SNAPSHOT_ARTIFACT)
+    return frozenset(added_back_in(json.loads(body))) if body else frozenset()
+
+
+# --- the richer answer: what passed, under which rules -------------------------------
+
+_LEGACY_MANIFEST = "pinned: the run has no paper manifest"
+
+
+@dataclass
+class RunAssessment:
+    """`verify_run`, split into the three questions it mixes together.
+
+      artifact_integrity      are the stored bytes the bytes the run pinned?
+                              pass | fail | incomplete (nothing was pinned)
+      current_rule_check      does the report pass today's checks?
+                              pass | fail | unavailable (could not be run)
+      environment_comparison  are today's checks and inputs the ones the run
+                              recorded? unchanged | changed | incomplete
+
+    The first two are what `verify_run` has always returned, as violations;
+    `violations` is still exactly that list. The third is a disclosure, not a
+    violation: a report that passes today's rules under a changed environment
+    is intact, and saying it is corrupt would be false. Publication-integrity
+    advisories, when there are any, are local lookups only and never a
+    network refresh.
+    """
+
+    run_id: str
+    artifact_integrity: str
+    artifact_errors: list[str]
+    current_rule_check: str
+    rule_violations: list[str]
+    environment: "Comparison"
+    advisories: list[str] = field(default_factory=list)
+
+    @property
+    def violations(self) -> list[str]:
+        return [*self.artifact_errors, *self.rule_violations]
+
+    def exit_code(self, *, require_same_rules: bool = False) -> int:
+        if self.violations or self.current_rule_check == "unavailable":
+            return 1
+        if require_same_rules and self.environment.status != "unchanged":
+            return 1
+        return 0
+
+    def summary(self) -> str:
+        """One plain sentence per axis, e.g. "Pinned artifacts intact; current-rule
+        checks pass; environment changed in knowledge/meaning_words.yaml; ..."."""
+        parts = [{
+            "pass": "pinned artifacts intact",
+            "fail": "pinned artifacts FAILED",
+            "incomplete": "nothing pinned to check (legacy run)",
+        }[self.artifact_integrity]]
+        parts.append({
+            "pass": "current-rule checks pass",
+            "fail": "current-rule checks FAILED",
+            "unavailable": "current-rule checks could not run",
+        }[self.current_rule_check])
+        env = self.environment
+        changed = env.changed_roles
+        if env.status == "unchanged":
+            parts.append("environment unchanged since the run")
+        elif changed:
+            parts.append("environment changed in " + ", ".join(changed))
+        else:
+            parts.append("environment comparison incomplete")
+        if env.legacy:
+            parts.append("prompt content not recorded in this legacy run")
+        parts.append("historical-rule replay not performed")
+        text = "; ".join(parts)
+        return text[0].upper() + text[1:] + "."
+
+
+def assess_run(db, run_id: str, kb: Knowledge | None = None, *, env=None, now=None) -> RunAssessment:
+    """Re-check a stored run and say, separately, whether its bytes are intact,
+    whether it passes today's rules, and whether today's rules are the ones it
+    recorded. Local reads only: no model, no network, no writes."""
+    from bedrock.litreview.knowledge import load_knowledge
+    from bedrock.litreview.report.verification_context import compare_run
+    from bedrock.litreview.runner import load_result
+
+    run = db.get_run(run_id)
+    if run is None:
+        raise ValueError(f"there is no run {run_id!r}")
+    kb_used = kb or load_knowledge()
+    try:
+        pinned = check_pinned(db, run_id)
+    except Exception as exc:  # noqa: BLE001 - an unreadable manifest is a failed check, not a crash
+        pinned = [f"pinned: cannot be checked: {type(exc).__name__}: {exc}"]
+    if not pinned:
+        integrity = "pass"
+    elif all(v.startswith(_LEGACY_MANIFEST) for v in pinned):
+        integrity = "incomplete"
+    else:
+        integrity = "fail"
+    result = None
+    try:
+        result = load_result(db, run_id)
+        report = result.report.model_copy(update={"integrity": []})
+        rules = check_report(report, result.papers, result.spec, kb_used, _added_back(db, run_id))
+        rule_state = "fail" if rules else "pass"
+    except Exception as exc:  # noqa: BLE001 - a missing pinned paper is exactly what this reports
+        rules = [f"cannot be verified: {type(exc).__name__}: {exc}"]
+        rule_state = "unavailable"
+    # The comparison is about the knowledge actually used for the checks
+    # above: a caller's own table, or the loaded default.
+    environment = compare_run(db, run, kb=kb_used, env=env)
+    advisories: list[str] = []
+    if result is not None:
+        advisories = _publication_advisories(db, run_id, result, now=now)
+    return RunAssessment(run_id, integrity, pinned, rule_state, rules, environment, advisories)
+
+
+def _publication_advisories(db, run_id: str, result, *, now=None) -> list[str]:
+    """Notices recorded on this machine about the papers the report cites, beside
+    what the run knew. Local reads only; never a refresh."""
+    from datetime import datetime, timedelta, timezone
+
+    from bedrock.litreview.config import load_settings
+    from bedrock.litreview.publication_integrity import SNAPSHOT_ARTIFACT, advisories_for_run
+
+    body = db.get_artifact(run_id, SNAPSHOT_ARTIFACT)
+    snapshot = json.loads(body) if body else None
+    cited = {ref.paper_id for ref in result.report.references}
+    papers = [p for p in result.papers if p.id in cited]
+    try:
+        days = int(load_settings(check_endpoint=False, require_models=False).knob("integrity.stale_after_days", 7))
+    except Exception:  # noqa: BLE001 - a broken config must not stop a verification
+        days = 7
+    return advisories_for_run(db, papers, snapshot, now=now or datetime.now(timezone.utc), ttl=timedelta(days=days))

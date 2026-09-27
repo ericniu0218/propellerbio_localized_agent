@@ -5,6 +5,76 @@
 > and `evals/` is `evals/litreview/`; the numbers are unaffected. The to-do
 > list in § Next steps is still the to-do list.
 
+# Completeness and integrity branch — what was and was not measured (26 September 2026)
+
+Branch `litreview/completeness-integrity-11-15`, rebased onto `995d193` (OPEN_ISSUES
+items 10–14; numbered 11–15 at `d3e3342`). **No real model was run for this branch.** No live literature
+search and no live provider request were made either. Every number in this
+section is either a code-only measurement or a *synthetic* control, labelled
+as such. All earlier results below are unchanged history.
+
+**Synthetic selection control.**
+- *Method (the audit's):* every paper chosen for grading is *assigned* grade
+  3; nothing is judged by a model. The real planner and chunker are then run
+  on the frozen searcher corpora (`evals/litreview/corpora-searcher/`), with
+  the exact benchmark questions.
+- *What it counts:* reference targets (Open Targets) *named* in the papers
+  read and in their planned chunks. That is a mention count under the
+  current matcher, not supported-target recall.
+- *Reproduce:* `selector_sensitivity.py` in the branch handoff notes.
+
+| Corpus | Policy | Graded/read | Grounded human papers read | Ref. targets named in papers read | …in planned chunks |
+|---|---|---|---|---|---|
+| obesity | lexical (default) | 40/16 | 2 | 9 | 8 |
+| obesity | evidence_aware | 40/16 | 4 | 9 | 9 |
+| asthma | lexical (default) | 40/16 | 2 | 9 | 6 |
+| asthma | evidence_aware | 40/16 | 5 | 5 | 5 |
+| obesity | lexical | 40/32 | 3 | 11 | 10 |
+| asthma | lexical | 40/32 | 5 | 9 | 6 |
+| obesity | lexical | 80/16 | 3 | 7 | 7 |
+| asthma | lexical | 80/16 | 3 | 5 | 5 |
+
+- The lexical rows reproduce the audit's figures exactly.
+- `evidence_aware` does what it is built to do: it reads more human studies.
+- On asthma it also displaced papers that name other reference targets, so
+  it stays opt-in (`rank.selection`).
+- Acceptance needs a matched real-model run on these frozen corpora, and it
+  must report:
+  - raw mention, corpus-conditional and adjudicated recall (the new `cov_*`
+    scorecard rows);
+  - precision and exactness;
+  - model calls and latency.
+
+**Gate renamed.** When the benchmark's re-run goes through the call cache, the
+gate is now called "same report twice (cached replay, not fresh inference)".
+The old name overstated what it shows. The PASS rows recorded below were all
+cached replays, and their wording is kept as it was run. Fresh-inference
+repeatability (old step 36) is measured by the new harness:
+
+```sh
+python -m bedrock.litreview.bench determinism evals/litreview/determinism/payloads.jsonl \
+  --mode fresh --models office --repeats 20 --condition same-process-serial \
+  --out evals/litreview/results/determinism/<date> --manifest deployment.json
+```
+
+It has **not been run**. It needs the office vLLM server, an agreed compute
+budget, and IT for the restart conditions.
+
+**Report text change.** Reports written after this branch differ from
+earlier ones in three places, and nowhere else. This was checked section by
+section on the fixture and both frozen corpora; rankings and plans are
+byte-identical.
+
+- Gaps and "What the answer needed" now count papers with verified findings,
+  not papers planned.
+- A new "Background from reviews (not primary evidence)" section appears.
+- When publication notices are recorded, retracted papers are excluded and
+  concern-flagged findings are ranked last and kept out of the Answer, as
+  described in OPEN_ISSUES item 12.
+
+Measured against `995d193`, the fixture report's id changed from `0ef23b491fe436c4` to `0b858528433bc13f`.
+Stored reports are unchanged and still verify.
+
 # Benchmark results — anchored evidence (before/after)
 
 **24 September 2026.** This section measures the "anchored evidence" change on
@@ -1123,7 +1193,9 @@ evals/judge/answers.jsonl`, or with `--from-run <id>` for a stored report.
 36. **Prove determinism on vLLM.**
     - *What:* Show byte-identical reports with a warm cache, a cold cache with serial requests, and a cold cache under concurrent load. If the concurrent case fails, serialise model calls or document that determinism comes from cache replay.
     - *Why:* The client's first acceptance test so far has passed only on the laptop with a warm cache.
-    - *Where:* The benchmark's "same report twice" gate, run on the office box.
+    - *Where:* ~~The benchmark's "same report twice" gate~~ - that gate replays the call cache. Use
+      `python -m bedrock.litreview.bench determinism --mode fresh` (harness built 26 September 2026, not yet run),
+      on the office box.
     - *Done when:* The results are recorded in this file.
     - *Owner:* Foreman · *Depends on:* 32–35
 37. **Re-benchmark on the office model, timed, and choose an on-site judge.**

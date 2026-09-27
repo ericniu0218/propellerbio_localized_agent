@@ -66,12 +66,24 @@ def paper_from_hit(hit: dict, query: str, *, source: str = "europepmc") -> Paper
             year=int(year) if year and str(year).isdigit() else None,
             citation_count=hit.get("citedByCount"),
             is_preprint=hit.get("source") == "PPR",
+            is_retracted=retracted_by_own_record(hit),
             open_access=hit.get("isOpenAccess") == "Y",
             publication_types=types,
         ),
         found_by_queries=[query],
         source=source,
     )
+
+
+def retracted_by_own_record(hit: dict) -> bool:
+    """True when the record's own `commentCorrectionList` says "Retraction in":
+    this paper was retracted. "Retraction of" is on the notice, which is not a
+    retracted study. The core search already returns the list, so this costs
+    no extra request."""
+    from bedrock.litreview.publication_integrity import parse_europepmc_hit
+
+    _, events, _ = parse_europepmc_hit(hit)
+    return any(e.status == "retracted" and e.asserted_on == "subject_record" for e in events)
 
 
 class EuropePMC:

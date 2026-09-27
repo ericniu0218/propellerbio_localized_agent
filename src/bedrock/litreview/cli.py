@@ -5,15 +5,20 @@
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
     bedrock-litreview runs                  # the most recent runs
-    bedrock-litreview verify-run RUN_ID     # re-prove a stored report
+    bedrock-litreview verify-run RUN_ID     # re-prove a stored report, and say if today's rules differ
+    bedrock-litreview verify-run --all --require-same-rules   # CI: also fail on changed rules
     bedrock-litreview rate REPORT_ID 4 --rater jd --comment "missed IL-36"
+    bedrock-litreview integrity plan --run RUN_ID      # which identifiers a refresh would send
+    bedrock-litreview integrity refresh --run RUN_ID --yes   # retractions/concerns (needs the network)
+    bedrock-litreview integrity import bundle.jsonl    # the same, carried in from a machine allowed out
 
 The same reviews run inside the terminal app as `/review`; this is the shell
 way in, for a script, a cron job or a machine with no app running. Both go
 through `service.run_review`, so both get one pipeline and one scheduler.
 
-`search` is the only command that goes to the internet, and `ask` does so only
-with `--search`. On an air-gapped machine, run `search` on one that is allowed
+`search` and `integrity refresh --yes` go to the internet. `ask` does with
+`--search`, and - unless retraction checks are set to manual - to ask PubMed
+and Crossref about its papers' identifiers before reading them. On an air-gapped machine, run `search` on one that is allowed
 out and carry the JSON-lines file across.
 
 Only `ask` with a model opens a connection to the model server. `search`,
@@ -151,6 +156,126 @@ def _unfinished_run_id(settings) -> str:
 
 
 
+def _integrity_ids(args, db) -> list[str]:
+    """The identifiers a command is about, normalised; a malformed one is an error."""
+    from bedrock.litreview.publication_integrity import normalize_id, paper_ids
+    from bedrock.litreview.runner import load_result
+
+    if args.ids:
+        out = []
+        for raw in args.ids:
+            kind, _, value = raw.partition(":")
+            norm = normalize_id(kind.lower(), value) if value else None
+            if norm is None:
+                raise ValueError(f"not a PMID:, PMCID: or DOI: identifier: {raw!r}")
+            out.append(norm)
+        return list(dict.fromkeys(out))
+    result = load_result(db, args.run)
+    cited = {ref.paper_id for ref in result.report.references}
+    papers = [p for p in result.papers if args.all_papers or p.id in cited]
+    # At most a PMID and a DOI per paper - each one sent says what is being
+    # read - and never a PMCID, which no validated lookup uses.
+    return list(dict.fromkeys(i for p in papers for i in paper_ids(p) if not i.startswith("PMCID:")))
+
+
+def _integrity(args, *, refresher=None, clock=None) -> int:
+    """`integrity plan|refresh|import|status`. Only `refresh --yes` uses the network."""
+    import hashlib
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from bedrock.litreview.db import Database
+    from bedrock.litreview.publication_integrity import BundleError, derive_state, observation_from_bundle
+    from bedrock.litreview.sources.integrity import IntegrityRefresher, RefreshRefused, plan
+
+    settings = _db_settings()
+    db = Database(args.db or settings.db_path)
+    command = args.integrity_command
+
+    if command in ("include", "exclude"):
+        from bedrock.litreview.publication_integrity import decide_reinstated
+
+        try:
+            print(decide_reinstated(db, args.paper, include=command == "include", by=args.by, note=args.note,
+                                    now=clock() if clock else datetime.now(timezone.utc)))
+        except ValueError as exc:
+            _say(f"integrity {command}: {exc}")
+            return 1
+        return 0
+
+    if command == "import":
+        data = args.bundle.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        imported = 0
+        for n, line in enumerate(data.decode("utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                obs, raw = observation_from_bundle(json.loads(line), bundle_sha256=digest, line=n)
+            except (BundleError, ValueError) as exc:
+                _say(f"integrity import: refused, nothing after line {n - 1} recorded: {exc}")
+                return 1
+            db.add_integrity_observation(obs, raw)
+            imported += 1
+        print(f"imported {imported} observation(s) from {args.bundle.name} (sha256 {digest[:12]}); "
+              "the bundle's origin is not authenticated")
+        return 0
+
+    try:
+        ids = _integrity_ids(args, db)
+        providers = [p.strip() for p in args.providers.split(",") if p.strip()]
+        requests = plan(ids, providers)
+    except (ValueError, RefreshRefused) as exc:
+        _say(f"integrity {command}: {exc}")
+        return 1
+
+    if command == "status":
+        now = clock() if clock else datetime.now(timezone.utc)
+        ttl = timedelta(days=int(settings.knob("integrity.stale_after_days", 7)))
+        for i in ids:
+            state = derive_state([i], db.integrity_observations([i]), now=now, ttl=ttl)
+            shown = ", ".join(state.statuses) or "no notice recorded"
+            print(f"{i}: {shown} [{state.freshness}]")
+        return 0
+
+    from bedrock.litreview.sources.integrity import checkable
+
+    sendable, skipped = checkable(ids)
+    if command in ("plan", "refresh") and skipped:
+        print(f"{len(skipped)} identifier(s) cannot be checked (a PMCID alone has no validated lookup): "
+              + " ".join(skipped))
+    if command == "plan" or (command == "refresh" and not args.yes):
+        print(f"{len(sendable)} identifier(s) would be sent, as {len(requests)} request(s):")
+        for provider, batch in requests:
+            host = {"europepmc": "www.ebi.ac.uk", "pubmed": "eutils.ncbi.nlm.nih.gov",
+                    "crossref": "api.crossref.org"}[provider]
+            print(f"  {provider} ({host}): {' '.join(batch)}")
+        print("Identifiers say what is being read. Nothing else is sent: no question, report or finding.")
+        if command == "refresh":
+            _say("integrity refresh: nothing was sent; add --yes to send these requests")
+            return 2
+        return 0
+
+    refresher = refresher or IntegrityRefresher(api_key=settings.ncbi_api_key, email=settings.contact_email)
+    bundle = args.bundle_out.open("w", encoding="utf-8") if args.bundle_out else None
+    failed = 0
+    try:
+        for provider, batch in requests:
+            obs, raw, line = refresher.fetch(provider, batch)
+            if not args.no_store:
+                db.add_integrity_observation(obs, raw)
+            if bundle is not None and line:
+                bundle.write(json.dumps(line, sort_keys=True) + "\n")
+            found = sorted({e.status for e in obs.events})
+            print(f"{provider}: {obs.outcome} for {len(batch)} id(s)" + (f"; notices: {', '.join(found)}" if found else ""))
+            failed += obs.outcome == "error"
+    finally:
+        refresher.close()
+        if bundle is not None:
+            bundle.close()
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bedrock-litreview")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -179,6 +304,42 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("run_id", nargs="?", help="the run to check")
     verify.add_argument("--all", action="store_true", help="check every finished run in the database")
     verify.add_argument("--db", help="database file (default: the configured one; the benchmark uses bench.sqlite3 in the same directory)")
+    verify.add_argument(
+        "--require-same-rules", action="store_true",
+        help="also fail when the config, knowledge, prompts or code differ from what the run recorded, "
+             "or cannot be compared (for CI; by default a difference is reported, not failed)",
+    )
+    verify.add_argument("--details", action="store_true", help="list every environment difference, not just the summary")
+
+    integrity = sub.add_parser(
+        "integrity", help="publication notices (retractions, concerns, corrections): plan, refresh, import, status")
+    isub = integrity.add_subparsers(dest="integrity_command", required=True)
+    for name, text in (("plan", "show the identifiers a refresh would send, and to whom (sends nothing)"),
+                       ("refresh", "ask Europe PMC, PubMed and Crossref about these papers (needs the network and --yes)"),
+                       ("status", "what this machine already knows about these papers (no network)")):
+        cmd = isub.add_parser(name, help=text)
+        target = cmd.add_mutually_exclusive_group(required=True)
+        target.add_argument("--run", help="the papers a stored run cites")
+        target.add_argument("--ids", nargs="+", help="identifiers: PMID:123, PMCID:PMC123, DOI:10.x/y")
+        cmd.add_argument("--all-papers", action="store_true", help="with --run: every paper it pinned, not only those cited")
+        cmd.add_argument("--providers", default="europepmc,pubmed,crossref",
+                         help="comma-separated: europepmc, pubmed, crossref")
+        cmd.add_argument("--db", help="database file (default: the configured one)")
+        if name == "refresh":
+            cmd.add_argument("--yes", action="store_true", help="send the requests (without it, nothing is sent)")
+            cmd.add_argument("--bundle-out", type=Path, help="also write the raw responses to this offline bundle")
+            cmd.add_argument("--no-store", action="store_true",
+                             help="do not record in the database (on the machine that is allowed out)")
+    for name, text in (("include", "add back a paper that was retracted and later reinstated (your decision)"),
+                       ("exclude", "leave a reinstated paper out again")):
+        cmd = isub.add_parser(name, help=text)
+        cmd.add_argument("paper", help="PMID:123, PMID123, PMC123 or a DOI")
+        cmd.add_argument("--by", required=True, help="who is deciding (recorded with the decision)")
+        cmd.add_argument("--note", help="why")
+        cmd.add_argument("--db", help="database file (default: the configured one)")
+    imp = isub.add_parser("import", help="record an offline bundle carried in from a machine allowed out")
+    imp.add_argument("bundle", type=Path)
+    imp.add_argument("--db", help="database file (default: the configured one)")
 
     runs = sub.add_parser("runs", help="list the most recent runs")
     runs.add_argument("--limit", type=int, default=20)
@@ -244,8 +405,7 @@ def _run(args) -> int:
 
     if args.command == "verify-run":
         from bedrock.litreview.db import Database
-        from bedrock.litreview.report.invariants import verify_run
-        from bedrock.litreview.runner import stale_reasons
+        from bedrock.litreview.report.invariants import assess_run
 
         db = Database(args.db or _db_settings().db_path)
         if args.all:
@@ -256,21 +416,37 @@ def _run(args) -> int:
         failed = 0
         for run_id in run_ids:
             try:
-                violations = verify_run(db, run_id)
+                assessment = assess_run(db, run_id)
             except Exception as exc:  # a missing pinned paper or an unreadable artifact is a failure too
-                violations = [f"cannot be verified: {type(exc).__name__}: {exc}"]
+                print(f"{run_id}: 1 violation(s)")
+                print(f"  - cannot be verified: {type(exc).__name__}: {exc}")
+                failed += 1
+                continue
+            violations = assessment.violations
             print(f"{run_id}: {'OK' if not violations else f'{len(violations)} violation(s)'}")
             for v in violations:
                 print(f"  - {v}")
-            # Informational only: never added to `failed`, so a sound report
-            # can never be reported as a violation just because the code or
-            # knowledge tables have since moved on.
-            run = db.get_run(run_id)
-            if run is not None:
-                for note in stale_reasons(run):
-                    print(f"  (note: {note})")
-            failed += bool(violations)
+            # The environment is a disclosure beside the verdict, never one of
+            # its violations: an intact report checked under changed rules is
+            # still intact, and is said to be checked under changed rules.
+            print(f"  {assessment.summary()}")
+            env = assessment.environment
+            shown = env.differences if args.details else [
+                d for d in env.differences if d.kind in ("changed", "source_changed", "missing_now")]
+            for d in shown:
+                print(f"    ~ {d.line()}")
+            if args.details:
+                for note in env.notes:
+                    print(f"    · {note}")
+            # Notices recorded on this machine about the papers cited: advice
+            # for a person, never a violation, never fetched here.
+            for advisory in assessment.advisories:
+                print(f"  ! {advisory}")
+            failed += bool(assessment.exit_code(require_same_rules=args.require_same_rules))
         return 1 if failed else 0
+
+    if args.command == "integrity":
+        return _integrity(args)
 
     if args.command == "rate":
         from bedrock.litreview.api import rate_report

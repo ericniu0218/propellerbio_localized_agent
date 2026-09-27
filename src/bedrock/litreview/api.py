@@ -21,7 +21,9 @@ Two ways in:
 
 Papers can be posted with the question, or `"search": true` on POST /ask runs
 the literature searcher (`sources/literature.py`) for that question — the only
-way the HTTP app goes to the internet, and only when asked. `set_searcher`
+way the HTTP app *searches*, and only when asked. (Like every new review, a
+request also runs the retraction check unless it is set to manual: paper
+identifiers to PubMed and Crossref, never the question.) `set_searcher`
 registers a default searcher for the Python `ask()` entry point; the HTTP app
 builds its own through `service.run_review`, so that one request's `search`
 flag is the whole of what decides.

@@ -10,7 +10,7 @@ project's history is that the benchmark finds bugs the unit tests do not.
 | # | Item | Touches | Status |
 |---|------|---------|--------|
 | 1 | Judge/reader display parity test | tests only | [x] |
-| 2 | `stale_reasons()` note on verify-run | `runner.py`, `cli.py`, `ui/review_command.py` | [x] |
+| 2 | ~~`stale_reasons()` note on verify-run~~ **superseded by `main`** | — | n/a |
 | 3 | Strip structured-abstract labels from displayed text | `extract/verify.py`, `s5_extract.py`, `extract/provenance.py` | [x] |
 | 4 | Drop garbled duplicated-stem sentences | `stages/s7_write.py` | [x] |
 | 5 | Strip leftover "However," ("Moreover," ruled out by measurement) | `stages/s7_write.py` | [x] |
@@ -73,3 +73,20 @@ Still open from this batch: `"moreover"` in `_FILLER`, numbered headings in
 `_HEADING_MAP`, the `METHODS:` label in `methods_subjects()`, guard check 10
 around obesity S18, and a corpus rebuilt from source so item 7 can be
 measured at all.
+
+## Item 2 was dropped, not delivered
+
+`main` already answers item 13, and much more thoroughly than this batch did:
+`report/invariants.py` `assess_run` with a per-invocation
+`verification_context.v1` covering config and knowledge roles, the hashes of
+the bytes actually loaded, prompt file hashes, code identity, a verifier
+fingerprint and schema hashes, plus `verify-run --require-same-rules` for CI.
+It landed in PR #27 while this batch was in flight.
+
+`runner.stale_reasons()` compared only `code_version` and `input_hashes`, so it
+was a strictly weaker duplicate wired into the same two call sites. Keeping both
+would have meant two mechanisms answering one question and two conflicting
+paragraphs in the docs, so the duplicate was removed when `main` was merged in -
+the function, its wiring and `tests/litreview/test_runner_staleness.py`. The
+design both arrived at independently is worth noting: a changed environment is
+disclosed beside the verdict and never counted as a violation.

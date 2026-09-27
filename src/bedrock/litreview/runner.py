@@ -24,18 +24,32 @@ The model never decides what happens next.
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import json
 import logging
-import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
 from pydantic import TypeAdapter
 
 from bedrock.litreview.config import PACKAGE_DIR, Settings, config_file, load_settings
+from bedrock.litreview.coverage import ARTIFACT as COVERAGE_ARTIFACT
+from bedrock.litreview.coverage import acquisition_summary, build_coverage, policy_knobs
+from bedrock.litreview.publication_integrity import SNAPSHOT_ARTIFACT as INTEGRITY_SNAPSHOT
+from bedrock.litreview.publication_integrity import build_snapshot as build_integrity_snapshot
+from bedrock.litreview.publication_integrity import (
+    added_back_in,
+    checked_in,
+    concern_papers,
+    notice_texts,
+    notices_in,
+    reinstated_waiting_in,
+    retracted_in,
+)
+from bedrock.litreview.sources.integrity import summary_line as integrity_summary_line
+from bedrock.litreview.study_design import VERSION as DESIGN_ARTIFACT
+from bedrock.litreview.study_design import designs_for
 from bedrock.litreview.db import Database
 from bedrock.litreview.facets import facets_for
 from bedrock.litreview.knowledge import TABLE as KNOWLEDGE_TABLE
@@ -67,6 +81,7 @@ from bedrock.litreview.report.entailment import JOB as ENTAIL_JOB
 from bedrock.litreview.report.entailment import PROMPT as ENTAIL_PROMPT
 from bedrock.litreview.report.entailment import EntailmentCheck
 from bedrock.litreview.report.invariants import check_report
+from bedrock.litreview.report.verification_context import append_context, capture, close_context, code_identity
 from bedrock.litreview.stages.s8_render import render, to_json
 
 log = logging.getLogger(__name__)
@@ -143,53 +158,9 @@ def _record_inputs(run: Run) -> None:
 def code_version() -> str | None:
     """`git describe --always --dirty` of the package, else its installed
     version, else None. Recorded on the Run only — never in the report, whose
-    bytes must not depend on it. Never raises."""
-    try:
-        out = subprocess.run(
-            ["git", "describe", "--always", "--dirty"],
-            cwd=PACKAGE_DIR, capture_output=True, text=True, timeout=5,
-        )
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
-    except Exception:  # noqa: BLE001 — provenance is best effort; a run must not fail on it
-        pass
-    try:
-        return importlib.metadata.version("bedrock-private-ai")
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def stale_reasons(run: Run) -> list[str]:
-    """Why this run's report might no longer match today's code and
-    knowledge tables — informational, never a violation. Empty when
-    nothing has changed since the run, or when the run predates this
-    check (no code_version/input_hashes recorded).
-
-    `verify-run` re-proves that a stored report is still faithful to the
-    papers it pinned — that check is unaffected by any of this and stays
-    a pass/fail invariant. But "no violations" only means the report is
-    internally sound; it says nothing about whether a prompt, a knowledge
-    table or the code that writes reports has since changed, so re-running
-    the same question today might write a different one. This function
-    answers that separate question, in plain English, so a reader does not
-    mistake "still sound" for "still current". A run written before
-    `code_version` existed has nothing recorded to compare against, so it
-    stays silent rather than guessing.
-    """
-    if run.code_version is None:
-        return []
-    reasons: list[str] = []
-    current_code = code_version()
-    if current_code is not None and current_code != run.code_version:
-        reasons.append(f"code changed: {run.code_version} -> {current_code}")
-    current_inputs = {_rel(p): file_sha256(p) for p in input_files() if p.exists()}
-    for name, old_hash in sorted(run.input_hashes.items()):
-        if name.startswith("resumed:"):
-            continue  # a resume-time snapshot of a file already changed by then, not a fresh comparison
-        new_hash = current_inputs.get(name)
-        if new_hash is not None and new_hash != old_hash:
-            reasons.append(f"{name} changed since this run")
-    return reasons
+    bytes must not depend on it. Never raises. How it was found is recorded
+    in the run's verification context (`report/verification_context.py`)."""
+    return code_identity().version
 
 
 def answer_question(
@@ -206,6 +177,7 @@ def answer_question(
     out_dir: Path | None = None,
     resume_run_id: str | None = None,
     progress: Callable[[str], None] | None = None,
+    integrity_check: Callable | None = None,
 ) -> RunResult:
     settings = settings or load_settings()
     say = progress or (lambda msg: log.info(msg))
@@ -248,6 +220,7 @@ def answer_question(
         while db.get_run(run_id := stable_id("run", spec.id, started, *([n] if n else []), length=12)):
             n += 1
         run = Run(id=run_id, question_id=spec.id, started=started)
+    resumed_from = run.stage_reached  # before this invocation moves it
     run.model_versions = {job: version_of(client, m(job)) for job in ("question", "relevance", "extract", "write")} if client else {}
     run.prompt_versions = {name: load_prompt(name).version for name in ("question", "relevance", "extract", "write_section")}
     entailment = EntailmentCheck(client, m(ENTAIL_JOB)) if client and settings.entailment_check else None
@@ -258,8 +231,15 @@ def answer_question(
         run.model_versions[ENTAIL_JOB] = version_of(client, entailment.model)
         run.prompt_versions[ENTAIL_PROMPT] = load_prompt(ENTAIL_PROMPT).version
     _record_inputs(run)
-    run.code_version = code_version()
+    identity = code_identity()
+    run.code_version = identity.version
     db.save_question(spec)
+    # What this invocation runs under, appended beside what earlier ones ran
+    # under: `verify-run` compares it with the environment that checks it later.
+    generation = None
+    if client is not None and hasattr(client, "generation_context"):
+        generation = {job: client.generation_context(m(job)) for job in ("question", "relevance", "extract", "write")}
+    append_context(db, run.id, capture(stage_at_start=run.stage_reached, kb=kb, code=identity, generation=generation))
 
     def done(stage: int, name: str | None = None, body: str | None = None) -> None:
         if name is not None and body is not None:
@@ -272,6 +252,7 @@ def answer_question(
     # 1 — collect (frozen per question unless asked to refresh). A resumed
     # run reads the exact paper versions it pinned, never the question's
     # current set: its gates, ranking and plan were built from those.
+    acquisition = None
     pinned = db.get_artifact(run.id, "papers_manifest") if resume_run_id else None
     if pinned is not None:
         collected = db.get_paper_versions(json.loads(pinned))
@@ -294,6 +275,9 @@ def answer_question(
                 raise NothingFound("no papers were found for this question: the search returned nothing, "
                                "or the corpus file is empty")
             manifest = db.save_papers(spec.id, collected)
+            report = getattr(searcher, "last_report", None) if papers is None else None
+            if report is not None:
+                acquisition = acquisition_summary(report, len(collected))
             corpus_path = getattr(searcher, "path", None) if papers is None else None
             if corpus_path is not None:
                 run.input_hashes[f"corpus:{corpus_path}"] = getattr(searcher, "sha256", None) or file_sha256(
@@ -305,25 +289,89 @@ def answer_question(
     by_id = {p.id: p for p in collected}
     done(1, "papers_manifest", manifest_body)
 
+    # What this machine already knows about retractions, concerns and
+    # corrections of these papers - local observations only, pinned the first
+    # time the run reaches here, so a resume reads what the run started with.
+    stored_integrity = load(INTEGRITY_SNAPSHOT)
+    if stored_integrity:
+        integrity = json.loads(stored_integrity)
+    elif resumed_from >= 2:
+        # A run from before snapshots, resumed after its gate: what it knew
+        # when it started is not recorded, and today's notices must not be
+        # written into it as if it had known them.
+        integrity = {"schema_version": 1, "status": "not_recorded", "papers": {},
+                     "source": "run started before publication-integrity snapshots; resumed without one"}
+        db.put_artifact(run.id, INTEGRITY_SNAPSHOT, json.dumps(integrity, sort_keys=True))
+    else:
+        now = datetime.now(timezone.utc)
+        ttl = timedelta(days=int(settings.knob("integrity.stale_after_days", 7)))
+        checked = None
+        if integrity_check is not None:
+            # The automatic retraction check (`service.auto_integrity_check`):
+            # identifiers to PubMed and Crossref, recorded as observations,
+            # before the snapshot below reads them. It never fails the run.
+            try:
+                checked = integrity_check(db, collected, now=now, ttl=ttl)
+                say(integrity_summary_line(checked))
+            except Exception as exc:  # noqa: BLE001 - a check that breaks must not break the review
+                log.warning("retraction check failed: %s", exc)
+                checked = {"stopped": f"the check failed: {type(exc).__name__}"}
+                say("retraction check: could not run; the report says which papers were not checked")
+        integrity = build_integrity_snapshot(db, collected, now=now, ttl=ttl)
+        integrity["automatic_check"] = checked if integrity_check is not None else "not run"
+        db.put_artifact(run.id, INTEGRITY_SNAPSHOT, json.dumps(integrity, sort_keys=True))
+    waiting = reinstated_waiting_in(integrity)
+    if waiting:
+        say(f"{len(waiting)} paper(s) were retracted and later reinstated: {', '.join(sorted(waiting))}. "
+            "They stay out until you add them back (`/reviews reinstate <paper>`).")
+
     # 2 — gate
     if reached(2):
         gates = _GATES.validate_json(load("gates"))
     else:
-        gates = gate_papers(collected, spec)
+        gates = gate_papers(collected, spec, retracted=retracted_in(integrity), added_back=added_back_in(integrity))
         done(2, "gates", _GATES.dump_json(gates).decode())
     passing = sum(1 for g in gates.values() if g.status == "pass")
     say(f"gate: {passing} of {len(collected)} concern the exact entity")
+
+    # What the ledger needs that no stage artifact holds: why each paper was
+    # graded or read, and what happened to each chunk. Bookkeeping only, kept
+    # beside the stage artifacts so a resumed run still has it.
+    ledger_inputs = json.loads(load("coverage_inputs") or "{}") if resumed_from >= 1 else {}
+    if acquisition is not None:
+        ledger_inputs["acquisition"] = acquisition
+        db.put_artifact(run.id, "coverage_inputs", json.dumps(ledger_inputs, sort_keys=True))
+
+    def keep_ledger(name: str, value) -> None:
+        ledger_inputs[name] = value
+        db.put_artifact(run.id, "coverage_inputs", json.dumps(ledger_inputs, sort_keys=True))
+
+    # Study design, read from each paper's own publication types and wording
+    # (pure code). Diagnostics for every run; with `rank.selection:
+    # evidence_aware` it also decides which papers are graded and read first.
+    policy = str(settings.knob("rank.selection", "lexical"))
+    stored_designs = load(DESIGN_ARTIFACT)
+    designs = json.loads(stored_designs) if stored_designs else designs_for(collected)
+    if not stored_designs:
+        db.put_artifact(run.id, DESIGN_ARTIFACT, json.dumps(designs, sort_keys=True))
 
     # 3 — rank
     facets = facets_for(spec)
     if reached(3):
         ranked = _RANKED.validate_json(load("ranking"))
     else:
+        grading_reasons: dict[str, str] = {}
         ranked = rank_papers(
             collected, gates, spec, facets, client,
             model=m("relevance") if client else None,
             max_graded=int(settings.knob("rank.max_graded", 40)),
+            selection=grading_reasons,
+            policy=policy,
+            designs=designs,
+            reservations=settings.knob("rank.reservations", None),
+            knowledge=kb,
         )
+        keep_ledger("grading", grading_reasons)
         done(3, "ranking", _RANKED.dump_json(ranked).decode())
     say(f"rank: {sum(1 for r in ranked if r.grade is not None)} papers graded")
 
@@ -331,13 +379,18 @@ def answer_question(
     if reached(4):
         plan = EvidencePlan.model_validate_json(load("plan"))
     else:
+        read_reasons: dict[str, str] = {}
         plan = build_plan(
             spec, facets, ranked, by_id,
             max_papers=int(settings.knob("plan.max_papers", 12)),
             min_grade=int(settings.knob("plan.min_grade", 2)),
             sections=tuple(settings.knob("extract.sections", ["abstract", "results"])),
             discussion_when_no_results=bool(settings.knob("extract.discussion_when_no_results", True)),
+            reasons=read_reasons,
+            policy=policy,
+            designs=designs,
         )
+        keep_ledger("read", read_reasons)
         done(4, "plan", plan.model_dump_json())
     say(f"plan: read {len(plan.jobs)} papers; facets "
         + ", ".join(f"{fp.facet.id}={fp.status}" for fp in plan.facets))
@@ -350,6 +403,7 @@ def answer_question(
         units, extract_stats = [], {}
         done(5, "evidence", "[]")
     else:
+        outcomes: dict[str, dict] = {}
         units, extract_stats = extract_plan(
             plan, by_id, spec, facets, client,
             model=m("extract"),
@@ -358,13 +412,16 @@ def answer_question(
             methods_chars=int(settings.knob("extract.methods_context_chars", 2500)),
             knowledge=kb,
             progress=say,
+            traces=outcomes,
         )
+        keep_ledger("extraction", outcomes)
         db.put_artifact(run.id, "extract_stats", json.dumps(extract_stats, sort_keys=True))
         done(5, "evidence", _UNITS.dump_json(units).decode())
     say(f"extract: {len(units)} verified findings")
 
     # 6 — score
-    summary = summarize(units, spec, facets, ranked, plan)
+    demoted = frozenset(concern_papers(integrity))
+    summary = summarize(units, spec, facets, ranked, plan, demoted=demoted)
     done(6, "summary", summary.model_dump_json())
 
     # 7 — write
@@ -375,12 +432,19 @@ def answer_question(
         units_per_target=int(settings.knob("write.units_per_target", 5)),
         max_units_per_section=int(settings.knob("write.max_units_per_section", 14)),
         entailment=entailment,
+        integrity_notes={**notices_in(integrity), **notice_texts(integrity)},
+        demoted=demoted,
+        reinstated_waiting=reinstated_waiting_in(integrity),
+        integrity_checked=checked_in(integrity),
+        integrity_check_stopped=(integrity.get("automatic_check") or {}).get("stopped")
+        if isinstance(integrity.get("automatic_check"), dict) else None,
+        added_back=added_back_in(integrity),
     )
     report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions)
     # The integrity check: everything the report shows as the paper's words is
     # the paper's words, on the papers this run pinned. A violation is a bug;
     # it is written on the report, which then opens with a warning.
-    report.integrity = check_report(report, collected, spec, kb)
+    report.integrity = check_report(report, collected, spec, kb, frozenset(added_back_in(integrity)))
     if report.integrity:
         log.error("integrity check failed with %d violation(s): %s", len(report.integrity), report.integrity[:3])
         say(f"INTEGRITY CHECK FAILED: {len(report.integrity)} violation(s); see the top of the report")
@@ -388,6 +452,21 @@ def answer_question(
     report_id = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     db.save_report(report_id, run.id, spec.id, body)
     done(7, "report", body)
+    # The coverage ledger: where every paper went and why it stopped there.
+    # Beside the report, never in it; built from what this run recorded.
+    ledger = build_coverage(
+        run_id=run.id, corpus_hash=run.papers_sha256, spec=spec, facets=facets, papers=collected, gates=gates,
+        ranked=ranked, plan=plan, summary=summary, report=report, knobs=policy_knobs(settings),
+        extract_stats=extract_stats if client is not None else None,
+        used_model=client is not None,
+        grading_reasons=ledger_inputs.get("grading"), read_reasons=ledger_inputs.get("read"),
+        extract_outcomes=ledger_inputs.get("extraction"),
+        section_inputs=ctx.section_inputs,
+        sentence_stats=dict(ctx.sentence_stats),
+        acquisition=ledger_inputs.get("acquisition"),
+        design={pid: {"labels": d["labels"], "roles": d["roles"]} for pid, d in designs.items()},
+    )
+    db.put_artifact(run.id, COVERAGE_ARTIFACT, json.dumps(ledger, sort_keys=True))
     say(f"write: {report.stats.get('sentences_kept', 0)} sentences kept, "
         f"{report.stats.get('sentences_dropped', 0)} removed by the citation check, "
         f"{report.stats.get('sentences_repeated', 0)} as repeats")
@@ -400,6 +479,7 @@ def answer_question(
     run.report_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
     (target_dir / "run.json").write_text(run.model_dump_json(indent=2) + "\n", encoding="utf-8")
     done(8)
+    close_context(db, run.id, 8)
     say(f"report: {paths['html']}")
 
     return RunResult(

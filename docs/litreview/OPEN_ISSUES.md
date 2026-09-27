@@ -28,20 +28,23 @@ and a hypothesis reported as a finding) and one flaw in the benchmark itself
 (item 25). **Run the benchmark after changing an accuracy rule, not only the
 tests.**
 
-**27 September 2026, the mechanical fix batch.** Eight more items, all
-structural or reusing a mechanism already trusted elsewhere, are done:
-commits `5373d99..de1915b` plus the correction in `0a2822f`. Six more rows are
-in the section A table below, and items 3, 6, 7, 9, 13 and 24 are rewritten
-with what is left. The rule held again, twice over. The benchmark found that
-the new hedge rule's only firing was a **false drop** that deleted a faithful
-sentence, with every unit test green before and after; and that obesity's "no
-distractor leaked" gate had been passing because no distractor was ever built,
-so "every gate passes on all three" above was not a measurement. Three new
-measurement items (26, 27, 28) record why the scores in this document cannot
-be compared across runs: the benchmark never checks its context window, a gate
-can pass on absent input, and the file judge is keyed by claim text so
-rewording sentences leaves claims unjudged. See
-[BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
+**27 September 2026, the mechanical fix batch.** Seven more items, all
+structural or reusing a mechanism already trusted elsewhere, are done. Six more
+rows are in the section A table below, and items 3, 6, 7, 9 and 24 are
+rewritten with what is left. (An eighth item in that batch was `verify-run`
+saying the rules changed — item 13 — which landed on `main` first and far more
+thoroughly, as `assess_run`; the duplicate was dropped rather than kept
+alongside it.)
+
+The rule held again, twice over. The benchmark found that the new hedge rule's
+only firing was a **false drop** that deleted a faithful sentence, with every
+unit test green before and after; and that obesity's "no distractor leaked"
+gate had been passing because no distractor was ever built, so "every gate
+passes on all three" above was not a measurement. Three new measurement items
+(26, 27, 28) record why the scores in this document cannot be compared across
+runs: the benchmark never checks its context window, a gate can pass on absent
+input, and the file judge is keyed by claim text so rewording sentences leaves
+claims unjudged. See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
 
 Each item says what goes wrong, the evidence, where in the code, and a
 suggested fix. "Size" is a rough guide: small is a day or less, medium is a
@@ -385,43 +388,149 @@ What is left:
 
 ## B. Completeness
 
+Status after branch `litreview/completeness-integrity-11-15` (from `d3e3342`,
+26 September 2026). Everything below marked *done* is built and tested
+offline with fake models; nothing here has been measured on a real model yet.
+
 10. **Few of the known targets reach the report.**
     - *Evidence:* reference-target recall of 0.11 (obesity) and 0.06
       (asthma), against targets that are named in the collected papers. Only
-      40 papers are graded and 16 read per question.
-    - *Fix:* old steps 25–27 in `BENCHMARK_RESULTS.md`: pre-select by study
-      design, plan by evidence type, put the key human numbers in the Answer.
+      40 papers are graded and 16 read per question. The raw mention ceiling
+      is far lower than 171/73: only 19 obesity and 18 asthma reference
+      targets are named anywhere in the passing papers, and 160/65 have no
+      curated alias entry.
+    - *Done - coverage ledger.* Every run writes `coverage.v1` beside (never
+      in) the report. It records where each paper stopped, from gate to
+      grading, reading, extraction, synthesis and citation, with a named loss
+      reason. It also records per-chunk outcomes, planned against realised
+      facets, target sets by *cited verified units*, and the search funnel
+      for live searches. Counts carry their denominators (`coverage.py`).
+      The benchmark adds `cov_*` rows: raw mention, corpus-conditional,
+      adjudicated (not available), verified-unit, narrative/Answer, human
+      numbers, negatives and facets. `overall` is unchanged.
+    - *Done - the report says what was verified.* The gaps and "What the
+      answer needed" sections now count papers that gave verified findings.
+      Before, they counted papers chosen to be read. The old fixture report
+      said a paper "supplied" causal evidence when none of its findings
+      survived. This changes new reports' bytes (with the background
+      section, fixture report id `0ef23b491fe436c4` → `0b858528433bc13f`
+      against `995d193`); stored reports are untouched.
+    - *Done, opt-in - evidence-aware selection.* `study_design.py` labels
+      each paper's design and document role from its publication type and
+      its own design wording, with offsets. `rank.selection: evidence_aware`
+      reserves 8/4/4/8 of the 40 grades for human interventional, human
+      genetic/observational, prevention and mechanistic papers. The planner
+      then counts only grounded human studies toward the clinical need.
+      **The default stays `lexical`.** A synthetic control (every chosen paper
+      given grade 3; not model output) reproduced the audit's lexical numbers.
+      Evidence-aware read 2→4 (obesity) and 2→5 (asthma) human studies at
+      40/16, but asthma's reference-target mentions in the papers read fell
+      from 9 to 5. Only a matched real-model benchmark can decide the default.
+    - *Done - section sentence limits* (`report.yaml` `sentences`) are parsed
+      and the maximum is enforced after the citation guard. No section is
+      padded to reach its minimum.
+    - *Open:*
+      - Human-number prioritisation in `best_units`, and the bounded retry
+        or fallback for an Answer with no numbers. These need a
+        scientist-adjudicated `evals/litreview/goldset.jsonl`, which does
+        not exist yet (item 23).
+      - Adaptive batch expansion (80/32 caps).
+      - Curated aliases.
+      - The real-model before/after comparison on the frozen
+        obesity/asthma corpora.
     - *Size:* big.
-11. **Background from reviews is not covered.**
-    - *Evidence:* 0 of the obesity review facts were supported by the
-      collected papers.
-    - *Fix:* this is the client decision in old step 28.
-
-## C. Evidence integrity
-
-12. **Retraction status can be stale or incomplete.**
-    - A separate retraction notice is not linked to its original.
-    - "Expression of Concern" is not surfaced.
-    - Retraction status is frozen at search time.
-    - *Fix:* follow Europe PMC's correction links, add a flag that is shown
-      (not an exclusion), and add the outside retraction-refresh lane (old
-      step 54).
-    - *Size:* medium.
-13. **`verify-run` does not say the rules changed.** *Fixed.*
-    `runner.stale_reasons()` compares a run's recorded `code_version` and
-    `input_hashes` against today's and returns plain-English notes ("code
-    changed: ... -> ...", "pipeline.yaml changed since this run"). Both
-    `verify-run` and `/reviews --verify` print them as indented notes.
-    - They are never counted as violations and cannot change the exit code:
-      "no violations" means the report is still sound, and that is a
-      different question from whether it is still current. A run written
-      before `code_version` existed returns no notes rather than a false
-      alarm.
-    - *Evidence:* `tests/litreview/test_runner_staleness.py` - a fresh run
-      reports nothing, and a mutated `code_version` or `input_hashes` entry
-      each produce their note.
+11. **Background from reviews is not covered.** *Done (owner decision, 26 September 2026: keep all the
+    evidence, in a separate area with links).*
+    - Every report now has a "Background from reviews (not primary evidence)" section. It lists the review
+      articles collected for the exact subject, most relevant first: 12 with up to two quote-checked
+      sentences from their own abstracts and a link, then up to 40 more as links.
+    - The section is written by code, not a model. `invariants.check_background` holds every quote to the
+      review's text.
+    - Reviews are counted nowhere else: not in targets, the evidence table or the Answer.
+    - Retracted reviews are not shown; flagged ones carry the notice.
+    - *Not built:* following each review's citations to fetch the trials it cites (old step 28, option 3).
+12. **Retraction status can be stale or incomplete.** *Done, with the owner's decisions of 26 September 2026.*
+    - *What is parsed and stored:*
+      - `publication_integrity.py` parses Europe PMC `commentCorrectionList`, PubMed `CommentsCorrections`
+        and Crossref `update-to`/`updated-by`, keeping direction. "Retraction in" on the paper's own record
+        means the paper is retracted; "Retraction of" on a notice means the record *is* a notice.
+      - Observations are append-only, with raw responses stored by hash.
+      - Status and freshness are derived from them with a clock. A failed lookup erases nothing.
+    - *Automatic by default.* Each new review asks PubMed (PMIDs) and Crossref (papers with only a DOI)
+      about its papers before reading them:
+      - It sends identifiers only, never the question.
+      - It skips papers checked in the last `integrity.stale_after_days` (7).
+      - It stops at once with no network, and keeps to a 90-second budget.
+      - When it finds a concern, retraction or reinstatement, it looks the notice up. The notice's own title
+        and opening words come from PubMed, Crossref or Europe PMC open-access full text.
+    - *Manual as an option.* Scientists switch with `/reviews settings manual` in the app, which explains
+      both choices in plain words. `integrity_checks` in `[litreview]` sets a site default, and
+      `BEDROCK_LITREVIEW_INTEGRITY_CHECKS` overrides both. The review's start notice says which mode is on.
+      Reports say how many papers read have never been checked, and when the automatic check stopped early.
+    - *Crossref may be contacted directly* (owner decision). `api.crossref.org` is on a separate allowlist
+      used only by the retraction check (`INTEGRITY_HOSTS`); the literature search cannot reach it.
+    - *Retractions* keep a paper out of new runs, as before.
+    - *Expressions of concern* (owner decision: "don't recommend it, don't hide it"):
+      - The paper stays in.
+      - Its findings are ranked after all other evidence.
+      - They are never used in the Answer, and the Answer names any target left out for that reason.
+      - They are marked ⚠ in the evidence table.
+      - Each reference quotes the notice and links to it.
+    - *Corrections* are flagged only.
+    - *Reinstatement* (owner decision):
+      - A paper that was retracted and later reinstated is never added back automatically.
+      - The report and the review's progress say so.
+      - A scientist adds it back with `/reviews reinstate <paper>`, or
+        `bedrock-litreview integrity include <paper> --by <name>`. `--undo` / `exclude` reverses it. The
+        decision is recorded append-only with who and when, and shown in later reports.
+      - Only a paper with a recorded reinstatement can be added back.
+    - *What a run knew is pinned* in its `publication_integrity_snapshot.v1`. A later notice is an advisory
+      on `verify-run`; stored reports never change.
+    - *Tested against captured public responses only.* No provider was exercised live by this branch.
+    - *Open:*
+      - PMCID-only papers are not checked (no validated lookup).
+      - The seven-day re-check interval is a default, not a guarantee.
+13. **`verify-run` does not say the rules changed.** *Done.*
+    - `assess_run` answers three separate questions: are the pinned
+      artifacts intact, do today's checks pass, and is today's environment
+      the one the run recorded?
+    - New runs record `verification_context.v1` per invocation. It covers the
+      config/knowledge roles and hashes of the bytes actually loaded, prompt
+      file hashes, code identity and how it was found, a verifier source
+      fingerprint, and schema hashes.
+    - A changed environment is reported (exit 0), never counted as a
+      violation. `verify-run --require-same-rules` fails on drift or
+      incomplete comparability, for CI.
+    - Legacy runs compare what they recorded and say what they did not.
+      Editing `pipeline.yaml` in this branch means every older run now
+      reports that file as changed. That is expected and correct.
 14. **Determinism on vLLM is unproven** (old step 36). Every benchmark run here
     re-ran identically, but through the call cache.
+    - *Done - cache identity.*
+      - The call-cache key now includes a `generation_context.v1`: seed,
+        thinking policy, weights digest or `None`, declared revision, template
+        and deployment, server, and normalisation.
+      - The audit's probe (seed 1 replayed seed 0 with zero calls) now calls
+        the server.
+      - A client that cannot identify itself is never replayed.
+      - Old cache entries are kept; they are replayed only with
+        `bench run --legacy-cache-read`. Expect every existing entry to miss
+        once.
+    - *Done - honest labels.* `bench run`'s gate is now "same report twice
+      (cached replay, not fresh inference)" when it went through the cache.
+      Historical scorecards keep their old wording.
+    - *Done - harness, not run.*
+      - `bench determinism` runs a cell. Fresh mode needs the backend's
+        request observer and fails any reply that did not reach the server.
+        Records are append-only.
+      - `bench determinism-payloads` renders the payloads; 20 pinned ones are
+        in `evals/litreview/determinism/payloads.jsonl`.
+      - `bench replay-control` is the recorded-output rendering control.
+    - **No fresh-inference cell has been run.** It needs the deployed vLLM
+      server, an approved compute budget, and (for restarts) IT. Until then
+      the accurate statement is: deterministic orchestration over pinned
+      inputs; reproducible cached replay and rendering from pinned outputs;
+      fresh-inference repeatability is deployment-specific and unmeasured.
 
 ## D. Deployment and IT
 
@@ -539,6 +648,7 @@ What is left:
     - *Fix:* report the judged fraction beside every score and refuse to
       compare two runs whose judged fractions differ materially.
     - *Size:* small.
+    - *Size:* small to medium.
 
 ## Long-term
 

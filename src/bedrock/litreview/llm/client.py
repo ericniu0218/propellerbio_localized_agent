@@ -34,6 +34,12 @@ from typing import Any, Callable, Protocol, runtime_checkable
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 2048
 
+GENERATION_CONTEXT_VERSION = "generation_context.v1"
+"""Bumped whenever the set of things a generation context names changes."""
+NORMALIZATION_VERSION = "strip_thinking.v1"
+"""Bumped whenever `strip_thinking` changes: what a client returns - and so
+what the call cache stores - is the reply after it."""
+
 log = logging.getLogger(__name__)
 
 # Thinking traces some models write before a free-text answer: MedGemma 1.5
@@ -121,6 +127,10 @@ class FakeLLMClient:
 
     def version_of(self, model: str) -> str:
         return self._version
+
+    def generation_context(self, model: str) -> dict[str, Any]:
+        return {"schema": GENERATION_CONTEXT_VERSION, "client": "fake", "model": model,
+                "version": self._version, "normalization": NORMALIZATION_VERSION}
 
 
 def parse_json_reply(raw: str) -> dict[str, Any]:

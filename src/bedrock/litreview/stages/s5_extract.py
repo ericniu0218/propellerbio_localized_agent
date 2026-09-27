@@ -582,14 +582,24 @@ def extract_paper(
     methods_chars: int = 2500,
     knowledge: Knowledge | None = None,
     stats: Counter | None = None,
+    outcomes: dict | None = None,
 ) -> list[EvidenceUnit]:
     """Extract every verified finding from one paper.
 
     A chunk that fails is logged and skipped. One bad chunk must never take
     down a paper, and one bad paper must never take down a report.
+
+    `outcomes`, when given, is filled with what happened to each chunk - sent,
+    failed, how many findings it proposed and why each rejected one was
+    rejected - and which units the paper kept. Bookkeeping only: it changes
+    no call and no result, and feeds the run's coverage ledger (`coverage.py`).
     """
     kb = knowledge or load_knowledge()
     stats = stats if stats is not None else Counter()
+    chunk_log: list[dict] = []
+    if outcomes is not None:
+        outcomes.clear()
+        outcomes.update({"chunks": chunk_log, "review_discarded": False, "unit_ids": [], "duplicates": 0})
     prompt_version = load_prompt(PROMPT).version
     model_version = version_of(client, model)
     schema = extraction_schema(facets)
@@ -601,7 +611,13 @@ def extract_paper(
     abbreviations = paper_abbreviations(paper)
 
     units: list[EvidenceUnit] = []
-    for section, chunk_i, text in plan_chunks(paper, job, query, chunk_chars=chunk_chars, max_chunks=max_chunks):
+    planned = plan_chunks(paper, job, query, chunk_chars=chunk_chars, max_chunks=max_chunks)
+    if outcomes is not None:
+        outcomes["planned"] = [f"{section}:{i}" for section, i, _ in planned]
+    for section, chunk_i, text in planned:
+        entry = {"id": f"{section}:{chunk_i}", "status": "failed", "findings": 0, "rejected": {}}
+        chunk_log.append(entry)
+        before = Counter(stats)
         prompt = render_prompt(spec, facets, job, section, text, methods)
         try:
             result = _extract_chunk(prompt, schema, client, model=model)
@@ -610,12 +626,16 @@ def extract_paper(
             stats["chunk_failed"] += 1
             continue
         stats["chunks"] += 1
+        entry["status"] = "completed"
         if result.is_review:
             stats["review_chunks"] += 1
+            entry["status"] = "review"
             if section == "abstract":
                 # The paper describes itself as a review: a review citing a
                 # trial is not a trial. Nothing from it counts.
                 log.info("paper=%s reads as a review; discarding its findings", paper.id)
+                if outcomes is not None:
+                    outcomes["review_discarded"] = True
                 return []
             continue
 
@@ -754,10 +774,20 @@ def extract_paper(
             if unit.outcome_measure:
                 stats["target_outcome_measure"] += 1
             units.append(unit)
+        if outcomes is not None:
+            delta = Counter(stats)
+            delta.subtract(before)
+            entry["findings"] = delta.pop("findings", 0)
+            entry["rejected"] = {k: v for k, v in sorted(delta.items())
+                                 if v > 0 and k not in ("chunks",) and not k.endswith("_corrected")
+                                 and not k.endswith("_unlocated")}
 
     kept = dedupe_within_paper(units)
     stats["duplicates"] += len(units) - len(kept)
     stats["kept"] += len(kept)
+    if outcomes is not None:
+        outcomes["unit_ids"] = [u.id for u in kept]
+        outcomes["duplicates"] = len(units) - len(kept)
     return kept
 
 
@@ -770,6 +800,7 @@ def extract_plan(
     *,
     model: str,
     progress=None,
+    traces: dict[str, dict] | None = None,
     **kwargs,
 ) -> tuple[list[EvidenceUnit], dict[str, int]]:
     """Extract across the whole plan; returns the units and the reject tally.
@@ -781,7 +812,10 @@ def extract_plan(
     stats: Counter = Counter()
     all_units: list[EvidenceUnit] = []
     for i, job in enumerate(plan.jobs, 1):
-        units = extract_paper(papers[job.paper_id], job, spec, facets, client, model=model, stats=stats, **kwargs)
+        outcomes = None if traces is None else traces.setdefault(job.paper_id, {})
+        units = extract_paper(
+            papers[job.paper_id], job, spec, facets, client, model=model, stats=stats, outcomes=outcomes, **kwargs
+        )
         all_units.extend(units)
         if progress:
             progress(f"extracted {i}/{len(plan.jobs)} papers, {len(all_units)} findings")

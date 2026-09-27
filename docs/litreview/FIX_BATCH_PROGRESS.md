@@ -55,7 +55,9 @@ This is why the rerun is not a formality. Both of these were invisible to
   the obesity corpus deleted a faithful sentence: obesity E189's qualifier
   states a fact and then speculates about its cause, and the report sentence
   repeated only the fact. Narrowed in `0a2822f` with tests from the real
-  sentences. Obesity is worth one more run to confirm.
+  sentences, and **confirmed by re-running obesity** (`20260927T082510Z`): the
+  same sentence is drafted again and kept, the hedge reason appears zero times,
+  `sentences_kept` 32 against 31.
 - **Obesity's "no distractor leaked" gate had never run.** It passed on
   26 September with `distractors.json` equal to `{}`. The rerun built 5 and
   2 leaked. A real, pre-existing weakness, newly visible - not a regression

@@ -68,6 +68,21 @@ unhedged, and a legitimate finding was deleted. Fixed in `0a2822f`, with both
 narrowings tested from these real sentences; the asthma S25 case the rule
 exists for is still caught.
 
+**Confirmed by re-running obesity after the fix** (`20260927T082510Z`). The
+writer drafted the same sentence again, and the guard now keeps it: the
+identical text citing E189 is `"kept": true, "drop_reason": null`, where in
+`20260927T070944Z` it was `"kept": false` with `"drops a hedge the cited
+evidence carries"`. The hedge reason appears zero times in the whole report,
+`sentences_kept` is 32 against 31, and `sentences_dropped` is 14 against 15 -
+one sentence recovered, and nothing else changed hands. `integrity check
+passes` and `claims supported by citations` still PASS. Overall 67.90.
+
+Two other things that rerun settles. `judge catches flipped effects` came back
+PASS on the same corpus where it had FAILed twice, which is further evidence it
+is the flaky gate of item 25 rather than a property of the pipeline. And `no
+distractor leaked` FAILs again at exactly 0.40, unchanged by the hedge fix,
+which is what a genuinely pre-existing weakness should do.
+
 **Obesity leaks 2 of 5 distractor papers, and always did.** `no distractor
 leaked` FAILs at a 0.40 leak rate, where the two pre-batch runs PASSed — but
 their `distractors.json` is `{}`. No distractors were ever made, so that gate

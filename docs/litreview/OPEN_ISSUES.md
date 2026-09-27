@@ -246,8 +246,12 @@ What is left:
      the cautious side of the trade on purpose - a claim hedging one clause
      while unhedging another is now missed, because a missed hedge leaves a
      claim slightly too firm where a false drop deletes a faithful sentence.
-   - *Size:* done. Obesity should be re-run once to confirm the false drop is
-     gone; the fix has a test from the real sentences either way.
+   - *Confirmed by re-running obesity* (`20260927T082510Z`): the writer drafted
+     the same sentence again and the guard now keeps it - identical text citing
+     E189, `kept: true`, no drop reason, where before it was dropped for the
+     hedge. The hedge reason appears zero times in the report, and
+     `sentences_kept` is 32 against 31.
+   - *Size:* done.
 4. **Two evidence labels are still wrong on purpose.** *Mostly fixed.* The
    evidence type now comes from the quote's own words (cells in a dish are
    `in_vitro` even when the context names mice; human tissue is

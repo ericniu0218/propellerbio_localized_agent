@@ -73,6 +73,18 @@ evidence it cites:
    sentence naming it is shown (`naming_quote`) - so "tubastatin A, acting
    on HDAC6, reduced food intake" is kept. Kept too when another cited quote
    names it and reports a result.
+10. A sentence's claim rests on the **quote**. The context, qualifier and
+    naming sentences are the paper's text too, so checks 2-9 are happy when
+    the writer simply restates one of them and cites a unit whose quote says
+    something else ("However, whether the CCL2-CCR2 signalling pathway
+    contributes to chronic migraine is not clear", citing a quote about
+    elevated CCL2 in CSF). Those sentences are shown so they can add a name,
+    a limit, a subject or a sample size to the quote's finding - never so
+    they can be the whole of it. So a sentence must state one of the quote's
+    numbers, or take words from the quote that it could not have taken from
+    the sentences shown beside it; if those supplied all of its content, or
+    several times as much as the quote did, it is restating one of them and
+    is dropped.
 
 The cited evidence is the paper's text, never what the model wrote beside it.
 `effect_detail`, `species_raw` and a sample size the paper does not state are
@@ -281,6 +293,13 @@ class CitationGuard:
         # another the passage named (the IL-23 / IL-17A probe; check 9).
         if (why := misattributes(sentence, masked, cited, self.kb)):
             return GuardResult(False, why)
+        # The sentence is one of the other sentences shown beside the quote -
+        # the qualifier, the context or the naming sentence - and the quote it
+        # cites says something else (check 10). Every cited unit has to fail
+        # this for the sentence to go: one quote it really does rest on is
+        # enough, since the sentence may be citing the others for a name.
+        if not any(rests_on_quote(sentence, masked, u) for u in cited):
+            return GuardResult(False, "restates the context, qualifier or naming sentence, not the quote it cites")
 
         # Which way a result points. A sentence may say something did not work
         # only if the paper's own displayed text says so: the MedGemma run
@@ -456,6 +475,73 @@ def drops_not_significant(sentence: str, cited: list[EvidenceUnit]) -> str | Non
     if not restates:
         return None
     return "drops the qualifier the paper states: not significant"
+
+
+# How much more of a sentence the other displayed sentences may supply than
+# the quote does before the sentence is one of them rather than a reading of
+# the quote. Five, measured: at four a good sentence that states the quote's
+# finding and then borrows the context sentence's detail ("AhR activation
+# reprograms the allergen-induced epithelial response, suppressing ROS
+# generation ... in bronchial epithelial cells and mouse lungs") is lost; at
+# eight a sentence that is the context sentence with one word of the quote's
+# in it survives. Five and six give the same answer on all three stored
+# reports, which is the only reason to trust the number at all.
+QUOTE_SHARE = 5
+
+
+def rests_on_quote(sentence: str, masked: str, unit: EvidenceUnit) -> bool:
+    """Does this sentence's content come from the unit's quote, rather than
+    only from the other sentences shown beside it? Check 10 in the module
+    docstring.
+
+    The comparison is what each side contributes that the other does not, so
+    that words both of them use (usually the target's name) decide nothing:
+
+    - `own`: content words and numbers the sentence shares with the quote
+      alone. `content_words` (`extract/verify.py`, the same reading check 8
+      uses) is what counts as content: four letters or more, or a name with a
+      digit in it, minus filler and result words.
+    - `borrowed`: the ones it shares with the context, qualifier and naming
+      sentences alone.
+
+    A number is the strongest signal there is that a sentence is reporting
+    the quote's result, so any number of the quote's settles it, whether or
+    not the other sentences repeat that number: "Montelukast at a dose of
+    3.0 mg/kg achieved a potentially therapeutic Cmax in children with ...
+    exacerbations" states the quote's own "3.0 mg/kg" result and takes only
+    its population from the context. After that: nothing borrowed means the
+    other sentences added nothing the quote did not, so there is nothing to
+    suspect. Otherwise the quote has to have supplied a fair share of what
+    the sentence says - see `QUOTE_SHARE`.
+
+    Numbers are read from `masked`, the sentence with known names blanked,
+    so the "2" of "type 2 diabetes" is not read as one of the quote's
+    figures. Words are read from the sentence itself, because a name blanked
+    out of it is exactly the kind of content this check is weighing.
+
+    One of the shown sentences counts as the quote's own: a qualifier that
+    `extract/verify.py` recognises as saying this quote's result was not
+    significant. That sentence is, by that test, *about* the quote's result,
+    so a sentence reporting the limit is still reporting the quote's finding
+    - and check 8 above is what governs those. The qualifiers the four known
+    failures restate are not of that kind: they are merely the paper's next
+    sentence, reporting something else.
+    """
+    quote = clean(unit.quote)
+    limit = unit.qualifier_quote if _not_significant(unit) else None
+    if limit:
+        quote += " " + clean(limit)
+    others = clean(" ".join(p for p in _shown(unit)[1:] if p != limit))
+    said_numbers, said_words = numbers_in(masked), content_words(clean(sentence))
+    quote_numbers, quote_words = numbers_in(quote), content_words(quote)
+    other_numbers, other_words = numbers_in(others), content_words(others)
+    if said_numbers & quote_numbers:
+        return True
+    own = said_words & (quote_words - other_words)
+    borrowed = (said_words & (other_words - quote_words)) | (said_numbers & (other_numbers - quote_numbers))
+    if not borrowed:
+        return True
+    return len(own) * QUOTE_SHARE > len(borrowed)
 
 
 def unbacked_people(masked: str, cited: list[EvidenceUnit]) -> str | None:

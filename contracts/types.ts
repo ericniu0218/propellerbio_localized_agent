@@ -62,7 +62,8 @@ export type EventType =
   | "approval.resolved"
   | "task.completed"
   | "task.failed"
-  | "usage.updated";
+  | "usage.updated"
+  | "session.resync";
 
 // ---------------------------------------------------------------------------
 // Core models
@@ -221,6 +222,20 @@ export interface UsageUpdatedPayload {
   budget_for_task: number;
 }
 
+/** Sent instead of a normal replay when a reconnecting client's
+ * Last-Event-ID is older than the server's bounded event buffer still
+ * holds (or the server has no history at all — e.g. after a restart).
+ * `events` is the most recent window the server still has, not a
+ * complete history — there is a gap before it the client cannot recover.
+ * `terminal`, if present, is the session's most recent task.completed/
+ * task.failed event, kept outside the bounded buffer specifically so a
+ * client can learn a run finished even if that event itself was evicted. */
+export interface SessionResyncPayload {
+  reason: "gap" | "unknown_last_event_id" | "no_history";
+  events: Event[];
+  terminal: Event | null;
+}
+
 /** Maps an EventType to its payload shape — use to type-narrow `Event.payload`. */
 export interface EventPayloadMap {
   "session.started": SessionStartedPayload;
@@ -238,11 +253,17 @@ export interface EventPayloadMap {
   "task.completed": TaskCompletedPayload;
   "task.failed": TaskFailedPayload;
   "usage.updated": UsageUpdatedPayload;
+  "session.resync": SessionResyncPayload;
 }
 
-/** Envelope for every event on the SSE stream (`GET /sessions/{id}/events`). */
+/** Envelope for every event on the SSE stream (`GET /sessions/{id}/events`).
+ * `seq` is a monotonically increasing per-session counter (starting at 1)
+ * — this is what the SSE wire `id:` field carries and what a reconnecting
+ * client sends back as `Last-Event-ID`. Separate from `event_id`, a random
+ * identity used elsewhere (e.g. audit logging), not meant for ordering. */
 export interface Event<T extends EventType = EventType> {
   event_id: string;
+  seq: number;
   type: T;
   session_id: string;
   timestamp: string; // ISO 8601

@@ -67,3 +67,8 @@ class EventType(StrEnum):
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     USAGE_UPDATED = "usage.updated"
+    # Sent instead of a normal replay when a reconnecting client's
+    # Last-Event-ID is older than what the (bounded) server-side buffer
+    # still holds — see app/events/bus.py. Never part of the "live" event
+    # sequence; only ever the first thing sent after such a reconnect.
+    SESSION_RESYNC = "session.resync"

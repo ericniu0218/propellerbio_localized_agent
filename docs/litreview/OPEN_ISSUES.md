@@ -25,7 +25,7 @@ found three bugs no test had (items A5, A6 and A7 in the fixed list — a
 methods sentence counting as a result because "diet-induced" contains
 "induced", the guard trusting the extraction model's own `no_effect` label,
 and a hypothesis reported as a finding) and one flaw in the benchmark itself
-(item 26). **Run the benchmark after changing an accuracy rule, not only the
+(item 25). **Run the benchmark after changing an accuracy rule, not only the
 tests.**
 
 Each item says what goes wrong, the evidence, where in the code, and a
@@ -34,31 +34,70 @@ few days, big is a week or more, or needs a decision first.
 
 Evidence labels such as "asthma S41" refer to the hand-audit sheets in
 [`evals/litreview/hand_audit/`](../../evals/litreview/hand_audit/). Each
-sheet shows a sampled report sentence beside the paper text around its quote,
-and `grades.jsonl` holds the grade and a note for every sentence.
-`audit_sheet.py` there rebuilds a sheet from any stored report.
+sheet shows a sampled report sentence beside the paper text around its quote.
+`grades.jsonl` holds the grade and a note for every sentence of the first
+audit (`qwen_*.md`, `claude_obesity.md`); `grades_after.jsonl` does the same
+for the audit of the reports this branch produces (`qwen_*_after.md`). An
+"after" label below means the second sheet. `audit_sheet.py` there rebuilds a
+sheet from any stored report.
 
 ## Where the audit left things
 
-- **Hand audit.** 15 random sentences per report, read against the full
-  paper text:
-  - qwen3:8b: 38 of 45 faithful to their papers.
-  - Claude as the model, same pipeline, obesity: 15 of 15.
-- **Judge.** The benchmark's strong judge sees only the quote and its context
-  sentence. It scored "claims supported by their citations" as follows:
-  - qwen3:8b: 0.98 (obesity), 0.87 (asthma), 0.86 (migraine).
-  - Claude as the model, obesity: 0.89.
-- **What that means.**
-  - The qwen3:8b gap between judge and hand audit is items 1–5 below: errors
-    the judge cannot see, because the problem is in the paper text around
-    the quote.
-  - The Claude-model report lost its judge points mostly to item 6. A
-    stronger writer attaches each finding's target to the sentence, and the
-    quote does not say it.
-  - 15 sentences per report is a small sample: the hand audit of that report
-    did not happen to draw one of those sentences.
-- **Code checks.** Every report passed every one. Quotes were always the
-  paper's own words.
+Two measurements, before the section A fixes (25–26 September) and after
+them (26 September, same questions, same frozen searcher corpora, same
+qwen3:8b at temperature 0, replayed through the model-call cache).
+
+- **Hand audit.** 15 random sentences per report, read against the full paper
+  text. Sheets and grades: `qwen_*.md` / `grades.jsonl` for before,
+  `qwen_*_after.md` / `grades_after.jsonl` for after.
+
+  | | before | after |
+  |---|---|---|
+  | obesity | 13 of 15 | 12 of 15 |
+  | asthma | 10 of 15 | 14 of 15 |
+  | migraine | 15 of 15 | 14 of 15 |
+  | **all three** | **38 of 45** | **40 of 45** |
+
+  Claude as the model, same pipeline, obesity, before: 15 of 15.
+- **Judge.** "Claims supported by their citations", strong judge through the
+  file seam:
+
+  | | before | after |
+  |---|---|---|
+  | obesity | 0.98 | 0.86 |
+  | asthma | 0.87 | 0.95 |
+  | migraine | 0.86 | 0.93 |
+
+  Overall score (0–100): 72.2 → 66.6, 64.6 → 68.2, 67.0 → 80.0. Every gate
+  passes on all three, including the benchmark-validity gate.
+- **Read those numbers carefully.**
+  - **They are not a controlled comparison.** The two runs were judged by
+    different raters — see item 25 — and the claims themselves changed, so
+    most answers are new. Treat them as indicative.
+  - **The obesity drop is mostly the rater, not the pipeline.** Today's
+    judges mark an added interpretation as unsupported: of the seven
+    obesity claims that lost points, five add a clause the paper does not
+    state ("suggesting a role for NOX2 in atrial remodeling", "indicating a
+    protective effect against hyperglycemia", "to assess its preventive
+    effects"). The earlier judge scored that shape *supported* — its own
+    obesity run contains "…, suggesting a potential link…" marked supported.
+    The same strictness applied to asthma and migraine, and both rose.
+  - **The failure classes changed, which is the real result.** The errors
+    the fixes targeted did not recur in the new sample: no invented
+    efficacy, no dropped "not significant" qualifier, no other study's
+    result presented as the paper's, no AhR/AHR collision, and no filler
+    sentence in a findings section (the before-audit flagged three). What
+    the after-audit found instead is one new class, all five of its
+    non-faithful sentences: **the writer builds a sentence out of a
+    qualifier or naming sentence while citing a quote that says something
+    else** (item 3 below).
+  - 15 sentences per report is a small sample, and two AI raters are not a
+    scientist (item 21).
+- **Code checks.** Every report passed every one, before and after. Quotes
+  were always the paper's own words.
+- **What the rerun cost.** About 25 minutes per question on a 16 GB M4 with
+  a warm extraction cache, and the disk filled through swap once; see
+  item 20.
 
 ## A. Report accuracy
 
@@ -111,24 +150,44 @@ What is left:
    - *Fix:* fall back to the disease context (an asthma paper's bare "AHR" is
      the measure), or ask for a scientist's ruling once and store it.
    - *Size:* small.
-3. **A displayed naming sentence can carry a whole report sentence.** *Partly
-   fixed.* A target or agent found only elsewhere in the passage must now be
-   in text the reader sees, or the finding is dropped: the sentence that
-   names it is stored, anchored, rendered and given to the writer, and guard
-   check 9 stops a sentence giving the quote's result to a name the quote
-   does not state (the IL-23/IL-17A probe). 106 of 593 units gain a naming
-   sentence; no kept sentence was a misattribution.
-   - *What is left:* the naming sentence is citable text, so its numbers are
-     citable too, and the writer can build a sentence almost entirely out of
-     it. In the new obesity report, S6 reads "In animal studies, shRNA
-     sequences targeting Gpr75, sh517 and sh1109, reduced Gpr75 mRNA and
-     protein levels in HEK293 cells by approximately 80% and 60%", citing a
-     quote about female mice gaining weight; every number comes from the
-     naming sentence, and "in animal studies … in HEK293 cells" contradicts
-     itself.
-   - *Fix:* a sentence's result must come from the quote; a naming sentence
-     may supply a name, not a finding. Consider citing the naming sentence as
-     its own unit instead.
+3. **A sentence can be built out of the qualifier or the naming sentence
+   instead of the quote.** *This is the one new failure class, and it was
+   introduced by the fixes themselves.* Giving the reader the qualifying next
+   sentence (the old item 1) and the sentence that names the target (the old
+   item 6) also made both of them citable, and the writer now mines them: it
+   writes a sentence whose content is one of those sentences, while citing a
+   unit whose **quote** says something else. The guard cannot see it, because
+   every word really is the paper's text.
+   - What the naming half already does right: a target or agent found only
+     elsewhere in the passage must now be in text the reader sees or the
+     finding is dropped; the naming sentence is stored, anchored, rendered
+     and given to the writer; and guard check 9 stops a sentence giving the
+     quote's result to a name the quote does not state (the IL-23/IL-17A
+     probe). 106 of 593 units gain a naming sentence, and no kept sentence
+     was a misattribution of that kind.
+   - *Evidence:* all five non-faithful sentences in the after-audit.
+     - obesity S6 (*misleading*): "In animal studies, shRNA sequences
+       targeting Gpr75, sh517 and sh1109, reduced Gpr75 mRNA and protein
+       levels in HEK293 cells by approximately 80% and 60%" — cites a quote
+       about female mice gaining weight; every number comes from the naming
+       sentence, and "in animal studies … in HEK293 cells" contradicts
+       itself.
+     - obesity S18 and S29, migraine S5 (*weak_citation*): the sentence is
+       the qualifier verbatim, and the cited quote is a different result
+       (S29's quote is a textbook line about AMPK).
+     - asthma S25 (*misleading*): "Leukotriene mediated airway inflammation
+       **is associated with** insufficient response…" from a background
+       sentence that says "**potentially due to** leukotriene mediated
+       airway inflammation" — the hedge is dropped and the speculation is
+       filed under mechanism.
+   - *Fix:* require a kept sentence's claim to rest on the **quote**; the
+     context, qualifier and naming sentences may add a name, a limit or a
+     subject, never be the sole source. A cheap version: the sentence must
+     share content with the quote (the same measure, or one of its numbers)
+     and not only with the other displayed sentences. Two independent
+     auditors picked this out as the single highest-value fix. Also strip a
+     leading "However,"/"Moreover," from a lifted sentence, and never drop a
+     hedge the source sentence carries.
    - *Size:* medium.
 4. **Two evidence labels are still wrong on purpose.** *Mostly fixed.* The
    evidence type now comes from the quote's own words (cells in a dish are
@@ -187,24 +246,49 @@ What is left:
      first. Until then, any change to `RESULT_WORDS` must be re-measured on
      the stored reports with `recheck.py`.
    - *Size:* medium, or big if folded into item 5.
+9. **Smaller things the after-audit saw, each small on its own.** All are in
+   `grades_after.jsonl` with the sentence that shows them.
+   - A **corrupted sentence reaches the reader**: obesity S13 begins
+     "Hypoth, hypothalamic Sik3 mRNA levels …". Nothing checks a sentence for
+     a dangling fragment or a repeated stem.
+   - A **structured-abstract label sits inside a quote**: asthma E1's quote
+     starts "Background and Purpose: Children with acute asthma…". The
+     splitter does not strip `Background and Purpose:` / `Key Results:` /
+     `Conclusion and Implications:`, which also defeats any section filter.
+   - **Context selection is by proximity, not relevance**: obesity E74's
+     context sentence is "Mice were excluded from experiments if they showed
+     any sign of morbidity."; E190's is about transgenic overexpressing mice
+     attached to a knockout result.
+   - **Near-duplicate sentences still reach one report** (obesity S23/S24 on
+     one unit; asthma S32/S34). The cross-section repeat check catches an
+     identical sentence, not a reworded one.
+   - **A drug or a metabolite is still filed as a target**: `targets:AEs`,
+     `targets:SAEs`, `targets:eptinezumab`, `targets:acetyl-CoA`,
+     `targets:15-keto-PGE2`. The outcome-measure list (item 2) covers the
+     measures it knows; it does not cover a drug or a metabolite in the
+     target slot.
+   - **A direction label can contradict its own quote**: migraine E4 is
+     `direction=activate` for MEDI0618, an antibody that blocks PAR2.
+   - *Size:* small each; the sentence-sanity check and the abstract-label
+     strip are the two worth doing first.
 
 ## B. Completeness
 
-9. **Few of the known targets reach the report.**
+10. **Few of the known targets reach the report.**
     - *Evidence:* reference-target recall of 0.11 (obesity) and 0.06
       (asthma), against targets that are named in the collected papers. Only
       40 papers are graded and 16 read per question.
     - *Fix:* old steps 25–27 in `BENCHMARK_RESULTS.md`: pre-select by study
       design, plan by evidence type, put the key human numbers in the Answer.
     - *Size:* big.
-10. **Background from reviews is not covered.**
+11. **Background from reviews is not covered.**
     - *Evidence:* 0 of the obesity review facts were supported by the
       collected papers.
     - *Fix:* this is the client decision in old step 28.
 
 ## C. Evidence integrity
 
-11. **Retraction status can be stale or incomplete.**
+12. **Retraction status can be stale or incomplete.**
     - A separate retraction notice is not linked to its original.
     - "Expression of Concern" is not surfaced.
     - Retraction status is frozen at search time.
@@ -212,47 +296,47 @@ What is left:
       (not an exclusion), and add the outside retraction-refresh lane (old
       step 54).
     - *Size:* medium.
-12. **`verify-run` does not say the rules changed.**
+13. **`verify-run` does not say the rules changed.**
     - It re-checks an old run under today's code and knowledge tables, and
       does not say when those changed since the run (`report/invariants.py`
       `verify_run`). The run records input hashes, so this is available.
     - *Fix:* print a note when a hash differs.
     - *Size:* small.
-13. **Determinism on vLLM is unproven** (old step 36). Every benchmark run here
+14. **Determinism on vLLM is unproven** (old step 36). Every benchmark run here
     re-ran identically, but through the call cache.
 
 ## D. Deployment and IT
 
-14. **The `office` model set needs IT's real model names.**
+15. **The `office` model set needs IT's real model names.**
     - It names two placeholder models at one server address
       (`defaults/models.yaml`).
     - *Fix:* IT decides the names, then ship them. See
       INTEGRATION_REVIEW fix #2 and old steps 31 and 33.
     - *Size:* big (decision).
-15. **No re-runnable setup check.**
+16. **No re-runnable setup check.**
     - *Fix:* a `bedrock-litreview doctor` that runs preflight. It should
       also check free disk space, and say when a company server name needs
       `allowed_hosts`. See INTEGRATION_REVIEW #3 and #10.
     - *Size:* small to medium.
-16. **`/review` in the app still uses chat's 120-second timeout.**
+17. **`/review` in the app still uses chat's 120-second timeout.**
     - INSTALL.md now tells laptop users to set `request_timeout = 600`; the
       code does not warn.
     - *Fix:* warn in `/review` preflight on the laptop profile. See
       INTEGRATION_REVIEW #4.
     - *Size:* small.
-17. **A review cannot be deleted.**
+18. **A review cannot be deleted.**
     - `/forget` is complete for chat, not for reviews.
     - *Fix:* add `/reviews forget` and `bedrock-litreview forget`. See
       INTEGRATION_REVIEW #8.
     - *Size:* medium.
-18. **Smaller integration items.** All small; details in INTEGRATION_REVIEW.
+19. **Smaller integration items.** All small; details in INTEGRATION_REVIEW.
     - report files are 0644 (#9)
     - a chat title can run between two review calls (#11)
     - no test checks that `package-data` covers every runtime file (#13)
     - no test checks the "only two modules import `bedrock.inference`" rule
       (#14)
     - the app shows a raw `ModuleNotFoundError` for a stale install (#16)
-19. **A 16 GB laptop is not a review machine.**
+20. **A 16 GB laptop is not a review machine.**
     - qwen3:8b took about two hours per question on a 16 GB M4.
     - With ordinary apps open, its 6.4 GB footprint pushed the Mac into swap
       until the disk filled. The run had to be paused and resumed three
@@ -262,15 +346,15 @@ What is left:
 
 ## E. Measurement
 
-20. **No scientist has checked any accuracy number.** The judge and the hand
+21. **No scientist has checked any accuracy number.** The judge and the hand
     audit were both AI models. A scientist should re-judge at least 40 claims
     blind (old step 23).
-21. **The office model is unmeasured.**
+22. **The office model is unmeasured.**
     - Qwen3-30B-A3B sits between qwen3:8b and Claude.
     - *Fix:* run the five benchmark questions on it, cold and timed, and
       hand-audit 15 sentences per report as done here (old step 37).
-22. **No gold set for extraction** (old step 22).
-23. **The judge must be shown exactly what the reader is shown.** *Fixed, and
+23. **No gold set for extraction** (old step 22).
+24. **The judge must be shown exactly what the reader is shown.** *Fixed, and
     worth guarding.* The report grew two new displayed sentences (the
     qualifier, the naming sentence) before `bench/run.py` `_unit_evidence`
     did, so for one round the judge saw less than the reader and marked
@@ -281,7 +365,7 @@ What is left:
     - *Left:* nothing enforces it. A test that fails when a displayed field
       is added to `_shown` but not to the judge's evidence would.
     - *Size:* small.
-24. **Judge answers on file come from more than one judge.** The scores below
+25. **Judge answers on file come from more than one judge.** The scores above
     mix answers written by an earlier strong judge (the 25–26 September runs)
     with answers written later for the claims this branch changed. Both were
     Claude models, but they are not the same rater, and the earlier ones were
@@ -294,6 +378,6 @@ What is left:
 
 ## Long-term
 
-25. **Semantic retrieval.** Ranking is keyword-based (BM25), so a paper that
+26. **Semantic retrieval.** Ranking is keyword-based (BM25), so a paper that
     says "pH" is not found for "acidity". This is blocked on a deployed
     embedding model; the plan is in `NEXT_STEPS.md` §6.

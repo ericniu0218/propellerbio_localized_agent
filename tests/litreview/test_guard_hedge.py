@@ -168,3 +168,48 @@ def test_the_guard_keeps_the_context_sentence_hedge_when_the_claim_states_it():
     )
     verdict = _guard(_e209()).check(hedged, ["E1"])
     assert verdict.kept, verdict.reason
+
+
+# --- What the benchmark found that these unit tests had not -------------------
+#
+# The hedge rule's only firing on the obesity corpus was a FALSE DROP, found by
+# re-running the benchmark rather than by any test here. Both cases below are
+# built from that real run:
+# evals/litreview/results/obesity-treatment-targets/20260927T070944Z, report
+# cb23593c148f1697, section targets:TMEM135, evidence unit E189 (PMID37773161).
+
+E189_QUALIFIER = (
+    "In contrast to female mice, high fat feeding in male mice did not elicit a significant "
+    "body weight difference between the genotypes, presumably because the already rapid "
+    "diet-induced weight gain in male C57BL/6J mice could not be further increased by the "
+    "TMEM135 inactivation (Supplementary Fig. )."
+)
+E189_CLAIM = (
+    "TMEM135 knockout in mice led to glucose intolerance, hyperinsulinemia, and insulin "
+    "resistance, while high fat feeding in male mice did not elicit a significant body "
+    "weight difference between genotypes."
+)
+
+
+def test_repeating_only_the_unhedged_clause_is_not_dropping_a_hedge():
+    """The paper states a fact ("did not elicit a significant body weight
+    difference") and then speculates about its cause ("presumably because the
+    already rapid diet-induced weight gain ..."). This claim repeats only the
+    fact and never asserts the guess, so nothing was unhedged. The first
+    version of the rule dropped it anyway, because the hedge's governed words
+    share the generic word "weight" with the fact it is explaining."""
+    assert drops_hedge(E189_CLAIM, E189_QUALIFIER) is False
+
+
+def test_a_hedge_worded_differently_is_still_a_hedge():
+    """The source hedges with "potentially due to leukotriene mediated airway
+    inflammation". This claim hedges the same content, but its "potentially"
+    governs "associated with" rather than "leukotriene ...". Comparing the two
+    hedges' governed words called that a drop; a claim that hedges at all is
+    not stating settled fact, so it is left alone."""
+    moved = (
+        "Leukotriene mediated airway inflammation is potentially associated with insufficient "
+        "response to inhaled beta-agonist and systemic corticosteroid in children with acute "
+        "asthma exacerbations."
+    )
+    assert drops_hedge(moved, ASTHMA_QUOTE) is False

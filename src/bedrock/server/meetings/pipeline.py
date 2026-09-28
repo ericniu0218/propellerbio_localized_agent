@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 # The transcription engine is bedrock's own (bedrock.meetings), shipped in the
 # same package, so it is always importable. Only its optional speaker and
 # screen-reading extras are guarded, where they are used.
-from bedrock.inference.openai_compatible import OpenAICompatibleBackend
 from bedrock.meetings.summarize import MeetingSummary, summarize_meeting
 from bedrock.meetings.transcribe import (
     WhisperConfig,
@@ -405,12 +404,19 @@ async def summarise(
     if on_progress:
         on_progress("Writing notes")
 
-    backend = OpenAICompatibleBackend(config.summary_endpoint)
+    # One queue per model server for the whole process (bedrock.server.models.hub):
+    # notes wait behind people's chats on the same server instead of competing
+    # with them, and are sized to the notes model's own window rather than a
+    # laptop's. `notes` in models.yaml reads the same MEETING_SUMMARY_* variables.
+    from bedrock.server.config import load_models_config
+    from bedrock.server.models.hub import get_model_hub
+
+    notes_model = load_models_config().for_role("notes")
     try:
         outcome.summary = await summarize_meeting(
             outcome.cues,
-            backend=backend,
-            model=config.summary_model,
+            scheduler=get_model_hub().scheduler_for("notes"),
+            model=notes_model.model_name,
             title=title,
             meeting_date=meeting_date,
             notes=notes,
@@ -421,7 +427,7 @@ async def summarise(
         logger.warning("Meeting summarisation failed for %r: %s", title, exc)
         outcome.notes.append(
             "The transcript was saved, but notes could not be written because "
-            f"the model at {config.summary_endpoint} did not answer. "
+            f"the model at {notes_model.endpoint} did not answer. "
             "You can ask about this meeting in chat regardless."
         )
         return outcome

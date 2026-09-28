@@ -71,8 +71,6 @@ class RecordingConfig:
     vocabulary: str | None
     language: str
     storage_dir: Path
-    summary_model: str
-    summary_endpoint: str
 
     @classmethod
     def from_env(cls) -> "RecordingConfig":
@@ -100,13 +98,6 @@ class RecordingConfig:
             vocabulary=os.environ.get("MEETING_VOCABULARY") or None,
             language=os.environ.get("MEETING_LANGUAGE", "en"),
             storage_dir=_recording_dir(),
-            # The notes are written by whatever local model this deployment
-            # already runs. Ollama is the development default, the same one
-            # bedrock-private-ai's own meeting CLI assumes.
-            summary_model=os.environ.get("MEETING_SUMMARY_MODEL", "llama3.1:8b"),
-            summary_endpoint=os.environ.get(
-                "MEETING_SUMMARY_ENDPOINT", "http://localhost:11434/v1"
-            ),
         )
 
 

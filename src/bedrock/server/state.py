@@ -22,6 +22,7 @@ def reset_server_state() -> None:
     from bedrock.server.db import base, database
     from bedrock.server.events import bus
     from bedrock.server.meetings import routes as meeting_routes
+    from bedrock.server.models import hub as model_hub
     from bedrock.server.models import registry as model_registry
     from bedrock.server.task_store import store as task_store
     from bedrock.server.tools import registry as tool_registry
@@ -35,6 +36,7 @@ def reset_server_state() -> None:
         task_store.get_task_store,
         approval_gates.get_approval_gate,
         model_registry.get_model_registry,
+        model_hub.get_model_hub,
         tool_registry.get_tool_registry,
         rbac.get_rbac_filter,
         state_store.get_state_store,

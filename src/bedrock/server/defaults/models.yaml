@@ -16,6 +16,7 @@ director:
   supports_thinking_mode: true
   thinking_mode_default: true      # Director should "think a lot" per spec
   api_key_env: DIRECTOR_LLM_API_KEY   # optional; local vLLM usually needs none
+  max_parallel: ${DIRECTOR_MAX_PARALLEL:-8}   # calls at once on this server; roles sharing a server share a queue
   fallback:
     note: "If a second node is available, swap to the higher-quality sibling."
     model_name: deepseek-ai/DeepSeek-V4-Pro-0813
@@ -32,6 +33,7 @@ specialist:
   supports_thinking_mode: true
   thinking_mode_default: false     # only enabled when Director marks a task "hard"
   api_key_env: SPECIALIST_LLM_API_KEY
+  max_parallel: ${SPECIALIST_MAX_PARALLEL:-8}
   fallback:
     note: "Higher-end MoE swap if GPU budget allows; same interface."
     model_name: Qwen/Qwen3.8-2.4T-A95B
@@ -49,11 +51,26 @@ runner:
   supports_thinking_mode: false
   thinking_mode_default: false
   api_key_env: RUNNER_LLM_API_KEY
+  max_parallel: ${RUNNER_MAX_PARALLEL:-8}
   alternatives:
     # Swap the model_name above to any of these for a cheaper/smaller Runner
     # tier; no code changes required.
     - Qwen/Qwen3.8-27B        # if you want Runner and Specialist on shared weights
     - Qwen/Qwen3.5-0.8B       # extreme-low-latency classification-only tier
+
+notes:
+  role: notes
+  # Meeting notes from recorded meetings (bedrock.server.meetings). The
+  # recorder's own variables still set it. The window defaults to 8192, the
+  # laptop-profile window notes were always sized for; raise it with
+  # MEETING_SUMMARY_CONTEXT when this points at a larger server model.
+  model_name: ${MEETING_SUMMARY_MODEL:-llama3.1:8b}
+  endpoint: ${MEETING_SUMMARY_ENDPOINT:-http://localhost:11434/v1}
+  served_via: ollama
+  context_length: ${MEETING_SUMMARY_CONTEXT:-8192}
+  supports_thinking_mode: false
+  thinking_mode_default: false
+  max_parallel: ${MEETING_SUMMARY_MAX_PARALLEL:-1}
 
 # Global serving defaults, overridable per-model above.
 defaults:

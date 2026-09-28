@@ -1,4 +1,4 @@
-"""Realistic-looking fake replies for MockModelClient.
+"""Realistic-looking fake replies for mock mode (MockBackend).
 
 Without this, the mock model just echoed back whatever prompt it was
 given — which, for the Runner's `format_output` call in particular, meant

@@ -67,8 +67,6 @@ def test_readiness_names_every_missing_piece_at_once(tmp_path):
         vocabulary=None,
         language="en",
         storage_dir=tmp_path,
-        summary_model="llama3.1:8b",
-        summary_endpoint="http://localhost:11434/v1",
     )
     issues = readiness_issues(config)
     assert any("speech model" in issue for issue in issues)

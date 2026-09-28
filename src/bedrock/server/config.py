@@ -63,6 +63,10 @@ class ModelConfig(BaseModel):
     supports_thinking_mode: bool = False
     thinking_mode_default: bool = False
     api_key_env: str | None = None
+    # How many of this role's calls may run at once on its model server. Roles
+    # that share one server share one queue, which allows the largest of their
+    # values; vLLM batches concurrent requests, so this is well above 1.
+    max_parallel: int = 8
     fallback: ModelFallback | None = None
     alternatives: list[str] = []
 
@@ -77,9 +81,20 @@ class ModelsConfig(BaseModel):
     director: ModelConfig
     specialist: ModelConfig
     runner: ModelConfig
+    # Meeting notes (bedrock.server.meetings.pipeline). Optional so an older
+    # replacement models.yaml without it still loads; then it comes from the
+    # recorder's own variables, which is where it came from before.
+    notes: ModelConfig | None = None
     defaults: dict = {}
 
     def for_role(self, role: str) -> ModelConfig:
+        if role == "notes" and self.notes is None:
+            return ModelConfig(
+                role="notes",
+                model_name=os.environ.get("MEETING_SUMMARY_MODEL", "llama3.1:8b"),
+                endpoint=os.environ.get("MEETING_SUMMARY_ENDPOINT", "http://localhost:11434/v1"),
+                context_length=int(os.environ.get("MEETING_SUMMARY_CONTEXT", "8192")),
+            )
         return getattr(self, role)
 
 

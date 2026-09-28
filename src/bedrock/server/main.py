@@ -62,6 +62,9 @@ async def lifespan(app: FastAPI):
     get_event_bus().register_audit_sink(audit_event_sink)
     logger.info("Agent pack started in %s mode.", settings.mode)
     yield
+    from bedrock.server.models.hub import get_model_hub
+
+    await get_model_hub().aclose()
 
 
 def create_app() -> FastAPI:

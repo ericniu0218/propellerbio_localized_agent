@@ -145,9 +145,17 @@ async def test_reasoning_off_is_sent_the_ways_ollama_and_vllm_read_it():
 
 
 async def test_reasoning_left_to_the_server_sends_nothing_about_it():
-    for options in (RequestOptions(), RequestOptions(reasoning=True)):
-        body = await sent_body(options)
-        assert "reasoning_effort" not in body and "chat_template_kwargs" not in body
+    body = await sent_body(RequestOptions())
+    assert "reasoning_effort" not in body and "chat_template_kwargs" not in body
+
+
+async def test_reasoning_on_is_sent_the_way_vllm_reads_it():
+    # The agent-pack server's Director asks for thinking explicitly. Only the
+    # template switch goes: there is no "reasoning_effort" value that means
+    # "on" for every server, and Ollama keeps its own default.
+    body = await sent_body(RequestOptions(reasoning=True))
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "reasoning_effort" not in body
 
 
 async def test_a_server_that_rejects_reasoning_effort_is_asked_again_without_it():

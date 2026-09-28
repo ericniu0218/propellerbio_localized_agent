@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover - deployments without the extra
 
 SEMANTIC_MISSING = (
     "Semantic meeting search is unavailable: model2vec is not installed. "
-    "Install requirements.txt to enable it; ranking falls back to keyword overlap."
+    'Install it with pip install "bedrock-private-ai[recorder]"; ranking falls back to keyword overlap.'
 )
 
 DEFAULT_MODEL = "minishlab/potion-base-8M"

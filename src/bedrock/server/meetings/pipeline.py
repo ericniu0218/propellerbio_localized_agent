@@ -1,11 +1,10 @@
 """Audio file in, meeting notes out — all of it on this machine.
 
-The heavy lifting already exists in bedrock-private-ai, the employee terminal
-client, which transcribes Zoom's *local* recordings for its `bedrock-meeting`
-command. This module reuses that code rather than keeping a second copy, the
-same arrangement `src/bedrock/server/tools/meeting_transcripts.py` has with the VTT parser:
-one implementation, pinned by commit in requirements.txt, so a fix reaches both
-products.
+The heavy lifting is bedrock's own meeting engine (bedrock.meetings), which the
+terminal app's `bedrock-meeting` command uses for Zoom's *local* recordings.
+This module reuses it rather than keeping a second copy, as
+`src/bedrock/server/tools/meeting_transcripts.py` does with the VTT parser: one
+implementation, so a fix reaches both.
 
 What this module adds is the part that was missing — a recording that did not
 come from Zoom. Browser audio arrives as WebM/Opus, gets normalised to the

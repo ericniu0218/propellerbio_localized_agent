@@ -368,8 +368,24 @@ by default (D10), which is documented for IT.
 
 ## 2. Decisions: where the codebases overlap, and which version wins
 
-⚑ marks decisions the owners should confirm in review. They are made here so
-execution is not blocked.
+⚑ marks the five decisions confirmed by the owner on 2026-09-28:
+
+- **D3:** the terminal-only rule governs the terminal client; the optional
+  server may serve the browser workspace and recorder.
+- **D10:** server data defaults to `$XDG_DATA_HOME/bedrock/server` (normally
+  `~/.local/share/bedrock/server`), with private directories. Existing
+  deployments retain their paths through `DATABASE_URL`, `WORKSPACE_DATA_DIR`
+  and `MEETING_RECORDING_DIR`; Docker uses `/var/lib/bedrock`.
+- **D16:** format answers deterministically in code and deliver approved text
+  byte for byte, without a later model rewrite.
+- **D21:** apply deterministic citation review to normal-tier answers in
+  citation-required domains.
+- **D28:** demo data follows server mode (`mock` → demo, `real` → live), while
+  an explicit `DEMO_MODE` override still wins.
+
+The owner also authorized pushing the feature branch and opening its PR.
+See [verification and handoff](AGENT_PACK_INTEGRATION_VERIFICATION.md) for
+validation results and remaining checks.
 
 | # | Topic | Agent pack | Private AI | Decision | Why |
 |---|---|---|---|---|---|
@@ -1312,7 +1328,7 @@ End with:
 - every decision the plan did not cover;
 - the Phase 14 step 5–7 results, or "not run" with the reason;
 - the ⚑ decisions (D3, D10, D16, D21, D28), restated in one line each, for the
-  owners to confirm;
+  owners, with their confirmation status;
 - a 3–5 line "Current status" paragraph for CLAUDE.md, if not already added.
 
 ## 9. Not in this change (follow-ups, in order)

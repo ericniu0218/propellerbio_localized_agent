@@ -50,6 +50,27 @@ After pulling new code, run `pip install -e ".[dev]"` again: dependencies
 change (the literature review added `pydantic`, `pyyaml`, `lxml` and
 `rapidfuzz`), and an old virtual environment fails with `ModuleNotFoundError`.
 
+## Browser GUI
+
+Install the optional server once in your activated environment:
+
+```bash
+pip install -e ".[server]"
+```
+
+Then start the browser workspace with:
+
+```bash
+website
+```
+
+Open **http://localhost:8000** in your browser and keep the terminal running.
+With the default configuration, use demo sign-in to explore fictional data
+and simulated agent replies. `website` uses the same configuration and options
+as `bedrock-server`, which remains available. For example, `website --port 8080`
+uses http://localhost:8080. Real model setup is covered in
+[server deployment](docs/server/DEPLOYMENT.md).
+
 ## Commands
 
 | Command          | What it does                     |

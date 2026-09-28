@@ -14,6 +14,10 @@ bedrock-server check        # everything missing, all at once; exit 1 on problem
 bedrock-server              # listens on 127.0.0.1:8000 by default
 ```
 
+`website` is an alias for `bedrock-server`. For a local browser workspace, run
+`website`, then open http://localhost:8000. It uses the same mode and settings;
+the default is mock mode with demo sign-in.
+
 Or with Docker, from the repository root:
 
 ```bash

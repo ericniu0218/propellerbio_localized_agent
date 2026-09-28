@@ -84,6 +84,7 @@ bedrock-biotech = "bedrock.biotech.cli:main"
 bedrock-meeting = "bedrock.meetings.cli:main"
 bedrock-litreview = "bedrock.litreview.cli:main"
 bedrock-server = "bedrock.server.cli:main"
+website = "bedrock.server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

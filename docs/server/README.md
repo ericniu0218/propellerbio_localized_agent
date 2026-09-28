@@ -25,10 +25,14 @@ pip install -e ".[server]"           # from the repository root
 export AGENT_PACK_MODE=mock          # default if unset
 export AIRGAP_CHECK=false            # the air-gap check is only meaningful in real mode
 
-bedrock-server                       # data under ~/.local/share/bedrock/server
+website                              # data under ~/.local/share/bedrock/server
 ```
 
-Then:
+Open **http://localhost:8000** in your browser and use demo sign-in. Keep the
+terminal running. `website` is a short alias for `bedrock-server`; both accept
+the same options and use the same settings.
+
+Or try the API:
 
 ```bash
 curl -s -X POST localhost:8000/sessions -d '{"user_id":"alice"}' -H 'content-type: application/json'

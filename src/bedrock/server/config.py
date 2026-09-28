@@ -194,6 +194,14 @@ class Settings(BaseModel):
     app_base_url: str = "http://localhost:8000"
     host: str = "127.0.0.1"
     port: int = 8000
+    # The company's own documents for rag_search, and a local literature mirror
+    # for literature_search. Unset in real mode means none: the packaged
+    # fictional samples are only ever read by a mock server.
+    knowledge_dir: Path | None = None
+    literature_dir: Path | None = None
+    # [server.connectors.<name>] tables, the same shape as the terminal app's
+    # [connectors.<name>] (bedrock.connectors): systems of record eln_lims reads.
+    connectors: dict = {}
 
     @property
     def sso_enabled(self) -> bool:
@@ -230,7 +238,14 @@ class Settings(BaseModel):
             app_base_url=pick(("APP_BASE_URL",), "app_base_url", "http://localhost:8000"),
             host=pick(("BEDROCK_SERVER_HOST",), "host", "127.0.0.1"),
             port=int(pick(("BEDROCK_SERVER_PORT",), "port", 8000)),
+            knowledge_dir=_path(pick(("BEDROCK_SERVER_KNOWLEDGE_DIR",), "knowledge_dir")),
+            literature_dir=_path(pick(("BEDROCK_SERVER_LITERATURE_DIR",), "literature_dir")),
+            connectors=dict(table.get("connectors") or {}),
         )
+
+
+def _path(value) -> Path | None:
+    return Path(value).expanduser() if value else None
 
 
 def private_dir(path: Path) -> Path:

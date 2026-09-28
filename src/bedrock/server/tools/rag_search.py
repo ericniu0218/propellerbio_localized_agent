@@ -88,7 +88,14 @@ class RAGSearchTool(Tool):
     args_model: ClassVar[type[BaseModel]] = RAGSearchArgs
 
     def __init__(self, index: VectorIndex | None = None, rbac: RBACFilter | None = None) -> None:
-        self._index = index or KeywordOverlapIndex()
+        if index is None:
+            # bedrock's context store when built, the configured folder, or
+            # (mock servers only) the packaged samples - see knowledge_index.py.
+            from bedrock.server.config import get_settings
+            from bedrock.server.tools.knowledge_index import default_index
+
+            index = default_index(get_settings(), DEFAULT_CORPUS_DIR)
+        self._index = index
         self._rbac = rbac or get_rbac_filter()
 
     async def run(self, args: RAGSearchArgs) -> ToolResult:

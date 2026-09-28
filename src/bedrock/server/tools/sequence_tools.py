@@ -7,6 +7,7 @@ a company system we don't have yet" instruction.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from typing import ClassVar, Literal
@@ -42,7 +43,9 @@ class SequenceStructureTool(Tool):
         if args.operation in ("transcribe", "translate", "reverse_complement"):
             return self._biopython_op(args)
         if args.operation == "blastn":
-            return self._blast(args)
+            # A search can take a minute: off the event loop, or every other
+            # request on the server waits for it.
+            return await asyncio.to_thread(self._blast, args)
         if args.operation == "structure_predict":
             return self._structure_predict(args)
         raise ValueError(f"Unsupported operation: {args.operation}")

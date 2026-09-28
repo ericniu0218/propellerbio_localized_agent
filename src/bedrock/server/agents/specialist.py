@@ -73,11 +73,22 @@ class Specialist(BaseAgent):
 
     async def _maybe_call_tool(self, task: TaskNode) -> ToolResult | None:
         tool_name = _DOMAIN_TOOL.get(task.domain)
-        if tool_name is None:
-            return None
+        if tool_name is not None:
+            args = await self._build_tool_args(tool_name, task)
+        else:
+            # No tool for this domain: use one only if the request plainly asks
+            # for it (bedrock.server.tools.intent). Never a model's guess.
+            from bedrock.server.config import get_settings
+            from bedrock.server.tools.intent import detect_tool
+
+            detected = detect_tool(task.description, task.domain, set(get_settings().connectors))
+            if detected is None:
+                return None
+            tool_name, args = detected
+            if tool_name == "eln_lims":
+                args["user_id"] = self._user_id
 
         call_id = uuid4().hex[:8]
-        args = await self._build_tool_args(tool_name, task)
 
         await self.emit(
             EventType.TOOL_CALLED,

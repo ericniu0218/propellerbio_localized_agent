@@ -2,6 +2,7 @@
 
     bedrock-server [--host H] [--port P] [--reload]
     bedrock-server check
+    bedrock-server index      build the internal-document index rag_search uses
 
 **Always one worker.** The event stream's history, the human-approval gates and
 the running jobs live in this process's memory (``bedrock.server.events.bus``,
@@ -46,7 +47,7 @@ ONE_WORKER = (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bedrock-server", description="Run the Bedrock agent-pack server.")
-    parser.add_argument("command", nargs="?", choices=["run", "check"], default="run")
+    parser.add_argument("command", nargs="?", choices=["run", "check", "index"], default="run")
     parser.add_argument("--host", help="address to listen on (default: [server] host, or 127.0.0.1)")
     parser.add_argument("--port", type=int, help="port (default: [server] port, or 8000)")
     parser.add_argument("--reload", action="store_true", help="restart on code changes (development)")
@@ -57,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(ONE_WORKER)
     if args.command == "check":
         return check()
+    if args.command == "index":
+        return index()
 
     missing = missing_packages()
     if missing:
@@ -88,6 +91,25 @@ def stay_offline(mode: str) -> None:
     allowed = os.environ.get("BEDROCK_SERVER_ALLOW_MODEL_DOWNLOAD", "").lower() in {"1", "true", "yes"}
     if mode == "real" and not allowed:
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+
+def index() -> int:
+    """Ingest ``knowledge_dir`` into the store rag_search reads (knowledge_index.py)."""
+    missing = missing_packages()
+    if missing:
+        print(NOT_INSTALLED.format(missing=", ".join(missing)), file=sys.stderr)
+        return 2
+    from bedrock.server.config import get_settings
+    from bedrock.server.tools.knowledge_index import build_index, index_dir
+
+    settings = get_settings()
+    if settings.knowledge_dir is None or not settings.knowledge_dir.is_dir():
+        print("Set knowledge_dir in [server] (or BEDROCK_SERVER_KNOWLEDGE_DIR) to the folder of "
+              "company documents first.", file=sys.stderr)
+        return 1
+    count = build_index(settings.knowledge_dir, index_dir(settings))
+    print(f"Indexed {count} document(s) from {settings.knowledge_dir} into {index_dir(settings)}.")
+    return 0
 
 
 def check() -> int:

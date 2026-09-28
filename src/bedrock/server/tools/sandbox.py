@@ -13,6 +13,7 @@ without container infra.
 
 from __future__ import annotations
 
+import asyncio
 import resource
 import subprocess
 import sys
@@ -50,6 +51,10 @@ class DataAnalysisSandboxTool(Tool):
     args_model: ClassVar[type[BaseModel]] = SandboxExecArgs
 
     async def run(self, args: SandboxExecArgs) -> ToolResult:
+        # Up to two minutes of someone's code: never on the event loop.
+        return await asyncio.to_thread(self._execute, args)
+
+    def _execute(self, args: SandboxExecArgs) -> ToolResult:
         with tempfile.TemporaryDirectory() as tmp:
             script_path = Path(tmp) / "script.py"
             script_path.write_text(args.code)

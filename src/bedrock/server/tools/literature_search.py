@@ -38,7 +38,20 @@ class LiteratureSearchTool(Tool):
     args_model: ClassVar[type[BaseModel]] = LiteratureSearchArgs
 
     def __init__(self, index: VectorIndex | None = None) -> None:
-        self._index = index or KeywordOverlapIndex(DEFAULT_CORPUS_DIR)
+        if index is None:
+            # The configured mirror; with none, a mock server reads the packaged
+            # sample and a real one reads nothing (never fiction as literature).
+            from bedrock.server.config import get_settings
+            from bedrock.server.tools.knowledge_index import EmptyIndex
+
+            settings = get_settings()
+            if settings.literature_dir:
+                index = KeywordOverlapIndex(settings.literature_dir)
+            elif settings.mode == "real":
+                index = EmptyIndex()
+            else:
+                index = KeywordOverlapIndex(DEFAULT_CORPUS_DIR)
+        self._index = index
 
     async def run(self, args: LiteratureSearchArgs) -> ToolResult:
         top_k = args.top_k or load_budgets_config().rag["top_k_chunks"]

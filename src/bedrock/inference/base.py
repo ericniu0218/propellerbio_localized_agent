@@ -76,7 +76,9 @@ class RequestOptions:
 
     reasoning: bool | None = None
     """``False`` asks a reasoning model to skip its hidden "thinking" and answer
-    straight away. ``None`` leaves the server's default."""
+    straight away. ``True`` asks for it, where the server has a switch for it
+    (vLLM and SGLang do; Ollama keeps its default). ``None`` leaves the
+    server's default."""
 
     seed: int | None = None
     """The random seed the server should start from. ``None`` leaves it to the

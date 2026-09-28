@@ -52,7 +52,7 @@ import inspect
 import itertools
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from bedrock.config.profile import MachineProfile
 from bedrock.inference import tokens
@@ -126,6 +126,7 @@ class Scheduler:
         *,
         priority: Priority,
         options: RequestOptions | None = None,
+        on_usage: Callable[[Usage], None] | None = None,
     ) -> AsyncIterator[str]:
         """Run one call when its turn comes and yield the reply as it arrives.
 
@@ -137,6 +138,12 @@ class Scheduler:
 
         Raises ``Preempted`` if a chat arrives while this ``BACKGROUND`` call
         is running, and ``InferenceError`` for any server failure.
+
+        ``on_usage`` is told this call's own token counts, once, when the reply
+        is complete and the server reported them. Use it for anything that is
+        about one call - a per-task budget, say. ``last_usage`` is different:
+        it is the last *chat* reply's counts, for the status bar, and on a
+        server that many people share it belongs to whoever finished last.
         """
         if model is None and priority is not Priority.BACKGROUND:
             raise ValueError("Only BACKGROUND calls may leave the model to the scheduler.")
@@ -167,6 +174,8 @@ class Scheduler:
                 if usage:
                     self._last_usage = usage[-1]
                     tokens.observe(characters, usage[-1])
+            if on_usage is not None and usage:
+                on_usage(usage[-1])
         finally:
             await self._finish(ticket)
 
@@ -177,10 +186,14 @@ class Scheduler:
         *,
         priority: Priority,
         options: RequestOptions | None = None,
+        on_usage: Callable[[Usage], None] | None = None,
     ) -> str:
         """Like ``stream``, but wait for the whole reply and return it as one string."""
         parts: list[str] = []
-        stream = self.stream(model, messages, priority=priority, options=options)
+        # ``on_usage`` only when asked for, so anything that wraps ``stream`` with
+        # the older signature (tests, a company's own adapter) keeps working.
+        extra = {"on_usage": on_usage} if on_usage is not None else {}
+        stream = self.stream(model, messages, priority=priority, options=options, **extra)
         try:
             async for fragment in stream:
                 parts.append(fragment)

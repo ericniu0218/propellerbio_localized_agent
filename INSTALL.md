@@ -100,7 +100,8 @@ Then create a file at:
 - macOS/Linux: `~/.config/bedrock/config.toml`
 - Windows: `%USERPROFILE%\.config\bedrock\config.toml`
 
-containing (for the company's full agent system):
+containing (for the company's full agent system - IT runs its server,
+`bedrock-server`; you never install that part yourself):
 
 ```toml
 backend = "agentpack"

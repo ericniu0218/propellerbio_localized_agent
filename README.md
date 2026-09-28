@@ -50,6 +50,27 @@ After pulling new code, run `pip install -e ".[dev]"` again: dependencies
 change (the literature review added `pydantic`, `pyyaml`, `lxml` and
 `rapidfuzz`), and an old virtual environment fails with `ModuleNotFoundError`.
 
+## Browser GUI
+
+Install the optional server once in your activated environment:
+
+```bash
+pip install -e ".[server]"
+```
+
+Then start the browser workspace with:
+
+```bash
+website
+```
+
+Open **http://localhost:8000** in your browser and keep the terminal running.
+With the default configuration, use demo sign-in to explore fictional data
+and simulated agent replies. `website` uses the same configuration and options
+as `bedrock-server`, which remains available. For example, `website --port 8080`
+uses http://localhost:8080. Real model setup is covered in
+[server deployment](docs/server/DEPLOYMENT.md).
+
 ## Commands
 
 | Command          | What it does                     |
@@ -479,7 +500,7 @@ message format; no traffic goes to OpenAI.
 ```
 src/bedrock/
   app.py                 The Textual application; wires UI to backend
-  agentpack_app.py       Optional biotech multi-agent client
+  agentpack_app.py       Agent-pack mode: the client of bedrock.server
   ui/
     widgets.py           Status bar, message widgets, conversation sidebar
     agent_panel.py       Live agent activity in agent-pack mode
@@ -513,7 +534,11 @@ src/bedrock/
                          (its own CLAUDE.md - read it before changing anything there)
   config/
     settings.py          Loads env vars + config file
+  server/                The agent-pack server (the [server] extra, `bedrock-server`):
+                         multi-agent API, browser workspace, meeting recorder.
+                         Not part of the terminal app; see docs/server/
 tests/                   pytest; drives the real app with a fake backend
+                         (tests/server/ only runs with the [server] extra)
 ```
 
 The important design decision: the UI never imports a concrete backend. It
@@ -634,9 +659,14 @@ workflow changes.
 ## Two modes
 
 The default `openai` mode talks directly to one OpenAI-compatible private model
-server. Setting `BEDROCK_BACKEND=agentpack` uses the biotech agent-pack backend,
+server. Setting `BEDROCK_BACKEND=agentpack` uses the biotech agent-pack server
+(`bedrock-server`, in this repository under `src/bedrock/server/`; IT deploys it
+per `docs/server/DEPLOYMENT.md`),
 with multi-agent activity and inline human approval prompts, while keeping the
 same terminal interface. Configure its endpoint with `AGENT_PACK_API_BASE`.
+In that mode `/tier quick|standard|deep|auto` chooses who answers and `/cancel`
+stops the running request, against a server that supports them (`bedrock-server`,
+see `docs/server/`).
 
 ## Running the tests
 

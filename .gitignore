@@ -13,3 +13,14 @@ package-lock.json
 # history.jsonl.
 evals/litreview/results/*/
 !evals/litreview/results/history.jsonl
+
+# The agent-pack server (src/bedrock/server/). Its data now defaults to
+# ~/.local/share/bedrock/server, but a deployment that keeps the old
+# working-directory paths (WORKSPACE_DATA_DIR=data/workspace and friends) must
+# still never commit recorded meetings or workspace records.
+data/workspace/
+data/recordings/
+data/demo-recorder/
+data/demo-zoom/
+agent_pack*.db
+scripts/server/eval/build/

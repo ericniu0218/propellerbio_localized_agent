@@ -58,15 +58,49 @@ class AgentPackClient:
             raise InferenceError(f"Could not start a session: {_describe(exc)}") from exc
         return response.json()["session_id"]
 
-    async def send_message(self, session_id: str, text: str) -> str:
+    async def features(self) -> set[str]:
+        """What this server supports beyond the original API, from ``/health``.
+
+        Laptops and the server update separately, so either may be older. An
+        older server lists nothing here, and the app then sends exactly what it
+        always sent.
+        """
         try:
-            response = await self._client.post(
-                "/messages", json={"session_id": session_id, "message": text}
-            )
+            response = await self._client.get("/health", timeout=5.0)
+            response.raise_for_status()
+            return set(response.json().get("features") or [])
+        except (httpx.HTTPError, ValueError):
+            return set()
+
+    async def send_message(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        force_tier: str | None = None,
+        context: list[dict] | None = None,
+    ) -> str:
+        body: dict = {"session_id": session_id, "message": text}
+        # Only what is set, so a request to an older server is unchanged.
+        if force_tier:
+            body["force_tier"] = force_tier
+        if context:
+            body["context"] = context
+        try:
+            response = await self._client.post("/messages", json=body)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise InferenceError(f"Could not send your message: {_describe(exc)}") from exc
         return response.json()["task_id"]
+
+    async def cancel_task(self, task_id: str) -> str:
+        """Stop a running request. Returns the status the server reports."""
+        try:
+            response = await self._client.post("/tasks/cancel", json={"task_id": task_id})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise InferenceError(f"Could not stop the request: {_describe(exc)}") from exc
+        return response.json().get("status", "cancelled")
 
     async def get_result(self, result_ref: str) -> str:
         try:

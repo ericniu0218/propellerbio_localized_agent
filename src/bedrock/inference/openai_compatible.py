@@ -33,6 +33,11 @@ How ``RequestOptions`` reach the server, field by field:
   server does that, the request is sent once more without it, and it is not
   sent to that server again.
 
+* ``reasoning=True`` (ask for the thinking): ``chat_template_kwargs:
+  {"enable_thinking": true}`` for vLLM and SGLang, whose hybrid models default
+  either way depending on the template. Ollama has no switch for it and keeps
+  its default. The agent-pack server's Director asks for this.
+
 * Token counts: ``stream_options = {"include_usage": true}`` asks the server
   to end the stream with a chunk carrying ``usage``, including
   ``prompt_tokens_details.cached_tokens`` where the server reports reuse.
@@ -259,6 +264,10 @@ class OpenAICompatibleBackend:
             if not self._skip_reasoning_effort:
                 payload["reasoning_effort"] = "none"
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif options.reasoning is True:
+            # vLLM and SGLang switch a hybrid model's thinking on this way; Ollama
+            # ignores the field and keeps its default.
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
         if options.seed is not None:
             payload["seed"] = options.seed
         return payload

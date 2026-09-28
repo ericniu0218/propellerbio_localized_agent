@@ -14,6 +14,17 @@ Do not use React, Next.js, Vue, Svelte, HTML, browser-based UI frameworks, Elect
 
 The employee application is a native Python terminal application.
 
+**Scope of this rule.** It governs the employee's terminal client: `bedrock`,
+`src/bedrock/app.py`, `src/bedrock/agentpack_app.py` and `src/bedrock/ui/`. It
+does not govern `bedrock.server`, the optional `[server]` extra (formerly the
+separate `bedrock-agent-pack` repository), which runs on the company's server
+and serves an HTTP API, the scientist workspace and the meeting recorder in a
+browser, as the September 16 workspace redesign decided
+(`docs/server/WORKSPACE_ARCHITECTURE.md`); nor the optional literature-review
+API. No terminal feature may depend on a browser, and no code outside
+`src/bedrock/server/` may import `bedrock.server`
+(`tests/test_import_boundaries.py`).
+
 ## Technology Stack
 
 - Language: Python 3.11+
@@ -187,6 +198,15 @@ session, never by loading a model at startup. `inference/tokens.py` estimates to
 from reported counts. The status bar's `context` counter shows the last prompt
 against the window, locally only. The first-run check prints matching Ollama
 settings. New features read limits from the profile, not constants of their own.
+
+Also built: the agent-pack server, moved in from its own repository with its
+history (`src/bedrock/server/`, the `[server]` extra, `bedrock-server`): the
+Director/Specialist/Runner orchestrator behind a REST + SSE API (what
+`BEDROCK_BACKEND=agentpack` talks to), the browser scientist workspace, and the
+meeting recorder, which uses `bedrock.meetings` as its engine. It runs on a
+company server, never on a laptop; the terminal app does not need it installed.
+Read `docs/server/README.md` and `docs/server/ARCHITECTURE.md` before changing
+it, and `docs/prompts/AGENT_PACK_INTEGRATION.md` for how and why it moved.
 
 ## Development Philosophy
 

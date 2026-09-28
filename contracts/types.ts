@@ -294,6 +294,25 @@ export interface SendMessageRequest {
   /** "runner" | "specialist" | "director" | null — null lets the Runner's
    * classifier decide (default). Never bypasses the high-stakes safety net. */
   force_tier: string | null;
+  /** Material to answer from, kept apart from `message`: the Runner classifies
+   * the message only, and the drafting agent reads these fenced as data.
+   * Optional; omit it for the old behaviour. */
+  context?: ContextBlock[];
+}
+
+export interface ContextBlock {
+  id: string;
+  title: string;
+  text: string;
+  kind?: "attachment" | "passage" | "memory" | "artifact" | "other";
+}
+
+/** GET /health. `features` lists what this server supports, so a client can
+ * fall back when talking to an older one. */
+export interface HealthResponse {
+  status: "ok";
+  mode: "mock" | "real";
+  features?: Array<"context_blocks" | "server_history" | "force_tier" | "cancel" | "approval_result_ref">;
 }
 
 /** One entry in GET /agent-tiers — for a tier picker / "Create Agent" UI. */

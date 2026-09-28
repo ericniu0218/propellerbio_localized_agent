@@ -106,10 +106,16 @@ class Director(BaseAgent):
             )
         return ReviewOutcome(approved=True)
 
-    async def synthesize(self, task: TaskNode, upstream_content: str, upstream_citations: list[str]) -> str:
+    async def synthesize(
+        self, task: TaskNode, upstream_content: str, upstream_citations: list[str], extra: str = ""
+    ) -> str:
+        # ``extra`` is the conversation so far; the material sent with the
+        # message already reached the research step, and arrives here digested.
         context = (
             f"Synthesize a final answer for: {task.description}\n\n"
             f"Upstream research/draft:\n{upstream_content}\n\n"
             f"Citations available: {', '.join(upstream_citations) or '(none)'}"
         )
+        if extra:
+            context += f"\n\n{extra}"
         return await self.call_model(self.build_prompt(context), task_id=task.task_id, thinking=True)

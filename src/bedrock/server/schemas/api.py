@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from bedrock.server.schemas.agents import AgentCard
@@ -14,9 +16,23 @@ class SessionResponse(BaseModel):
     created_at: str
 
 
+class ContextBlock(BaseModel):
+    """Material sent with a message to answer from: an attached file, a stored
+    passage, a remembered note. Kept apart from ``message`` so the Runner
+    classifies the question rather than reading every attachment, and fenced
+    as data, not instructions, when an agent drafts from it."""
+
+    id: str
+    title: str
+    text: str
+    kind: Literal["attachment", "passage", "memory", "artifact", "other"] = "other"
+
+
 class SendMessageRequest(BaseModel):
     session_id: str
     message: str
+    # Optional and additive: a client that sends none behaves exactly as before.
+    context: list[ContextBlock] = Field(default_factory=list)
     # "runner" | "specialist" | "director" | None (None = let the Runner's
     # classifier decide, the default). Never bypasses the high-stakes
     # safety net — see app/orchestrator/loop.py::handle_message.

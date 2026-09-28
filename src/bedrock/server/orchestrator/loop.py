@@ -34,6 +34,8 @@ from bedrock.server.schemas.events import (
     TaskFailedPayload,
     TaskPlannedPayload,
 )
+from bedrock.server.orchestrator.context import context_budget, history_budget, render_context, render_history
+from bedrock.server.schemas.api import ContextBlock, HistoryTurn
 from bedrock.server.schemas.tasks import TaskNode
 from bedrock.server.task_store.store import get_task_store
 
@@ -51,6 +53,9 @@ async def handle_message(
     message: str,
     root_task_id: str | None = None,
     force_tier: str | None = None,
+    *,
+    context: list[ContextBlock] | None = None,
+    history: list[HistoryTurn] | None = None,
 ) -> str:
     """`root_task_id` can be supplied by the caller so it's known
     synchronously, before this (potentially long-running, gate-blocking)
@@ -65,17 +70,26 @@ async def handle_message(
     regulatory/clinical/safety request is always routed through the
     Director regardless of what was requested, since that check exists
     specifically so a UI control can't be used to skip it.
+
+    ``context`` is material sent with the message (files, passages, memories)
+    and ``history`` the conversation so far; without ``history`` the session's
+    own recent turns are used. See bedrock.server.orchestrator.context. A
+    request with material is never answered by the Runner alone, which would
+    not read it: it is handled at least at the normal tier.
     """
     bus = get_event_bus()
     db = get_database()
     store = get_task_store()
 
+    earlier = history if history is not None else db.recent_history(session_id)
     db.add_history_turn(session_id, "user", message)
     root_task_id = root_task_id or store.new_task_id()
+    context = context or []
+    previous = next((t.content for t in reversed(earlier) if t.role == "user"), None)
 
     runner = Runner(session_id=session_id)
     await runner.emit_started(root_task_id, "Classify request")
-    classification = await runner.classify(message, task_id=root_task_id)
+    classification = await runner.classify(message, task_id=root_task_id, previous=previous)
     high_stakes = is_high_stakes(classification.domain, message)
     if high_stakes:
         complexity = TaskComplexity.HARD
@@ -84,17 +98,35 @@ async def handle_message(
     else:
         complexity = effective_complexity(classification.complexity, high_stakes)
     await runner.emit_status(AgentStatus.DONE, root_task_id, "Classify request")
+    if context and complexity == TaskComplexity.SIMPLE:
+        complexity = TaskComplexity.NORMAL
+
+    def extra_for(role: str, *, with_context: bool) -> str:
+        parts = [render_history(earlier, history_budget(role))]
+        if with_context:
+            parts.append(render_context(context, context_budget(role)))
+        return "\n\n".join(p for p in parts if p)
 
     if complexity == TaskComplexity.SIMPLE and not high_stakes:
-        return await _handle_simple(session_id, user_id, message, root_task_id, classification, runner)
+        return await _handle_simple(
+            session_id, user_id, message, root_task_id, classification, runner,
+            extra=extra_for("runner", with_context=False),
+        )
 
     if complexity == TaskComplexity.NORMAL and not high_stakes:
-        return await _handle_normal(session_id, user_id, message, root_task_id, classification, runner)
+        return await _handle_normal(
+            session_id, user_id, message, root_task_id, classification, runner,
+            extra=extra_for("specialist", with_context=True), context=context,
+        )
 
-    return await _handle_hard(session_id, user_id, message, root_task_id, classification, high_stakes, runner)
+    return await _handle_hard(
+        session_id, user_id, message, root_task_id, classification, high_stakes, runner,
+        extra=extra_for("specialist", with_context=True), context=context,
+        director_extra=extra_for("director", with_context=False),
+    )
 
 
-async def _handle_simple(session_id, user_id, message, task_id, classification, runner: Runner) -> str:
+async def _handle_simple(session_id, user_id, message, task_id, classification, runner: Runner, *, extra: str = "") -> str:
     bus = get_event_bus()
     db = get_database()
     store = get_task_store()
@@ -113,7 +145,7 @@ async def _handle_simple(session_id, user_id, message, task_id, classification, 
         task_id=task_id, assigned_to=AgentRole.RUNNER, title=node.title
     ))
 
-    answer = await runner.call_model(runner.build_prompt(message), task_id=task_id)
+    answer = await runner.call_model(runner.build_prompt(f"{extra}\n\n{message}" if extra else message), task_id=task_id)
     formatted = format_answer(answer, [])
     result_ref = store.store_result(session_id, formatted)
 
@@ -129,7 +161,9 @@ async def _handle_simple(session_id, user_id, message, task_id, classification, 
     return task_id
 
 
-async def _handle_normal(session_id, user_id, message, task_id, classification, runner: Runner) -> str:
+async def _handle_normal(
+    session_id, user_id, message, task_id, classification, runner: Runner, *, extra: str = "", context=None,
+) -> str:
     bus = get_event_bus()
     db = get_database()
     store = get_task_store()
@@ -155,13 +189,13 @@ async def _handle_normal(session_id, user_id, message, task_id, classification, 
         # merely "normal" must still cite what it says (ARCHITECTURE.md §9 q8).
         # The check is deterministic - no model call - and the same retry loop.
         content, citations, blocked = await _run_with_review_loop(
-            session_id, node, specialist, Director(session_id=session_id)
+            session_id, node, specialist, Director(session_id=session_id), extra=extra, context=context
         )
         if blocked:
             return task_id
     else:
         await specialist.emit_started(task_id, node.title)
-        content, citations = await specialist.execute(node)
+        content, citations = await specialist.execute(node, extra=extra, context=context)
         await specialist.emit_status(AgentStatus.DONE, task_id, node.title)
 
     formatted = format_answer(content, citations)
@@ -179,7 +213,10 @@ async def _handle_normal(session_id, user_id, message, task_id, classification, 
     return task_id
 
 
-async def _handle_hard(session_id, user_id, message, task_id, classification, high_stakes, runner: Runner) -> str:
+async def _handle_hard(
+    session_id, user_id, message, task_id, classification, high_stakes, runner: Runner,
+    *, extra: str = "", context=None, director_extra: str = "",
+) -> str:
     bus = get_event_bus()
     db = get_database()
     store = get_task_store()
@@ -196,7 +233,7 @@ async def _handle_hard(session_id, user_id, message, task_id, classification, hi
     specialist = Specialist(session_id=session_id, user_id=user_id)
 
     content, citations, blocked = await _run_with_review_loop(
-        session_id, research_node, specialist, director
+        session_id, research_node, specialist, director, extra=extra, context=context
     )
     if blocked:
         return research_node.task_id
@@ -207,7 +244,7 @@ async def _handle_hard(session_id, user_id, message, task_id, classification, hi
         task_id=synth_node.task_id, assigned_to=AgentRole.DIRECTOR, title=synth_node.title
     ))
     await director.emit_started(synth_node.task_id, synth_node.title)
-    final_text = await director.synthesize(synth_node, upstream_content, upstream_citations)
+    final_text = await director.synthesize(synth_node, upstream_content, upstream_citations, director_extra)
     await director.emit_status(AgentStatus.DONE, synth_node.task_id, synth_node.title)
 
     outcome = director.review(synth_node, final_text, upstream_citations)
@@ -273,7 +310,7 @@ async def _handle_hard(session_id, user_id, message, task_id, classification, hi
 
 
 async def _run_with_review_loop(
-    session_id: str, node: TaskNode, specialist: Specialist, director: Director
+    session_id: str, node: TaskNode, specialist: Specialist, director: Director, *, extra: str = "", context=None,
 ) -> tuple[str, list[str], bool]:
     """Runs a Specialist step, then the Director review/retry loop (max 2
     retries per docs/ARCHITECTURE.md). Returns (content, citations, blocked)
@@ -289,7 +326,7 @@ async def _run_with_review_loop(
     working_node = node
     while True:
         await specialist.emit_started(working_node.task_id, working_node.title)
-        content, citations = await specialist.execute(working_node)
+        content, citations = await specialist.execute(working_node, extra=extra, context=context)
         await specialist.emit_status(AgentStatus.DONE, working_node.task_id, working_node.title)
 
         outcome = director.review(working_node, content, citations)

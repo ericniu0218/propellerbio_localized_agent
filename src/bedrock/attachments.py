@@ -351,17 +351,27 @@ def prompt_block(attachments: list[Attachment]) -> str:
     """The attachments as text for the model, fenced off from the question."""
     blocks = [DATA_NOT_INSTRUCTIONS]
     for attachment in attachments:
-        name = _safe_name(attachment.name)
-        tag = f"FILE {name}"
-        number = 1
-        # The closing line must not occur inside the file, or the file could
-        # end its own fence early and carry on as if it were the employee.
-        while f"<<<END {tag}>>>" in attachment.text:
-            number += 1
-            tag = f"FILE {name} #{number}"
         note = " - sent as a compressed digest rather than whole" if attachment.mode == "digest" else ""
-        blocks.append(f"<<<{tag}{note}>>>\n{attachment.text.rstrip()}\n<<<END {tag}>>>")
+        blocks.append(fence_block(attachment.name, attachment.text, note))
     return "\n\n".join(blocks)
+
+
+def fence_block(name: str, text: str, note: str = "") -> str:
+    """One file's text inside a fence the text itself cannot close.
+
+    Also used by the agent-pack server (``bedrock.server.orchestrator.context``)
+    for the files and memories a client sends with a message, so both products
+    fence data the same way.
+    """
+    name = _safe_name(name)
+    tag = f"FILE {name}"
+    number = 1
+    # The closing line must not occur inside the file, or the file could
+    # end its own fence early and carry on as if it were the employee.
+    while f"<<<END {tag}>>>" in text:
+        number += 1
+        tag = f"FILE {name} #{number}"
+    return f"<<<{tag}{note}>>>\n{text.rstrip()}\n<<<END {tag}>>>"
 
 
 def with_attachments(text: str, attachments: list[Attachment]) -> str:

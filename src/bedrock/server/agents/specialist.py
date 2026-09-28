@@ -52,12 +52,23 @@ class Specialist(BaseAgent):
         self._tools = tool_registry or get_tool_registry()
         self._user_id = user_id
 
-    async def execute(self, task: TaskNode) -> tuple[str, list[str]]:
+    async def execute(
+        self, task: TaskNode, *, extra: str = "", context: list | None = None
+    ) -> tuple[str, list[str]]:
         """Runs the task's research/tool step (if its domain implies one),
-        then drafts the final content. Returns (content, citations)."""
+        then drafts the final content. Returns (content, citations).
+
+        ``extra`` is the conversation so far and the fenced material sent with
+        the message (bedrock.server.orchestrator.context); the tool still
+        searches with the task description alone. A material block the draft
+        cites as ``[source:ID]`` becomes a citation.
+        """
+        from bedrock.server.orchestrator.context import cited_sources
+
         tool_result = await self._maybe_call_tool(task)
-        content = await self._draft(task, tool_result)
-        citations = tool_result.citations if tool_result else []
+        content = await self._draft(task, tool_result, extra)
+        citations = list(tool_result.citations) if tool_result else []
+        citations += cited_sources(content, context or [])
         return content, citations
 
     async def _maybe_call_tool(self, task: TaskNode) -> ToolResult | None:
@@ -134,10 +145,13 @@ class Specialist(BaseAgent):
         except (KeyError, ValueError, json.JSONDecodeError):
             return (reference - timedelta(days=7)).isoformat(), reference.isoformat()
 
-    async def _draft(self, task: TaskNode, tool_result: ToolResult | None) -> str:
+    async def _draft(self, task: TaskNode, tool_result: ToolResult | None, extra: str = "") -> str:
+        # "Task:" stays first: mock mode's fixtures recognise the prompt by it.
         context = f"Task: {task.title}\n{task.description}"
         if task.fix_instruction:
             context += f"\n\nThe Director rejected a prior attempt. Fix instruction: {task.fix_instruction}"
+        if extra:
+            context += f"\n\n{extra}"
         if tool_result and tool_result.content:
             context += f"\n\nTool result ({', '.join(tool_result.citations)}):\n{tool_result.content}"
         thinking = task.complexity.value == "hard"

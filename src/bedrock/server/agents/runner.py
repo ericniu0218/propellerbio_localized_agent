@@ -33,9 +33,17 @@ class Runner(BaseAgent):
     role = AgentRole.RUNNER
     static_prompt_prefix = _STATIC_PREFIX
 
-    async def classify(self, request: str, task_id: str | None = None) -> ClassificationResult:
+    async def classify(
+        self, request: str, task_id: str | None = None, previous: str | None = None
+    ) -> ClassificationResult:
+        # The question only - never the files sent with it - plus the previous
+        # message, so a short follow-up ("and the second one?") classifies with
+        # what it follows. Material is for the drafting agent, not the router.
+        earlier = (
+            f"Earlier message in this conversation, for context only: {previous[:500]}\n\n" if previous else ""
+        )
         prompt = (
-            f"Classify this user request.\n\nRequest: {request}\n\n"
+            f"Classify this user request.\n\nRequest: {request}\n\n{earlier}"
             'Respond with JSON: {"complexity": "simple|normal|hard", '
             '"domain": "literature|internal_docs|bioinformatics|chemistry|'
             'data_analysis|regulatory|clinical|lab_data|meetings|general", "reason": "..."}'

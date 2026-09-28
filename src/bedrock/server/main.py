@@ -27,6 +27,8 @@ from bedrock.server.workspace import routes as routes_workspace
 
 logger = logging.getLogger("agent_pack")
 
+FEATURES = ("context_blocks", "server_history", "force_tier", "cancel", "approval_result_ref")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -85,7 +87,10 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "mode": get_settings().mode}
+        # `features` lets a client (the terminal app) use what this server
+        # supports and fall back where it does not: laptops and the server are
+        # updated separately, so either may be the older one.
+        return {"status": "ok", "mode": get_settings().mode, "features": list(FEATURES)}
 
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

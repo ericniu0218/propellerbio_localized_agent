@@ -79,6 +79,22 @@ class Database:
                 for r in rows
             ]
 
+    def recent_history(self, session_id: str, limit: int = 40) -> list[HistoryTurn]:
+        """The last ``limit`` turns, oldest first - what a prompt can use,
+        without loading a long session's whole history."""
+        with SessionLocal() as db:
+            rows = (
+                db.query(HistoryTurnRow)
+                .filter(HistoryTurnRow.session_id == session_id)
+                .order_by(HistoryTurnRow.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                HistoryTurn(turn_id=r.turn_id, role=r.role, content=r.content, created_at=r.created_at.isoformat())
+                for r in reversed(rows)
+            ]
+
     # -- tasks ---------------------------------------------------------------
     def upsert_task(self, session_id: str, node: TaskNode) -> None:
         with SessionLocal() as db:

@@ -49,7 +49,9 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
     get_message_runs().start(
         session_id=req.session_id,
         root_task_id=root_task_id,
-        coro=handle_message(req.session_id, user_id, req.message, root_task_id, req.force_tier),
+        coro=handle_message(
+            req.session_id, user_id, req.message, root_task_id, req.force_tier, context=req.context
+        ),
     )
     return SendMessageResponse(session_id=req.session_id, task_id=root_task_id, accepted=True)
 

@@ -203,7 +203,11 @@ Also built: the agent-pack server, moved in from its own repository with its
 history (`src/bedrock/server/`, the `[server]` extra, `bedrock-server`): the
 Director/Specialist/Runner orchestrator behind a REST + SSE API (what
 `BEDROCK_BACKEND=agentpack` talks to), the browser scientist workspace, and the
-meeting recorder, which uses `bedrock.meetings` as its engine. It runs on a
+meeting recorder, which uses `bedrock.meetings` as its engine. The workspace's
+Research tab (`src/bedrock/server/research/`) is the literature review in the
+browser: it goes through `litreview.service.run_review` like `/review` does, so
+it gets the same pipeline, checks and reports; a finished report can be saved
+into a project or chat as a file the workspace's chats read. All of it runs on a
 company server, never on a laptop; the terminal app does not need it installed.
 Read `docs/server/README.md` and `docs/server/ARCHITECTURE.md` before changing
 it, and `docs/prompts/AGENT_PACK_INTEGRATION.md` for how and why it moved.

@@ -23,6 +23,7 @@ from bedrock.server.compliance.audit import audit_event_sink
 from bedrock.server.config import get_settings
 from bedrock.server.events import get_event_bus
 from bedrock.server.meetings import routes as routes_meetings
+from bedrock.server.research import routes as routes_research
 from bedrock.server.workspace import routes as routes_workspace
 
 logger = logging.getLogger("agent_pack")
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
     get_event_bus().register_audit_sink(audit_event_sink)
     logger.info("Agent pack started in %s mode.", settings.mode)
     yield
+    await routes_research.aclose()
     from bedrock.server.models.hub import get_model_hub
 
     await get_model_hub().aclose()
@@ -84,6 +86,9 @@ def create_app() -> FastAPI:
     # After the workspace router: this one reuses its `identity` dependency and
     # its store, and sits under the same /workspace/api prefix.
     app.include_router(routes_meetings.router)
+    # The Research tab: the literature review (bedrock.litreview), same
+    # identity and store, under /workspace/api/research.
+    app.include_router(routes_research.router)
 
     @app.get("/health")
     async def health() -> dict:
@@ -98,7 +103,7 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def index() -> FileResponse:
         # The scientist-facing workspace: three-column chat/projects/memory/
-        # meetings UI backed by /workspace/api, wrapping the existing
+        # meetings/research UI backed by /workspace/api, wrapping the existing
         # orchestrator rather than replacing it (see WORKSPACE_ARCHITECTURE.md).
         return FileResponse(static_dir / "workspace" / "index.html")
 

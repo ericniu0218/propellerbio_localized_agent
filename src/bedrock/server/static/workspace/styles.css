@@ -463,3 +463,39 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
   font-size: 13px; line-height: 1.6; max-height: 160px; overflow-y: auto;
   white-space: pre-wrap;
 }
+
+/* ==================== research (literature review) ==================== */
+.research-pane { max-width: 1040px; }
+.notice { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.5; }
+.notice.warn { border-color: var(--warn); background: var(--warn-soft); color: var(--text); }
+.notice.good { border-color: var(--good); background: var(--good-soft); color: var(--text); }
+.research-form { display: flex; flex-direction: column; gap: 14px; }
+.research-form textarea { min-height: 56px; }
+.research-checks { display: flex; flex-direction: column; gap: 8px; }
+.research-options summary { cursor: pointer; color: var(--muted); font-size: 13px; user-select: none; }
+.research-options summary:hover { color: var(--text); }
+.research-options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; }
+.research-form .check-row { align-items: center; color: var(--text-secondary); }
+.research-form .check-row input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.list-row.clickable { cursor: pointer; }
+.list-row.clickable:hover { background: var(--panel-2); }
+.research-progress { margin: 12px 0; }
+.research-progress-label { display: flex; align-items: baseline; gap: 6px; margin-bottom: 8px; font-size: 13px; }
+.bar { height: 6px; border-radius: 999px; background: var(--panel-3); overflow: hidden; position: relative; }
+.bar span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.bar.indeterminate span { width: 35%; position: absolute; animation: research-slide 1.4s ease-in-out infinite; }
+@keyframes research-slide { 0% { left: -35%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .bar.indeterminate span { animation-duration: 4s; } }
+.research-log { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; max-height: 260px; overflow-y: auto; color: var(--text-secondary); overflow-wrap: anywhere; }
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 14px 0; }
+.stat-tile { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+.stat-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--muted); }
+.report-frame { width: 100%; height: 75vh; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; margin-top: 14px; }
+a.btn { text-decoration: none; }
+#research-activity:not(:empty) { padding: 14px 14px 0; }
+#research-activity .run-card { margin-bottom: 10px; }
+.research-form .check-row { display: flex; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 400; letter-spacing: 0; }
+.research-form .check-row input { flex: none; padding: 0; }
+.modal .field select { width: 100%; }
+#research-activity:not(:empty) + #activity-body .empty-state { display: none; }

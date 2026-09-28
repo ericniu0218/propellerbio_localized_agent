@@ -59,7 +59,10 @@ def profile(name, text):
         return f"{len(rows)} rows · {len(fields)} columns\n" + "\n".join(stats)
     if suffix in {".fa", ".fasta", ".fna", ".faa", ".seq"}:
         records = re.findall(r">([^\n]+)\n([^>]+)", text)
-        return "\n".join(f"{header}: {len(re.sub(r'\s', '', seq))} sequence characters" for header, seq in records[:30]) or "No FASTA records detected."
+        # Counted outside the f-string: a backslash inside an f-string
+        # expression is a SyntaxError before Python 3.12, and 3.11 is supported.
+        counts = [(header, len(re.sub(r"\s", "", seq))) for header, seq in records[:30]]
+        return "\n".join(f"{header}: {n} sequence characters" for header, n in counts) or "No FASTA records detected."
     if suffix == ".json":
         try:
             data = json.loads(text)

@@ -70,6 +70,7 @@
     send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
     upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
     download: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   };
   const icon = (name, cls = "") => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -113,6 +114,7 @@
       showApp();
       render();
       startPolling();
+      startResearch();
     } catch {
       showLogin(cfg);
     }
@@ -149,6 +151,8 @@
   $("#logout-btn").addEventListener("click", async () => {
     await fetch(API + "/logout", { method: "POST", credentials: "same-origin" });
     state = null;
+    Object.assign(R, { status: null, reviews: [], selected: null, detail: null, loaded: false, draft: null });
+    paintResearchActivity();
     showLogin({ demo: true });
   });
 
@@ -296,7 +300,7 @@
   }
 
   function renderCenter(force) {
-    const title = { chats: "Chats", projects: "Projects", memory: "Memory", meetings: "Meetings", settings: "Settings" }[view] || "";
+    const title = { chats: "Chats", projects: "Projects", memory: "Memory", meetings: "Meetings", research: "Research", settings: "Settings" }[view] || "";
     $("#center-title").textContent = title;
     $("#center-actions").innerHTML = "";
     const body = $("#center-body");
@@ -305,6 +309,7 @@
     if (view === "memory") return renderMemoryView(body);
     if (view === "meetings") return renderMeetingsView(body, force);
     if (view === "settings") return renderSettingsView(body);
+    if (view === "research") return renderResearchView(body, force);
   }
 
   // ==================== CHATS ====================
@@ -1405,6 +1410,319 @@
 
   // ==================== ACTIVITY (agents only) ====================
   const expandedFollowups = new Set();
+
+  // ==================== RESEARCH (literature review) ====================
+  // The Research tab is the browser front end to the literature review
+  // (bedrock.litreview): the same pipeline as /review in the terminal app.
+  // It keeps its own 2-second poll so typing a question is never interrupted
+  // by the workspace's global re-render.
+  const R = { status: null, reviews: [], selected: null, detail: null, loaded: false, poll: null, draft: null };
+  const REVIEW_STATUS = { queued: "queued", running: "running", completed: "completed", failed: "failed", stopped: "failed", cancelled: "cancelled" };
+  const since = (iso) => {
+    if (!iso) return "";
+    const s = (Date.now() - new Date(iso).getTime()) / 1000;
+    return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : new Date(iso).toLocaleDateString();
+  };
+  const tile = (value, label) => el("div", { class: "stat-tile" }, [el("div", { class: "stat-value" }, String(value)), el("div", { class: "stat-label" }, label)]);
+  const researchApi = (path, opts) => api("/research" + path, opts);
+  const researchRunning = () => R.reviews.some((r) => ["queued", "running"].includes(r.status));
+
+  async function loadResearch({ status = false } = {}) {
+    const [st, reviews] = await Promise.all([
+      status || !R.status ? researchApi("/status").catch((e) => ({ available: false, reason: e.message, model: {} })) : Promise.resolve(R.status),
+      researchApi("/runs").catch(() => R.reviews),
+    ]);
+    R.status = st; R.reviews = reviews || [];
+    if (R.selected) R.detail = await researchApi("/runs/" + encodeURIComponent(R.selected)).catch(() => null);
+    R.loaded = true;
+  }
+
+  function startResearch() {
+    startResearchPoll();
+    researchApi("/runs").then((r) => { R.reviews = r || []; paintResearchActivity(); }).catch(() => {});
+  }
+
+  function startResearchPoll() {
+    if (R.poll) return;
+    R.poll = setInterval(async () => {
+      if (document.hidden || !state) return;
+      if (view !== "research" && !researchRunning()) return;
+      try {
+        const before = JSON.stringify(R.reviews.map((r) => [r.id, r.status]));
+        R.reviews = await researchApi("/runs");
+        paintResearchActivity();
+        if (view !== "research") { if (before !== JSON.stringify(R.reviews.map((r) => [r.id, r.status]))) refresh().catch(() => {}); return; }
+        if (R.selected) {
+          const d = R.detail;
+          if (!d || ["queued", "running"].includes(d.status)) {
+            R.detail = await researchApi("/runs/" + encodeURIComponent(R.selected));
+            paintReviewDetail();
+          }
+        } else paintReviewList();
+      } catch {}
+    }, 2000);
+  }
+
+  function openResearch(id) {
+    R.selected = id || null; R.detail = null;
+    view = "research";
+    $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "research"));
+    lastRenderSig.center = ""; renderCenter(true);
+    if (id) researchApi("/runs/" + encodeURIComponent(id)).then((d) => { R.detail = d; paintReviewDetail(); }).catch((e) => alert(e.message));
+  }
+
+  function renderResearchView(body, force) {
+    const sig = "research:" + (R.selected || "") + ":" + R.loaded;
+    if (!force && lastRenderSig.center === sig) return;   // keep the form and the report frame intact between polls
+    lastRenderSig.center = sig;
+    body.innerHTML = "";
+    const pane = el("div", { class: "pane research-pane" });
+    body.appendChild(pane);
+    startResearchPoll();
+    if (!R.loaded) {
+      pane.appendChild(el("div", { class: "thinking-dots" }, [el("span"), el("span"), el("span")]));
+      loadResearch({ status: true }).then(() => { if (view === "research") renderCenter(true); });
+      return;
+    }
+    if (force && !R.selected) loadResearch({ status: true }).then(() => { if (view === "research" && !R.selected) paintReviewList(); }).catch(() => {});
+    if (R.selected) {
+      pane.appendChild(el("a", { class: "back-link", onclick: () => { R.selected = null; R.detail = null; renderCenter(true); } }, [icon("chevronright", "rotate180"), "All research"]));
+      pane.appendChild(el("div", { id: "research-detail" }));
+      paintReviewDetail();
+      return;
+    }
+    renderResearchHome(pane);
+  }
+
+  function renderResearchHome(pane) {
+    pane.appendChild(el("p", { class: "pane-intro" },
+      "Ask a research question. The literature review searches Europe PMC, preprints and PubMed, keeps the papers about your exact subject, " +
+      "reads them, and writes a report in which every sentence cites a quote checked against the paper."));
+    const st = R.status || {};
+    const model = st.model || {};
+    if (st.available === false) pane.appendChild(el("div", { class: "notice warn" }, st.reason || "The literature review is not available on this server."));
+    else {
+      if (st.searchAvailable === false) pane.appendChild(el("div", { class: "notice warn" }, st.searchReason));
+      if (!model.ready) pane.appendChild(el("div", { class: "notice" }, [
+        el("b", {}, "No model is ready, so reviews run without one. "),
+        "Papers are still searched, filtered and ranked, but no findings are extracted and no report sections are written. ",
+        model.reason ? el("div", { class: "small muted", style: "margin-top:6px;white-space:pre-wrap" }, model.reason) : null,
+      ]));
+    }
+
+    const draft = R.draft || (R.draft = { question: "", projectId: "" });
+    const question = el("textarea", { rows: "2", maxlength: "600", placeholder: "e.g. If I want to prevent psoriasis, what should I target?" });
+    question.value = draft.question;
+    question.addEventListener("input", () => { draft.question = question.value; });
+    const projectSel = el("select", {}, [el("option", { value: "" }, "No project"), ...(state.projects || []).map((p) => el("option", { value: p.id }, p.name))]);
+    projectSel.value = draft.projectId;
+    projectSel.addEventListener("change", () => { draft.projectId = projectSel.value; });
+    const searchIn = el("input", { type: "checkbox" });
+    searchIn.checked = st.searchAvailable !== false;
+    if (st.searchAvailable === false) searchIn.disabled = true;
+    const modelIn = el("input", { type: "checkbox" });
+    modelIn.checked = !!model.ready;
+    const fullIn = el("input", { type: "checkbox", checked: "checked" });
+    const sourceIns = (st.sources || []).map((s) => {
+      const box = el("input", { type: "checkbox", checked: "checked", value: s.name });
+      return { box, row: el("label", { class: "check-row" }, [box, s.label]) };
+    });
+    const submit = el("button", { type: "submit", class: "btn primary" }, [icon("search"), "Start review"]);
+    if (st.available === false) submit.disabled = true;
+    const busy = R.reviews.find((r) => ["queued", "running"].includes(r.status));
+    const form = el("form", { class: "simple-form research-form" }, [
+      el("div", { class: "field" }, [el("label", {}, "Question"), question]),
+      el("div", { class: "field" }, [el("label", {}, "Project (the report is saved to it, so its chats can use it)"), projectSel]),
+      el("div", { class: "research-checks" }, [
+        el("label", { class: "check-row" }, [searchIn, "Search the literature for papers (needs internet)"]),
+        el("label", { class: "check-row" }, [modelIn, "Use the model to read the papers and write the report" + (model.ready ? "" : " (not ready)")]),
+      ]),
+      el("details", { class: "research-options" }, [
+        el("summary", {}, "More options"),
+        el("div", { class: "research-options-grid" }, [
+          el("label", { class: "check-row" }, [fullIn, "Download free full text where it is open access"]),
+          ...(sourceIns.length ? [el("div", { class: "small muted", style: "grid-column:1/-1" }, "Search in:"), ...sourceIns.map((s) => s.row)] : []),
+        ]),
+      ]),
+      el("div", { class: "action-row" }, [submit, busy ? el("span", { class: "small muted" }, "You have a review running — it has to finish first.") : null]),
+    ]);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const q = question.value.trim();
+      if (q.length < 5) { alert("Type a research question first."); return; }
+      submit.disabled = true;
+      try {
+        const review = await researchApi("/runs", { method: "POST", body: {
+          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked,
+          sources: sourceIns.filter((s) => s.box.checked).map((s) => s.box.value), projectId: projectSel.value || null } });
+        R.draft = null;
+        R.reviews = [review, ...R.reviews.filter((r) => r.id !== review.id)];
+        paintResearchActivity();
+        openResearch(review.id);
+      } catch (err) { alert(err.message); submit.disabled = false; }
+    });
+    pane.appendChild(el("div", { class: "detail-card" }, form));
+    const modelTxt = model.ready ? `Model: ${(model.models || []).join(", ")} at ${model.baseUrl}` : model.baseUrl ? `Model server: ${model.baseUrl} (not ready)` : "";
+    if (modelTxt) pane.appendChild(el("div", { class: "small muted", style: "margin:-6px 2px 0" }, modelTxt));
+
+    pane.appendChild(el("div", { class: "section-title" }, "Your reviews"));
+    pane.appendChild(el("div", { id: "research-list" }));
+    paintReviewList();
+  }
+
+  function reviewSub(r) {
+    const st = r.stats || {};
+    if (["queued", "running"].includes(r.status)) return r.lastEvent || "Working…";
+    if (r.status === "completed") return `${st.evidence_units ?? 0} verified findings · ${r.references ?? 0} papers cited · ${since(r.finishedAt || r.startedAt)}`;
+    return r.error || r.status;
+  }
+
+  function paintReviewList() {
+    const host = $("#research-list");
+    if (!host) return;
+    const sig = JSON.stringify(R.reviews.map((r) => [r.id, r.status, r.lastEvent]));
+    if (host.dataset.sig === sig) return;
+    host.dataset.sig = sig;
+    host.innerHTML = "";
+    if (!R.reviews.length) { host.appendChild(el("p", { class: "muted small" }, "No reviews yet. Ask a question above.")); return; }
+    host.appendChild(el("div", { class: "list-rows" }, R.reviews.map((r) => {
+      const row = el("div", { class: "list-row clickable" }, [
+        el("div", { class: "row-main" }, [el("div", { class: "row-title" }, r.question), el("div", { class: "row-sub" }, reviewSub(r))]),
+        el("span", { class: "badge status-" + (REVIEW_STATUS[r.status] || r.status) }, r.status),
+      ]);
+      row.addEventListener("click", () => openResearch(r.id));
+      return row;
+    })));
+  }
+
+  function paintReviewDetail() {
+    const host = $("#research-detail");
+    if (!host) return;
+    const d = R.detail;
+    if (!d) { host.innerHTML = ""; host.appendChild(el("div", { class: "thinking-dots" }, [el("span"), el("span"), el("span")])); return; }
+    const sig = JSON.stringify([d.id, d.status, (d.events || []).length, d.reportId, (d.savedArtifactIds || []).length]);
+    if (host.dataset.sig === sig) return;
+    host.dataset.sig = sig;
+    host.innerHTML = "";
+    const card = el("div", { class: "detail-card" });
+    card.appendChild(el("div", { class: "pane-header" }, [el("h2", {}, d.question), el("span", { class: "badge status-" + (REVIEW_STATUS[d.status] || d.status) }, d.status)]));
+    const facts = [d.search ? "searched " + (d.sources || []).length + " sources" : "papers already collected", d.useModel ? "with the model" : "without a model"];
+    const project = d.projectId && byId(state.projects, d.projectId);
+    if (project) facts.push("project: " + project.name);
+    facts.push("started " + since(d.startedAt));
+    card.appendChild(el("div", { class: "row-sub" }, facts.join(" · ")));
+
+    if (["queued", "running"].includes(d.status)) {
+      card.appendChild(el("div", { class: "research-progress" }, [
+        el("div", { class: "research-progress-label" }, [el("b", {}, "Working"), el("span", { class: "muted small" }, " a review with a model takes from a few minutes to an hour")]),
+        el("div", { class: "bar indeterminate" }, el("span")),
+      ]));
+      const log = el("div", { class: "research-log" }, (d.events || []).slice(-40).map((e) =>
+        el("div", {}, [el("span", { class: "muted" }, new Date(e.time).toLocaleTimeString() + "  "), e.message])));
+      card.appendChild(log);
+      setTimeout(() => { log.scrollTop = log.scrollHeight; }, 0);
+      card.appendChild(el("div", { class: "action-row" }, [el("button", { class: "btn ghost small", onclick: async () => {
+        try { await researchApi(`/runs/${d.id}/cancel`, { method: "POST" }); } catch (err) { alert(err.message); }
+      } }, "Stop")]));
+    } else if (d.status !== "completed") {
+      card.appendChild(el("p", { class: "small", style: "color:var(--bad);white-space:pre-wrap" }, d.error || "The review did not finish."));
+      const actions = [];
+      if (d.canResume) actions.push(el("button", { class: "btn primary small", onclick: async () => {
+        try { const r = await researchApi(`/runs/${d.id}/resume`, { method: "POST" }); R.detail = r; host.dataset.sig = ""; paintReviewDetail(); } catch (err) { alert(err.message); }
+      } }, "Resume from where it stopped"));
+      actions.push(el("button", { class: "btn ghost small", onclick: () => {
+        R.draft = { question: d.question, projectId: d.projectId || "" }; R.selected = null; R.detail = null; renderCenter(true);
+      } }, "Ask again"));
+      actions.push(deleteReviewButton(d));
+      card.appendChild(el("div", { class: "action-row" }, actions));
+    }
+
+    if (d.status === "completed") {
+      const st = d.stats || {};
+      card.appendChild(el("div", { class: "stat-tiles" }, [
+        tile(st.papers_collected ?? 0, "papers found"),
+        tile(st.gate_pass ?? 0, "about the exact subject"),
+        tile(st.papers_read ?? 0, "read in detail"),
+        tile(st.evidence_units ?? 0, "verified findings"),
+        tile(st.sentences_kept ?? 0, "report sentences"),
+      ]));
+      card.appendChild(d.integrityPassed
+        ? el("div", { class: "notice good" }, "Integrity check passed: every quote in this report is the paper's own words.")
+        : el("div", { class: "notice warn" }, ["Integrity check FAILED — read the warning at the top of the report. ", ...(d.integrity || []).map((v) => el("div", { class: "small" }, v))]));
+      if (!d.useModel) card.appendChild(el("p", { class: "small muted" }, "Run without a model: the papers are found and ranked, but no findings were extracted. Ask again with the model on for a written report."));
+      const base = `${API}/research/runs/${encodeURIComponent(d.id)}/report`;
+      const saved = (d.savedArtifactIds || []).length;
+      card.appendChild(el("div", { class: "action-row" }, [
+        el("button", { class: "btn primary small", onclick: () => askInChat(d) }, [icon("chat"), "Ask about it in a chat"]),
+        el("button", { class: "btn small", onclick: () => saveReport(d) }, [icon("folder"), saved ? "Save again" : "Save to a project"]),
+        el("a", { class: "btn small", href: base + "?format=html&download=1" }, [icon("download"), "HTML"]),
+        el("a", { class: "btn small", href: base + "?format=md&download=1" }, [icon("download"), "Markdown"]),
+        el("a", { class: "btn small", href: base + "?format=json&download=1" }, [icon("download"), "JSON"]),
+        deleteReviewButton(d),
+      ]));
+      if (saved) card.appendChild(el("p", { class: "small muted" }, `Saved to the workspace ${saved === 1 ? "once" : saved + " times"} — chats in that project (or your own chats, if no project) can use it.`));
+      host.appendChild(card);
+      host.appendChild(el("iframe", { class: "report-frame", src: base + "?format=html", title: "Report", sandbox: "allow-popups allow-popups-to-escape-sandbox" }));
+      return;
+    }
+    host.appendChild(card);
+  }
+
+  function deleteReviewButton(d) {
+    return el("button", { class: "btn ghost small", title: "Remove from your list (the review database keeps it)", onclick: async () => {
+      if (!confirm("Remove this review from your list?")) return;
+      try { await researchApi(`/runs/${d.id}`, { method: "DELETE" }); R.reviews = R.reviews.filter((r) => r.id !== d.id); R.selected = null; R.detail = null; renderCenter(true); paintResearchActivity(); }
+      catch (err) { alert(err.message); }
+    } }, [icon("trash"), "Remove"]);
+  }
+
+  async function saveReport(d) {
+    const sel = el("select", {}, [el("option", { value: "" }, "My own library (every chat of mine)"), ...(state.projects || []).map((p) => el("option", { value: p.id }, p.name))]);
+    sel.value = d.projectId || "";
+    const save = el("button", { class: "btn primary" }, "Save");
+    const m = openModal({ title: "Save report to the workspace", sub: "It becomes a file chats can read, like an uploaded document.",
+      body: el("div", { class: "field" }, [el("label", {}, "Where"), sel]), footer: [save] });
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await researchApi(`/runs/${d.id}/save`, { method: "POST", body: { projectId: sel.value || null } });
+        m.close();
+        R.detail = await researchApi("/runs/" + encodeURIComponent(d.id)); paintReviewDetail();
+        await refresh();
+      } catch (err) { alert(err.message); save.disabled = false; }
+    });
+  }
+
+  async function askInChat(d) {
+    try {
+      const chat = await api("/records/chats", { method: "POST", body: { data: {
+        title: "Review: " + d.question.slice(0, 60), projectId: d.projectId || null, messages: [], artifactIds: [], pinned: false, archived: false } } });
+      await researchApi(`/runs/${d.id}/save`, { method: "POST", body: { chatId: chat.id } });
+      currentChatId = chat.id; view = "chats";
+      $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "chats"));
+      await refresh();
+    } catch (err) { alert(err.message); }
+  }
+
+  // Running and just-finished reviews also show in the Agent Activity panel.
+  function paintResearchActivity() {
+    const host = $("#research-activity");
+    if (!host) return;
+    const recent = R.reviews.filter((r) => ["queued", "running"].includes(r.status) || (r.finishedAt && Date.now() - new Date(r.finishedAt).getTime() < 3600e3)).slice(0, 4);
+    const sig = JSON.stringify(recent.map((r) => [r.id, r.status, r.lastEvent]));
+    if (host.dataset.sig === sig) return;
+    host.dataset.sig = sig;
+    host.innerHTML = "";
+    recent.forEach((r) => {
+      const card = el("div", { class: "run-card" }, [
+        el("div", { class: "run-title" }, r.question),
+        el("div", { class: "run-meta" }, [el("span", { class: "badge status-" + (REVIEW_STATUS[r.status] || r.status) }, r.status), el("span", {}, "Literature review")]),
+        ["queued", "running"].includes(r.status) ? el("div", { class: "run-current-step" }, [el("span", { class: "dot" }), el("span", {}, r.lastEvent || "Working…")]) : null,
+        el("a", { class: "run-answer-link", onclick: () => openResearch(r.id) }, ["Open in Research", icon("chevronright")]),
+      ]);
+      host.appendChild(card);
+    });
+  }
 
   function renderActivity() {
     const runs = [...state.runs].filter((r) => r.mode && !["ask", "auto"].includes(r.mode)).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));

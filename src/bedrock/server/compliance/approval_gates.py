@@ -21,7 +21,13 @@ class ApprovalGate:
 
     async def wait_for_decision(self, task_id: str) -> ApprovalDecision:
         future = self._pending.get(task_id) or self.open(task_id)
-        return await future
+        try:
+            return await future
+        finally:
+            # Decided, or the run waiting was cancelled: either way nothing is
+            # pending any more, and the entry must not outlive its run.
+            if self._pending.get(task_id) is future:
+                del self._pending[task_id]
 
     def resolve(self, task_id: str, decision: ApprovalDecision) -> bool:
         future = self._pending.get(task_id)

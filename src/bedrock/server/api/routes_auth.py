@@ -6,8 +6,11 @@ docs/WORKFLOW.md section 1. The whole redirect round-trip:
   browser --GET /auth/callback?code&state--> backend
   backend --(code, client secret)--> Keycloak token endpoint   [server-to-server]
   backend <--id_token-- Keycloak
-  backend verifies id_token signature, creates an app session,
-  browser <--302 to "/?session_id=...&user=..."-- backend
+  backend verifies id_token signature, signs the browser in to the workspace
+  (the `bedrock_workspace` cookie), browser <--302 to "/"-- backend
+
+  The legacy page (/legacy) starts at /auth/login?next=/legacy and gets its
+  orchestrator session back in the query string, as it always did.
 
 The client secret never reaches the browser — only the backend ever talks
 to Keycloak's token endpoint. If SSO isn't configured (no Keycloak in
@@ -27,6 +30,7 @@ from bedrock.server.auth.oidc import OIDCClient, new_state
 from bedrock.server.auth.state_store import get_state_store
 from bedrock.server.config import get_settings
 from bedrock.server.orchestrator.session import start_session
+from bedrock.server.workspace.routes import issue_session
 
 router = APIRouter(tags=["auth"])
 
@@ -45,18 +49,24 @@ def _require_oidc_client() -> OIDCClient:
     return OIDCClient(settings)
 
 
+# Where a sign-in may return to: nothing else, so /auth/login cannot be used to
+# bounce a browser to an arbitrary address.
+_RETURN_PAGES = {"/", "/legacy"}
+
+
 @router.get("/auth/login")
-async def login():
+async def login(next: str = "/"):
     client = _require_oidc_client()
     state = new_state()
-    get_state_store().issue(state)
+    get_state_store().issue(state, next if next in _RETURN_PAGES else "/")
     url = await client.authorize_url(state)
     return RedirectResponse(url, status_code=302)
 
 
 @router.get("/auth/callback")
 async def callback(code: str, state: str):
-    if not get_state_store().consume(state):
+    next_path = get_state_store().consume(state)
+    if next_path is None:
         raise HTTPException(status_code=400, detail="Login expired or was already used. Try again.")
 
     client = _require_oidc_client()
@@ -68,13 +78,20 @@ async def callback(code: str, state: str):
     # readable, unlike the opaque `sub`.
     user_id = user.preferred_username or user.email or user.sub
     settings = get_settings()
-    session_id = await start_session(user_id)
+    if next_path == "/legacy":
+        session_id = await start_session(user_id)
+        redirect_url = (
+            f"{settings.app_base_url}/legacy?session_id={quote(session_id)}"
+            f"&user_id={quote(user_id)}&user_name={quote(user.display_name)}"
+        )
+        return RedirectResponse(redirect_url, status_code=302)
 
-    redirect_url = (
-        f"{settings.app_base_url}/?session_id={quote(session_id)}"
-        f"&user_id={quote(user_id)}&user_name={quote(user.display_name)}"
-    )
-    return RedirectResponse(redirect_url, status_code=302)
+    # The workspace (served at /) knows people by its session cookie only.
+    # Without it, signing in with Keycloak landed on the sign-in page again,
+    # and with SSO configured there was no other way in.
+    response = RedirectResponse(f"{settings.app_base_url}/", status_code=302)
+    issue_session(response, user_id, user.display_name)
+    return response
 
 
 @router.get("/auth/config")

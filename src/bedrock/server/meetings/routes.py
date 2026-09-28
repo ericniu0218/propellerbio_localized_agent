@@ -59,6 +59,7 @@ from bedrock.server.tools.datacenter_client import (
 from bedrock.server.workspace.routes import identity, require_object, store
 from bedrock.server.workspace.store import uid
 from bedrock.server.config import private_dir
+from bedrock.server.paths import safe_component
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ async def create_recording(
     # Streamed to disk in chunks rather than read into memory, because the
     # whole point of the size cap is that these files are large.
     job_id = uid()
-    recordings_dir = recording_config.storage_dir / user["id"]
+    recordings_dir = recording_config.storage_dir / safe_component(user["id"])
     recordings_dir.mkdir(parents=True, exist_ok=True)
     audio_path = recordings_dir / f"{job_id}{suffix}"
 
@@ -254,7 +255,7 @@ async def enroll_voice(
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(415, f"{suffix} is not an audio format we can read.")
 
-    scratch = recording_config.storage_dir / user["id"] / "enroll"
+    scratch = recording_config.storage_dir / safe_component(user["id"]) / "enroll"
     scratch.mkdir(parents=True, exist_ok=True)
     person_id = uid()
     raw = scratch / f"{person_id}{suffix}"
@@ -370,7 +371,7 @@ async def delete_meeting(meeting_id: str, user=Depends(identity)):
 
     recording_id = meeting.get("recordingId")
     if recording_id:
-        directory = config().storage_dir / user["id"]
+        directory = config().storage_dir / safe_component(user["id"])
         for path in directory.glob(f"{recording_id}.*"):
             try:
                 path.unlink()
@@ -425,7 +426,7 @@ async def live_clip(
         raise HTTPException(404, "That preview session is unavailable or has expired.")
 
     recording_config = config()
-    scratch = recording_config.storage_dir / user["id"] / "live" / session_id
+    scratch = recording_config.storage_dir / safe_component(user["id"]) / "live" / session_id
     scratch.mkdir(parents=True, exist_ok=True)
     suffix = Path(audio.filename or "clip.webm").suffix.lower() or ".webm"
     clip = scratch / f"{session.clips:05d}{suffix}"
@@ -519,7 +520,7 @@ def close_live(session_id: str, user=Depends(identity)):
     _live.close(user["id"], session_id)
     import shutil
 
-    shutil.rmtree(config().storage_dir / user["id"] / "live" / session_id, ignore_errors=True)
+    shutil.rmtree(config().storage_dir / safe_component(user["id"]) / "live" / session_id, ignore_errors=True)
     return {"ok": True}
 
 

@@ -30,7 +30,19 @@ def _default_root():
 
 
 def demo_mode():
-    return os.getenv("DEMO_MODE", "true").lower() == "true"
+    """Fictional demo data and demo sign-in, or the real, empty workspace.
+
+    ``DEMO_MODE`` decides when set. Unset, it follows the server's mode: a mock
+    server is a demo, a real one is not - a real deployment must never seed
+    fictional projects (docs/server/WORKSPACE_ARCHITECTURE.md). It used to
+    default to demo whatever the mode.
+    """
+    explicit = os.getenv("DEMO_MODE")
+    if explicit is not None:
+        return explicit.lower() == "true"
+    from bedrock.server.config import get_settings
+
+    return get_settings().mode != "real"
 
 
 class WorkspaceStore:

@@ -12,15 +12,30 @@ refused unless it is 1. Scaling out needs a shared bus first (see
 ``docs/server/DEPLOYMENT.md``).
 
 ``check`` reports everything a deployment needs, all at once, and exits 1 if
-anything is missing: settings, the data directory, the model servers named in
-``models.yaml`` (real mode), what the meeting recorder is missing, and single
-sign-on. It never starts the server.
+anything is missing: the server's own packages, settings, the data directory,
+the model servers named in ``models.yaml`` (real mode), what the meeting
+recorder is missing, and single sign-on. It never starts the server.
+
+**No downloads in real mode.** Meeting search's embedding model (model2vec,
+through Hugging Face's library) would otherwise fetch itself from the internet
+the first time it is used. ``HF_HUB_OFFLINE=1`` is set before anything imports
+that library, so a model that was not staged locally fails at once and search
+falls back to keywords. ``BEDROCK_SERVER_ALLOW_MODEL_DOWNLOAD=true`` lifts it
+for a machine that is allowed to download (docs/server/DEPLOYMENT.md).
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import os
 import sys
+
+SERVER_PACKAGES = ("fastapi", "uvicorn", "sqlalchemy", "sse_starlette", "multipart")
+NOT_INSTALLED = (
+    "The server is not installed here (missing: {missing}). "
+    'Install it with: pip install "bedrock-private-ai[server]"'
+)
 
 ONE_WORKER = (
     "bedrock-server runs one worker: the event stream, approvals and jobs live in "
@@ -38,21 +53,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=1, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
-    try:
-        from bedrock.server.config import get_settings
-    except ImportError as exc:  # the [server] extra is not installed
-        print(f"The server is not installed ({exc.name} is missing). "
-              'Install it with: pip install "bedrock-private-ai[server]"', file=sys.stderr)
-        return 2
-
     if args.workers != 1:
         parser.error(ONE_WORKER)
     if args.command == "check":
         return check()
 
+    missing = missing_packages()
+    if missing:
+        print(NOT_INSTALLED.format(missing=", ".join(missing)), file=sys.stderr)
+        return 2
+
     import uvicorn
 
+    from bedrock.server.config import get_settings
+
     settings = get_settings()
+    stay_offline(settings.mode)
     uvicorn.run(
         "bedrock.server.main:app",
         host=args.host or settings.host,
@@ -63,14 +79,31 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def missing_packages() -> list[str]:
+    return [name for name in SERVER_PACKAGES if importlib.util.find_spec(name) is None]
+
+
+def stay_offline(mode: str) -> None:
+    """Real mode never downloads a model at runtime (module docstring)."""
+    allowed = os.environ.get("BEDROCK_SERVER_ALLOW_MODEL_DOWNLOAD", "").lower() in {"1", "true", "yes"}
+    if mode == "real" and not allowed:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+
 def check() -> int:
     """Print every problem a deployment would hit; exit 1 if there are any."""
     import asyncio
+
+    missing = missing_packages()
+    if missing:
+        print(NOT_INSTALLED.format(missing=", ".join(missing)))
+        return 1
 
     from bedrock.server.config import get_settings, load_models_config, private_dir
     from bedrock.server.meetings.config import RecordingConfig, readiness_issues
 
     settings = get_settings()
+    stay_offline(settings.mode)
     problems: list[str] = []
     print(f"mode: {settings.mode}")
     try:

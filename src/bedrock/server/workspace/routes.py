@@ -409,7 +409,8 @@ async def start_run(body: RunInput, user=Depends(identity)):
 
 
 @router.post("/runs/{object_id}/cancel")
-def cancel(object_id: str, user=Depends(identity)):
+async def cancel(object_id: str, user=Depends(identity)):
+    # async: Task.cancel must run on the event loop, not in FastAPI's thread pool.
     s = store()
     run = require_object(s, user["id"], object_id, "runs")
     if object_id in jobs:
@@ -425,7 +426,8 @@ class Decision(BaseModel):
 
 
 @router.post("/runs/{object_id}/decision")
-def decide(object_id: str, body: Decision, user=Depends(identity)):
+async def decide(object_id: str, body: Decision, user=Depends(identity)):
+    # async: resolving an asyncio future from a worker thread is not thread-safe.
     from bedrock.server.compliance.approval_gates import get_approval_gate
     from bedrock.server.schemas.enums import ApprovalDecision
     s = store()

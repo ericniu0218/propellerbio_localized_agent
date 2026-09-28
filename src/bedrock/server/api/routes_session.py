@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -8,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from bedrock.server.db import get_database
 from bedrock.server.events import get_event_bus
 from bedrock.server.orchestrator.loop import handle_message
+from bedrock.server.orchestrator.runs import get_message_runs
 from bedrock.server.orchestrator.session import start_session
 from bedrock.server.schemas.api import (
     CancelTaskRequest,
@@ -44,14 +44,21 @@ async def send_message(req: SendMessageRequest) -> SendMessageResponse:
     # a client learns from the `task.planned`/`task.completed` events.
     user_id = get_database().get_session_user(req.session_id)
     root_task_id = get_task_store().new_task_id()
-    asyncio.create_task(
-        handle_message(req.session_id, user_id, req.message, root_task_id, req.force_tier)
+    # Watched, not fire-and-forget: a failure becomes one task.failed on the
+    # stream and a cancel really stops it (bedrock.server.orchestrator.runs).
+    get_message_runs().start(
+        session_id=req.session_id,
+        root_task_id=root_task_id,
+        coro=handle_message(req.session_id, user_id, req.message, root_task_id, req.force_tier),
     )
     return SendMessageResponse(session_id=req.session_id, task_id=root_task_id, accepted=True)
 
 
 @router.post("/tasks/cancel")
 async def cancel_task(req: CancelTaskRequest) -> dict:
+    # A run still going is stopped, and publishes its own task.failed.
+    if await get_message_runs().cancel(req.task_id):
+        return {"task_id": req.task_id, "status": "cancelled"}
     store = get_task_store()
     task = store.get_task(req.task_id)
     if task is None:
@@ -59,6 +66,10 @@ async def cancel_task(req: CancelTaskRequest) -> dict:
     session_id = store.get_task_session_id(req.task_id)
     from bedrock.server.schemas.enums import TaskStatus
 
+    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+        # Already finished: saying "cancelled" now would contradict the result
+        # the client may already have shown.
+        return {"task_id": req.task_id, "status": task.status.value}
     task.status = TaskStatus.CANCELLED
     store.update_task(session_id, task)
     # Previously silent on the event stream: a client waiting on this task

@@ -1,21 +1,32 @@
+# The Bedrock agent-pack server (bedrock.server), built from this repository.
+#
+#   docker build -f docker/server/Dockerfile -t bedrock-server .
+#
+# Run from the repository root: the build context is the whole repo. Add
+# chemistry and sequence tools with --build-arg EXTRAS=server,postgres,recorder,speakers,chem
+#
+# whisper.cpp (whisper-cli, whisper-vad-speech-segments) and the speech and VAD
+# model files are not in this image, exactly as before: mount them and point
+# MEETING_MODEL_DIR (and PATH) at them, or the meeting recorder reports itself
+# unavailable and everything else runs. See docs/server/DEPLOYMENT.md.
 FROM python:3.12-slim
 
-WORKDIR /app
+ARG EXTRAS=server,postgres,recorder,speakers
 
-COPY requirements.txt .
-# RDKit/Biopython are optional (guarded imports) and slow to build in a
-# minimal image; install the core web/serving deps here. Add them to this
-# install step once the target image's base has the toolchain for them, or
-# install from conda-forge in a real deployment image.
-RUN pip install --no-cache-dir \
-    fastapi uvicorn[standard] pydantic pyyaml sqlalchemy sse-starlette httpx psycopg2-binary
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY app ./app
-COPY config ./config
-COPY contracts ./contracts
-COPY data ./data
+WORKDIR /src
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir ".[${EXTRAS}]"
 
-ENV PYTHONPATH=/app
+# Data (database, workspace, recordings) lives on a volume, and nothing may
+# download a model at runtime: this server is air-gapped.
+ENV BEDROCK_SERVER_DATA_DIR=/var/lib/bedrock \
+    HF_HUB_OFFLINE=1
+VOLUME /var/lib/bedrock
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bedrock-server", "--host", "0.0.0.0", "--port", "8000"]

@@ -14,25 +14,48 @@ concurrency:
 
 jobs:
   pytest:
-    name: pytest
+    name: pytest (${{ matrix.install }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # What an employee installs: the terminal app and the literature
+          # review's optional API. The server's tests are not collected here,
+          # which proves the terminal app does not depend on the server.
+          - install: core
+            extras: "dev,api"
+          # Everything the server can use.
+          - install: server-full
+            extras: "dev,api,server,recorder,speakers,chem"
+          # The server with none of its optional helpers. Its chemistry,
+          # sequence, speaker, semantic-search and screen-reading code claims
+          # to degrade when those libraries are absent; this job holds it to
+          # that, the way the agent pack's old "minimal" job did.
+          - install: server-minimal
+            extras: "dev,server"
 
     steps:
       - uses: actions/checkout@v5
 
-      # pyproject.toml declares requires-python = ">=3.11". Pinned to one
-      # version rather than a matrix because nothing here is version-sensitive
-      # yet; add 3.11 to a matrix if that stops being true.
+      # pyproject.toml declares requires-python = ">=3.11". 3.12 is the version
+      # the server's Docker image uses, and the last one rapidocr-onnxruntime
+      # (the recorder's screen reading) installs on.
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies
-        # `api` too, or the two HTTP API tests skip silently.
-        run: pip install -e ".[dev,api]"
+      - name: Install
+        run: pip install -e ".[${{ matrix.extras }}]"
+
+      # A missing server dependency would make tests/server skip rather than
+      # fail; import it first so that can never pass unnoticed.
+      - name: The server imports
+        if: matrix.install != 'core'
+        run: python -c "import bedrock.server.main"
 
       # The Textual UI tests drive the app through its headless test harness,
       # so no display or TTY is needed.

@@ -1,12 +1,12 @@
 # Brings up the whole stack with one command.
 #
-#   Mock mode (no GPUs needed, frontend-ready immediately):
-#     docker compose up --build
+#   Mock mode (no GPUs needed, frontend-ready immediately), from the repo root:
+#     docker compose -f docker/server/compose.yml up --build
 #
 #   Real mode (requires the on-prem GPU server + downloaded model weights):
-#     docker compose --profile real up --build
+#     docker compose -f docker/server/compose.yml --profile real up --build
 #
-# See docs/ARCHITECTURE.md and docs/HARDWARE.md before running the `real`
+# See docs/server/ARCHITECTURE.md and docs/server/HARDWARE.md before running the `real`
 # profile — the vLLM services below assume NVIDIA GPUs are available to
 # Docker (nvidia-container-toolkit) and that model weights are already
 # present at the paths mounted into each vllm service.
@@ -34,7 +34,9 @@ services:
       - "6379:6379"
 
   api:
-    build: .
+    build:
+      context: ../..
+      dockerfile: docker/server/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,7 +54,7 @@ services:
   # --- real mode only: one vLLM OpenAI-compatible server per model -------
   # Model names/precision come from config/models.yaml; MODEL_PATH below
   # should point at locally downloaded weights (no internet access at
-  # runtime — see docs/ARCHITECTURE.md section 8).
+  # runtime — see docs/server/ARCHITECTURE.md section 8).
 
   director-llm:
     profiles: [real]

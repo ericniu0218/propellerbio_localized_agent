@@ -29,6 +29,13 @@ class ApprovalGate:
             if self._pending.get(task_id) is future:
                 del self._pending[task_id]
 
+    def discard(self, task_id: str) -> None:
+        """Nothing will wait for this decision any more (the run ended or was
+        cancelled, possibly before it began waiting)."""
+        future = self._pending.pop(task_id, None)
+        if future is not None and not future.done():
+            future.cancel()
+
     def resolve(self, task_id: str, decision: ApprovalDecision) -> bool:
         future = self._pending.get(task_id)
         if future is None or future.done():

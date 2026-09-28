@@ -28,7 +28,7 @@ _STATIC_PREFIX = (
 # Citations are mandatory in these domains — the Director rejects on their
 # absence without needing a model call, per the hallucination-guardrail
 # requirement in docs/ARCHITECTURE.md section 8.
-_CITATION_REQUIRED_DOMAINS = {
+CITATION_REQUIRED_DOMAINS = {
     TaskDomain.LITERATURE,
     TaskDomain.INTERNAL_DOCS,
     TaskDomain.REGULATORY,
@@ -92,7 +92,7 @@ class Director(BaseAgent):
         low-latency retry-loop behavior; a real deployment can upgrade the
         "high-stakes qualitative" branch to call self.call_model.
         """
-        if task.domain in _CITATION_REQUIRED_DOMAINS and not citations:
+        if task.domain in CITATION_REQUIRED_DOMAINS and not citations:
             return ReviewOutcome(
                 approved=False,
                 reason="No citation attached to a claim in a citation-required domain.",

@@ -428,13 +428,22 @@ class Decision(BaseModel):
 @router.post("/runs/{object_id}/decision")
 async def decide(object_id: str, body: Decision, user=Depends(identity)):
     # async: resolving an asyncio future from a worker thread is not thread-safe.
-    from bedrock.server.compliance.approval_gates import get_approval_gate
+    from bedrock.server.compliance.approvals import NotPending, UnknownTask, resolve_approval
     from bedrock.server.schemas.enums import ApprovalDecision
     s = store()
     run = require_object(s, user["id"], object_id, "runs")
-    gate = get_approval_gate()
-    if run.get("status") != "waiting" or not gate.is_pending(run.get("approvalTaskId", "")):
+    if run.get("status") != "waiting":
         raise HTTPException(409, "This review is no longer pending.")
-    gate.resolve(run["approvalTaskId"], ApprovalDecision(body.decision))
+    try:
+        # The same signature record /approvals writes, naming the signed-in
+        # person; it used to release the gate with no record at all.
+        await resolve_approval(
+            run.get("approvalTaskId", ""),
+            ApprovalDecision(body.decision),
+            signer=user["id"],
+            signer_verified=get_settings().sso_enabled and not demo_mode(),
+        )
+    except (NotPending, UnknownTask):
+        raise HTTPException(409, "This review is no longer pending.")
     s.audit(user["id"], "human " + body.decision, object_id)
     return {"ok": True}

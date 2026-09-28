@@ -187,6 +187,8 @@ export interface ApprovalResolvedPayload {
   approved_by: string;
   comment?: string | null;
   recorded_at: string;
+  /** True only when `approved_by` came from a signed-in identity. */
+  signer_verified?: boolean;
 }
 
 export interface ApprovalRequiredPayload {
@@ -195,6 +197,8 @@ export interface ApprovalRequiredPayload {
   reason: string;
   domain: TaskDomain;
   preview: string;
+  /** The full answer awaiting approval (GET /results/{ref}); delivered unchanged if approved. */
+  result_ref?: string | null;
 }
 
 export interface TaskCompletedPayload {

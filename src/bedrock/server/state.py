@@ -18,7 +18,7 @@ from __future__ import annotations
 def reset_server_state() -> None:
     from bedrock.server import config
     from bedrock.server.auth import state_store
-    from bedrock.server.compliance import approval_gates, rbac
+    from bedrock.server.compliance import approval_gates, audit, rbac
     from bedrock.server.db import base, database
     from bedrock.server.events import bus
     from bedrock.server.meetings import routes as meeting_routes
@@ -44,4 +44,5 @@ def reset_server_state() -> None:
         meeting_routes.recording_jobs,
     ):
         cached.cache_clear()
+    audit.reset()
     base.dispose_engine()

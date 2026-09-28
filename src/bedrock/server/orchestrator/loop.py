@@ -10,9 +10,10 @@ so REST calls return immediately and the frontend follows progress over SSE.
 
 from __future__ import annotations
 
-from bedrock.server.agents.director import Director
+from bedrock.server.agents.director import CITATION_REQUIRED_DOMAINS, Director
 from bedrock.server.agents.runner import Runner
 from bedrock.server.agents.specialist import Specialist
+from bedrock.server.answers import format_answer
 from bedrock.server.compliance.approval_gates import get_approval_gate
 from bedrock.server.db import get_database
 from bedrock.server.events import get_event_bus
@@ -113,7 +114,7 @@ async def _handle_simple(session_id, user_id, message, task_id, classification, 
     ))
 
     answer = await runner.call_model(runner.build_prompt(message), task_id=task_id)
-    formatted = await runner.format_output(answer, [], task_id=task_id)
+    formatted = format_answer(answer, [])
     result_ref = store.store_result(session_id, formatted)
 
     node.status = TaskStatus.COMPLETED
@@ -148,11 +149,22 @@ async def _handle_normal(session_id, user_id, message, task_id, classification, 
     ))
 
     specialist = Specialist(session_id=session_id, user_id=user_id)
-    await specialist.emit_started(task_id, node.title)
-    content, citations = await specialist.execute(node)
-    await specialist.emit_status(AgentStatus.DONE, task_id, node.title)
+    if node.domain in CITATION_REQUIRED_DOMAINS:
+        # The citation guard runs here too, not only on the hard path: a
+        # literature, internal-document or meeting answer the classifier calls
+        # merely "normal" must still cite what it says (ARCHITECTURE.md §9 q8).
+        # The check is deterministic - no model call - and the same retry loop.
+        content, citations, blocked = await _run_with_review_loop(
+            session_id, node, specialist, Director(session_id=session_id)
+        )
+        if blocked:
+            return task_id
+    else:
+        await specialist.emit_started(task_id, node.title)
+        content, citations = await specialist.execute(node)
+        await specialist.emit_status(AgentStatus.DONE, task_id, node.title)
 
-    formatted = await runner.format_output(content, citations, task_id=task_id)
+    formatted = format_answer(content, citations)
     result_ref = store.store_result(session_id, formatted)
 
     node.status = TaskStatus.COMPLETED
@@ -209,6 +221,11 @@ async def _handle_hard(session_id, user_id, message, task_id, classification, hi
         ))
         return synth_node.task_id
 
+    # The answer is fixed now, before any human sees it: if it needs approval,
+    # the text approved is the text stored here, and the text delivered.
+    formatted = format_answer(final_text, upstream_citations)
+    result_ref = store.store_result(session_id, formatted)
+
     # Human approval gate for high-stakes final output — see
     # docs/ARCHITECTURE.md section 8.
     if high_stakes:
@@ -219,14 +236,20 @@ async def _handle_hard(session_id, user_id, message, task_id, classification, hi
         # the instant it sees the event, and resolve() is a no-op if no
         # future is open yet — opening first closes that race.
         gate.open(synth_node.task_id)
-        await bus.publish_typed(session_id, EventType.APPROVAL_REQUIRED, ApprovalRequiredPayload(
-            task_id=synth_node.task_id,
-            title=synth_node.title,
-            reason="High-stakes output requires human approval before completion.",
-            domain=synth_node.domain,
-            preview=final_text[:500],
-        ))
-        decision = await gate.wait_for_decision(synth_node.task_id)
+        try:
+            await bus.publish_typed(session_id, EventType.APPROVAL_REQUIRED, ApprovalRequiredPayload(
+                task_id=synth_node.task_id,
+                title=synth_node.title,
+                reason="High-stakes output requires human approval before completion.",
+                domain=synth_node.domain,
+                preview=formatted[:500],
+                result_ref=result_ref,
+            ))
+            decision = await gate.wait_for_decision(synth_node.task_id)
+        finally:
+            # Cancelled while publishing (the audit write awaits) or while
+            # waiting: the gate must not stay open for a run that has ended.
+            gate.discard(synth_node.task_id)
         if decision == ApprovalDecision.REJECT:
             synth_node.status = TaskStatus.FAILED
             store.update_task(session_id, synth_node)
@@ -236,8 +259,6 @@ async def _handle_hard(session_id, user_id, message, task_id, classification, hi
             ))
             return synth_node.task_id
 
-    formatted = await runner.format_output(final_text, upstream_citations, task_id=synth_node.task_id)
-    result_ref = store.store_result(session_id, formatted)
     synth_node.status = TaskStatus.COMPLETED
     synth_node.result_ref = result_ref
     synth_node.citations = upstream_citations

@@ -1,7 +1,7 @@
 """Realistic-looking fake replies for mock mode (MockBackend).
 
 Without this, the mock model just echoed back whatever prompt it was
-given — which, for the Runner's `format_output` call in particular, meant
+given — which, for the Runner's formatting call (since removed), meant
 the literal internal formatting *instructions* ("append a 'Sources'
 section listing these citations exactly...") ended up shown to the user as
 if it were the answer. That's a bad demo and would confuse a non-technical
@@ -29,8 +29,6 @@ def fake_reply(prompt: str, model_name: str) -> str:
         return _fake_date_range(prompt)
     if "Extract structured entities as JSON" in prompt:
         return json.dumps({"genes": [], "proteins": [], "compound_ids": [], "dates": [], "doses": []})
-    if "Format this content as clean markdown" in prompt:
-        return _fake_format(prompt)
     if "Synthesize a final answer for:" in prompt:
         return _fake_synthesis(prompt)
     if "Compress this conversation history" in prompt:
@@ -121,15 +119,6 @@ def _fake_date_range(prompt: str) -> str:
             start, end = reference - timedelta(days=7), reference
 
     return json.dumps({"from": start.isoformat(), "to": end.isoformat()})
-
-
-def _fake_format(prompt: str) -> str:
-    content = _after(prompt, "\n\nContent:\n") or prompt
-    sources = _between(prompt, "citations exactly:\n", "\n\nContent:")
-    text = _trim(content.strip(), 500) or "Nothing to report."
-    if sources and sources.strip() and sources.strip() != "(no citations)":
-        text += f"\n\n**Sources**\n{sources.strip()}"
-    return text
 
 
 def _fake_synthesis(prompt: str) -> str:

@@ -1,5 +1,5 @@
 """Runner: fast/cheap Qwen model. Classification, summarization, entity
-extraction, PHI redaction, history compaction, and output formatting — see
+extraction, PHI redaction, history and compaction — see
 docs/ARCHITECTURE.md section 2. Never calls the Director or Specialist
 itself; the orchestrator decides what happens with the Runner's output.
 """
@@ -77,15 +77,6 @@ class Runner(BaseAgent):
     async def compact_history(self, turns: list[str], task_id: str | None = None) -> str:
         joined = "\n".join(turns)
         prompt = f"Compress this conversation history into a short summary a future turn can use as context:\n\n{joined}"
-        return await self.call_model(self.build_prompt(prompt), task_id=task_id)
-
-    async def format_output(self, content: str, citations: list[str], task_id: str | None = None) -> str:
-        citation_block = "\n".join(f"- {c}" for c in citations) if citations else "(no citations)"
-        prompt = (
-            f"Format this content as clean markdown for a chat UI, and append a "
-            f"'Sources' section listing these citations exactly:\n{citation_block}\n\n"
-            f"Content:\n{content}"
-        )
         return await self.call_model(self.build_prompt(prompt), task_id=task_id)
 
 

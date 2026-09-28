@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException
 
-from bedrock.server.compliance.approval_gates import get_approval_gate
-from bedrock.server.events import get_event_bus
+from bedrock.server.compliance import approvals
 from bedrock.server.schemas.api import ApprovalRequest
-from bedrock.server.schemas.enums import EventType
-from bedrock.server.schemas.events import ApprovalResolvedPayload
-from bedrock.server.task_store import get_task_store
 
 router = APIRouter(tags=["approval"])
 
@@ -26,28 +20,18 @@ async def resolve_approval(req: ApprovalRequest) -> dict:
     approval on a regulatory or clinical task is exactly what the audit trail
     exists to make impossible.
     """
-    gate = get_approval_gate()
-    if not gate.is_pending(req.task_id):
-        raise HTTPException(status_code=409, detail="no pending approval for this task")
-
-    session_id = get_task_store().get_task_session_id(req.task_id)
-    if session_id is None:
-        raise HTTPException(status_code=404, detail="unknown task")
-
-    # Published rather than written straight to the database so the existing
-    # audit sink persists it and the frontend sees the outcome on the event
-    # stream, the same path every other decision takes.
-    await get_event_bus().publish_typed(
-        session_id,
-        EventType.APPROVAL_RESOLVED,
-        ApprovalResolvedPayload(
-            task_id=req.task_id,
-            decision=req.decision.value,
-            approved_by=req.approved_by,
+    try:
+        await approvals.resolve_approval(
+            req.task_id,
+            req.decision,
+            signer=req.approved_by,
+            # A name in the request body, not a signed-in identity: this API has
+            # no sign-in yet (the terminal app cannot sign in).
+            signer_verified=False,
             comment=req.comment,
-            recorded_at=datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-
-    gate.resolve(req.task_id, req.decision)
+        )
+    except approvals.NotPending:
+        raise HTTPException(status_code=409, detail="no pending approval for this task")
+    except approvals.UnknownTask:
+        raise HTTPException(status_code=404, detail="unknown task")
     return {"task_id": req.task_id, "decision": req.decision.value}

@@ -93,6 +93,9 @@ class ApprovalResolvedPayload(BaseModel):
     approved_by: str
     comment: str | None = None
     recorded_at: str
+    # True only when `approved_by` came from a signed-in identity (the
+    # workspace's session under Keycloak), not from a name the client typed.
+    signer_verified: bool = False
 
 
 class ApprovalRequiredPayload(BaseModel):
@@ -101,6 +104,10 @@ class ApprovalRequiredPayload(BaseModel):
     reason: str
     domain: TaskDomain
     preview: str
+    # The full answer awaiting approval (GET /results/{ref}). It is stored
+    # before the gate opens and delivered unchanged after approval, so what a
+    # person signs is exactly what is shown as final.
+    result_ref: str | None = None
 
 
 class TaskCompletedPayload(BaseModel):

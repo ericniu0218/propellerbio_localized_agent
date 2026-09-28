@@ -1,6 +1,6 @@
 """Every prompt, agent decision, tool call, and output must be logged to the
 append-only audit store — docs/ARCHITECTURE.md section 8. The audit sink
-(app/compliance/audit.py) is wired to the event bus at API startup; these
+(bedrock/server/compliance/audit.py) is wired to the event bus at API startup; these
 tests wire it directly so they don't need a running FastAPI app.
 """
 
@@ -33,6 +33,11 @@ async def test_every_event_type_produces_an_audit_row(session_id):
 
     completed_entry = next(e for e in entries if e.action == EventType.TASK_COMPLETED.value)
     assert completed_entry.task_id == task_id
+
+    # Streamed tokens are not a row each: every model reply is one agent.output
+    # row carrying the whole text (bedrock.server.compliance.audit).
+    assert EventType.AGENT_TOKEN.value not in actions
+    assert "agent.output" in actions
 
 
 async def test_audit_log_has_no_update_or_delete_methods_on_database():

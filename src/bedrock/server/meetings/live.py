@@ -140,10 +140,8 @@ async def transcribe_clip(clip: Path, config, work_dir: Path) -> str:
     A clip that fails is worth nothing and must not interrupt a meeting, so the
     failure is counted and swallowed.
     """
-    from bedrock.server.meetings.pipeline import PIPELINE_AVAILABLE, _whisper_config
+    from bedrock.server.meetings.pipeline import _whisper_config
 
-    if not PIPELINE_AVAILABLE:
-        return ""
     try:
         from bedrock.meetings.transcribe import WhisperTranscriber
 

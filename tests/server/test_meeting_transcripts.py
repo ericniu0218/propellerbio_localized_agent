@@ -12,8 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
-import sys
 import time
 
 import httpx
@@ -267,39 +265,3 @@ async def test_connector_rejects_a_bad_signature(tmp_path, monkeypatch):
     )
     with pytest.raises(DatacenterError, match="rejected our signature"):
         await client.fetch_range("2025-01-01T00:00:00Z", "2025-02-01T00:00:00Z")
-
-
-# --- Without bedrock-private-ai installed --------------------------------------
-
-
-async def test_tool_reports_a_missing_reader_without_fetching(monkeypatch):
-    class _MustNotFetch:
-        async def fetch_range(self, from_iso, to_iso, groups=None):
-            raise AssertionError("transcripts were fetched with no reader to parse them")
-
-    monkeypatch.setattr(meeting_transcripts, "_READER_AVAILABLE", False)
-    tool = MeetingTranscriptsTool(client=_MustNotFetch())
-
-    result = await tool.run(MeetingTranscriptsArgs(query="what did we decide?"))
-
-    assert result.summary == meeting_transcripts.READER_MISSING
-    assert result.content == ""
-    assert result.citations == []
-
-
-def test_server_starts_when_bedrock_private_ai_is_not_installed():
-    """Run in a fresh interpreter where importing ``bedrock`` fails, as it does
-    in the Docker image. A subprocess keeps this from disturbing the modules
-    the rest of the suite has already imported."""
-    script = (
-        "import sys\n"
-        "sys.modules['bedrock'] = None\n"  # makes `import bedrock...` raise ImportError
-        "from app.tools import meeting_transcripts\n"
-        "from app.tools.registry import get_tool_registry\n"
-        "assert meeting_transcripts._READER_AVAILABLE is False\n"
-        "assert get_tool_registry().get('meeting_transcripts') is not None\n"
-    )
-    completed = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
-    )
-    assert completed.returncode == 0, completed.stderr

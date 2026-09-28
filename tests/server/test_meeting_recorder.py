@@ -341,21 +341,6 @@ def test_an_overview_is_preferred_when_there_is_one():
     assert to_record_fields(outcome)["summary"] == "Enrollment and the interim analysis date."
 
 
-# --- Without bedrock-private-ai installed -------------------------------------
-
-
-def test_readiness_reports_a_missing_pipeline_instead_of_crashing(monkeypatch):
-    """The Docker image does not install bedrock-private-ai. The server must
-    still start, and only this feature report that it is unavailable — the same
-    guarded-import contract meeting_transcripts and chemistry_tools have."""
-    import bedrock.server.meetings.routes as routes
-
-    monkeypatch.setattr(routes, "PIPELINE_AVAILABLE", False)
-    result = routes.readiness(user={"id": "maya", "name": "Maya"})
-    assert result["ready"] is False
-    assert "not installed" in result["issues"][0]
-
-
 # --- Deleting a meeting -------------------------------------------------------
 #
 # "Delete" has to mean the audio, the transcript, the job row and the

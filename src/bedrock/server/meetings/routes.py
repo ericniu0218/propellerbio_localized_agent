@@ -24,6 +24,7 @@ import re
 import shutil
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -47,7 +48,6 @@ from bedrock.server.meetings.job_store import PersistedJob, RecordingJobStore
 from bedrock.server.meetings.jobs import RecordingJob, RecordingJobs, process
 from bedrock.server.meetings.live import LiveSessions, transcribe_clip
 from bedrock.server.meetings.screen import SCREEN_AVAILABLE, read as read_frame
-from bedrock.server.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
 from bedrock.server.meetings.retention import audio_retention_days, sweep, transcript_retention_days
 from bedrock.server.meetings.vocabulary_source import auto_enabled, suggest
 from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
@@ -58,15 +58,24 @@ from bedrock.server.tools.datacenter_client import (
 )
 from bedrock.server.workspace.routes import identity, require_object, store
 from bedrock.server.workspace.store import uid
+from bedrock.server.config import private_dir
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workspace/api/meetings", tags=["meetings"])
 
 # One registry for the process, backed by a store so an interrupted job can be
-# picked up after a restart rather than silently lost.
-_job_store = RecordingJobStore(RecordingConfig.from_env().storage_dir / "jobs.sqlite")
-_jobs = RecordingJobs(_job_store)
+# picked up after a restart rather than silently lost. Made on first use rather
+# than at import, so importing this module never creates a database in
+# whatever directory the process happened to start in.
+@lru_cache
+def job_store() -> RecordingJobStore:
+    return RecordingJobStore(private_dir(RecordingConfig.from_env().storage_dir) / "jobs.sqlite")
+
+
+@lru_cache
+def recording_jobs() -> RecordingJobs:
+    return RecordingJobs(job_store())
 
 # Live previews: in memory, because a preview has no value once the real
 # transcript replaces it.
@@ -85,8 +94,6 @@ def config() -> RecordingConfig:
 @router.get("/readiness")
 def readiness(user=Depends(identity)):
     """What would stop this server transcribing a recording right now."""
-    if not PIPELINE_AVAILABLE:
-        return {"ready": False, "issues": [PIPELINE_MISSING]}
     issues = readiness_issues(config())
     return {"ready": not issues, "issues": issues}
 
@@ -107,8 +114,6 @@ async def create_recording(
     user=Depends(identity),
 ):
     """Accept a recording and start turning it into a meeting."""
-    if not PIPELINE_AVAILABLE:
-        raise HTTPException(503, PIPELINE_MISSING)
 
     recording_config = config()
     if auto_enabled():
@@ -188,12 +193,12 @@ async def create_recording(
         audio_path=audio_path,
         work_dir=recordings_dir / f"{job_id}.work",
     )
-    _jobs.register(job)
+    recording_jobs().register(job)
 
     live_session = _live.get(user["id"], liveSessionId) if liveSessionId else None
     screen = live_session.screen if live_session else None
 
-    _job_store.save(
+    job_store().save(
         PersistedJob(
             id=job_id, owner=user["id"], title=job.title,
             audio_path=str(audio_path), work_dir=str(job.work_dir),
@@ -203,7 +208,7 @@ async def create_recording(
             access_groups=None,
         )
     )
-    _jobs.start(job, _runner_for(job, recording_config, workspace, projectId, notes,
+    recording_jobs().start(job, _runner_for(job, recording_config, workspace, projectId, notes,
                                  started_at, expectedSpeakers, consent, user["id"],
                                  minimumSpeakers, screen))
     workspace.audit(user["id"], "recorded meeting", job_id)
@@ -375,7 +380,7 @@ async def delete_meeting(meeting_id: str, user=Depends(identity)):
         work_dir = directory / f"{recording_id}.work"
         if work_dir.is_dir():
             shutil.rmtree(work_dir, ignore_errors=True)
-        _job_store.forget(recording_id)
+        job_store().forget(recording_id)
     elif meeting.get("source") == "recording":
         # Recorded before recordingId was stored on the record. The audio is
         # still on disk under an id this record never kept.
@@ -401,8 +406,6 @@ async def delete_meeting(meeting_id: str, user=Depends(identity)):
 @router.post("/live")
 def open_live(user=Depends(identity)):
     """Start a preview session for a meeting about to be recorded."""
-    if not PIPELINE_AVAILABLE:
-        raise HTTPException(503, PIPELINE_MISSING)
     return _live.open(uid(), user["id"]).public()
 
 
@@ -586,7 +589,7 @@ def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
         prints = voice_store().vectors(owner) if ENROLLMENT_AVAILABLE else []
         await process(
             running_job,
-            _jobs,
+            recording_jobs(),
             recording_config,
             store=workspace,
             project_id=project_id,
@@ -610,17 +613,15 @@ def resume_interrupted() -> list[str]:
     is nothing left to transcribe, and leaving the row would make every startup
     try again.
     """
-    if not PIPELINE_AVAILABLE:
-        return []
     resumed = []
     workspace = store()
-    for stale in _job_store.unfinished():
+    for stale in job_store().unfinished():
         audio = Path(stale.audio_path)
         if not audio.exists():
             logger.warning("Dropping recording job %s: its audio is gone", stale.id)
-            _job_store.forget(stale.id)
+            job_store().forget(stale.id)
             continue
-        claimed = _job_store.claim(stale.id)
+        claimed = job_store().claim(stale.id)
         if claimed is None:
             logger.warning("Abandoning recording job %s after repeated failures", stale.id)
             continue
@@ -628,9 +629,9 @@ def resume_interrupted() -> list[str]:
             id=claimed.id, owner=claimed.owner, title=claimed.title,
             audio_path=audio, work_dir=Path(claimed.work_dir),
         )
-        _jobs.register(job)
-        _jobs.advance(job, "Resuming after a restart")
-        _jobs.start(job, _runner_for(
+        recording_jobs().register(job)
+        recording_jobs().advance(job, "Resuming after a restart")
+        recording_jobs().start(job, _runner_for(
             job, config(), workspace, claimed.project_id, claimed.typed_notes,
             _parse_started_at(claimed.started_at), claimed.expected_speakers,
             claimed.consent, claimed.owner,
@@ -653,24 +654,22 @@ async def retry_recording(job_id: str, user=Depends(identity)):
     is one request away from being finished, not a re-record. The audio is the
     part that cannot be recreated; everything after it can.
     """
-    if not PIPELINE_AVAILABLE:
-        raise HTTPException(503, PIPELINE_MISSING)
 
-    stale = _job_store.claim(job_id, max_attempts=10)
+    stale = job_store().claim(job_id, max_attempts=10)
     if stale is None or stale.owner != user["id"]:
         raise HTTPException(404, "That recording is unavailable, or has been retried too often.")
     audio = Path(stale.audio_path)
     if not audio.exists():
-        _job_store.forget(job_id)
+        job_store().forget(job_id)
         raise HTTPException(410, "The audio for that recording is no longer on disk.")
 
     job = RecordingJob(
         id=stale.id, owner=stale.owner, title=stale.title,
         audio_path=audio, work_dir=Path(stale.work_dir),
     )
-    _jobs.register(job)
-    _jobs.advance(job, "Retrying")
-    _jobs.start(job, _runner_for(
+    recording_jobs().register(job)
+    recording_jobs().advance(job, "Retrying")
+    recording_jobs().start(job, _runner_for(
         job, config(), store(), stale.project_id, stale.typed_notes,
         _parse_started_at(stale.started_at), stale.expected_speakers,
         stale.consent, stale.owner, stale.expected_speakers, None,
@@ -681,7 +680,7 @@ async def retry_recording(job_id: str, user=Depends(identity)):
 
 @router.get("/recordings/{job_id}")
 def recording_status(job_id: str, user=Depends(identity)):
-    job = _jobs.get(user["id"], job_id)
+    job = recording_jobs().get(user["id"], job_id)
     if job is None:
         raise HTTPException(404, "That recording is unavailable or has expired.")
     return job.public()
@@ -690,7 +689,7 @@ def recording_status(job_id: str, user=Depends(identity)):
 @router.get("/recordings")
 def recording_list(user=Depends(identity)):
     """Recordings still in flight, so a page reload does not lose track of one."""
-    return {"recordings": _jobs.for_owner(user["id"])}
+    return {"recordings": recording_jobs().for_owner(user["id"])}
 
 
 def _parse_started_at(value: str | None) -> datetime:

@@ -65,23 +65,9 @@ from bedrock.server.tools.datacenter_client import (
     MeetingTranscript,
 )
 
-# The VTT reader lives in bedrock-private-ai, the employee terminal client, so
-# both products parse transcripts with the same code rather than two copies
-# that drift apart (requirements.txt pins the commit). The import is guarded
-# like RDKit's in chemistry_tools.py: without that package the server still
-# starts, and only this tool reports that it cannot read transcripts.
-try:
-    from bedrock.meetings.transcript import Cue, parse_vtt, speakers
-
-    _READER_AVAILABLE = True
-except ImportError:
-    _READER_AVAILABLE = False
-
-READER_MISSING = (
-    "Meeting transcript search is unavailable: the transcript reader from "
-    "bedrock-private-ai is not installed. Install requirements.txt, which "
-    "pins it, to enable this tool."
-)
+# The VTT reader is bedrock's own (bedrock.meetings.transcript), shared with
+# the `bedrock-meeting` command, so both parse transcripts with the same code.
+from bedrock.meetings.transcript import Cue, parse_vtt, speakers
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +280,6 @@ class MeetingTranscriptsTool(Tool):
     async def run(self, args: MeetingTranscriptsArgs) -> ToolResult:
         # Checked before fetching: there is no point pulling transcripts
         # across the network that nothing here can read.
-        if not _READER_AVAILABLE:
-            return ToolResult(summary=READER_MISSING, content="", citations=[])
 
         now = datetime.now(timezone.utc)
         from_iso = args.from_time or _iso(now - timedelta(days=max(args.lookback_days, 1)))

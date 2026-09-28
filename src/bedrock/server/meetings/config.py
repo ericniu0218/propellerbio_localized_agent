@@ -99,9 +99,7 @@ class RecordingConfig:
             threads=int(os.environ.get("MEETING_WHISPER_THREADS", _default_threads())),
             vocabulary=os.environ.get("MEETING_VOCABULARY") or None,
             language=os.environ.get("MEETING_LANGUAGE", "en"),
-            storage_dir=Path(
-                os.environ.get("MEETING_RECORDING_DIR", "data/recordings")
-            ).expanduser(),
+            storage_dir=_recording_dir(),
             # The notes are written by whatever local model this deployment
             # already runs. Ollama is the development default, the same one
             # bedrock-private-ai's own meeting CLI assumes.
@@ -110,6 +108,16 @@ class RecordingConfig:
                 "MEETING_SUMMARY_ENDPOINT", "http://localhost:11434/v1"
             ),
         )
+
+
+def _recording_dir() -> Path:
+    """``MEETING_RECORDING_DIR``, else ``recordings`` in the server's data directory."""
+    explicit = os.environ.get("MEETING_RECORDING_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    from bedrock.server.config import get_settings
+
+    return get_settings().data_dir / "recordings"
 
 
 def readiness_issues(config: RecordingConfig) -> list[str]:

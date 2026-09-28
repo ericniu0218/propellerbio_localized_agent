@@ -20,7 +20,8 @@ from bedrock.server.config import load_budgets_config
 from bedrock.server.tools.base import Tool, ToolResult
 from bedrock.server.tools.rag_search import KeywordOverlapIndex, VectorIndex
 
-DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "literature"
+# The sample corpus ships inside the package (bedrock/server/sample_data/).
+DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent / "sample_data" / "literature"
 
 
 class LiteratureSearchArgs(BaseModel):

@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bedrock.server.config import private_dir
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -20,6 +22,13 @@ def uid():
     return secrets.token_hex(16)
 
 
+def _default_root():
+    """``workspace`` in the server's data directory (see bedrock.server.config)."""
+    from bedrock.server.config import get_settings
+
+    return get_settings().data_dir / "workspace"
+
+
 def demo_mode():
     return os.getenv("DEMO_MODE", "true").lower() == "true"
 
@@ -27,8 +36,8 @@ def demo_mode():
 class WorkspaceStore:
     def __init__(self, root=None):
         environment = "demo" if demo_mode() else "live"
-        self.root = Path(root or os.getenv("WORKSPACE_DATA_DIR", "data/workspace")) / environment
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = Path(root or os.getenv("WORKSPACE_DATA_DIR") or _default_root()) / environment
+        private_dir(self.root)
         self.blobs = self.root / "artifacts"
         self.blobs.mkdir(exist_ok=True)
         with self.db() as db:

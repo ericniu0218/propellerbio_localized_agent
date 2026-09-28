@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -27,8 +28,44 @@ from bedrock.server.workspace import routes as routes_workspace
 logger = logging.getLogger("agent_pack")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Anything a restart interrupted. Transcription runs for tens of
+    # minutes, so a deploy in the middle of one used to lose it silently.
+    try:
+        resumed = routes_meetings.resume_interrupted()
+        if resumed:
+            logger.info("Resumed %d interrupted meeting recording(s)", len(resumed))
+    except Exception:
+        logger.exception("Could not resume interrupted recordings")
+
+    # Retention runs here rather than on a timer: a background thread that
+    # silently deletes company records should not start by importing a
+    # module. One pass per start is predictable and auditable.
+    try:
+        swept = routes_meetings.run_retention_sweep()
+        if swept["audioDeleted"]:
+            logger.info(
+                "Retention: deleted %d recording(s), freed %d MB",
+                swept["audioDeleted"], swept["bytesFreed"] // 1_000_000,
+            )
+    except Exception:
+        logger.exception("Retention sweep failed")
+
+    settings = get_settings()
+    if settings.airgap_check_enabled and settings.mode == "real":
+        try:
+            run_airgap_check()
+        except AirgapViolation as exc:
+            logger.critical(str(exc))
+            raise
+    get_event_bus().register_audit_sink(audit_event_sink)
+    logger.info("Agent pack started in %s mode.", settings.mode)
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Biotech Agent Pack", version="0.1.0")
+    app = FastAPI(title="Biotech Agent Pack", version="0.1.0", lifespan=lifespan)
 
     app.include_router(routes_session.router)
     app.include_router(routes_auth.router)
@@ -42,40 +79,6 @@ def create_app() -> FastAPI:
     # After the workspace router: this one reuses its `identity` dependency and
     # its store, and sits under the same /workspace/api prefix.
     app.include_router(routes_meetings.router)
-
-    @app.on_event("startup")
-    async def startup() -> None:
-        # Anything a restart interrupted. Transcription runs for tens of
-        # minutes, so a deploy in the middle of one used to lose it silently.
-        try:
-            resumed = routes_meetings.resume_interrupted()
-            if resumed:
-                logger.info("Resumed %d interrupted meeting recording(s)", len(resumed))
-        except Exception:
-            logger.exception("Could not resume interrupted recordings")
-
-        # Retention runs here rather than on a timer: a background thread that
-        # silently deletes company records should not start by importing a
-        # module. One pass per start is predictable and auditable.
-        try:
-            swept = routes_meetings.run_retention_sweep()
-            if swept["audioDeleted"]:
-                logger.info(
-                    "Retention: deleted %d recording(s), freed %d MB",
-                    swept["audioDeleted"], swept["bytesFreed"] // 1_000_000,
-                )
-        except Exception:
-            logger.exception("Retention sweep failed")
-
-        settings = get_settings()
-        if settings.airgap_check_enabled and settings.mode == "real":
-            try:
-                run_airgap_check()
-            except AirgapViolation as exc:
-                logger.critical(str(exc))
-                raise
-        get_event_bus().register_audit_sink(audit_event_sink)
-        logger.info("Agent pack started in %s mode.", settings.mode)
 
     @app.get("/health")
     async def health() -> dict:

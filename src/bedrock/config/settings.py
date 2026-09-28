@@ -197,6 +197,12 @@ class Settings:
     in it is reported by ``/review`` instead of stopping the app from
     starting - the same rule as ``connectors``."""
 
+    server: dict = field(default_factory=dict)
+    """The ``[server]`` table, read only by ``bedrock.server`` (the optional
+    agent-pack server, ``bedrock-server``). Environment variables still win
+    over it; see ``bedrock.server.config`` and ``docs/server/DEPLOYMENT.md``.
+    The terminal app never reads it."""
+
     agents: dict = field(default_factory=default_agent_settings)
     """The ``[agents]`` block: roster path, execution budgets and capability
     configuration. A configured capability is still unavailable unless an
@@ -281,6 +287,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         "alphafold_models_to_relax", "biotech_max_sequence_length",
         "pymol_executable", "connectors", "agents", "profile", "context_window",
         "litreview",
+        "server",
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
@@ -330,6 +337,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     # file - a connector names the environment variable that holds its token.
     connectors = file_values.get("connectors") or {}
     litreview = file_values.get("litreview") or {}
+    server = file_values.get("server") or {}
     agents = _agent_settings(file_values.get("agents"))
     profile = _profile(env, file_values)
 
@@ -365,6 +373,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         pymol_executable=env.get("PYMOL_EXECUTABLE") or file_values.get("pymol_executable") or "pymol",
         connectors=connectors,
         litreview=litreview,
+        server=server,
         agents=agents,
         extra=extra,
     )

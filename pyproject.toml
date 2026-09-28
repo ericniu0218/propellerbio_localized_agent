@@ -27,11 +27,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "pytest-asyncio>=0.23",
+    "pytest-asyncio>=0.24",
 ]
 # The literature review's optional HTTP front door (bedrock.litreview.api).
 # The terminal app never needs it; see docs/prompts/LITREVIEW_INTEGRATION.md.
-api = ["fastapi>=0.110", "uvicorn>=0.29"]
+# The floor is the agent-pack server's (bedrock.server), so one FastAPI serves both.
+api = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 # Telling voices apart, and recognising an enrolled one. ONNX only — no
 # PyTorch — so it installs on the same laptop as everything else. Optional:
@@ -44,12 +45,45 @@ speakers = [
     "numpy>=1.24",
 ]
 
+# The agent-pack server (src/bedrock/server/, started with `bedrock-server`):
+# the multi-agent API, the scientist workspace and the meeting recorder, for the
+# company's server. Laptops never need it; the terminal app works without it.
+# See docs/server/DEPLOYMENT.md.
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
+    "sqlalchemy>=2.0",
+    "python-multipart>=0.0.9",   # meeting recording uploads
+    "pypdf>=4.0",                # PDF text for workspace uploads
+    "python-jose[cryptography]>=3.3",  # verifies Keycloak tokens when SSO is configured
+    "pydantic>=2.8",
+]
+# When DATABASE_URL points at Postgres.
+postgres = ["psycopg2-binary>=2.9"]
+# The meeting recorder's optional helpers on the server. Each import is
+# guarded: without them, meeting search ranks by keyword and speakers are
+# worked out from the audio. rapidocr-onnxruntime does not install on Python
+# 3.13 or later (it declares requires_python <3.13), so screen reading is
+# unavailable there until it moves to the `rapidocr` 3.x API.
+recorder = [
+    "model2vec>=0.9",
+    "rapidocr-onnxruntime>=1.2; python_version < '3.13'",
+    "pillow>=10.0",
+]
+# Chemistry and sequence tools for the server's agents. Guarded imports: the
+# tools return a clear stub result without them.
+chem = ["biopython>=1.83", "rdkit>=2024.3.1"]
+# Everything the server can use.
+server-all = ["bedrock-private-ai[server,postgres,recorder,speakers,chem]"]
+
 # This is what makes the `bedrock` command exist after `pip install .`
 [project.scripts]
 bedrock = "bedrock.app:main"
 bedrock-biotech = "bedrock.biotech.cli:main"
 bedrock-meeting = "bedrock.meetings.cli:main"
 bedrock-litreview = "bedrock.litreview.cli:main"
+bedrock-server = "bedrock.server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -61,6 +95,10 @@ bedrock = [
     "litreview/llm/prompts/*.md",
     "litreview/knowledge/*.yaml",
     "litreview/defaults/*.yaml",
+    "server/static/*.html",
+    "server/static/workspace/*",
+    "server/defaults/*.yaml",
+    "server/sample_data/*/*.txt",
 ]
 
 [tool.pytest.ini_options]

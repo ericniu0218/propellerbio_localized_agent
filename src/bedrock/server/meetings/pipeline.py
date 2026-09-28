@@ -38,26 +38,17 @@ from bedrock.meetings.vocabulary import VocabularyReport, correct_texts
 
 logger = logging.getLogger(__name__)
 
-# Imported the way chemistry_tools.py imports RDKit: without the package the
-# server still starts and only this feature reports that it is unavailable.
-try:
-    from bedrock.inference.openai_compatible import OpenAICompatibleBackend
-    from bedrock.meetings.summarize import MeetingSummary, summarize_meeting
-    from bedrock.meetings.transcribe import (
-        WhisperConfig,
-        WhisperTranscriber,
-        to_vtt,
-    )
-    from bedrock.meetings.transcript import Cue
-
-    PIPELINE_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised by deployments without it
-    PIPELINE_AVAILABLE = False
-
-PIPELINE_MISSING = (
-    "Meeting recording is unavailable: the transcription pipeline from "
-    "bedrock-private-ai is not installed. Install requirements.txt, which pins it."
+# The transcription engine is bedrock's own (bedrock.meetings), shipped in the
+# same package, so it is always importable. Only its optional speaker and
+# screen-reading extras are guarded, where they are used.
+from bedrock.inference.openai_compatible import OpenAICompatibleBackend
+from bedrock.meetings.summarize import MeetingSummary, summarize_meeting
+from bedrock.meetings.transcribe import (
+    WhisperConfig,
+    WhisperTranscriber,
+    to_vtt,
 )
+from bedrock.meetings.transcript import Cue
 
 
 class RecordingError(RuntimeError):
@@ -113,9 +104,6 @@ async def transcribe(
     meeting spends in whisper, instead of watching a spinner and assuming the
     thing has hung.
     """
-    if not PIPELINE_AVAILABLE:
-        raise RecordingError(PIPELINE_MISSING)
-
     issues = readiness_issues(config)
     if issues:
         raise RecordingError(

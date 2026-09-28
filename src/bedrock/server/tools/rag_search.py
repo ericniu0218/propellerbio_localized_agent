@@ -27,7 +27,8 @@ from bedrock.server.compliance.rbac import RBACFilter, get_rbac_filter
 from bedrock.server.config import load_budgets_config
 from bedrock.server.tools.base import Tool, ToolResult
 
-DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "internal_docs"
+# The sample corpus ships inside the package (bedrock/server/sample_data/).
+DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent / "sample_data" / "internal_docs"
 
 
 class RAGSearchArgs(BaseModel):

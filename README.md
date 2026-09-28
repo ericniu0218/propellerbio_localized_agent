@@ -637,6 +637,9 @@ The default `openai` mode talks directly to one OpenAI-compatible private model
 server. Setting `BEDROCK_BACKEND=agentpack` uses the biotech agent-pack backend,
 with multi-agent activity and inline human approval prompts, while keeping the
 same terminal interface. Configure its endpoint with `AGENT_PACK_API_BASE`.
+In that mode `/tier quick|standard|deep|auto` chooses who answers and `/cancel`
+stops the running request, against a server that supports them (`bedrock-server`,
+see `docs/server/`).
 
 ## Running the tests
 

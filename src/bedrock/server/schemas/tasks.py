@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from app.schemas.enums import AgentRole, TaskComplexity, TaskDomain, TaskStatus
+from bedrock.server.schemas.enums import AgentRole, TaskComplexity, TaskDomain, TaskStatus
 
 
 class TaskNode(BaseModel):

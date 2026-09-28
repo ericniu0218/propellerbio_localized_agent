@@ -11,10 +11,10 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
-from app.events import get_event_bus
-from app.events.bus import EventBus
-from app.schemas.enums import EventType
-from app.schemas.events import Event, SessionResyncPayload
+from bedrock.server.events import get_event_bus
+from bedrock.server.events.bus import EventBus
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import Event, SessionResyncPayload
 
 router = APIRouter(tags=["events"])
 

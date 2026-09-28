@@ -5,11 +5,11 @@ docs/ARCHITECTURE.md section 2 and app/orchestrator/loop.py.
 
 import asyncio
 
-from app.compliance.approval_gates import get_approval_gate
-from app.events import get_event_bus
-from app.orchestrator.loop import handle_message
-from app.schemas.enums import AgentRole, ApprovalDecision, EventType, TaskStatus
-from app.task_store.store import get_task_store
+from bedrock.server.compliance.approval_gates import get_approval_gate
+from bedrock.server.events import get_event_bus
+from bedrock.server.orchestrator.loop import handle_message
+from bedrock.server.schemas.enums import AgentRole, ApprovalDecision, EventType, TaskStatus
+from bedrock.server.task_store.store import get_task_store
 
 
 async def _auto_approve(session_id: str) -> None:

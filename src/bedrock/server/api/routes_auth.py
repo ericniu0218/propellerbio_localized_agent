@@ -23,10 +23,10 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
-from app.auth.oidc import OIDCClient, new_state
-from app.auth.state_store import get_state_store
-from app.config import get_settings
-from app.orchestrator.session import start_session
+from bedrock.server.auth.oidc import OIDCClient, new_state
+from bedrock.server.auth.state_store import get_state_store
+from bedrock.server.config import get_settings
+from bedrock.server.orchestrator.session import start_session
 
 router = APIRouter(tags=["auth"])
 

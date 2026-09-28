@@ -36,7 +36,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.compliance.phi_redaction import redact_phi
+from bedrock.server.compliance.phi_redaction import redact_phi
 
 # Fields on a stored meeting that hold words somebody said, or a model's
 # rendering of them. Everything here is redacted together, because a patient

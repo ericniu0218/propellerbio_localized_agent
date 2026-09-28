@@ -21,7 +21,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from bedrock.server.main import app
 
 _REAL_SLEEP = asyncio.sleep
 COOKIE = "bedrock_workspace"
@@ -189,7 +189,7 @@ def test_upload_rejects_bad_base64_and_oversized_files(client, monkeypatch):
 
 
 def test_sensitive_upload_is_quarantined_from_chat_context_until_redacted(client, monkeypatch):
-    from app.workspace.routes import build_context, store
+    from bedrock.server.workspace.routes import build_context, store
 
     _dev_login(client, monkeypatch)
     chat = _new_chat(client)

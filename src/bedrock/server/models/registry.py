@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.config import get_settings, load_models_config
-from app.models.client import ModelClient
-from app.models.http_client import HTTPModelClient
-from app.models.mock_client import MockModelClient
+from bedrock.server.config import get_settings, load_models_config
+from bedrock.server.models.client import ModelClient
+from bedrock.server.models.http_client import HTTPModelClient
+from bedrock.server.models.mock_client import MockModelClient
 
 
 class ModelRegistry:

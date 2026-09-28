@@ -5,9 +5,9 @@ startup. See docs/ARCHITECTURE.md section 8."""
 
 from __future__ import annotations
 
-from app.db import get_database
-from app.schemas.enums import AgentRole, EventType
-from app.schemas.events import Event
+from bedrock.server.db import get_database
+from bedrock.server.schemas.enums import AgentRole, EventType
+from bedrock.server.schemas.events import Event
 
 # Every event type is audit-relevant per the spec ("every prompt, agent
 # decision, tool call, approval/rejection, and output is logged"), so we log

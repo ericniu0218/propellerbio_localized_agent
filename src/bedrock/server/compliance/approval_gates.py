@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from functools import lru_cache
 
-from app.schemas.enums import ApprovalDecision
+from bedrock.server.schemas.enums import ApprovalDecision
 
 
 class ApprovalGate:

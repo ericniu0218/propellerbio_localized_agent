@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from uuid import uuid4
 
-from app.db.base import SessionLocal, init_db
-from app.db.models import (
+from bedrock.server.db.base import SessionLocal, init_db
+from bedrock.server.db.models import (
     AuditLogRow,
     HistoryTurnRow,
     ResultCacheRow,
@@ -20,9 +20,9 @@ from app.db.models import (
     TaskRow,
     TokenUsageRow,
 )
-from app.schemas.api import AuditLogEntry, HistoryTurn
-from app.schemas.enums import AgentRole
-from app.schemas.tasks import TaskNode
+from bedrock.server.schemas.api import AuditLogEntry, HistoryTurn
+from bedrock.server.schemas.enums import AgentRole
+from bedrock.server.schemas.tasks import TaskNode
 
 
 def _now_iso() -> str:

@@ -24,20 +24,20 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("DATACENTER_BASE_URL", raising=False)
     monkeypatch.delenv("DATACENTER_SIGNING_SECRET", raising=False)
 
-    import app.main
-    import app.workspace.store as store_module
-    import app.meetings.routes as routes
+    import bedrock.server.main
+    import bedrock.server.workspace.store as store_module
+    import bedrock.server.meetings.routes as routes
 
     store_module._store = None  # rebuilt against the new WORKSPACE_DATA_DIR
     monkeypatch.setattr(routes, "config", lambda: _config(tmp_path / "recordings"))
 
-    with TestClient(app.main.app) as client:
+    with TestClient(bedrock.server.main.app) as client:
         client.post("/workspace/api/demo-login")
         yield client
 
 
 def _config(directory):
-    from app.meetings.config import RecordingConfig
+    from bedrock.server.meetings.config import RecordingConfig
 
     base = RecordingConfig.from_env()
     return type(base)(**{**base.__dict__, "storage_dir": directory})

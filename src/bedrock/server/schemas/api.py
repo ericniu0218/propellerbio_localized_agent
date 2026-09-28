@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 
-from app.schemas.agents import AgentCard
-from app.schemas.enums import AgentRole, ApprovalDecision, TaskStatus
+from bedrock.server.schemas.agents import AgentCard
+from bedrock.server.schemas.enums import AgentRole, ApprovalDecision, TaskStatus
 
 
 class StartSessionRequest(BaseModel):

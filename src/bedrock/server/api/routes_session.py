@@ -5,20 +5,20 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
-from app.db import get_database
-from app.events import get_event_bus
-from app.orchestrator.loop import handle_message
-from app.orchestrator.session import start_session
-from app.schemas.api import (
+from bedrock.server.db import get_database
+from bedrock.server.events import get_event_bus
+from bedrock.server.orchestrator.loop import handle_message
+from bedrock.server.orchestrator.session import start_session
+from bedrock.server.schemas.api import (
     CancelTaskRequest,
     SendMessageRequest,
     SendMessageResponse,
     SessionResponse,
     StartSessionRequest,
 )
-from app.schemas.enums import EventType
-from app.schemas.events import TaskFailedPayload
-from app.task_store.store import get_task_store
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import TaskFailedPayload
+from bedrock.server.task_store.store import get_task_store
 
 router = APIRouter(tags=["session"])
 
@@ -57,7 +57,7 @@ async def cancel_task(req: CancelTaskRequest) -> dict:
     if task is None:
         raise HTTPException(status_code=404, detail="task not found")
     session_id = store.get_task_session_id(req.task_id)
-    from app.schemas.enums import TaskStatus
+    from bedrock.server.schemas.enums import TaskStatus
 
     task.status = TaskStatus.CANCELLED
     store.update_task(session_id, task)

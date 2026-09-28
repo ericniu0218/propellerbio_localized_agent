@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.schemas.api import ResultResponse
-from app.task_store.store import get_task_store
+from bedrock.server.schemas.api import ResultResponse
+from bedrock.server.task_store.store import get_task_store
 
 router = APIRouter(tags=["results"])
 

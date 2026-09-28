@@ -1,7 +1,7 @@
-from app.agents.base import BaseAgent, BudgetExceededError
-from app.agents.director import Director, ReviewOutcome
-from app.agents.runner import ClassificationResult, Runner
-from app.agents.specialist import Specialist
+from bedrock.server.agents.base import BaseAgent, BudgetExceededError
+from bedrock.server.agents.director import Director, ReviewOutcome
+from bedrock.server.agents.runner import ClassificationResult, Runner
+from bedrock.server.agents.specialist import Specialist
 
 __all__ = [
     "BaseAgent",

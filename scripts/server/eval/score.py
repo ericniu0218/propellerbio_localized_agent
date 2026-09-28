@@ -39,8 +39,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.meetings.config import RecordingConfig  # noqa: E402
-from app.meetings.pipeline import transcribe  # noqa: E402
+from bedrock.server.meetings.config import RecordingConfig  # noqa: E402
+from bedrock.server.meetings.pipeline import transcribe  # noqa: E402
 
 HERE = Path(__file__).parent
 BUILD = HERE / "build"

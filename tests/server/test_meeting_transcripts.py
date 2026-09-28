@@ -19,7 +19,7 @@ import time
 import httpx
 import pytest
 
-from app.tools.datacenter_client import (
+from bedrock.server.tools.datacenter_client import (
     DatacenterConfig,
     DatacenterError,
     DatacenterNotConfigured,
@@ -29,8 +29,8 @@ from app.tools.datacenter_client import (
     sign_request,
     transcripts_path,
 )
-from app.tools import meeting_transcripts
-from app.tools.meeting_transcripts import MeetingTranscriptsArgs, MeetingTranscriptsTool, rank_excerpts
+from bedrock.server.tools import meeting_transcripts
+from bedrock.server.tools.meeting_transcripts import MeetingTranscriptsArgs, MeetingTranscriptsTool, rank_excerpts
 from bedrock.meetings.transcript import parse_vtt, speakers
 
 SECRET = "test-shared-secret"

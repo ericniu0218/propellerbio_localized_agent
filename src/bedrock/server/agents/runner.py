@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import json
 
-from app.compliance.phi_redaction import RedactionResult, redact_phi
-from app.models.client import ChatMessage
-from app.schemas.enums import AgentRole, TaskComplexity, TaskDomain
-from app.agents.base import BaseAgent
+from bedrock.server.compliance.phi_redaction import RedactionResult, redact_phi
+from bedrock.server.models.client import ChatMessage
+from bedrock.server.schemas.enums import AgentRole, TaskComplexity, TaskDomain
+from bedrock.server.agents.base import BaseAgent
 
 _STATIC_PREFIX = (
     "You are the Runner, a fast, cheap classification/utility agent in a "

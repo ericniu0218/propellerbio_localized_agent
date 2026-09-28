@@ -4,12 +4,12 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
-from app.compliance.approval_gates import get_approval_gate
-from app.events import get_event_bus
-from app.schemas.api import ApprovalRequest
-from app.schemas.enums import EventType
-from app.schemas.events import ApprovalResolvedPayload
-from app.task_store import get_task_store
+from bedrock.server.compliance.approval_gates import get_approval_gate
+from bedrock.server.events import get_event_bus
+from bedrock.server.schemas.api import ApprovalRequest
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import ApprovalResolvedPayload
+from bedrock.server.task_store import get_task_store
 
 router = APIRouter(tags=["approval"])
 

@@ -12,13 +12,13 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.compliance.approval_gates import get_approval_gate
-from app.compliance.audit import audit_event_sink
-from app.events import get_event_bus
-from app.db import get_database
-from app.main import app
-from app.schemas.enums import ApprovalDecision, EventType
-from app.task_store import get_task_store
+from bedrock.server.compliance.approval_gates import get_approval_gate
+from bedrock.server.compliance.audit import audit_event_sink
+from bedrock.server.events import get_event_bus
+from bedrock.server.db import get_database
+from bedrock.server.main import app
+from bedrock.server.schemas.enums import ApprovalDecision, EventType
+from bedrock.server.task_store import get_task_store
 
 
 async def _client() -> AsyncClient:
@@ -33,8 +33,8 @@ async def _pending_task(session_id: str) -> str:
     takes.
     """
     get_event_bus().register_audit_sink(audit_event_sink)
-    from app.schemas.enums import AgentRole, TaskComplexity, TaskDomain, TaskStatus
-    from app.schemas.tasks import TaskNode, TaskPlan
+    from bedrock.server.schemas.enums import AgentRole, TaskComplexity, TaskDomain, TaskStatus
+    from bedrock.server.schemas.tasks import TaskNode, TaskPlan
 
     # A fresh id per test: the task store maps task_id -> session_id globally,
     # so a shared id makes the second test's audit rows land in the first

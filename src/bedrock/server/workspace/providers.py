@@ -2,7 +2,7 @@
 import asyncio
 from typing import Protocol
 
-from app.workspace.store import now
+from bedrock.server.workspace.store import now
 
 
 class AIProvider(Protocol):
@@ -41,10 +41,10 @@ class MockAIProvider:
 
 class LocalLLMProvider:
     async def execute(self, store, owner, run, context):
-        from app.events import get_event_bus
-        from app.orchestrator.session import start_session
-        from app.orchestrator.loop import handle_message
-        from app.task_store.store import get_task_store
+        from bedrock.server.events import get_event_bus
+        from bedrock.server.orchestrator.session import start_session
+        from bedrock.server.orchestrator.loop import handle_message
+        from bedrock.server.task_store.store import get_task_store
         session = await start_session(owner)
         bus = get_event_bus()
         queue = bus.subscribe(session)

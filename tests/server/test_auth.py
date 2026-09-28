@@ -5,7 +5,7 @@ still respond sanely rather than crashing or silently requiring Keycloak.
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from bedrock.server.main import app
 
 
 def test_auth_config_reports_disabled_by_default():

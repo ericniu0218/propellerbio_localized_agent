@@ -10,12 +10,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from app.schemas.enums import AgentRole, EventType, TaskDomain
-from app.schemas.events import ToolCalledPayload, ToolResultPayload
-from app.schemas.tasks import TaskNode
-from app.tools.base import ToolResult
-from app.tools.registry import ToolRegistry, get_tool_registry
-from app.agents.base import BaseAgent
+from bedrock.server.schemas.enums import AgentRole, EventType, TaskDomain
+from bedrock.server.schemas.events import ToolCalledPayload, ToolResultPayload
+from bedrock.server.schemas.tasks import TaskNode
+from bedrock.server.tools.base import ToolResult
+from bedrock.server.tools.registry import ToolRegistry, get_tool_registry
+from bedrock.server.agents.base import BaseAgent
 
 _STATIC_PREFIX = (
     "You are the Specialist, the primary workhorse agent in a biotech AI "

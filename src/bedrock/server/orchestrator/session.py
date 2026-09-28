@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from app.db import get_database
-from app.events import get_event_bus
-from app.schemas.enums import EventType
-from app.schemas.events import SessionStartedPayload
+from bedrock.server.db import get_database
+from bedrock.server.events import get_event_bus
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import SessionStartedPayload
 
 
 def new_session_id() -> str:

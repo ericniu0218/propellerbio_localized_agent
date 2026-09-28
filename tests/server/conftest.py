@@ -11,8 +11,8 @@ os.environ.setdefault("AIRGAP_CHECK", "false")
 
 import pytest
 
-from app.db import get_database
-from app.orchestrator.session import start_session
+from bedrock.server.db import get_database
+from bedrock.server.orchestrator.session import start_session
 
 
 @pytest.fixture

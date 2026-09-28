@@ -5,13 +5,13 @@ already covers that). Registering a tool is not the same as it being
 reachable; this is what catches the difference.
 """
 
-from app.agents.director import Director
-from app.agents.specialist import Specialist
-from app.events import get_event_bus
-from app.orchestrator.loop import _run_with_review_loop, handle_message
-from app.schemas.enums import AgentRole, EventType, TaskComplexity, TaskDomain, TaskStatus
-from app.task_store.store import get_task_store
-from app.tools.base import Tool, ToolResult
+from bedrock.server.agents.director import Director
+from bedrock.server.agents.specialist import Specialist
+from bedrock.server.events import get_event_bus
+from bedrock.server.orchestrator.loop import _run_with_review_loop, handle_message
+from bedrock.server.schemas.enums import AgentRole, EventType, TaskComplexity, TaskDomain, TaskStatus
+from bedrock.server.task_store.store import get_task_store
+from bedrock.server.tools.base import Tool, ToolResult
 from pydantic import BaseModel
 
 
@@ -52,7 +52,7 @@ class _FakeRegistry:
 async def test_meetings_domain_task_reaches_the_tool_with_a_resolved_date_range(session_id):
     tool = _RecordingMeetingTool()
     node = get_task_store().new_task_id()
-    from app.schemas.tasks import TaskNode
+    from bedrock.server.schemas.tasks import TaskNode
 
     task = TaskNode(
         task_id=node,
@@ -93,7 +93,7 @@ async def test_meetings_domain_without_a_citation_is_rejected_like_other_citatio
             return ToolResult(summary="No meeting transcripts found.", content="", citations=[])
 
     tool = _NoCitationTool()
-    from app.schemas.tasks import TaskNode
+    from bedrock.server.schemas.tasks import TaskNode
 
     task = TaskNode(
         task_id=get_task_store().new_task_id(),

@@ -24,8 +24,8 @@ from functools import lru_cache
 
 from pydantic import BaseModel
 
-from app.schemas.enums import EventType
-from app.schemas.events import Event
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import Event
 
 AuditSink = Callable[[Event], Awaitable[None]]
 

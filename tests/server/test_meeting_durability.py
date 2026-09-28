@@ -11,9 +11,9 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
-from app.meetings.job_store import PersistedJob, RecordingJobStore
-from app.meetings.jobs import RecordingJob, RecordingJobs
-from app.meetings.retention import expired_meetings, sweep_audio
+from bedrock.server.meetings.job_store import PersistedJob, RecordingJobStore
+from bedrock.server.meetings.jobs import RecordingJob, RecordingJobs
+from bedrock.server.meetings.retention import expired_meetings, sweep_audio
 
 
 def a_job(job_id: str = "j1", status: str = "queued") -> PersistedJob:

@@ -12,13 +12,13 @@ human (docs/ARCHITECTURE.md section 2: "Max 2 retries per task, then
 escalate to the human in the chat").
 """
 
-from app.agents.director import Director
-from app.agents.specialist import Specialist
-from app.events import get_event_bus
-from app.orchestrator.loop import _run_with_review_loop
-from app.schemas.enums import AgentRole, EventType, TaskComplexity, TaskDomain, TaskStatus
-from app.schemas.tasks import TaskNode
-from app.task_store.store import get_task_store
+from bedrock.server.agents.director import Director
+from bedrock.server.agents.specialist import Specialist
+from bedrock.server.events import get_event_bus
+from bedrock.server.orchestrator.loop import _run_with_review_loop
+from bedrock.server.schemas.enums import AgentRole, EventType, TaskComplexity, TaskDomain, TaskStatus
+from bedrock.server.schemas.tasks import TaskNode
+from bedrock.server.task_store.store import get_task_store
 
 
 def _make_node(task_id: str) -> TaskNode:

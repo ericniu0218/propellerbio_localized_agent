@@ -29,10 +29,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from app.meetings.config import RecordingConfig
-from app.meetings.governance import groups_for, redact_record
-from app.meetings.job_store import RecordingJobStore
-from app.meetings.pipeline import (
+from bedrock.server.meetings.config import RecordingConfig
+from bedrock.server.meetings.governance import groups_for, redact_record
+from bedrock.server.meetings.job_store import RecordingJobStore
+from bedrock.server.meetings.pipeline import (
     RecordingError,
     TranscriptionOutcome,
     summarise,

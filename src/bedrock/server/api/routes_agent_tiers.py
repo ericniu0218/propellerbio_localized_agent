@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.config import load_models_config
-from app.schemas.api import AgentTierInfo, AgentTiersResponse
+from bedrock.server.config import load_models_config
+from bedrock.server.schemas.api import AgentTierInfo, AgentTiersResponse
 
 router = APIRouter(tags=["agent-tiers"])
 

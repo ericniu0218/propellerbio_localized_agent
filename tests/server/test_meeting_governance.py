@@ -10,21 +10,21 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.compliance.rbac import RBACFilter, StaticPermissionSource
-from app.meetings.governance import (
+from bedrock.server.compliance.rbac import RBACFilter, StaticPermissionSource
+from bedrock.server.meetings.governance import (
     Consent,
     capture_consent,
     groups_for,
     may_read,
     redact_record,
 )
-from app.tools.datacenter_client import (
+from bedrock.server.tools.datacenter_client import (
     DatacenterConfig,
     DatacenterTranscriptClient,
     MeetingTranscript,
     transcripts_path,
 )
-from app.tools.meeting_transcripts import MeetingTranscriptsArgs, MeetingTranscriptsTool
+from bedrock.server.tools.meeting_transcripts import MeetingTranscriptsArgs, MeetingTranscriptsTool
 
 SECRET = "test-secret"
 

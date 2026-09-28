@@ -23,9 +23,9 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel
 
-from app.compliance.rbac import RBACFilter, get_rbac_filter
-from app.config import load_budgets_config
-from app.tools.base import Tool, ToolResult
+from bedrock.server.compliance.rbac import RBACFilter, get_rbac_filter
+from bedrock.server.config import load_budgets_config
+from bedrock.server.tools.base import Tool, ToolResult
 
 DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "internal_docs"
 

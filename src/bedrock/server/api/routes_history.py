@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.db import get_database
-from app.schemas.api import AuditLogResponse, HistoryResponse
+from bedrock.server.db import get_database
+from bedrock.server.schemas.api import AuditLogResponse, HistoryResponse
 
 router = APIRouter(tags=["history"])
 

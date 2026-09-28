@@ -48,17 +48,17 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from app.config import load_budgets_config
-from app.tools.base import Tool, ToolResult
-from app.compliance.rbac import RBACFilter, get_rbac_filter
-from app.meetings.governance import GENERAL as GENERAL_GROUP
-from app.meetings.semantic import (
+from bedrock.server.config import load_budgets_config
+from bedrock.server.tools.base import Tool, ToolResult
+from bedrock.server.compliance.rbac import RBACFilter, get_rbac_filter
+from bedrock.server.meetings.governance import GENERAL as GENERAL_GROUP
+from bedrock.server.meetings.semantic import (
     MIN_SEMANTIC_MATCH,
     SEMANTIC_WEIGHT,
     load as load_semantic_model,
     similarities,
 )
-from app.tools.datacenter_client import (
+from bedrock.server.tools.datacenter_client import (
     DatacenterError,
     DatacenterNotConfigured,
     DatacenterTranscriptClient,

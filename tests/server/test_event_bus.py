@@ -3,9 +3,9 @@ reconnection (NEXT_STEPS.md §5 in the frontend repo). Pure unit tests, no
 FastAPI/SSE involved; tests/test_sse_reconnect.py covers the wire format.
 """
 
-from app.events.bus import EventBus
-from app.schemas.enums import EventType
-from app.schemas.events import Event
+from bedrock.server.events.bus import EventBus
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import Event
 
 SESSION = "sess-1"
 

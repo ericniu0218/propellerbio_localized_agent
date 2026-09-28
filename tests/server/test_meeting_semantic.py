@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.meetings.semantic import MIN_SEMANTIC_MATCH, enabled, load, similarities
-from app.tools.datacenter_client import MeetingTranscript
-from app.tools.meeting_transcripts import rank_excerpts
+from bedrock.server.meetings.semantic import MIN_SEMANTIC_MATCH, enabled, load, similarities
+from bedrock.server.tools.datacenter_client import MeetingTranscript
+from bedrock.server.tools.meeting_transcripts import rank_excerpts
 
 TRANSCRIPT = """WEBVTT
 

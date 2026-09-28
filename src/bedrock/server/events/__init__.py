@@ -1,3 +1,3 @@
-from app.events.bus import EventBus, get_event_bus
+from bedrock.server.events.bus import EventBus, get_event_bus
 
 __all__ = ["EventBus", "get_event_bus"]

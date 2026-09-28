@@ -11,7 +11,7 @@ prevent.
 
 from __future__ import annotations
 
-from app.schemas.enums import TaskComplexity, TaskDomain
+from bedrock.server.schemas.enums import TaskComplexity, TaskDomain
 
 _ALWAYS_HIGH_STAKES_DOMAINS = {
     TaskDomain.REGULATORY,

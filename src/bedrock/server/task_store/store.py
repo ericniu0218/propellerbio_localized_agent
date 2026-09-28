@@ -13,9 +13,9 @@ from __future__ import annotations
 from functools import lru_cache
 from uuid import uuid4
 
-from app.db import Database, get_database
-from app.schemas.enums import TaskStatus
-from app.schemas.tasks import TaskNode, TaskPlan
+from bedrock.server.db import Database, get_database
+from bedrock.server.schemas.enums import TaskStatus
+from bedrock.server.schemas.tasks import TaskNode, TaskPlan
 
 
 class TaskStore:

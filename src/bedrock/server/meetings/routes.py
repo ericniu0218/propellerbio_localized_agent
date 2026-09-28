@@ -29,35 +29,35 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.meetings.config import (
+from bedrock.server.meetings.config import (
     MAX_RECORDING_BYTES,
     MAX_RECORDING_SECONDS,
     RecordingConfig,
     readiness_issues,
 )
-from app.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
+from bedrock.server.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
 from bedrock.meetings.enrollment import (
     ENROLLMENT_AVAILABLE,
     ENROLLMENT_MISSING,
     VoicePrintStore,
     enroll_from_wav,
 )
-from app.meetings.governance import capture_consent, consent_required
-from app.meetings.job_store import PersistedJob, RecordingJobStore
-from app.meetings.jobs import RecordingJob, RecordingJobs, process
-from app.meetings.live import LiveSessions, transcribe_clip
-from app.meetings.screen import SCREEN_AVAILABLE, read as read_frame
-from app.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
-from app.meetings.retention import audio_retention_days, sweep, transcript_retention_days
-from app.meetings.vocabulary_source import auto_enabled, suggest
+from bedrock.server.meetings.governance import capture_consent, consent_required
+from bedrock.server.meetings.job_store import PersistedJob, RecordingJobStore
+from bedrock.server.meetings.jobs import RecordingJob, RecordingJobs, process
+from bedrock.server.meetings.live import LiveSessions, transcribe_clip
+from bedrock.server.meetings.screen import SCREEN_AVAILABLE, read as read_frame
+from bedrock.server.meetings.pipeline import PIPELINE_AVAILABLE, PIPELINE_MISSING
+from bedrock.server.meetings.retention import audio_retention_days, sweep, transcript_retention_days
+from bedrock.server.meetings.vocabulary_source import auto_enabled, suggest
 from bedrock.meetings.transcribe import WhisperConfig, WhisperTranscriber
-from app.tools.datacenter_client import (
+from bedrock.server.tools.datacenter_client import (
     DatacenterError,
     DatacenterNotConfigured,
     DatacenterTranscriptClient,
 )
-from app.workspace.routes import identity, require_object, store
-from app.workspace.store import uid
+from bedrock.server.workspace.routes import identity, require_object, store
+from bedrock.server.workspace.store import uid
 
 logger = logging.getLogger(__name__)
 

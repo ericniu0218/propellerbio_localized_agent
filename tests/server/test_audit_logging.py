@@ -4,11 +4,11 @@ append-only audit store — docs/ARCHITECTURE.md section 8. The audit sink
 tests wire it directly so they don't need a running FastAPI app.
 """
 
-from app.compliance.audit import audit_event_sink
-from app.db import get_database
-from app.events import get_event_bus
-from app.orchestrator.loop import handle_message
-from app.schemas.enums import EventType
+from bedrock.server.compliance.audit import audit_event_sink
+from bedrock.server.db import get_database
+from bedrock.server.events import get_event_bus
+from bedrock.server.orchestrator.loop import handle_message
+from bedrock.server.schemas.enums import EventType
 
 
 async def test_every_event_type_produces_an_audit_row(session_id):

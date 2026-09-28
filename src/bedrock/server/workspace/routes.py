@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app.config import get_settings
-from app.workspace.store import WorkspaceStore, demo_mode, now, uid
-from app.workspace.files import extract, profile, transcript_summary, SENSITIVE
-from app.workspace.providers import MockAIProvider, LocalLLMProvider, ModelRouter
+from bedrock.server.config import get_settings
+from bedrock.server.workspace.store import WorkspaceStore, demo_mode, now, uid
+from bedrock.server.workspace.files import extract, profile, transcript_summary, SENSITIVE
+from bedrock.server.workspace.providers import MockAIProvider, LocalLLMProvider, ModelRouter
 
 router = APIRouter(prefix="/workspace/api", tags=["workspace"])
 KINDS = {"chats", "projects", "memory", "meetings", "tasks", "preferences"}
@@ -88,7 +88,7 @@ class FollowupInput(BaseModel):
 
 @router.get("/config")
 def config():
-    from app.config import get_settings
+    from bedrock.server.config import get_settings
     settings = get_settings()
     if demo_mode():
         ai = "Demo provider"
@@ -123,7 +123,7 @@ def dev_login(body: DevLoginInput, response: Response):
     # A named identity for real (non-demo) mode before SSO is configured —
     # no fake data is seeded (WorkspaceStore.seed no-ops outside demo mode),
     # so this is a real, empty workspace for whoever signs in.
-    from app.config import get_settings
+    from bedrock.server.config import get_settings
     if demo_mode():
         raise HTTPException(403, "Use the demo login while running in demo mode.")
     if get_settings().sso_enabled:
@@ -329,10 +329,10 @@ async def execute_followup(owner, run_id, followup_id, context, prompt, mode):
             parts.append("This demonstration does not establish scientific, clinical, or safety conclusions.")
             _update_followup(owner, run_id, followup_id, answer="\n\n".join(parts), status="completed")
             return
-        from app.events import get_event_bus
-        from app.orchestrator.session import start_session
-        from app.orchestrator.loop import handle_message
-        from app.task_store.store import get_task_store
+        from bedrock.server.events import get_event_bus
+        from bedrock.server.orchestrator.session import start_session
+        from bedrock.server.orchestrator.loop import handle_message
+        from bedrock.server.task_store.store import get_task_store
         session = await start_session(owner)
         bus = get_event_bus()
         queue = bus.subscribe(session)
@@ -426,8 +426,8 @@ class Decision(BaseModel):
 
 @router.post("/runs/{object_id}/decision")
 def decide(object_id: str, body: Decision, user=Depends(identity)):
-    from app.compliance.approval_gates import get_approval_gate
-    from app.schemas.enums import ApprovalDecision
+    from bedrock.server.compliance.approval_gates import get_approval_gate
+    from bedrock.server.schemas.enums import ApprovalDecision
     s = store()
     run = require_object(s, user["id"], object_id, "runs")
     gate = get_approval_gate()

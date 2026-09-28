@@ -5,12 +5,12 @@ docs/ARCHITECTURE.md section 6 and config/budgets.yaml.
 
 import pytest
 
-from app.agents.base import BudgetExceededError
-from app.agents.runner import Runner
-from app.config import load_budgets_config
-from app.db import get_database
-from app.models.client import ChatMessage, CompletionResult, StreamChunk
-from app.task_store.store import get_task_store
+from bedrock.server.agents.base import BudgetExceededError
+from bedrock.server.agents.runner import Runner
+from bedrock.server.config import load_budgets_config
+from bedrock.server.db import get_database
+from bedrock.server.models.client import ChatMessage, CompletionResult, StreamChunk
+from bedrock.server.task_store.store import get_task_store
 
 
 class _OversizedResponseClient:

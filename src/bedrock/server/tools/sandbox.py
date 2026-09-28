@@ -22,7 +22,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from app.tools.base import Tool, ToolResult
+from bedrock.server.tools.base import Tool, ToolResult
 
 _DEFAULT_TIMEOUT_S = 20
 _DEFAULT_MEMORY_MB = 512

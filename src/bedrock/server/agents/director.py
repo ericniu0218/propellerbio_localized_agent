@@ -10,9 +10,9 @@ lookups. Those stay with the Runner/Specialist.
 
 from __future__ import annotations
 
-from app.schemas.enums import AgentRole, TaskComplexity, TaskDomain, TaskStatus
-from app.schemas.tasks import TaskNode, TaskPlan
-from app.agents.base import BaseAgent
+from bedrock.server.schemas.enums import AgentRole, TaskComplexity, TaskDomain, TaskStatus
+from bedrock.server.schemas.tasks import TaskNode, TaskPlan
+from bedrock.server.agents.base import BaseAgent
 
 _STATIC_PREFIX = (
     "You are the Director, the senior reasoning agent in a biotech AI "
@@ -55,7 +55,7 @@ class Director(BaseAgent):
         graph; this default is deterministic enough to test while still
         routing through a genuine Director review step for the final node.
         """
-        from app.task_store.store import TaskStore
+        from bedrock.server.task_store.store import TaskStore
 
         research_id = TaskStore.new_task_id()
         synth_id = TaskStore.new_task_id()

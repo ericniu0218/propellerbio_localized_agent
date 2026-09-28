@@ -13,7 +13,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
-from app.tools.base import Tool, ToolResult
+from bedrock.server.tools.base import Tool, ToolResult
 
 try:
     from Bio.Seq import Seq  # type: ignore

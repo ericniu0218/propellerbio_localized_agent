@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import (
+from bedrock.server.api import (
     routes_agent_tiers,
     routes_agents,
     routes_approval,
@@ -17,12 +17,12 @@ from app.api import (
     routes_session,
     sse,
 )
-from app.compliance.airgap_check import AirgapViolation, run_airgap_check
-from app.compliance.audit import audit_event_sink
-from app.config import get_settings
-from app.events import get_event_bus
-from app.meetings import routes as routes_meetings
-from app.workspace import routes as routes_workspace
+from bedrock.server.compliance.airgap_check import AirgapViolation, run_airgap_check
+from bedrock.server.compliance.audit import audit_event_sink
+from bedrock.server.config import get_settings
+from bedrock.server.events import get_event_bus
+from bedrock.server.meetings import routes as routes_meetings
+from bedrock.server.workspace import routes as routes_workspace
 
 logger = logging.getLogger("agent_pack")
 

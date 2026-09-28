@@ -10,14 +10,14 @@ so REST calls return immediately and the frontend follows progress over SSE.
 
 from __future__ import annotations
 
-from app.agents.director import Director
-from app.agents.runner import Runner
-from app.agents.specialist import Specialist
-from app.compliance.approval_gates import get_approval_gate
-from app.db import get_database
-from app.events import get_event_bus
-from app.orchestrator.router import effective_complexity, is_high_stakes
-from app.schemas.enums import (
+from bedrock.server.agents.director import Director
+from bedrock.server.agents.runner import Runner
+from bedrock.server.agents.specialist import Specialist
+from bedrock.server.compliance.approval_gates import get_approval_gate
+from bedrock.server.db import get_database
+from bedrock.server.events import get_event_bus
+from bedrock.server.orchestrator.router import effective_complexity, is_high_stakes
+from bedrock.server.schemas.enums import (
     AgentRole,
     AgentStatus,
     ApprovalDecision,
@@ -25,7 +25,7 @@ from app.schemas.enums import (
     TaskComplexity,
     TaskStatus,
 )
-from app.schemas.events import (
+from bedrock.server.schemas.events import (
     ApprovalRequiredPayload,
     ReviewDecisionPayload,
     TaskAssignedPayload,
@@ -33,8 +33,8 @@ from app.schemas.events import (
     TaskFailedPayload,
     TaskPlannedPayload,
 )
-from app.schemas.tasks import TaskNode
-from app.task_store.store import get_task_store
+from bedrock.server.schemas.tasks import TaskNode
+from bedrock.server.task_store.store import get_task_store
 
 
 _FORCE_TIER_COMPLEXITY = {

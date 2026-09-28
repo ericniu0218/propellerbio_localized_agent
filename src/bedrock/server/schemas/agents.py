@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from app.schemas.enums import AgentRole, AgentStatus
+from bedrock.server.schemas.enums import AgentRole, AgentStatus
 
 
 class AgentCard(BaseModel):

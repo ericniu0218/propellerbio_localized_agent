@@ -11,10 +11,10 @@ import json
 import pytest
 from starlette.requests import Request
 
-from app.api.sse import _parse_last_event_id, sse_event_stream
-from app.events.bus import EventBus
-from app.schemas.enums import EventType
-from app.schemas.events import AgentStatusPayload, TaskAssignedPayload, TaskCompletedPayload
+from bedrock.server.api.sse import _parse_last_event_id, sse_event_stream
+from bedrock.server.events.bus import EventBus
+from bedrock.server.schemas.enums import EventType
+from bedrock.server.schemas.events import AgentStatusPayload, TaskAssignedPayload, TaskCompletedPayload
 
 SESSION = "sess-1"
 

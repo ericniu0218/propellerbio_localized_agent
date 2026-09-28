@@ -1,4 +1,4 @@
-from app.models.mock_fixtures import fake_reply
+from bedrock.server.models.mock_fixtures import fake_reply
 import json
 
 

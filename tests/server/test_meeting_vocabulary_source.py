@@ -7,7 +7,7 @@ and the failure is silent, which is what makes it worth guarding carefully.
 
 from __future__ import annotations
 
-from app.meetings.vocabulary_source import from_meetings, harvest, suggest
+from bedrock.server.meetings.vocabulary_source import from_meetings, harvest, suggest
 
 TRANSCRIPT = (
     "Good morning. Enrollment for the KRAS trial is 148 of 200. "

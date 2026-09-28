@@ -18,18 +18,18 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from app.meetings.config import RecordingConfig, readiness_issues
-from app.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
-from app.meetings.jobs import RecordingJob, RecordingJobs
-from app.meetings.pipeline import TranscriptionOutcome, to_record_fields
-from app.meetings.routes import _default_title, _parse_started_at
-from app.tools.datacenter_client import (
+from bedrock.server.meetings.config import RecordingConfig, readiness_issues
+from bedrock.server.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
+from bedrock.server.meetings.jobs import RecordingJob, RecordingJobs
+from bedrock.server.meetings.pipeline import TranscriptionOutcome, to_record_fields
+from bedrock.server.meetings.routes import _default_title, _parse_started_at
+from bedrock.server.tools.datacenter_client import (
     DatacenterConfig,
     DatacenterError,
     DatacenterTranscriptClient,
     MeetingTranscript,
 )
-from app.tools.meeting_transcripts import MeetingTranscriptsArgs, MeetingTranscriptsTool
+from bedrock.server.tools.meeting_transcripts import MeetingTranscriptsArgs, MeetingTranscriptsTool
 
 SECRET = "test-secret"
 
@@ -221,7 +221,7 @@ async def test_delivery_failure_is_reported_but_never_fatal(tmp_path, monkeypatc
         return httpx.Response(503)
 
     monkeypatch.setattr(
-        "app.meetings.delivery.DatacenterTranscriptClient",
+        "bedrock.server.meetings.delivery.DatacenterTranscriptClient",
         lambda: DatacenterTranscriptClient(
             config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret=SECRET),
             transport=httpx.MockTransport(refuse),
@@ -280,7 +280,7 @@ async def test_a_recording_is_delivered_and_then_found_by_the_agent(tmp_path, mo
     )
 
     started = datetime(2026, 9, 22, 14, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("app.meetings.delivery.DatacenterTranscriptClient", lambda: client)
+    monkeypatch.setattr("bedrock.server.meetings.delivery.DatacenterTranscriptClient", lambda: client)
 
     note = await deliver_recording(
         {"id": "abc123", "title": "KRAS trial weekly"}, _outcome(), started, "maya"
@@ -348,7 +348,7 @@ def test_readiness_reports_a_missing_pipeline_instead_of_crashing(monkeypatch):
     """The Docker image does not install bedrock-private-ai. The server must
     still start, and only this feature report that it is unavailable — the same
     guarded-import contract meeting_transcripts and chemistry_tools have."""
-    import app.meetings.routes as routes
+    import bedrock.server.meetings.routes as routes
 
     monkeypatch.setattr(routes, "PIPELINE_AVAILABLE", False)
     result = routes.readiness(user={"id": "maya", "name": "Maya"})
@@ -373,7 +373,7 @@ async def test_deleting_a_meeting_removes_the_datacenter_copy(tmp_path, monkeypa
         config=DatacenterConfig(base_url="http://transcripts.internal", signing_secret=SECRET),
         transport=httpx.ASGITransport(app=connector_app),
     )
-    monkeypatch.setattr("app.meetings.delivery.DatacenterTranscriptClient", lambda: client)
+    monkeypatch.setattr("bedrock.server.meetings.delivery.DatacenterTranscriptClient", lambda: client)
     await deliver_recording(
         {"id": "gone1", "title": "Weekly"}, _outcome(), datetime.now(timezone.utc), "maya"
     )

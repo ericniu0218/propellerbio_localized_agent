@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from app.meetings.live import IDLE_TIMEOUT_S, MAX_PREVIEW_CHARS, LiveSessions
+from bedrock.server.meetings.live import IDLE_TIMEOUT_S, MAX_PREVIEW_CHARS, LiveSessions
 
 
 def test_a_preview_accumulates_clip_by_clip():

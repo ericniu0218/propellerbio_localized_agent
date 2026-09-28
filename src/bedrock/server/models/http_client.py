@@ -9,8 +9,8 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.config import ModelConfig
-from app.models.client import ChatMessage, CompletionResult, StreamChunk
+from bedrock.server.config import ModelConfig
+from bedrock.server.models.client import ChatMessage, CompletionResult, StreamChunk
 
 
 class HTTPModelClient:

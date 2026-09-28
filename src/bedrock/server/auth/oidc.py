@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import httpx
 from jose import jwt as jose_jwt
 
-from app.config import Settings
+from bedrock.server.config import Settings
 
 
 @dataclass

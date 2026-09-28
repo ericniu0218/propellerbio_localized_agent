@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.events import get_event_bus
-from app.schemas.agents import AgentCard
-from app.schemas.api import AgentPanelResponse
-from app.schemas.enums import EventType
+from bedrock.server.events import get_event_bus
+from bedrock.server.schemas.agents import AgentCard
+from bedrock.server.schemas.api import AgentPanelResponse
+from bedrock.server.schemas.enums import EventType
 
 router = APIRouter(tags=["agents"])
 

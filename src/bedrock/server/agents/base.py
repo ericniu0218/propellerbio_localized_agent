@@ -9,14 +9,14 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-from app.config import BudgetsConfig, load_budgets_config, load_models_config
-from app.db import Database, get_database
-from app.events import EventBus, get_event_bus
-from app.models.client import ChatMessage, ModelClient
-from app.models.registry import get_model_registry
-from app.schemas.agents import AgentCard
-from app.schemas.enums import AgentRole, AgentStatus, EventType
-from app.schemas.events import (
+from bedrock.server.config import BudgetsConfig, load_budgets_config, load_models_config
+from bedrock.server.db import Database, get_database
+from bedrock.server.events import EventBus, get_event_bus
+from bedrock.server.models.client import ChatMessage, ModelClient
+from bedrock.server.models.registry import get_model_registry
+from bedrock.server.schemas.agents import AgentCard
+from bedrock.server.schemas.enums import AgentRole, AgentStatus, EventType
+from bedrock.server.schemas.events import (
     AgentStartedPayload,
     AgentStatusPayload,
     AgentTokenPayload,

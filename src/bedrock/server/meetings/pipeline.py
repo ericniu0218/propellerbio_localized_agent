@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
-from app.meetings.config import RecordingConfig, readiness_issues
+from bedrock.server.meetings.config import RecordingConfig, readiness_issues
 from bedrock.meetings.diarize import assign, consolidate, diarize, speaker_change_points
 from bedrock.meetings.enrollment import cluster_embeddings, identify, rescore_cues
 from bedrock.meetings.vocabulary import VocabularyReport, correct_texts

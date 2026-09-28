@@ -3,9 +3,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.schemas.agents import AgentCard
-from app.schemas.enums import AgentRole, AgentStatus, EventType, TaskDomain
-from app.schemas.tasks import TaskPlan
+from bedrock.server.schemas.agents import AgentCard
+from bedrock.server.schemas.enums import AgentRole, AgentStatus, EventType, TaskDomain
+from bedrock.server.schemas.tasks import TaskPlan
 
 
 def _now() -> str:

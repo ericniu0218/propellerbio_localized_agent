@@ -1,4 +1,4 @@
-from app.schemas.enums import (
+from bedrock.server.schemas.enums import (
     AgentRole,
     AgentStatus,
     ApprovalDecision,
@@ -7,9 +7,9 @@ from app.schemas.enums import (
     TaskDomain,
     TaskStatus,
 )
-from app.schemas.agents import AgentCard
-from app.schemas.tasks import TaskNode, TaskPlan
-from app.schemas.events import (
+from bedrock.server.schemas.agents import AgentCard
+from bedrock.server.schemas.tasks import TaskNode, TaskPlan
+from bedrock.server.schemas.events import (
     AgentStartedPayload,
     AgentStatusPayload,
     AgentTokenPayload,
@@ -25,7 +25,7 @@ from app.schemas.events import (
     ToolResultPayload,
     UsageUpdatedPayload,
 )
-from app.schemas.api import (
+from bedrock.server.schemas.api import (
     AgentPanelResponse,
     AgentTierInfo,
     AgentTiersResponse,

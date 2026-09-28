@@ -1,5 +1,5 @@
-from app.orchestrator.router import effective_complexity, is_high_stakes
-from app.schemas.enums import TaskComplexity, TaskDomain
+from bedrock.server.orchestrator.router import effective_complexity, is_high_stakes
+from bedrock.server.schemas.enums import TaskComplexity, TaskDomain
 
 
 def test_regulatory_domain_is_always_high_stakes():

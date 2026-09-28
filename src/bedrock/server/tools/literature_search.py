@@ -16,9 +16,9 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from app.config import load_budgets_config
-from app.tools.base import Tool, ToolResult
-from app.tools.rag_search import KeywordOverlapIndex, VectorIndex
+from bedrock.server.config import load_budgets_config
+from bedrock.server.tools.base import Tool, ToolResult
+from bedrock.server.tools.rag_search import KeywordOverlapIndex, VectorIndex
 
 DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "literature"
 

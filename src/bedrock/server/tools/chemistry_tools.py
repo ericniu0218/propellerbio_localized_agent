@@ -7,7 +7,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
-from app.tools.base import Tool, ToolResult
+from bedrock.server.tools.base import Tool, ToolResult
 
 try:
     from rdkit import Chem  # type: ignore

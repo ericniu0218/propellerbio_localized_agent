@@ -24,8 +24,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from app.meetings.pipeline import TranscriptionOutcome
-from app.tools.datacenter_client import (
+from bedrock.server.meetings.pipeline import TranscriptionOutcome
+from bedrock.server.tools.datacenter_client import (
     DatacenterError,
     DatacenterNotConfigured,
     DatacenterTranscriptClient,

@@ -1,4 +1,4 @@
-from app.compliance.phi_redaction import redact_phi
+from bedrock.server.compliance.phi_redaction import redact_phi
 
 
 def test_redacts_ssn():

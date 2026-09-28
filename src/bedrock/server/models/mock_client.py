@@ -8,8 +8,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from app.models.client import ChatMessage, CompletionResult, StreamChunk
-from app.models.mock_fixtures import fake_reply
+from bedrock.server.models.client import ChatMessage, CompletionResult, StreamChunk
+from bedrock.server.models.mock_fixtures import fake_reply
 
 
 class MockModelClient:

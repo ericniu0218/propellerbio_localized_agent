@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.meetings.screen import FrameReading, Label, ScreenTimeline, looks_like_a_name
+from bedrock.server.meetings.screen import FrameReading, Label, ScreenTimeline, looks_like_a_name
 
 
 @dataclass

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import JSON, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from bedrock.server.db.base import Base
 
 
 def _now() -> datetime:

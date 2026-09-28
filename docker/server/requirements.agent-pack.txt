@@ -1,0 +1,82 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+pyyaml>=6.0
+sqlalchemy>=2.0
+sse-starlette>=2.1
+httpx>=0.27
+psycopg2-binary>=2.9   # only needed when DATABASE_URL points at Postgres (real mode)
+python-jose[cryptography]>=3.3   # verifies Keycloak-issued JWTs; only needed when SSO is configured
+pypdf>=4.0   # PDF text extraction for chat attachments (app/workspace/files.py); without it PDFs upload with no extracted text and get silently dropped from context
+
+# The meeting transcript reader. It lives in the employee terminal client,
+# bedrock-private-ai, so both products share one VTT parser instead of two
+# copies. Pinned to an exact commit: change it on purpose and rerun the tests.
+# The repo is private, so installing it needs GitHub access (CI uses the
+# BEDROCK_PRIVATE_AI_TOKEN secret). The import is guarded: without it the
+# server still starts and only meeting_transcripts reports it is unavailable.
+#
+# Moved forward from d210db6 for three reasons. app/meetings/ needs the
+# transcription pipeline (bedrock.meetings.transcribe); d210db6 predates
+# "Check that meeting citations point at the line that says it" (00cc9c9) — so
+# on the old pin every timestamp in a generated meeting note was unverified,
+# and an invented one was indistinguishable from a real one; and it predates
+# the summariser fix that stops llama3.1:8b handing its own JSON placeholders
+# back as content ("owner": "name or null" reaching a reader as an action item).
+#
+# Moved forward again from 87061af, which moved diarisation and voice prints
+# into that repo but left their arithmetic - cosine similarity over voice
+# prints - importing numpy from inside the functions, so a machine without the
+# extra crashed where it should have carried on. The fix split the sums
+# (bedrock.meetings.vectors, plain Python) from the models.
+#
+# And forward again for the one that mattered: TitaNet raises above ~123
+# seconds of audio, cluster_embeddings fed it a speaker's three longest turns
+# concatenated and uncapped, and the exception was swallowed - so whoever spoke
+# most in a meeting got no voice vector and could never be matched to an
+# enrolled name. Voice enrolment only ever worked on short test clips.
+#
+# Now at the merge of PR #24, which brings two things from a branch of Eric
+# Niu's that had sat unmerged for over a week. Zoom renamed its per-participant
+# tracks in 2026 - "audio<Name><recording id>.m4a" inside an "Audio Record"
+# folder, where it used to be "audio<digits>_<Name>.m4a" - and matching only
+# the old shape meant those tracks went unrecognised and the meeting fell back
+# to the mixed recording, throwing away the best speaker attribution in the
+# whole pipeline. And every decision and action item now carries who said it,
+# read off the transcript at its verified timestamp rather than asked of the
+# model.
+bedrock-private-ai[speakers] @ git+https://github.com/Bedrock-Technical-Consulting/bedrock-private-ai.git@d3e3342737ee921017041c200a4bc4aa831dd627
+
+python-multipart>=0.0.9   # multipart parsing for meeting recording uploads (app/meetings/routes.py)
+
+# Speaker identification for recorded meetings (app/meetings/diarize.py). ONNX
+# only - no PyTorch - so it stays installable on the same box as everything
+# else. Imports are guarded: without these a recording still transcribes and is
+# reported as unattributed, exactly as it was before.
+# sherpa-onnx and soundfile now arrive with bedrock-private-ai[speakers],
+# which owns diarisation and voice prints.
+
+# Semantic meeting search (app/meetings/semantic.py). model2vec distils a
+# sentence transformer into a fixed table of token vectors, so inference is
+# numpy over a lookup: no PyTorch, no GPU, ~30 MB. That matters more than the
+# last few points of quality, because this runs on the same air-gapped box as
+# everything else and a 2 GB deep-learning stack would not be deployed.
+# Guarded: without it, ranking falls back to keyword overlap.
+model2vec>=0.9
+
+# Reading the meeting window (app/meetings/screen.py). For an online call the
+# answer to "who said that?" is already on screen — every client draws
+# participant names and rings whoever is speaking — so this reads it instead of
+# inferring speakers from voices. ONNX again, no PyTorch. Guarded: without it,
+# speakers fall back to being worked out from the audio.
+rapidocr-onnxruntime>=1.2
+pillow>=10.0
+
+# Optional biotech tool dependencies — imports are guarded so the app still
+# runs without them (stub results instead); install for real tool behavior.
+biopython>=1.83
+rdkit>=2024.3.1
+
+# Dev/test
+pytest>=8.0
+pytest-asyncio>=0.24

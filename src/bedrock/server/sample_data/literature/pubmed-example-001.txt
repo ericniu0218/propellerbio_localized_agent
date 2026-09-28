@@ -1,0 +1,3 @@
+Title: Hepatic enzyme elevation as an early biomarker of dose-limiting toxicity in small-molecule oncology candidates.
+
+Abstract: Elevated ALT/AST at intermediate dose levels in rodent studies frequently predicts hepatotoxicity risk at higher exposures in later-stage species. This review summarizes cross-compound patterns from 40 published preclinical toxicology studies and recommends incorporating reversibility assessment via satellite recovery cohorts as a standard practice when early hepatic signals are observed.

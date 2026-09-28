@@ -1,0 +1,121 @@
+# Brings up the whole stack with one command.
+#
+#   Mock mode (no GPUs needed, frontend-ready immediately):
+#     docker compose up --build
+#
+#   Real mode (requires the on-prem GPU server + downloaded model weights):
+#     docker compose --profile real up --build
+#
+# See docs/ARCHITECTURE.md and docs/HARDWARE.md before running the `real`
+# profile — the vLLM services below assume NVIDIA GPUs are available to
+# Docker (nvidia-container-toolkit) and that model weights are already
+# present at the paths mounted into each vllm service.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent_pack
+      POSTGRES_PASSWORD: agent_pack
+      POSTGRES_DB: agent_pack
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_pack"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_PACK_MODE: ${AGENT_PACK_MODE:-mock}
+      DATABASE_URL: postgresql+psycopg2://agent_pack:agent_pack@postgres:5432/agent_pack
+      REDIS_URL: redis://redis:6379/0
+      AIRGAP_CHECK: ${AIRGAP_CHECK:-false}
+      DIRECTOR_LLM_URL: http://director-llm:8001/v1
+      SPECIALIST_LLM_URL: http://specialist-llm:8002/v1
+      RUNNER_LLM_URL: http://runner-llm:8003/v1
+    ports:
+      - "8000:8000"
+
+  # --- real mode only: one vLLM OpenAI-compatible server per model -------
+  # Model names/precision come from config/models.yaml; MODEL_PATH below
+  # should point at locally downloaded weights (no internet access at
+  # runtime — see docs/ARCHITECTURE.md section 8).
+
+  director-llm:
+    profiles: [real]
+    image: vllm/vllm-openai:latest
+    command: >
+      --model /models/deepseek-v4-flash
+      --served-model-name deepseek-ai/DeepSeek-V4-Flash-0731
+      --quantization fp8
+      --max-model-len 131072
+      --port 8001
+    volumes:
+      - ${MODEL_DIR:-./models}/deepseek-v4-flash:/models/deepseek-v4-flash
+    ports:
+      - "8001:8001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  specialist-llm:
+    profiles: [real]
+    image: vllm/vllm-openai:latest
+    command: >
+      --model /models/qwen3.8-27b
+      --served-model-name Qwen/Qwen3.8-27B
+      --quantization fp8
+      --max-model-len 65536
+      --port 8002
+    volumes:
+      - ${MODEL_DIR:-./models}/qwen3.8-27b:/models/qwen3.8-27b
+    ports:
+      - "8002:8002"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  runner-llm:
+    profiles: [real]
+    image: vllm/vllm-openai:latest
+    command: >
+      --model /models/qwen3.6-35b-a3b
+      --served-model-name Qwen/Qwen3.6-35B-A3B
+      --quantization fp8
+      --max-model-len 32768
+      --port 8003
+    volumes:
+      - ${MODEL_DIR:-./models}/qwen3.6-35b-a3b:/models/qwen3.6-35b-a3b
+    ports:
+      - "8003:8003"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  pgdata:

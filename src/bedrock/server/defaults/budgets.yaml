@@ -1,0 +1,47 @@
+# Per-agent, per-task token budgets and token-efficiency knobs.
+# See docs/ARCHITECTURE.md section 6.
+#
+# A task that exceeds its agent's budget stops mid-step and reports to the
+# Director rather than continuing to spend tokens.
+
+token_budgets:
+  director:
+    max_tokens_per_task: 60000     # thinks a lot, but is called rarely
+    max_tokens_per_call: 16000
+  specialist:
+    max_tokens_per_task: 40000
+    max_tokens_per_call: 8000
+  runner:
+    max_tokens_per_task: 8000
+    max_tokens_per_call: 2000
+
+summarization:
+  # Any tool output larger than this (approx tokens) gets summarized by the
+  # Runner before another agent sees it.
+  summarize_over_tokens: 1500
+  # Target length of a Runner-produced summary.
+  summary_target_tokens: 300
+
+context_compaction:
+  # Once a session's running history exceeds this many turns, the Runner
+  # compacts everything older than `keep_recent_turns` into one summary turn.
+  compact_after_turns: 20
+  keep_recent_turns: 4
+
+rag:
+  top_k_chunks: 5
+  max_chunk_tokens: 400
+
+meeting_transcripts:
+  # A date range can span many meetings; cap how many transcripts one
+  # search pulls back so a broad question doesn't blow the calling agent's
+  # token budget in one tool call.
+  max_meetings: 10
+
+caching:
+  # (query_hash, doc_set_hash) -> result cache for RAG/tool calls.
+  enabled: true
+  ttl_seconds: 86400
+
+retries:
+  max_review_retries: 2   # Director rejections before escalating to human

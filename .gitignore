@@ -21,5 +21,6 @@ evals/litreview/results/*/
 data/workspace/
 data/recordings/
 data/demo-recorder/
+data/demo-zoom/
 agent_pack*.db
 scripts/server/eval/build/

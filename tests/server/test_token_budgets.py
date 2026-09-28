@@ -1,6 +1,6 @@
 """A task that exceeds its agent's per-task token budget must stop and
 report to the Director rather than continuing to spend tokens —
-docs/ARCHITECTURE.md section 6 and config/budgets.yaml.
+docs/server/ARCHITECTURE.md section 6 and config/budgets.yaml.
 """
 
 import pytest

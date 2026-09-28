@@ -2,8 +2,8 @@
 
 Agents pass *references* (task IDs, result_refs) to each other; only the
 code that actually needs content calls `get_result`. This is the mechanism
-behind the token-efficiency requirement in docs/ARCHITECTURE.md section 6.
-Persistence is delegated to app.db.Database (SQLite in mock/test mode,
+behind the token-efficiency requirement in docs/server/ARCHITECTURE.md section 6.
+Persistence is delegated to bedrock.server.db.Database (SQLite in mock/test mode,
 Postgres in real mode); this module adds the task-graph-shaped API the
 orchestrator wants plus an in-process cache for hot reads within a request.
 """

@@ -115,7 +115,7 @@ async def test_meetings_domain_without_a_citation_is_rejected_like_other_citatio
 
 
 async def test_a_raw_chat_message_reaches_the_real_tool_through_handle_message(session_id):
-    """Goes through the actual public entrypoint (app.api.routes_session
+    """Goes through the actual public entrypoint (bedrock.server.api.routes_session
     calls exactly this) with the real tool registry — no stub. With
     DATACENTER_BASE_URL unset in the test environment, the real tool
     correctly reports itself unconfigured rather than attempting a
@@ -124,13 +124,13 @@ async def test_a_raw_chat_message_reaches_the_real_tool_through_handle_message(s
     classification -> meetings domain -> date extraction -> real tool.
 
     Note: mock classification gives "meetings" TaskComplexity.NORMAL (see
-    app/models/mock_fixtures.py::_fake_classification), which routes
+    src/bedrock/server/models/mock_fixtures.py::_fake_classification), which routes
     through _handle_normal — the same tier literature_search/rag_search
     get by default. That tier does not run the Director's citation
     guardrail (only _handle_hard does), so a citation-required domain
     classified as merely "normal" can complete without one. That gap
     predates this change and isn't specific to meetings — see
-    docs/ARCHITECTURE.md open question 8.
+    docs/server/ARCHITECTURE.md open question 8.
     """
     await handle_message(
         session_id=session_id,

@@ -3,7 +3,7 @@ study reports, protocols, past submissions).
 
 Every hit must carry a citation (document id + section) — callers that
 drop the citation before it reaches the Director will get rejected, per
-the hallucination-guardrail requirement in docs/ARCHITECTURE.md section 8.
+the hallucination-guardrail requirement in docs/server/ARCHITECTURE.md section 8.
 
 The real index is pgvector (default) or Qdrant (documented swap) over
 embeddings computed at ingest time — that ingest pipeline and the actual

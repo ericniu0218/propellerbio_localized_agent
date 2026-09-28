@@ -1,4 +1,4 @@
-"""SSE reconnection: drives app.api.sse.sse_event_stream directly against a
+"""SSE reconnection: drives bedrock.server.api.sse.sse_event_stream directly against a
 real EventBus (no HTTP transport involved — see that module's docstring
 for why). Covers the exact scenarios from the reconnection spec: a drop
 mid-run with no gaps/duplicates on reconnect, reconnect after completion,

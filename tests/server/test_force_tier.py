@@ -1,6 +1,6 @@
 """force_tier lets a caller pick which tier handles a request, but must
 never let a high-stakes request skip the Director — see
-docs/ARCHITECTURE.md section 2 and app/orchestrator/loop.py.
+docs/server/ARCHITECTURE.md section 2 and src/bedrock/server/orchestrator/loop.py.
 """
 
 import asyncio

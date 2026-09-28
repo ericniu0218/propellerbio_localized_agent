@@ -3,8 +3,8 @@
 Three separate obligations that all land on the same record, so they live
 together rather than being scattered through the pipeline.
 
-**Redaction.** `app/compliance/phi_redaction.py` has existed since the start and
-was applied on no path at all — `docs/MEETINGS.md` said so in its own "known
+**Redaction.** `src/bedrock/server/compliance/phi_redaction.py` has existed since the start and
+was applied on no path at all — `docs/server/MEETINGS.md` said so in its own "known
 gaps". A recorded meeting is the likeliest place in this product for a patient
 to be named out loud, because people say things in a room that they would never
 type into a form. Redaction runs over the transcript and over everything

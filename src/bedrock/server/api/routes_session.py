@@ -75,7 +75,7 @@ async def cancel_task(req: CancelTaskRequest) -> dict:
     task.status = TaskStatus.CANCELLED
     store.update_task(session_id, task)
     # Previously silent on the event stream: a client waiting on this task
-    # (or reconnecting later, per app/events/bus.py's terminal tracking)
+    # (or reconnecting later, per src/bedrock/server/events/bus.py's terminal tracking)
     # would otherwise never learn it was cancelled rather than still running.
     await get_event_bus().publish_typed(
         session_id,

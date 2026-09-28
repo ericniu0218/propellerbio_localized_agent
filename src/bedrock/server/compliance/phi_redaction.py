@@ -1,5 +1,5 @@
 """PHI/PII detection and redaction, run by the Runner before anything is
-logged or handed to another agent (docs/ARCHITECTURE.md section 8).
+logged or handed to another agent (docs/server/ARCHITECTURE.md section 8).
 
 This module ships a regex-based baseline (dates of birth, SSNs, MRNs,
 emails, phone numbers) that catches the common structured cases without

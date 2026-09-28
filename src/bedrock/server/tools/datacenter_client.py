@@ -10,7 +10,7 @@ network — never to the Worker.** Routing a question through the Worker would
 mean this air-gapped system making an outbound call to the public internet to
 answer it, which defeats the air gap the whole deployment exists to maintain.
 `assert_internal_endpoint` is a cheap guard against that specific
-misconfiguration, in the same spirit as app/compliance/airgap_check.py.
+misconfiguration, in the same spirit as src/bedrock/server/compliance/airgap_check.py.
 
 Signing scheme, which must match the Worker's `signedHeaders` byte for byte:
 
@@ -151,7 +151,7 @@ class DatacenterTranscriptClient:
 
     Reading is the original job: zoom-transcript-vault puts Zoom's transcripts
     into the datacenter and `meeting_transcripts` reads them back. Writing was
-    added for `app/meetings/`, which records meetings nobody else captured — a
+    added for `src/bedrock/server/meetings/`, which records meetings nobody else captured — a
     microphone in a room, or the audio of an online call. Those are delivered
     through endpoint 1 of the same contract, in the same shape the Worker uses,
     so a recorded meeting and a Zoom meeting are indistinguishable to every

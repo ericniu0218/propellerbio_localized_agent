@@ -15,7 +15,7 @@ that it has not hung.
 Jobs live in memory. A server restart mid-transcription loses the job but not
 the recording: the audio is on disk under `MEETING_RECORDING_DIR` and can be
 re-submitted. Making jobs survive restarts means a real queue, which is the
-right call when this moves off one box and is noted in docs/MEETINGS.md.
+right call when this moves off one box and is noted in docs/server/MEETINGS.md.
 """
 
 from __future__ import annotations

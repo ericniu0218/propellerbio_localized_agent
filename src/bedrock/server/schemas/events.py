@@ -138,7 +138,7 @@ class UsageUpdatedPayload(BaseModel):
 class SessionResyncPayload(BaseModel):
     """Sent as a session.resync event when a reconnecting client's
     Last-Event-ID is older than the server's bounded event buffer — see
-    app/events/bus.py. `events` is the buffer's current contents (the most
+    src/bedrock/server/events/bus.py. `events` is the buffer's current contents (the most
     recent events we still have; there is a gap before them the client
     cannot recover) and is empty when `reason` is `"no_history"` (a session
     the server has never seen any events for, e.g. after a server

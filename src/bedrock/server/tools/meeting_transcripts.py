@@ -3,7 +3,7 @@
 Completes the loop that zoom-transcript-vault opens: that service captures
 transcripts from Zoom and pushes them into the customer's datacenter, and this
 tool is the consumer its README describes — the air-gapped side reading them
-back over the internal network. See app/tools/datacenter_client.py for the
+back over the internal network. See src/bedrock/server/tools/datacenter_client.py for the
 signed transport and why it must not go through the public relay.
 
 The connector only supports retrieval by date range, but people ask questions
@@ -15,7 +15,7 @@ to the agent, because a month of meetings is far larger than any context
 budget — the same reason rag_search returns top-k chunks instead of documents.
 
 Scoring is hybrid: keyword overlap plus semantic similarity from a small
-static embedding model (see app/meetings/semantic.py). Keyword alone missed
+static embedding model (see src/bedrock/server/meetings/semantic.py). Keyword alone missed
 every meeting that used a different word for the same thing — "recruitment"
 scored zero against "enrollment" — and meaning alone would blur "G12C" into
 "G12D", which in a biotech company is the worse mistake. Added together, the
@@ -35,7 +35,7 @@ connector in `contrib/` filters server-side on the identity in the signed
 request, and this filters again on what comes back. Meetings that Zoom captured
 through zoom-transcript-vault carry no groups yet: that relay has not been
 taught to set them, so they remain readable by everyone until it is. See
-docs/MEETINGS.md.
+docs/server/MEETINGS.md.
 """
 
 from __future__ import annotations

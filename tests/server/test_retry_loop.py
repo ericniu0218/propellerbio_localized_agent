@@ -6,9 +6,9 @@ Director/Specialist review loop directly with a deterministic setup rather
 than going through the classifier: a citation-required domain
 (internal_docs) plus a query that matches nothing in the local RAG corpus
 guarantees the Specialist comes back with zero citations every time, which
-the Director must reject — per docs/ARCHITECTURE.md section 8's
+the Director must reject — per docs/server/ARCHITECTURE.md section 8's
 hallucination guardrail — up to `max_retries` times before escalating to a
-human (docs/ARCHITECTURE.md section 2: "Max 2 retries per task, then
+human (docs/server/ARCHITECTURE.md section 2: "Max 2 retries per task, then
 escalate to the human in the chat").
 """
 

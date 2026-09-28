@@ -47,7 +47,7 @@ class TaskRow(Base):
 class ResultRow(Base):
     """Tool/agent output content, addressed by result_ref. Agents pass the
     ref between each other; only the code that needs the actual bytes reads
-    this table — see docs/ARCHITECTURE.md section 6 (reference-passing)."""
+    this table — see docs/server/ARCHITECTURE.md section 6 (reference-passing)."""
 
     __tablename__ = "results"
 
@@ -90,7 +90,7 @@ class TokenUsageRow(Base):
 
 class ResultCacheRow(Base):
     """(query_hash, doc_set_hash) -> cached tool/RAG result, per
-    docs/ARCHITECTURE.md section 6."""
+    docs/server/ARCHITECTURE.md section 6."""
 
     __tablename__ = "result_cache"
 

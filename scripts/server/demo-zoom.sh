@@ -13,7 +13,7 @@
 #
 # Override ZOOM_VAULT_DIR if the clone isn't a sibling of this repo.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 VAULT_DIR="${ZOOM_VAULT_DIR:-../zoom-transcript-vault}"
 if [ ! -d "$VAULT_DIR" ]; then
@@ -28,7 +28,7 @@ fi
 
 pkill -f "mock-datacenter.mjs" 2>/dev/null || true
 pkill -f "wrangler dev" 2>/dev/null || true
-pkill -f "uvicorn app.main:app" 2>/dev/null || true
+pkill -f "bedrock-server" 2>/dev/null || true
 sleep 1
 
 echo "[1/4] Starting the mock datacenter + fake Zoom file host on :9100 ..."
@@ -46,13 +46,13 @@ echo "[3/4] Sending a real, signed Zoom webhook (pushes a sample transcript thro
 
 echo "[4/4] Starting the workspace, pointed at the same mock datacenter, on http://localhost:8000 ..."
 if [ ! -d .venv ]; then
-  echo "No .venv found — run: python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"
+  echo "No .venv found — run: python3 -m venv .venv && .venv/bin/pip install -e '.[server]'"
   exit 1
 fi
 source .venv/bin/activate
-DEMO_MODE=false AGENT_PACK_MODE=mock AIRGAP_CHECK=false DATABASE_URL=sqlite:///./demo_zoom.db \
+DEMO_MODE=false AGENT_PACK_MODE=mock AIRGAP_CHECK=false BEDROCK_SERVER_DATA_DIR=./data/demo-zoom \
   DATACENTER_BASE_URL=http://localhost:9100 DATACENTER_SIGNING_SECRET=demo-datacenter-secret-456 \
-  uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+  bedrock-server --host 0.0.0.0 --port 8000 &
 SERVER_PID=$!
 
 trap 'kill $DATACENTER_PID $WORKER_PID $SERVER_PID 2>/dev/null' EXIT

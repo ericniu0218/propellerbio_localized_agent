@@ -21,7 +21,7 @@ class TaskNode(BaseModel):
     rejection_reason: str | None = None
     # Kept separate from `description` (rather than appended to it) so a
     # retry's fix instruction guides drafting without polluting the query
-    # text handed to search tools — see docs/ARCHITECTURE.md section 2.
+    # text handed to search tools — see docs/server/ARCHITECTURE.md section 2.
     fix_instruction: str | None = None
     citations: list[str] = Field(default_factory=list)
 

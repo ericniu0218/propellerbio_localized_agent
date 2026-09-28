@@ -2,7 +2,7 @@
 into a small task graph, reviews Specialist output, and handles the hardest
 reasoning itself (final synthesis, conflicting-evidence analysis,
 regulatory/safety judgment calls). Called rarely and thinks a lot when it
-runs — see docs/ARCHITECTURE.md sections 2 and 3.
+runs — see docs/server/ARCHITECTURE.md sections 2 and 3.
 
 Never does grunt work: no formatting, no summarizing tool output, no simple
 lookups. Those stay with the Runner/Specialist.
@@ -27,7 +27,7 @@ _STATIC_PREFIX = (
 
 # Citations are mandatory in these domains — the Director rejects on their
 # absence without needing a model call, per the hallucination-guardrail
-# requirement in docs/ARCHITECTURE.md section 8.
+# requirement in docs/server/ARCHITECTURE.md section 8.
 CITATION_REQUIRED_DOMAINS = {
     TaskDomain.LITERATURE,
     TaskDomain.INTERNAL_DOCS,

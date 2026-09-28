@@ -1,5 +1,5 @@
 """Every prompt, agent decision, tool call, and output must be logged to the
-append-only audit store — docs/ARCHITECTURE.md section 8. The audit sink
+append-only audit store — docs/server/ARCHITECTURE.md section 8. The audit sink
 (bedrock/server/compliance/audit.py) is wired to the event bus at API startup; these
 tests wire it directly so they don't need a running FastAPI app.
 """
@@ -16,7 +16,7 @@ async def test_every_event_type_produces_an_audit_row(session_id):
     bus.register_audit_sink(audit_event_sink)
 
     db = get_database()
-    # Mirrors what the real API does (app/api/routes_session.py): look up
+    # Mirrors what the real API does (src/bedrock/server/api/routes_session.py): look up
     # the session's actual user rather than passing an arbitrary one, since
     # the audit sink attributes every row to the session's registered user.
     user_id = db.get_session_user(session_id)

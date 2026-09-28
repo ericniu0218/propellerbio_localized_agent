@@ -8,7 +8,7 @@ if it were the answer. That's a bad demo and would confuse a non-technical
 user, even though the underlying agent loop was working correctly.
 
 This module recognizes the shape of a handful of known prompts (by the
-fixed instruction text each agent method in `app/agents/*.py` always
+fixed instruction text each agent method in `src/bedrock/server/agents/*.py` always
 sends) and returns something that looks like a plausible reply to that
 kind of call, instead of parroting the prompt. It is not a language model
 — just enough pattern-matching to make mock mode demoable. Real mode

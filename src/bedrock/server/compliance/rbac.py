@@ -1,5 +1,5 @@
 """Role-based access control for document search tools. Agents inherit the
-requesting user's permissions — never broader — per docs/ARCHITECTURE.md
+requesting user's permissions — never broader — per docs/server/ARCHITECTURE.md
 section 8.
 
 No company identity provider was specified (see ARCHITECTURE.md open

@@ -2,8 +2,8 @@
 
 These are characterisation tests: they were written against the unmodified
 code, before the agent pack moved into bedrock-private-ai, so that the move and
-every later change to `app/workspace/` has something to be held to. Nothing in
-`app/workspace/` had a test before this file. Where a test pins behaviour a
+every later change to `src/bedrock/server/workspace/` has something to be held to. Nothing in
+`src/bedrock/server/workspace/` had a test before this file. Where a test pins behaviour a
 later change is meant to alter (the demo default, the approval record), that
 change updates the test in the same commit and says why.
 

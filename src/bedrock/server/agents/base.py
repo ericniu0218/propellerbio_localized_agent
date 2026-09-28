@@ -1,7 +1,7 @@
 """Shared machinery for Director/Specialist/Runner: model calls with
 token-usage tracking + budget enforcement, event emission for the frontend
 panel, and the static-prefix-first prompt convention that makes serving-
-engine prefix caching effective (docs/ARCHITECTURE.md section 6).
+engine prefix caching effective (docs/server/ARCHITECTURE.md section 6).
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ class BaseAgent:
     # -- prompt construction --------------------------------------------------
     def build_prompt(self, dynamic_context: str) -> list[ChatMessage]:
         """Static prefix first (cacheable), variable content after — see
-        docs/ARCHITECTURE.md section 6."""
+        docs/server/ARCHITECTURE.md section 6."""
         return [
             ChatMessage(role="system", content=self.static_prompt_prefix),
             ChatMessage(role="user", content=dynamic_context),

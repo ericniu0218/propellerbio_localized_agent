@@ -2,6 +2,21 @@
 
 Status: **approved plan, implementation in progress**
 
+> **As built, after the move into bedrock-private-ai (2026-09):** model calls go
+> through bedrock's `Scheduler` (one queue per model server, real token counts,
+> budgets enforced); answers are formatted in code, and on the high-stakes path
+> the approved text is the delivered text; the audit log has one row per model
+> reply and PHI is redacted in it (identity fields excepted); the normal tier
+> runs the citation check for literature, internal-document and meeting
+> answers; agents see the conversation so far and material sent with a message
+> (`ContextBlock`). **Not built, despite what sections 5–8 describe:** the
+> Director's planning is a fixed two-step template and its review a
+> deterministic check (no model call); Runner summarising, entity extraction,
+> history compaction and the result cache are unused; pgvector, Redis and
+> `scripts/gen_ts_types.py` do not exist (`contracts/types.ts` is kept by
+> hand); the REST API has no authentication. See
+> `docs/prompts/AGENT_PACK_INTEGRATION.md` (Part A, section 9).
+
 ## 1. Goal and constraints
 
 Backend for a self-hosted, three-agent AI system (Director / Specialist /
@@ -25,7 +40,7 @@ constraints:
 | Specialist | Qwen large model | Most "real work" tasks | Research, bioinformatics/data analysis via sandboxed Python, drafting documents |
 | Runner | Small Qwen model | Constantly, on every request/turn | Classify request difficulty/domain, summarize/trim tool output, extract structured entities, redact PHI, compress history, format final output |
 
-Routing rules (implemented in `app/orchestrator/router.py`, decided by a
+Routing rules (implemented in `src/bedrock/server/orchestrator/router.py`, decided by a
 Runner classification call, not hardcoded regexes):
 
 - **simple** → Runner answers directly, Director never invoked.
@@ -37,7 +52,7 @@ Runner classification call, not hardcoded regexes):
   touching regulatory submissions, clinical/patient data, safety
   conclusions, or a "final report" step type always routes through Director
   review, regardless of what the classifier says. This is enforced in code
-  (`app/orchestrator/router.py::is_high_stakes`) as a safety net over the
+  (`src/bedrock/server/orchestrator/router.py::is_high_stakes`) as a safety net over the
   model's own judgment.
 
 Retry/escalation: a rejected Specialist/Director-reviewed step gets at most
@@ -48,8 +63,8 @@ instruction; on a 3rd failure the task is marked `blocked_on_human` and an
 ## 3. Model selection
 
 All model identifiers, endpoints, precision, context length, "thinking
-mode" flags, and per-agent token budgets live in **`config/models.yaml`**
-and **`config/budgets.yaml`** only — nothing else in the codebase hardcodes
+mode" flags, and per-agent token budgets live in **`src/bedrock/server/defaults/models.yaml`**
+and **`src/bedrock/server/defaults/budgets.yaml`** only — nothing else in the codebase hardcodes
 a model name, so any model can be swapped by editing YAML.
 
 Current defaults, chosen by checking Hugging Face + vendor announcements as
@@ -60,11 +75,11 @@ of this build (see caveat below):
   only for tasks the Director marks hard). `DeepSeek-V4-Pro` (~1.6T total /
   ~49B active) is documented as an optional upgrade if the company adds a
   second node — it is very unlikely to fit a single ~$300K server (see
-  `docs/HARDWARE.md`).
+  `docs/server/HARDWARE.md`).
 - **Specialist** → `Qwen/Qwen3.8-27B` (dense, deployment-friendly single- or
   dual-GPU size). `Qwen/Qwen3.8-2.4T-A95B` (MoE) is listed as an optional
   higher-end swap if GPU budget allows; both are wired through the same
-  `config/models.yaml` entry so switching is a one-line change.
+  `src/bedrock/server/defaults/models.yaml` entry so switching is a one-line change.
 - **Runner** → `Qwen/Qwen3.6-35B-A3B` (MoE, ~3B active — same shape class as
   the `Qwen3-30B-A3B` referenced in the original spec, just the current
   generation), configurable down to a smaller dense model (e.g. an ~8B
@@ -78,7 +93,7 @@ parameter counts, context lengths, and — especially — **licenses** in the
 table above as "believed correct, re-verify against the official model
 card before procurement or download," not as guaranteed fact. If any of
 these turn out to be wrong or renamed by the time of purchase,
-`config/models.yaml` is the only file that needs to change.
+`src/bedrock/server/defaults/models.yaml` is the only file that needs to change.
 
 ## 4. Serving
 
@@ -91,7 +106,7 @@ Specialist → http://specialist-llm:8002/v1  (Qwen3.8-27B)
 Runner     → http://runner-llm:8003/v1      (Qwen3.6-35B-A3B)
 ```
 
-`app/models/client.py` defines a `ModelClient` protocol (chat-completion +
+`src/bedrock/server/models/client.py` defines a `ModelClient` protocol (chat-completion +
 streaming) with two implementations: `HTTPModelClient` (real, talks to the
 above endpoints) and `MockModelClient` (fixture-driven, used when
 `AGENT_PACK_MODE=mock`). Agents only ever depend on the protocol, never on
@@ -102,7 +117,7 @@ which implementation is active.
 ```
                          ┌──────────────────────┐
  frontend  ── REST/SSE ──▶      FastAPI app       │
-                         │  (app/api)            │
+                         │  (src/bedrock/server/api)            │
                          └──────────┬────────────┘
                                     │
                     ┌───────────────┼────────────────┐
@@ -136,7 +151,7 @@ which implementation is active.
 Directory layout:
 
 ```
-app/
+src/bedrock/server/   (formerly app/)
   main.py            FastAPI app factory, mounts routers, startup air-gap check
   config.py          loads config/*.yaml, env vars
   schemas/           Pydantic models — the single source of truth for the
@@ -152,7 +167,7 @@ app/
   compliance/        audit log, PHI redaction, RBAC, approval gates, air-gap check
   api/               REST routers + SSE endpoint
   db/                SQLAlchemy models + session/init helpers
-contracts/types.ts   hand-maintained TS mirror of app/schemas (see §7)
+contracts/types.ts   hand-maintained TS mirror of src/bedrock/server/schemas (see §7)
 config/              models.yaml, budgets.yaml
 docker/              per-service Dockerfiles/configs (vLLM entrypoints etc.)
 tests/               routing, retry/escalation, PHI redaction, audit log,
@@ -163,13 +178,13 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
 
 - System prompts: static, unchanging prefix first (role + rules), variable
   task context appended after, so vLLM/SGLang prefix caching is effective.
-  Enforced by convention in `app/agents/base.py::build_prompt`.
+  Enforced by convention in `src/bedrock/server/agents/base.py::build_prompt`.
 - Agents pass **references** through the task store (doc IDs, tool-result
   IDs, file paths), never full content, across agent boundaries.
 - Runner summarizes any tool output over `budgets.yaml: summarize_over_tokens`
   before it reaches another agent.
 - Inter-agent messages are compact JSON (Pydantic models), never prose.
-- Per-task-per-agent token budgets in `config/budgets.yaml`; a task that
+- Per-task-per-agent token budgets in `src/bedrock/server/defaults/budgets.yaml`; a task that
   exceeds budget stops and reports to the Director instead of continuing.
 - Runner compacts old conversation turns into short summaries once history
   exceeds a configured turn/token count.
@@ -184,7 +199,7 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
 ## 7. Frontend contract
 
 - REST: start session, send message, cancel task, approve/reject a human
-  gate, fetch history, fetch audit log (`app/api/`).
+  gate, fetch history, fetch audit log (`src/bedrock/server/api/`).
 - SSE stream (`GET /sessions/{id}/events`) with the event types the spec
   requires: `session.started`, `task.planned`, `task.assigned`,
   `agent.started`, `agent.status`, `agent.token`, `tool.called`,
@@ -217,7 +232,7 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
 - **Human approval gates**: any tool marked `writes_to_external_system=True`
   or any task marked high-stakes blocks on an `approval.required` event
   until a human approve/reject call resolves it.
-- **Air-gapped by default**: a startup check (`app/compliance/airgap_check.py`)
+- **Air-gapped by default**: a startup check (`src/bedrock/server/compliance/airgap_check.py`)
   attempts a handful of outbound connections/DNS lookups and refuses to
   start the app if any succeed, on the theory that a properly air-gapped
   network makes them fail — this catches misconfiguration, not a
@@ -228,7 +243,7 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
 
 ## 9. Open questions / assumptions (recorded, not blocking)
 
-1. **ELN/LIMS**: no specific product named, so `app/tools/lab_connectors.py`
+1. **ELN/LIMS**: no specific product named, so `src/bedrock/server/tools/lab_connectors.py`
    ships as typed stub interfaces only (loosely shaped like common
    open-source ELN/LIMS REST APIs) — not a working integration. Tell me the
    actual system and I'll wire a real client against this interface.
@@ -245,7 +260,7 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
    given.
 6. **Model versions**: see §3 caveat — recent releases, verify before
    procurement.
-7. **Meeting transcript RBAC**: `app/tools/meeting_transcripts.py` (added
+7. **Meeting transcript RBAC**: `src/bedrock/server/tools/meeting_transcripts.py` (added
    after this doc's initial approval — see zoom-transcript-vault repo for
    the ingestion side) does not yet filter results by the requesting
    user's permissions the way `rag_search` does; the datacenter connector
@@ -255,11 +270,11 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
    `rag_search`'s documents use) or this tool grows its own filtering.
 8. **Citation guardrail only runs on the hard/Director path**: this
    predates the meeting_transcripts addition and isn't specific to it —
-   `app/orchestrator/loop.py::_handle_normal` (used for
+   `src/bedrock/server/orchestrator/loop.py::_handle_normal` (used for
    `TaskComplexity.NORMAL`) never calls `Director.review()`, so a
    citation-required domain (`literature`, `internal_docs`, `meetings`;
    `regulatory`/`clinical` are safe because they're forced to `HARD` via
-   `_ALWAYS_HIGH_STAKES_DOMAINS` in `app/orchestrator/router.py`) can
+   `_ALWAYS_HIGH_STAKES_DOMAINS` in `src/bedrock/server/orchestrator/router.py`) can
    complete with zero citations whenever the Runner's classifier — or the
    mock heuristic — calls it merely "normal" rather than "hard". Confirmed
    via `tests/test_meeting_domain_routing.py`'s
@@ -281,4 +296,4 @@ tests/               routing, retry/escalation, PHI redaction, audit log,
 4. Real model clients + router + Director/Specialist/Runner loop.
 5. Tools, then compliance layer.
 6. Token optimizations + usage tracking.
-7. Tests, `docs/HARDWARE.md`, Docker Compose, `README.md`.
+7. Tests, `docs/server/HARDWARE.md`, Docker Compose, `README.md`.

@@ -1,3 +1,8 @@
+> **Historical.** This is the plan from before the agent pack moved into
+> bedrock-private-ai (`src/bedrock/server/`). Repository URLs, paths such as
+> `app/...` and the two-repo workflow describe the old layout; see
+> `docs/server/README.md` and `docs/server/DEPLOYMENT.md` for the current one.
+
 # Team Plan — What's Left, Who Owns It, How to Start
 
 **Browsable version with one-click copy on every Claude briefing:**

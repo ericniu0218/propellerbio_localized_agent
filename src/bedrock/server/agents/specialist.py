@@ -1,7 +1,7 @@
 """Specialist: the Qwen workhorse. Does literature/internal-doc research,
 bioinformatics/chemistry/data-analysis via tools, and drafts documents. Uses
 thinking mode only when the Director marks a task "hard" — see
-docs/ARCHITECTURE.md sections 2 and 6.
+docs/server/ARCHITECTURE.md sections 2 and 6.
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ class Specialist(BaseAgent):
         """Resolves a relative time phrase in the task ("last Tuesday
         afternoon") into a concrete ISO 8601 [from, to] range, via the same
         model this agent already drafts with — see
-        app/models/mock_fixtures.py::_fake_date_range for the mock-mode
+        src/bedrock/server/models/mock_fixtures.py::_fake_date_range for the mock-mode
         stand-in. Falls back to the last 7 days if the model's output
         doesn't parse, mirroring Runner.classify's fail-safe-toward-a-
         bounded-default philosophy rather than silently searching nothing.
@@ -172,7 +172,7 @@ class Specialist(BaseAgent):
 
 
 def _extract_json(raw: str) -> str:
-    """Same tolerant extraction as app/agents/runner.py::_extract_json —
+    """Same tolerant extraction as src/bedrock/server/agents/runner.py::_extract_json —
     duplicated rather than imported to keep the two agents' modules
     independent; it's 4 lines, not worth coupling over."""
     start, end = raw.find("{"), raw.rfind("}")

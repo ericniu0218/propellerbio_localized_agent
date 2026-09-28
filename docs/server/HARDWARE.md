@@ -3,8 +3,8 @@
 **Caveat up front:** exact parameter counts, layer counts, and attention
 architecture (hidden size, number of KV heads, whether Multi-head Latent
 Attention or plain GQA is used) for the specific model builds in
-`config/models.yaml` were not independently verifiable against a primary
-model card at the time of this pass — see docs/ARCHITECTURE.md section 3.
+`src/bedrock/server/defaults/models.yaml` were not independently verifiable against a primary
+model card at the time of this pass — see docs/server/ARCHITECTURE.md section 3.
 The weight-size numbers below are computed from published parameter counts
 (reliable to within precision-format rounding); the **KV-cache** numbers are
 order-of-magnitude estimates using standard formulas and should be
@@ -29,7 +29,7 @@ compared to a dense model of similar hidden size.
 
 `bytes_per_param`: FP8 = 1, INT4 = 0.5, BF16/FP16 = 2.
 
-## Per-model budget (at config/models.yaml defaults)
+## Per-model budget (at src/bedrock/server/defaults/models.yaml defaults)
 
 | Model | Role | Total params | Active params | Precision | Weight VRAM | Context (configured) | Est. KV cache @ full context* |
 |---|---|---|---|---|---|---|---|
@@ -58,7 +58,7 @@ market pricing at time of purchase.
 needed against 640 GB available. It does **not** have comfortable headroom
 for the Director's Pro sibling (`DeepSeek-V4-Pro-0813`, ~1.6T total params
 → ~1.6 TB at FP8, ~800 GB even at INT4) on a single node; that model is
-listed in `config/models.yaml` as a fallback for a second node, not the
+listed in `src/bedrock/server/defaults/models.yaml` as a fallback for a second node, not the
 default.
 
 Fallbacks, in order of preference, if actual KV-cache/overhead numbers come
@@ -70,7 +70,7 @@ in higher than the placeholder above or if the server spec comes in below
    headroom at some quality cost on the hardest tasks. Since the Director
    is called rarely, this is the first lever to pull.
 2. **Reduce configured context length** for the Director below 131,072 in
-   `config/models.yaml` — directly shrinks whatever the real KV-cache
+   `src/bedrock/server/defaults/models.yaml` — directly shrinks whatever the real KV-cache
    number turns out to be; the Director doesn't need 1M-token context for
    most planning/review calls.
 3. **Share GPUs across engines with time-slicing** (MPS or MIG on the same
@@ -79,7 +79,7 @@ in higher than the placeholder above or if the server spec comes in below
    so the Director's engine can be sized smaller and lean on request
    queuing during its rare, expensive calls.
 4. **Swap the Runner down** to `Qwen/Qwen3.5-0.8B` (already listed as an
-   alternative in `config/models.yaml`) — frees tens of GB with negligible
+   alternative in `src/bedrock/server/defaults/models.yaml`) — frees tens of GB with negligible
    quality impact on classification/formatting-only work.
 5. **Two-node split** as a last resort — Director on its own smaller node,
    Specialist+Runner on the primary node — if the company's budget allows

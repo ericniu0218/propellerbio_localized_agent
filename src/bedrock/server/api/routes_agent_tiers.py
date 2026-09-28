@@ -1,6 +1,6 @@
 """Lets a client (e.g. the web frontend's tier picker) show the three
 agent tiers with a plain-language description and the underlying model
-name — see docs/UX.md section 1 for why the default view otherwise hides
+name — see docs/server/UX.md section 1 for why the default view otherwise hides
 model names; this endpoint exists specifically for a UI that wants to show
 them deliberately (a tier picker, an admin/technical view).
 

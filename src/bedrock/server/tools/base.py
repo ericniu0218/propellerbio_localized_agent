@@ -1,5 +1,5 @@
 """Base types every tool implements. Keep each tool small, Pydantic-typed,
-and documented — see docs/ARCHITECTURE.md section 2 (Biotech-Specific
+and documented — see docs/server/ARCHITECTURE.md section 2 (Biotech-Specific
 Capabilities)."""
 
 from __future__ import annotations

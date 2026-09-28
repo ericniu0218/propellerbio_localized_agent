@@ -1,6 +1,6 @@
 """SSE endpoint for the frontend's live event stream — see
-docs/ARCHITECTURE.md section 7 for the full event list, and
-app/events/bus.py for the reconnection/replay contract this implements.
+docs/server/ARCHITECTURE.md section 7 for the full event list, and
+src/bedrock/server/events/bus.py for the reconnection/replay contract this implements.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ router = APIRouter(tags=["events"])
 # (see bedrock-private-ai's AgentPackClient, which does its own
 # exponential-backoff-with-jitter and ignores this for anything past its
 # first retry — this is a floor/hint for any other client, e.g. a browser
-# using the native EventSource API against app/static/index.html).
+# using the native EventSource API against src/bedrock/server/static/index.html).
 CLIENT_RETRY_MS = 2000
 
 # How often to send a keep-alive comment. Chosen so proxies/load balancers

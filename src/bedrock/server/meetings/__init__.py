@@ -1,6 +1,6 @@
 """Recording a meeting in the browser and turning it into searchable notes.
 
-This is the in-house half of the meeting story. `app/tools/meeting_transcripts.py`
+This is the in-house half of the meeting story. `src/bedrock/server/tools/meeting_transcripts.py`
 reads meetings that Zoom recorded for us; this package produces meetings that
 nobody else recorded at all — someone in a room presses Record, or captures the
 audio of an online call they are already sitting in.

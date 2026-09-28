@@ -1,7 +1,7 @@
 // Shared TypeScript types for the Biotech Agent Pack frontend contract.
 //
 // This file is a hand-maintained 1:1 mirror of the Pydantic models in
-// app/schemas/*.py, which are the source of truth. If you change a Pydantic
+// src/bedrock/server/schemas/*.py, which are the source of truth. If you change a Pydantic
 // model, update this file in the same commit (or regenerate via
 // scripts/gen_ts_types.py). Do not hand-edit shapes that diverge from the
 // Python models.

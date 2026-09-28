@@ -1,6 +1,6 @@
 """Human approval gates: any tool that writes to a company system, or any
 task flagged high-stakes, blocks until a human approves/rejects via the
-REST endpoint. See docs/ARCHITECTURE.md section 8."""
+REST endpoint. See docs/server/ARCHITECTURE.md section 8."""
 
 from __future__ import annotations
 

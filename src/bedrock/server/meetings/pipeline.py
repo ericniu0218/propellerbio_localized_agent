@@ -3,7 +3,7 @@
 The heavy lifting already exists in bedrock-private-ai, the employee terminal
 client, which transcribes Zoom's *local* recordings for its `bedrock-meeting`
 command. This module reuses that code rather than keeping a second copy, the
-same arrangement `app/tools/meeting_transcripts.py` has with the VTT parser:
+same arrangement `src/bedrock/server/tools/meeting_transcripts.py` has with the VTT parser:
 one implementation, pinned by commit in requirements.txt, so a fix reaches both
 products.
 
@@ -466,7 +466,7 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
     """Shape the summary the way the workspace Meetings view already renders it.
 
     The view expects lists of strings under `decisions`, `actions`, `deadlines`,
-    `questions` and `findings` — the shape `app/workspace/files.py` produces for
+    `questions` and `findings` — the shape `src/bedrock/server/workspace/files.py` produces for
     an uploaded transcript. Rendering each point through `Point.render()` keeps
     the owner and the verified timestamp attached to the sentence they belong to.
     """

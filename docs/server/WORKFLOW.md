@@ -1,10 +1,10 @@
 # Workflow — Employee Sharing, Reuse, and Condensing Layer
 
 Status: **draft, awaiting approval before implementation** (this document
-and `docs/UX.md` are the deliverable for build-order step 1; nothing else
+and `docs/server/UX.md` are the deliverable for build-order step 1; nothing else
 gets written until both are approved).
 
-This extends `docs/ARCHITECTURE.md` (the Director/Specialist/Runner
+This extends `docs/server/ARCHITECTURE.md` (the Director/Specialist/Runner
 backend) with the product layer scientists, lab staff, and engineers
 actually touch: login, workspaces, sharing/review, drag-and-drop
 condensing, and reusable recipes. Nothing in the existing API or event
@@ -105,7 +105,7 @@ a hard block.
 - **`@` mention** — typing `@` in the chat box opens a picker over
   teammates' shared items, Team Spaces, and documents by name. Purely a
   faster path to the same "Add to chat" action; every `@` capability has an
-  equivalent button, per the no-commands-required rule in `docs/UX.md`.
+  equivalent button, per the no-commands-required rule in `docs/server/UX.md`.
 
 ## 5. Condensing data (the core feature)
 
@@ -174,7 +174,7 @@ long-running task completing while the user has navigated away.
 (the permission-scoped searchable index), `shared_items`,
 `shared_item_versions`, `reviews`, `recipes`, `schedules`,
 `notifications`, `usage_metrics`. Full field-level detail lives in the
-code (each gets a short docstring, same convention as `app/db/models.py`
+code (each gets a short docstring, same convention as `src/bedrock/server/db/models.py`
 today) rather than duplicated here.
 
 ## 9. New REST endpoints (grouped; exact paths finalized in code)
@@ -197,7 +197,7 @@ today) rather than duplicated here.
 `review.requested`, `review.decided`, `item.updated`, `recipe.started`,
 `recipe.completed`, `notification.created`. All existing event types are
 unchanged. `AgentCard`/`AgentStatusPayload` gain two additive fields
-(`friendly_label`, `trust_status`) — see `docs/UX.md` for what populates
+(`friendly_label`, `trust_status`) — see `docs/server/UX.md` for what populates
 them.
 
 ## 11. Open items already resolved with the user

@@ -113,9 +113,10 @@ persistence, packaging as a standalone executable.
 
 ## Agent-pack mode
 
-This client can now also connect to a separate project, the biotech
-"agent-pack" backend (a multi-agent system: Director/Specialist/Runner,
-sessions, human-approval gates — see that repo's `docs/ARCHITECTURE.md`).
+This client can now also connect to the biotech "agent-pack" server, which
+lives in this repository as `src/bedrock/server/` (a multi-agent system:
+Director/Specialist/Runner, sessions, human-approval gates — see
+`docs/server/ARCHITECTURE.md`; started with `bedrock-server`).
 `app.py::main` dispatches to `agentpack_app.AgentPackApp` instead of the
 plain `BedrockApp` when `settings.backend == "agentpack"`
 (`BEDROCK_BACKEND=agentpack`). This is still the same terminal app, same

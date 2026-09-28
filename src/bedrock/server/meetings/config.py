@@ -2,7 +2,7 @@
 
 Everything here comes from environment variables so a deployment can point at
 its own model files without editing code, matching how `DATACENTER_BASE_URL`
-and friends are configured next door in `app/tools/datacenter_client.py`.
+and friends are configured next door in `src/bedrock/server/tools/datacenter_client.py`.
 
 The one setting worth reading twice is `vocabulary`. Whisper renders words it
 does not know phonetically: in testing it wrote "CROS" for "KRAS" and turned

@@ -1,6 +1,6 @@
 """Routing rules: simple -> Runner only, normal -> Specialist (+Runner
 cleanup), hard/high-stakes -> Director plans+reviews. See
-docs/ARCHITECTURE.md section 2.
+docs/server/ARCHITECTURE.md section 2.
 
 `is_high_stakes` is a deterministic code-level safety net over the Runner's
 own classification: certain domains are ALWAYS high-stakes regardless of

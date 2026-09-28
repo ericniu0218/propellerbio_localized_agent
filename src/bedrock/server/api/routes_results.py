@@ -1,7 +1,7 @@
 """Fetch the actual content behind a result_ref.
 
 Agents pass references (result_ref) to each other internally rather than
-full content — see docs/ARCHITECTURE.md section 6. A client needs a way to
+full content — see docs/server/ARCHITECTURE.md section 6. A client needs a way to
 resolve a ref from a `task.completed` event into the text to actually show
 the user; this is that one small, additive endpoint.
 """

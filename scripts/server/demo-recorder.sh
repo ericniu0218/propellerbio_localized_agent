@@ -19,7 +19,7 @@
 # Note the VAD model is in a *different* Hugging Face repo from the speech
 # model, and is not optional: without it every timestamp drifts by minutes.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 PYTHON="${PYTHON:-./.venv/bin/python}"
 if [ ! -x "$PYTHON" ]; then PYTHON="$(command -v python3)"; fi
@@ -54,7 +54,7 @@ if ! curl -s -m 3 "${OLLAMA_URL%/v1}/api/tags" | grep -q "\"$SUMMARY_MODEL\""; t
 fi
 
 pkill -f "contrib.datacenter_connector" 2>/dev/null || true
-pkill -f "uvicorn app.main:app" 2>/dev/null || true
+pkill -f "bedrock-server" 2>/dev/null || true
 # And the work a previous run left behind. Killing the server does not kill the
 # transcription it spawned: whisper and the VAD binary keep running, and the
 # next recording then competes with them for every core. Two orphaned VAD
@@ -83,7 +83,7 @@ env DEMO_MODE=true AGENT_PACK_MODE=mock AIRGAP_CHECK=false \
   MEETING_VOCABULARY="${MEETING_VOCABULARY-}" \
   DATACENTER_BASE_URL="http://127.0.0.1:$CONNECTOR_PORT" \
   DATACENTER_SIGNING_SECRET="$SECRET" \
-  PYTHONPATH="$PWD" "$PYTHON" -m uvicorn app.main:app --port "$PORT" --log-level warning &
+  PYTHONPATH="$PWD" "$PYTHON" -m bedrock.server --port "$PORT" &
 SERVER_PID=$!
 sleep 3
 

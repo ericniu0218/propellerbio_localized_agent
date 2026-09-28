@@ -1,6 +1,6 @@
 """Lab data connectors: open-source ELN/LIMS systems and plate-reader /
 instrument CSV exports. No specific company system was named (see
-docs/ARCHITECTURE.md open question 1), so this ships a typed interface
+docs/server/ARCHITECTURE.md open question 1), so this ships a typed interface
 loosely shaped like common open-source ELN/LIMS REST APIs, returning a
 clear "not connected" result until a real backend is wired in.
 """

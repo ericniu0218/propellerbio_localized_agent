@@ -1,5 +1,5 @@
 """Login via Keycloak (real SSO) when configured, per
-docs/WORKFLOW.md section 1. The whole redirect round-trip:
+docs/server/WORKFLOW.md section 1. The whole redirect round-trip:
 
   browser --GET /auth/login--> backend --302--> Keycloak login page
   browser <--302 (code, state)-- Keycloak

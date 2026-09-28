@@ -3,7 +3,7 @@
 This catches *misconfiguration* (a stray default gateway, a container that
 wasn't actually put on the isolated network) — it is not a defense against a
 determined bypass from inside the box, and is documented as such in
-docs/ARCHITECTURE.md section 8. Disable via AIRGAP_CHECK=false only for
+docs/server/ARCHITECTURE.md section 8. Disable via AIRGAP_CHECK=false only for
 local development off the air-gapped network.
 """
 

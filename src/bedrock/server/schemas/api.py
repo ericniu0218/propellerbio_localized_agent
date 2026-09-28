@@ -35,7 +35,7 @@ class SendMessageRequest(BaseModel):
     context: list[ContextBlock] = Field(default_factory=list)
     # "runner" | "specialist" | "director" | None (None = let the Runner's
     # classifier decide, the default). Never bypasses the high-stakes
-    # safety net — see app/orchestrator/loop.py::handle_message.
+    # safety net — see src/bedrock/server/orchestrator/loop.py::handle_message.
     force_tier: str | None = None
 
 
@@ -92,7 +92,7 @@ class AgentPanelResponse(BaseModel):
 
 class AgentTierInfo(BaseModel):
     """One entry in the frontend's tier picker — see GET /agent-tiers.
-    `description` is deliberately plain-language (docs/UX.md), even though
+    `description` is deliberately plain-language (docs/server/UX.md), even though
     this endpoint also exposes the underlying model name for anyone who
     wants it."""
 
@@ -108,7 +108,7 @@ class AgentTiersResponse(BaseModel):
 
 class ResultResponse(BaseModel):
     """Fetches the actual content behind a `result_ref` — agents pass refs
-    to each other internally (docs/ARCHITECTURE.md section 6); a client
+    to each other internally (docs/server/ARCHITECTURE.md section 6); a client
     (e.g. the terminal app) needs this to show the finished answer."""
 
     result_ref: str

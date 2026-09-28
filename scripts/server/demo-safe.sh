@@ -12,10 +12,10 @@
 # open-ended questions. 8b follows it correctly). Override
 # OLLAMA_MODEL/OLLAMA_URL to use a different local model or port.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 if [ ! -d .venv ]; then
-  echo "No .venv found — run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+  echo "No .venv found — run: python3 -m venv .venv && .venv/bin/pip install -e '.[server]'"
   exit 1
 fi
 source .venv/bin/activate
@@ -41,7 +41,7 @@ else
 fi
 
 echo "Starting Bedrock Workspace in demo mode on http://localhost:8000 ..."
-env DEMO_MODE=true "${REAL_MODEL_ENV[@]+"${REAL_MODEL_ENV[@]}"}" uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+env DEMO_MODE=true "${REAL_MODEL_ENV[@]+"${REAL_MODEL_ENV[@]}"}" bedrock-server --host 0.0.0.0 --port 8000 &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null' EXIT
 

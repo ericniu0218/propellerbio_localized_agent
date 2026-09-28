@@ -1,7 +1,7 @@
 """Scientific literature search over a local mirror/cached export of public
 literature (e.g. a PubMed baseline or open-access subset). No live internet
 access — the mirror is assumed to already exist on disk (see
-docs/ARCHITECTURE.md open question 2); this tool only searches it.
+docs/server/ARCHITECTURE.md open question 2); this tool only searches it.
 
 Implementation reuses the same keyword-overlap index as rag_search.py
 (swap for real semantic search / a proper PubMed index later) but reads

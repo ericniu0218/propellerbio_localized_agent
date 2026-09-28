@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score the meeting recorder against audio whose truth we know.
 
-    PYTHONPATH=. ./.venv/bin/python scripts/eval/score.py
+    ./.venv/bin/python scripts/server/eval/score.py
 
 Builds a short meeting with text-to-speech — who says what, and when, is known
 exactly — runs the real pipeline over it, and reports word error, how many

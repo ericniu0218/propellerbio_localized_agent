@@ -1,4 +1,4 @@
-"""OIDC login against Keycloak — see docs/WORKFLOW.md section 1 for why
+"""OIDC login against Keycloak — see docs/server/WORKFLOW.md section 1 for why
 Keycloak: employees log in with their existing company account, never a
 separate app password.
 
@@ -10,7 +10,7 @@ This is the whole handshake in three functions:
    trusting anything it claims about who logged in.
 
 Only active when `Settings.sso_enabled` is true; see
-`app/api/routes_auth.py` for what happens when it isn't (plain mock login
+`src/bedrock/server/api/routes_auth.py` for what happens when it isn't (plain mock login
 still works, for tests and GPU-less demos).
 """
 

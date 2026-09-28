@@ -1,7 +1,7 @@
 # UX and Plain-Language Rules
 
 Status: **draft, awaiting approval before implementation** — companion to
-`docs/WORKFLOW.md`. Written for whoever builds the frontend; the backend
+`docs/server/WORKFLOW.md`. Written for whoever builds the frontend; the backend
 enforces the parts of this that are contracts (event fields, error shape),
 and everything visual is their call, not dictated here.
 
@@ -101,12 +101,12 @@ how much of this is shown, not what's computed:
 - **Full detail** — everything, untrimmed, full source excerpts.
 
 Moving the slider is instant (a render, not a re-ask) — see
-`docs/WORKFLOW.md` §5.
+`docs/server/WORKFLOW.md` §5.
 
 ## 6. Starter buttons and empty states
 
 An empty chat shows 3–4 buttons based on the user's department (admin-set,
-per `docs/WORKFLOW.md` §1): defaults are "Summarize files," "Compare
+per `docs/server/WORKFLOW.md` §1): defaults are "Summarize files," "Compare
 results," "Draft a report," "Catch me up," and a department can swap these
 for its own starter recipes. Nobody sees a blank box with no next step.
 

@@ -1,6 +1,6 @@
 """Filing a recorded meeting where the assistant already knows to look.
 
-`app/tools/meeting_transcripts.py` answers "what did we decide on Tuesday?" by
+`src/bedrock/server/tools/meeting_transcripts.py` answers "what did we decide on Tuesday?" by
 asking the datacenter connector for a date range. It does not know or care
 whether a transcript came from Zoom or from somebody's microphone — it takes
 what the connector returns. So the cheapest way to make recorded meetings

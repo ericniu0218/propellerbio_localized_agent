@@ -1,6 +1,6 @@
 """Runner: fast/cheap Qwen model. Classification, summarization, entity
 extraction, PHI redaction, history and compaction — see
-docs/ARCHITECTURE.md section 2. Never calls the Director or Specialist
+docs/server/ARCHITECTURE.md section 2. Never calls the Director or Specialist
 itself; the orchestrator decides what happens with the Runner's output.
 """
 
@@ -79,7 +79,7 @@ class Runner(BaseAgent):
 
     def redact(self, text: str) -> RedactionResult:
         # Deterministic, no model call needed for the structured-PII baseline
-        # — see app/compliance/phi_redaction.py.
+        # — see src/bedrock/server/compliance/phi_redaction.py.
         return redact_phi(text)
 
     async def compact_history(self, turns: list[str], task_id: str | None = None) -> str:

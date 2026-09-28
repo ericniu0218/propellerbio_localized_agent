@@ -21,11 +21,11 @@ Zoom  ──webhook──▶  zoom-transcript-vault        (public internet, a r
                      ▲    ▲
                      │    │ GET /transcripts?from=&to=  (signed, INTERNAL network)
                      │    │
-                     │    └──── app/tools/meeting_transcripts.py   ← this repo
+                     │    └──── src/bedrock/server/tools/meeting_transcripts.py   ← this repo
                      │
                      │ POST /transcripts  (signed, INTERNAL network)
                      │
-              app/meetings/  ← this repo: record in the browser, transcribe here
+              src/bedrock/server/meetings/  ← this repo: record in the browser, transcribe here
 ```
 
 The vault is a relay on the public internet. It captures transcripts from
@@ -36,7 +36,7 @@ content itself. This repo reads them back.
 directly over the internal network. Asking the vault instead would mean this
 air-gapped deployment making an outbound call to the public internet to answer
 a question, which defeats the air gap. `assert_internal_endpoint` in
-`app/tools/datacenter_client.py` refuses a `DATACENTER_BASE_URL` that points at
+`src/bedrock/server/tools/datacenter_client.py` refuses a `DATACENTER_BASE_URL` that points at
 an obviously public host.
 
 ## Configuration
@@ -63,7 +63,7 @@ sent as `X-Vault-Timestamp` and `X-Vault-Signature: v1=<hex>`.
 
 The method and path are inside the signed message so a signature for one date
 range can't be replayed against another. Because the *literal* path string is
-signed, `app/tools/datacenter_client.py` builds the query string itself and
+signed, `src/bedrock/server/tools/datacenter_client.py` builds the query string itself and
 sends that exact string — `%3A` and `:` produce different signatures, so any
 library that re-encodes the URL would break every request.
 
@@ -97,21 +97,13 @@ agent doesn't present an unrelated meeting as an answer.
 ## Where the transcript parser lives
 
 Turning WEBVTT into speaker-attributed cues is done by
-`bedrock.meetings.transcript` from **bedrock-private-ai**, the employee terminal
-client, which uses the same code for its own meeting notes. This repo does not
-keep a copy, so a parsing fix is made once and reaches both products.
+`bedrock.meetings.transcript`, the same code the terminal app's
+`bedrock-meeting` uses for its own meeting notes. Since the server moved into
+bedrock-private-ai it is simply part of the same package: no pinned commit, no
+private-repository token, and no "reader not installed" case. The tool uses
+`Cue`, `parse_vtt` and `speakers`, plus `Cue.timestamp` and `Cue.render()`.
 
-- `requirements.txt` pins it to one commit. To pick up a change, update that
-  commit hash on purpose and run the tests. The tool uses `Cue`, `parse_vtt`
-  and `speakers`, plus `Cue.timestamp` and `Cue.render()`.
-- The repo is private. Installing needs GitHub access; CI reads it with the
-  `BEDROCK_PRIVATE_AI_TOKEN` repository secret, a read-only token for that repo.
-- The import is guarded. Without the package (the Docker image does not install
-  it), the server starts normally and `meeting_transcripts` returns "the
-  transcript reader from bedrock-private-ai is not installed" instead of
-  results.
-
-## Recording a meeting here (`app/meetings/`)
+## Recording a meeting here (`src/bedrock/server/meetings/`)
 
 The Meetings tab has a Record button. It captures the device's microphone, the
 audio of a browser tab, or both mixed together, uploads the audio, and turns it
@@ -175,7 +167,7 @@ MEETING_VOCABULARY="KRAS, EGFR, G12D, Priya, interim analysis, enrollment, proto
 ```
 
 It is used twice. First as whisper's decoder hint, which is what gets most of
-these right. Then `app/meetings/vocabulary.py` repairs near-misses that slipped
+these right. Then `src/bedrock/server/meetings/vocabulary.py` repairs near-misses that slipped
 through, because the hint is a bias and not a guarantee — the same audio gave
 "KRAS" on one run and "CRAS" on the next, and a transcript that says CRAS is
 not merely untidy, it is unsearchable.
@@ -225,7 +217,7 @@ Zoom's local recordings can write one audio file per participant, which is
 where bedrock-private-ai's perfect speaker labels come from — every word in
 Bob's file was said by Bob, by construction. A microphone in a room offers
 nothing equivalent, so the voices are told apart from the audio itself
-(`app/meetings/diarize.py`): a segmentation model finds the voice changes, an
+(`src/bedrock/server/meetings/diarize.py`): a segmentation model finds the voice changes, an
 embedding model turns each stretch into a vector, and the vectors are
 clustered. All ONNX, all local.
 
@@ -273,7 +265,7 @@ by "Speaker 2" is no more use than one owned by nobody.
 
 For a meeting in a browser tab, the answer to "who said that?" is already on
 the screen. Every client draws participant names under the tiles and puts a
-coloured ring around whoever is speaking, so `app/meetings/screen.py` reads
+coloured ring around whoever is speaking, so `src/bedrock/server/meetings/screen.py` reads
 that instead of inferring it: frames are sampled every few seconds, OCR'd for
 names, and the ring is found by looking for the one strongly saturated thing on
 an otherwise grey screen — which is why it survives a re-theme, a platform

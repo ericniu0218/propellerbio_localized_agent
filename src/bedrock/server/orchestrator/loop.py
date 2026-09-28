@@ -1,8 +1,8 @@
-"""The main orchestration loop: routes a message per app.orchestrator.router,
+"""The main orchestration loop: routes a message per bedrock.server.orchestrator.router,
 runs the appropriate agent(s), drives the Director's reject/retry/escalate
 loop, and gates high-stakes final output on human approval. Every step
 publishes events on the EventBus (which also feeds the audit log) — see
-docs/ARCHITECTURE.md sections 2, 5, and 8.
+docs/server/ARCHITECTURE.md sections 2, 5, and 8.
 
 Runs as a background asyncio task per message (scheduled by the API layer)
 so REST calls return immediately and the frontend follows progress over SSE.
@@ -60,7 +60,7 @@ async def handle_message(
     """`root_task_id` can be supplied by the caller so it's known
     synchronously, before this (potentially long-running, gate-blocking)
     coroutine is scheduled as a background task — see
-    `app/api/routes_session.py::send_message`, which does exactly that
+    `src/bedrock/server/api/routes_session.py::send_message`, which does exactly that
     rather than racing a fire-and-forget task with `asyncio.sleep(0)`.
 
     `force_tier` ("runner" | "specialist" | "director") lets a caller pick
@@ -264,7 +264,7 @@ async def _handle_hard(
     result_ref = store.store_result(session_id, formatted)
 
     # Human approval gate for high-stakes final output — see
-    # docs/ARCHITECTURE.md section 8.
+    # docs/server/ARCHITECTURE.md section 8.
     if high_stakes:
         synth_node.status = TaskStatus.WAITING_FOR_APPROVAL
         store.update_task(session_id, synth_node)
@@ -313,7 +313,7 @@ async def _run_with_review_loop(
     session_id: str, node: TaskNode, specialist: Specialist, director: Director, *, extra: str = "", context=None,
 ) -> tuple[str, list[str], bool]:
     """Runs a Specialist step, then the Director review/retry loop (max 2
-    retries per docs/ARCHITECTURE.md). Returns (content, citations, blocked)
+    retries per docs/server/ARCHITECTURE.md). Returns (content, citations, blocked)
     where blocked=True means it was escalated to a human and the caller
     should stop."""
     bus = get_event_bus()

@@ -6,18 +6,22 @@ before picking up more work here.
 
 ## Where the actual AI system lives
 
-This repo is the **client only**. The three-agent backend it talks to
-(Director/Specialist/Runner — planning, research, review, approvals,
-compliance/audit logging) is a **separate project**, currently only local
-to the machine that built it (not yet pushed to GitHub — ask whoever ran
-this integration for it, or push it and update this section with the
-repo link). Its docs, which this client's behavior is built to match, are:
+**In this repository** since the agent-pack merge: `src/bedrock/server/`,
+the `[server]` extra, started with `bedrock-server` on a company server
+(`docs/server/DEPLOYMENT.md`). The terminal client talks to it in agent-pack
+mode. Its docs:
 
-- `docs/ARCHITECTURE.md` — the backend's overall design
-- `docs/WORKFLOW.md` — the sharing/uploads/recipes product plan (**mostly
+- `docs/server/ARCHITECTURE.md` — the server's design (with an "as built" note)
+- `docs/server/WORKFLOW.md` — the sharing/uploads/recipes product plan (**mostly
   not built yet** — see below)
-- `docs/UX.md` — the plain-language rules this client's `friendly.py`
+- `docs/server/UX.md` — the plain-language rules this client's `friendly.py`
   implements
+- `docs/prompts/AGENT_PACK_INTEGRATION.md` — how and why it moved, and the
+  ordered follow-ups (section 9: terminal sign-in first)
+
+The sections below were written before the merge; paths such as
+`app/models/http_client.py` now live under `src/bedrock/server/` (that client
+is gone: model calls go through bedrock's `Scheduler`).
 
 ## What's actually working right now
 

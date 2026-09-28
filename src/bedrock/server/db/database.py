@@ -1,7 +1,7 @@
 """Thin facade over SQLAlchemy sessions used by the task store, audit sink,
 and API routers. Kept synchronous and short-lived-session for simplicity;
 swap for async SQLAlchemy + asyncpg if request volume ever makes this a
-bottleneck (flagged in docs/ARCHITECTURE.md as a known simplification)."""
+bottleneck (flagged in docs/server/ARCHITECTURE.md as a known simplification)."""
 
 from __future__ import annotations
 

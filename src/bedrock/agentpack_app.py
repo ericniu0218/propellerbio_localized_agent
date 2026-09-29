@@ -107,7 +107,7 @@ AGENTPACK_HELP_TEXT = """\
 | `/sources` | List the company data sources you can pull from |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
-| `/tier [quick\|standard\|deep\|auto]` | Choose who answers: a quick answer, the standard agents, or a deep analysis with a review |
+| `/tier [quick\\|standard\\|deep\\|auto]` | Choose who answers: a quick answer, the standard agents, or a deep analysis with a review |
 | `/cancel` | Stop the request that is running |
 | `/clear` | Clear the conversation |
 | `/help` | Show this help |

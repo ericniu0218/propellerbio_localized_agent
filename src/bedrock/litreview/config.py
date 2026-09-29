@@ -173,6 +173,12 @@ class Settings:
     contact_email: str = ""
     """Sent to NCBI with PubMed searches, as their terms ask. Use a generic
     mailbox: it travels with every query."""
+    epo_ops_key: str = ""
+    epo_ops_secret: str = ""
+    """Consumer key/secret from developers.epo.org > My Apps. Patents are a
+    separate, lower-confidence lane (sources/patents_base.py) — these are
+    read only by `bedrock-litreview patents`, never by the model-facing
+    pipeline."""
 
     def model_for(self, job: str) -> str:
         tier = self.jobs.get(job, "medium")
@@ -283,6 +289,8 @@ def load_settings(
         allowed_hosts=allowed,
         ncbi_api_key=env.get("NCBI_API_KEY", ""),
         contact_email=str(env.get("SOURCES_CONTACT_EMAIL") or table.get("contact_email") or ""),
+        epo_ops_key=env.get("EPO_OPS_KEY", ""),
+        epo_ops_secret=env.get("EPO_OPS_SECRET", ""),
     )
     if check_endpoint:
         assert_local_url(settings.base_url, allowed)

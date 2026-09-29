@@ -26,6 +26,19 @@ search:
     safety: [adverse event, adverse events, safety, toxicity]
     prevent: [prevention, prevents, prophylaxis, prophylactic, relapse, recurrence, onset]
 
+patents:
+  # EPO OPS (src/bedrock/litreview/sources/epo_ops.py). A separate,
+  # lower-confidence lane — see sources/patents_base.py — never searched or
+  # read by the model-facing pipeline. Populated only by `bedrock-litreview
+  # patents` and read into the competitor-landscape section
+  # (defaults/report.yaml).
+  max_results: 100
+  # Claim 1 costs a second API call per patent (p.66 of the OPS reference
+  # guide); capped the same way full-text fetching is capped for papers, so a
+  # broad landscape scan doesn't spend the whole quota reading claims nobody
+  # will look at.
+  claims_max: 40
+
 rank:
   # How many papers get a model relevance grade, chosen by lexical score among
   # those that pass the exact-entity gate. The rest are ranked lexically only.

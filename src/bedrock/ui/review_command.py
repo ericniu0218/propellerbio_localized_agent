@@ -129,6 +129,7 @@ def parse_review_command(args: str) -> ReviewCommand:
     parser.add_argument("--models")
     parser.add_argument("--sources")
     parser.add_argument("--no-full-text", action="store_true", dest="no_full_text")
+    parser.add_argument("--patents")
     options = parser.parse_args(split_arguments(option_text))
 
     if options.corpus and options.search:
@@ -152,6 +153,7 @@ def parse_review_command(args: str) -> ReviewCommand:
             model_set=options.models,
             sources=_sources(options.sources),
             full_text=not options.no_full_text,
+            patents=_patents(options.patents),
         )
     )
 
@@ -178,6 +180,22 @@ def _sources(value: str | None) -> tuple[str, ...] | None:
     if not names:
         raise CommandUsageError("/review: --sources needs at least one source name")
     return names
+
+
+def _patents(path: str | None):
+    """Read `--patents FILE` (from `bedrock-litreview patents`) here, on the UI
+    thread, before the request is built — not inside the pipeline. It is a
+    handful of records at most, and reading it here means a bad or missing
+    file is a usage error shown immediately, the same way an unreadable
+    `--corpus` would be, rather than a failure discovered minutes into a run."""
+    if not path:
+        return None
+    from bedrock.litreview.sources.patent_corpus import read_patents
+
+    try:
+        return read_patents(Path(path.removeprefix("@")).expanduser())
+    except (OSError, ValueError) as exc:
+        raise CommandUsageError(f"/review: --patents {path!r}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

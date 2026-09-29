@@ -70,6 +70,7 @@ target_identification:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise the adverse effects and risks reported for acting on these targets.
+  - {id: competitors, title: Competitor landscape, kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}

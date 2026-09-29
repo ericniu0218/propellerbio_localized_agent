@@ -2,7 +2,8 @@
 
     bedrock-litreview doctor                # can this machine run a review? what to change
     bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
-    bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl
+    bedrock-litreview patents "If I want to prevent psoriasis, what should I target?" --out patents.jsonl
+    bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl --patents patents.jsonl
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
     bedrock-litreview runs                  # the most recent runs
@@ -14,12 +15,17 @@ The same reviews run inside the terminal app as `/review`; this is the shell
 way in, for a script, a cron job or a machine with no app running. Both go
 through `service.run_review`, so both get one pipeline and one scheduler.
 
-`search` is the only command that goes to the internet, and `ask` does so only
-with `--search`. On an air-gapped machine, run `search` on one that is allowed
-out and carry the JSON-lines file across.
+`search` and `patents` are the only commands that go to the internet, and `ask`
+does so only with `--search` (never for patents — pass `--patents FILE`,
+always a separate, explicit step; a patents file has nothing frozen between
+runs the way `--corpus` does). On an air-gapped machine, run `search` and
+`patents` on a machine that is allowed out and carry the files across.
+`patents` needs a free EPO OPS account (developers.epo.org) and
+`EPO_OPS_KEY`/`EPO_OPS_SECRET`; see `sources/epo_ops.py`.
 
 Only `ask` with a model opens a connection to the model server. `search`,
-`verify-run`, `rate`, `runs` and `ask --no-model` never build a backend at all.
+`patents`, `verify-run`, `rate`, `runs` and `ask --no-model` never build a
+backend at all.
 
 The benchmark has its own entry point: `python -m bedrock.litreview.bench --help`.
 """
@@ -81,6 +87,16 @@ def _ask(args) -> int:
         _say(f"ask: {exc}")
         return 1
 
+    patents = None
+    if args.patents:
+        from bedrock.litreview.sources.patent_corpus import read_patents
+
+        try:
+            patents = read_patents(args.patents)
+        except (OSError, ValueError) as exc:
+            _say(f"ask: {exc}")
+            return 1
+
     request = ReviewRequest(
         question=args.question,
         corpus=args.corpus,
@@ -92,6 +108,7 @@ def _ask(args) -> int:
         sources=_searcher_overrides(args).get("sources"),
         full_text=not args.no_full_text,
         out_dir=args.out,
+        patents=patents,
     )
 
     async def go():
@@ -142,6 +159,46 @@ def _ask(args) -> int:
         _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
              "it opens with a warning")
         return 1
+    return 0
+
+
+def _patents(args) -> int:
+    """`patents QUESTION --out FILE`: search EPO OPS, write JSON lines.
+
+    Never opens a model connection — this is a `search`-shaped command, not an
+    `ask`-shaped one. The records it writes are read back only by `ask
+    --patents FILE`, or `/review --patents FILE` in the app, into the
+    generated "Competitor landscape" section; nothing here reaches the
+    model-facing pipeline (`sources/patents_base.py`).
+    """
+    from bedrock.litreview.knowledge import load_knowledge
+    from bedrock.litreview.sources.epo_ops import EpoOps, PatentSearchFailed
+    from bedrock.litreview.sources.patent_corpus import write_patents
+    from bedrock.litreview.sources.patents_base import PatentSearchRequest
+    from bedrock.litreview.stages.s0_question import parse_question
+
+    settings = load_settings(check_endpoint=False)
+    if not settings.epo_ops_key or not settings.epo_ops_secret:
+        _say("patents: set EPO_OPS_KEY and EPO_OPS_SECRET (free account at developers.epo.org)")
+        return 1
+    try:
+        spec = parse_question(args.question, None, model=None, knowledge=load_knowledge())
+        searcher = EpoOps(
+            settings.epo_ops_key, settings.epo_ops_secret,
+            claims_max=args.claims_max if args.claims_max is not None
+            else int(settings.knob("patents.claims_max", 40)),
+        )
+        request = PatentSearchRequest(
+            question=spec.text, spec=spec,
+            exact_terms={e.canonical: e.exact_terms for e in spec.entities},
+            max_results=args.max_results,
+        )
+        records = searcher.search(request)
+    except (QuestionError, PatentSearchFailed, ValueError) as exc:
+        _say(f"patents: {exc}")
+        return 1
+    write_patents(records, args.out)
+    print(args.out)
     return 0
 
 
@@ -304,11 +361,20 @@ def main(argv: list[str] | None = None) -> int:
     search.add_argument("--out", type=Path, required=True, help="where to write the papers (.jsonl)")
     search.add_argument("--max-results", type=int, default=200)
 
+    patents = sub.add_parser(
+        "patents", help="search EPO OPS and save patent records as JSON lines (needs network + EPO_OPS_KEY/SECRET)")
+    patents.add_argument("question")
+    patents.add_argument("--out", type=Path, required=True, help="where to write the records (.jsonl)")
+    patents.add_argument("--max-results", type=int, default=100)
+    patents.add_argument("--claims-max", type=int, default=None,
+                         help="cap on the (per-document) claim-1 calls; default from defaults/pipeline.yaml")
+
     ask = sub.add_parser("ask", help="answer a question with a cited report")
     ask.add_argument("question")
     papers_from = ask.add_mutually_exclusive_group()
     papers_from.add_argument("--corpus", type=Path, help="papers as JSON lines (the searcher's handoff format)")
     papers_from.add_argument("--search", action="store_true", help="search the literature now (needs network)")
+    ask.add_argument("--patents", type=Path, help="patent records as JSON lines (from `bedrock-litreview patents`)")
     ask.add_argument("--models", help="model set from defaults/models.yaml (office, laptop, medgemma)")
     ask.add_argument("--out", type=Path, help="output directory (default: the reports folder in the review data directory)")
     ask.add_argument("--no-model", action="store_true", help="run without any model")
@@ -381,6 +447,9 @@ def _run(args) -> int:
         write_papers(papers, args.out)
         print(args.out)
         return 0
+
+    if args.command == "patents":
+        return _patents(args)
 
     if args.command == "ask":
         return _ask(args)

@@ -46,7 +46,7 @@ from typing import Any, Callable
 from bedrock.inference import InferenceError, Scheduler
 from bedrock.litreview.config import ConfigError, Settings, config_dir, private_dir
 from bedrock.litreview.llm import make_client
-from bedrock.litreview.models import Paper
+from bedrock.litreview.models import Paper, PatentRecord
 from bedrock.litreview.runner import RunResult, answer_question
 from bedrock.litreview.sources.corpus import CorpusSearcher
 from bedrock.litreview.sources.literature import LiteratureSearcher
@@ -72,6 +72,12 @@ class ReviewRequest:
 
     approved_terms: dict[str, list[str]] | None = None
     """Extra search terms a person approved by hand. HTTP only, as in the source."""
+
+    patents: list[PatentRecord] | None = None
+    """Competitor-landscape input, from `bedrock-litreview patents` (EPO OPS).
+    Never fetched here: unlike `search`, there is no `patents=True` flag that
+    reaches the internet as part of answering a question — a patent search is
+    always its own separate, explicit step. See `sources/patents_base.py`."""
 
 
 REVIEW_TIMEOUT_FLOOR = 600.0
@@ -415,6 +421,7 @@ async def run_review(
         use_model=request.use_model,
         searcher=searcher,
         papers=request.papers,
+        patents=request.patents,
         refresh_papers=request.refresh,
         approved_terms=request.approved_terms,
         out_dir=request.out_dir,

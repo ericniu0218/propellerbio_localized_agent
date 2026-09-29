@@ -37,8 +37,12 @@ import httpx
 USER_AGENT = "litreview/0.2"
 _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
-SOURCE_HOSTS = frozenset({"www.ebi.ac.uk", "eutils.ncbi.nlm.nih.gov"})
-"""The only hosts a literature search may reach. See the module docstring."""
+SOURCE_HOSTS = frozenset({"www.ebi.ac.uk", "eutils.ncbi.nlm.nih.gov", "ops.epo.org"})
+"""The only hosts a literature or patent search may reach. See the module
+docstring. `ops.epo.org` is EPO OPS (`sources/epo_ops.py`) — a separate,
+lower-confidence lane (`sources/patents_base.py`) that never enters the paper
+pipeline, but its HTTP client is this same one, so it is bound by this same
+allowlist and the same redirect check."""
 
 
 class SourceError(RuntimeError):

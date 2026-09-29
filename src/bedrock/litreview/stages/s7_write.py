@@ -22,6 +22,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date
 
 from pydantic import ValidationError
 
@@ -37,6 +38,7 @@ from bedrock.litreview.models import (
     Facet,
     GateResult,
     Paper,
+    PatentRecord,
     QuestionSpec,
     RankedPaper,
     Reference,
@@ -121,6 +123,11 @@ class WriteContext:
     units_per_target: int = 5
     max_units_per_section: int = 14
     sentence_stats: Counter = field(default_factory=Counter)
+    patents: list[PatentRecord] = field(default_factory=list)
+    """Competitor-landscape input, from `bedrock-litreview patents` (EPO OPS).
+    Read only by `_competitors` below, generated (code, no model call) for
+    exactly the reason no other generated section takes one: nothing here is
+    a biological claim, so there is nothing for the citation guard to check."""
 
     def __post_init__(self) -> None:
         self.rank_of = {r.paper_id: r.rank for r in self.ranked}
@@ -433,6 +440,55 @@ def _method(ctx: WriteContext) -> str:
     return "\n".join(lines)
 
 
+def _competitors(ctx: WriteContext, limit: int = 60) -> str:
+    """Who else has filed or been granted a patent naming these entities —
+    grouped by assignee, one row per family so EP/US/CN filings of the same
+    invention are not counted three times.
+
+    No model call, no citation guard: this is a list of what the patent
+    office record says, not a claim about biology. `sources/patents_base.py`
+    has the full reasoning for why patents never reach the evidence pipeline.
+    """
+    if not ctx.patents:
+        return (
+            "No patent search was run for this question. Run "
+            "`bedrock-litreview patents \"<question>\" --out patents.jsonl` and pass "
+            "`--patents patents.jsonl` to `ask` to add one."
+        )
+
+    by_assignee: dict[str, list[PatentRecord]] = {}
+    for record in ctx.patents:
+        by_assignee.setdefault(record.assignee or "Unknown / unassigned", []).append(record)
+
+    # Distinct families, not raw records: three filings of one EP/US/CN
+    # family must read as one family, or the count contradicts the very
+    # table underneath it that just finished merging them into one row.
+    families = {r.family_id or r.id for r in ctx.patents}
+    lines = [f"{len(families)} patent famil{'y' if len(families) == 1 else 'ies'} found "
+             f"({len(ctx.patents)} filing{'' if len(ctx.patents) == 1 else 's'}), grouped by assignee.", ""]
+    lines += ["| Assignee | Earliest priority | Filings | Lead publication | Status |", "|---|---|---|---|---|"]
+    rows = []
+    for assignee, records in by_assignee.items():
+        records = sorted(records, key=lambda r: r.priority_date or date.max)
+        earliest = records[0].priority_date
+        lead = min(records, key=lambda r: r.priority_date or date.max)
+        granted = sum(1 for r in records if (r.kind_code or "").upper().startswith("B"))
+        status = f"{granted} granted, {len(records) - granted} pending" if granted else f"{len(records)} pending/unknown"
+        rows.append((
+            earliest or date.max,
+            f"| {cell(assignee)} | {earliest or '—'} | {len(records)} | "
+            f"{cell(lead.title[:90])} ({lead.id}) | {status} |",
+        ))
+    rows.sort(key=lambda r: r[0])
+    lines += [row for _, row in rows[:limit]]
+    if len(rows) > limit:
+        lines.append(f"| … | | {len(rows) - limit} more assignees | | |")
+    lines += ["", f"Source: EPO Open Patent Services. Claim 1 (never the full claim set or description) "
+                   f"is recorded for {sum(1 for p in ctx.patents if p.claim_1)} of {len(ctx.patents)} families "
+                   f"in the JSON report, for a human to read — not summarised by any model here."]
+    return "\n".join(lines)
+
+
 def _excluded(ctx: WriteContext, limit: int = 80) -> str:
     rows = ["| Paper | Why excluded |", "|---|---|"]
     order = {"near_miss": 0, "absent": 1, "review": 2, "retracted": 3}
@@ -521,6 +577,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "evidence_table": lambda: _evidence_table(ctx, refs),
         "method": lambda: _method(ctx),
         "excluded": lambda: _excluded(ctx),
+        "competitors": lambda: _competitors(ctx),
     }
     for section in sections:
         if section.kind == "generated":

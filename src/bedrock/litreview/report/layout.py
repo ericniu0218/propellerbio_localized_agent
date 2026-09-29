@@ -15,7 +15,7 @@ import yaml
 
 from bedrock.litreview.config import config_file
 
-GENERATED = {"best_source", "gaps", "plan", "ranking", "evidence_table", "method", "excluded"}
+GENERATED = {"best_source", "gaps", "plan", "ranking", "evidence_table", "method", "excluded", "competitors"}
 
 
 @dataclass(frozen=True)

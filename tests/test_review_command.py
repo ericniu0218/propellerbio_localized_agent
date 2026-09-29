@@ -52,6 +52,42 @@ def test_a_corpus_dropped_onto_the_terminal_loses_its_at_sign():
     assert command.request.corpus == Path("/tmp/papers.jsonl")
 
 
+def test_a_patents_file_is_read_at_parse_time_not_inside_the_pipeline(tmp_path):
+    """`--patents FILE` is read here, on the UI thread, before the request is
+    built — the same reasoning `--corpus` gets, and the same reason a bad file
+    is a usage error immediately rather than a failure minutes into a run."""
+    from bedrock.litreview.models import PatentRecord
+    from bedrock.litreview.sources.patent_corpus import write_patents
+
+    path = tmp_path / "patents.jsonl"
+    write_patents([PatentRecord(id="EP1A1", title="x")], path)
+
+    command = parse_review_command(f"prevent psoriasis --patents {path}")
+    assert command.request.patents == [PatentRecord(id="EP1A1", title="x")]
+
+
+def test_a_patents_file_dropped_onto_the_terminal_loses_its_at_sign(tmp_path):
+    from bedrock.litreview.models import PatentRecord
+    from bedrock.litreview.sources.patent_corpus import write_patents
+
+    path = tmp_path / "patents.jsonl"
+    write_patents([PatentRecord(id="EP1A1", title="x")], path)
+
+    command = parse_review_command(f"prevent psoriasis --patents @{path}")
+    assert command.request.patents == [PatentRecord(id="EP1A1", title="x")]
+
+
+def test_an_unreadable_patents_file_is_a_usage_error_not_a_crash():
+    """A typo'd path must stop the command before a job starts, the same way
+    every other bad option does — not raise from inside the worker thread."""
+    with pytest.raises(CommandUsageError, match="patents"):
+        parse_review_command("prevent psoriasis --patents /no/such/file.jsonl")
+
+
+def test_no_patents_option_means_no_patents():
+    assert parse_review_command("prevent psoriasis").request.patents is None
+
+
 def test_stop_is_the_one_verb():
     assert parse_review_command("stop").stop is True
     assert parse_review_command("STOP").stop is True
@@ -132,6 +168,24 @@ def corpus_file(tmp_path):
     return path
 
 
+@pytest.fixture()
+def patents_file(tmp_path):
+    from bedrock.litreview.models import PatentRecord
+    from bedrock.litreview.sources.patent_corpus import write_patents
+
+    path = tmp_path / "patents.jsonl"
+    write_patents(
+        [
+            PatentRecord(id="EP1A1", family_id="f1", title="Anti-IL-23 antibody",
+                         assignee="Genentech, Inc.", kind_code="A1", priority_date="2018-01-01"),
+            PatentRecord(id="US1A1", family_id="f1", title="Anti-IL-23 antibody",
+                         assignee="Genentech, Inc.", kind_code="A1", priority_date="2018-01-01"),
+        ],
+        path,
+    )
+    return path
+
+
 class ReviewBackend(FakeBackend):
     """The fake chat backend, which also answers review calls.
 
@@ -200,6 +254,33 @@ async def test_a_review_without_a_model_finishes_and_never_calls_the_server(
 
     assert backend.requests == [], "a --no-model review must not reach the model server"
     assert backend.review_requests == []
+
+
+async def test_a_review_with_patents_shows_the_competitor_landscape(
+    corpus_file, patents_file, review_dir, models_yaml
+):
+    """The one path this file had no coverage for: `/review --patents FILE`
+    end to end, through the real app — `parse_review_command` reading the
+    file, `ReviewRequest.patents`, `service.run_review`, and all the way down
+    to `_competitors` actually writing the section. `--corpus` and `--patents`
+    are wired through service.py identically, so this is the proof the app
+    side was not left as an unverified guess."""
+    backend = ReviewBackend()
+    app = make_app(backend)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file} --patents {patents_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        assert "Literature review finished" in "\n".join(notices(app))
+        reports = list((review_dir / "reports").glob("*/*/report.md"))
+        assert len(reports) == 1
+        body = reports[0].read_text()
+        assert "Competitor landscape" in body
+        assert "Genentech, Inc." in body
+        assert "1 patent famil" in body  # the two filings merged into one family, exactly as `--corpus` alone could not prove
+        assert "2 filing" in body
 
 
 async def test_reviews_lists_the_run_and_verify_says_ok(corpus_file, review_dir, models_yaml):

@@ -905,7 +905,14 @@ def build_references(ctx: WriteContext, sections: list[ReportSection]) -> dict[s
     return {pid: i for i, pid in enumerate(order, 1)}
 
 
-def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str]) -> Report:
+def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str],
+                 tick=None) -> Report:
+    """`tick` reports each section as it is written: one model call per
+    written section, plus one per target subsection, and nothing said between
+    them until now. Display only; see `progress.py`."""
+    from bedrock.litreview.progress import safe_tick
+
+    tick = safe_tick(tick)
     layout = load_layout(ctx.spec.question_type)
     sections: list[ReportSection] = []
     # Each written section, and each per-target subsection, sees only its own
@@ -918,15 +925,22 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     # repeat check possible without the sections calling each other.
     already_kept: list[set[str]] = []
 
+    # Only the written sections cost a model call; a generated one is code and
+    # returns at once, so counting all of them would make the bar jump.
+    written_total = sum(1 for s in layout if s.kind == "written")
+    written_done = 0
     for spec in layout:
         if spec.kind != "written":
             sections.append(ReportSection(id=spec.id, title=spec.title, kind="generated"))
             continue
+        tick("write", written_done, written_total, spec.title)
         if spec.source == "per_target":
             section = ReportSection(id=spec.id, title=spec.title, kind="written")
-            for t in ctx.summary.targets[: ctx.max_targets]:
+            targets = ctx.summary.targets[: ctx.max_targets]
+            for n, t in enumerate(targets, 1):
                 units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target,
                                    ctx.demoted)
+                tick("write", written_done, written_total, f"{spec.title} {n}/{len(targets)}")
                 sentences, note = write_section_text(ctx, spec, units, subsection=t.target, already_kept=already_kept)
                 names = [n for n in t.names_seen if n != t.target][:3]
                 title = t.target + (f" ({', '.join(names)})" if names else "")
@@ -939,6 +953,8 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             if not section.subsections:
                 section.note = "No target-level evidence was extracted from the papers read."
             sections.append(section)
+            written_done += 1
+            tick("write", written_done, written_total)
             continue
         units = _slice(ctx, spec.source or "all")
         sentences, note = write_section_text(ctx, spec, units, already_kept=already_kept)
@@ -949,6 +965,8 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             elif withheld:
                 note = f"{note} {withheld}" if note else withheld
         sections.append(ReportSection(id=spec.id, title=spec.title, kind="written", sentences=sentences, note=note))
+        written_done += 1
+        tick("write", written_done, written_total)
 
     refs = build_references(ctx, sections)
     if ctx.integrity_notes:

@@ -43,9 +43,11 @@ import asyncio
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 
 from bedrock.litreview.config import ConfigError, load_settings
+from bedrock.litreview.progress import throttled
 from bedrock.litreview.sources.corpus import CorpusSearcher
 from bedrock.litreview.sources.literature import SOURCES, LiteratureSearcher, SearchFailed
 from bedrock.litreview.stages.s0_question import QuestionError
@@ -130,6 +132,10 @@ def _ask(args) -> int:
                 # about the configured 120 would be a false alarm here.
                 warn=lambda message: _say(f"ask: {message}"),
                 timeout_floor_applied=True,
+                # A shell has no status bar to overwrite, and every line it
+                # prints is permanent, so the per-item ticks are throttled to
+                # a handful per stage rather than one per paper.
+                tick=throttled(_say, now=time.monotonic),
             )
 
         # A run without a model never reaches a server, so none is opened: the

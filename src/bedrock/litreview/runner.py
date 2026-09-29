@@ -182,10 +182,17 @@ def answer_question(
     out_dir: Path | None = None,
     resume_run_id: str | None = None,
     progress: Callable[[str], None] | None = None,
+    tick=None,
     integrity_check: Callable | None = None,
 ) -> RunResult:
     settings = settings or load_settings()
     say = progress or (lambda msg: log.info(msg))
+    # `say` is one line per milestone; `tick` is the "still alive" signal from
+    # inside the three stages that make one model call per item. See
+    # `progress.py` for why they are separate.
+    from bedrock.litreview.progress import safe_tick
+
+    tick = safe_tick(tick)
     if client is None and use_model:
         client = make_client(settings)
     if not use_model:
@@ -375,6 +382,7 @@ def answer_question(
             designs=designs,
             reservations=settings.knob("rank.reservations", None),
             knowledge=kb,
+            tick=tick,
         )
         keep_ledger("grading", grading_reasons)
         done(3, "ranking", _RANKED.dump_json(ranked).decode())
@@ -417,6 +425,7 @@ def answer_question(
             methods_chars=int(settings.knob("extract.methods_context_chars", 2500)),
             knowledge=kb,
             progress=say,
+            tick=tick,
             traces=outcomes,
         )
         keep_ledger("extraction", outcomes)
@@ -470,7 +479,7 @@ def answer_question(
         if isinstance(integrity.get("automatic_check"), dict) else None,
         added_back=added_back_in(integrity),
     )
-    report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions)
+    report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions, tick=tick)
     # The integrity check: everything the report shows as the paper's words is
     # the paper's words, on the papers this run pinned. A violation is a bug;
     # it is written on the report, which then opens with a warning.

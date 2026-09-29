@@ -142,6 +142,15 @@ as `improved`. Models skip these unless explicitly told not to.
   s8_render (s9_chat not built). `runner.py` calls them; nothing else sequences
 - What each question type needs is `facets.py` (code). The report layout is
   `defaults/report.yaml`. Pipeline knobs are `defaults/pipeline.yaml`
+- Two ways to say a run is alive, and they are not interchangeable
+  (`progress.py`): `progress`/`say` is one line per *milestone* and there are
+  about a dozen in a run; a `Tick` is per *item* in the three stages that make
+  one model call each (rank, extract, write) and there are hundreds. Ticks go
+  somewhere that overwrites itself — the status bar, a throttled stderr line —
+  never into notices, or a 40-paper rank posts 40 toasts. A tick must never
+  change what a run produces: the report is byte-identical with and without
+  one, and `tests/litreview/test_progress.py` proves it. Add a stage that
+  loops over model calls, give it a `tick`
 - The paper searcher plugs in only through `sources/base.py`
 - The searcher goes to the internet only when asked: `bedrock-litreview search`,
   `ask --search`, `/review --search`, or `"search": true` over HTTP. Never make

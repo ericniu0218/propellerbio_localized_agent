@@ -1185,3 +1185,42 @@ async def test_a_scientific_job_holds_the_queue_until_it_finishes(fake_client, t
         for _ in range(4):
             await pilot.pause()
         assert fake_client.sent_messages == [("sess_fake", "what does that structure show?")]
+
+
+# ---------------------------------------------------------------------------
+# /reviews in agent-pack mode
+# ---------------------------------------------------------------------------
+
+
+async def test_reviews_here_does_not_send_you_to_a_command_this_mode_refuses(
+    fake_client: FakeAgentPackClient, tmp_path, monkeypatch
+):
+    """With no reviews yet, `/reviews` used to say "Start one with `/review`" -
+    in the one mode that refuses `/review`. Every `/reviews` verb works here;
+    only *starting* a review does not."""
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "litreview"))
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/reviews", "enter")
+        for _ in range(6):
+            await pilot.pause()
+
+        notice = "\n".join(str(n.source) for n in app.query(SystemNotice))
+        assert "No literature reviews on this machine yet" in notice, notice
+        assert "Start one with `/review" not in notice
+        assert "bedrock-litreview ask" in notice
+
+
+async def test_the_retraction_settings_are_discoverable_here(fake_client: FakeAgentPackClient):
+    """The reported gap: `/reviews settings` and `/reviews reinstate` work in
+    agent-pack mode but were in none of its help tables."""
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/help", "enter")
+        await pilot.pause()
+
+        helped = "\n".join(str(n.source) for n in app.query(SystemNotice))
+        assert "/reviews settings" in helped, helped
+        assert "/reviews reinstate" in helped

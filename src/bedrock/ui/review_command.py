@@ -78,22 +78,72 @@ REVIEW_STALE_INSTALL = (
     "The missing piece was: {detail}"
 )
 
-REVIEWS_HELP = """\
+@dataclass(frozen=True)
+class ReviewsVerb:
+    """One `/reviews` verb, described once.
+
+    Three help tables used to list these by hand - `REVIEWS_HELP` below,
+    `ui/commands.py`'s default-mode `/help`, and `agentpack_app.py`'s - and
+    they drifted: `settings` and `reinstate` shipped in only the first, so in
+    agent-pack mode the retraction settings were undiscoverable. All three are
+    now generated from this list, and `tests/test_reviews_help.py` fails if a
+    dispatched verb is missing from any of them.
+    """
+
+    command: str
+    """As typed, with its argument: "/reviews verify <run-id>"."""
+    summary: str
+    verb: str | None = None
+    """The word `run_reviews_command` dispatches on; None for bare `/reviews`
+    and for the `--all` variant, which is a flag on an existing verb."""
+    writes: bool = False
+    """Changes something on this machine. `settings` saves a preference and
+    `reinstate` records a decision, so "reads local files only" was wrong of
+    them - a claim worth keeping true, because it is what tells a scientist
+    whether a command is safe to try."""
+    needs_server: bool = False
+    """Asks the model server something. Only `check`, and only which models it
+    has - no prompt, no paper, no question."""
+    compact: bool = False
+    """Also shown in the short `/help` tables, which list commands across the
+    whole app rather than just this one."""
+
+
+REVIEWS_VERBS: tuple[ReviewsVerb, ...] = (
+    ReviewsVerb("/reviews", "Literature reviews recorded on this machine", compact=True),
+    ReviewsVerb("/reviews verify <run-id>", "Re-prove one report against the papers it pinned",
+                verb="verify", compact=True),
+    ReviewsVerb("/reviews verify --all", "Re-prove every finished report"),
+    ReviewsVerb("/reviews check", "Can this machine run a review? What to change",
+                verb="check", needs_server=True, compact=True),
+    ReviewsVerb("/reviews settings", "Retraction checks: automatic or manual, and what each means",
+                verb="settings", writes=True, compact=True),
+    ReviewsVerb("/reviews reinstate <paper>",
+                "Add back a paper that was retracted and later reinstated (your decision)",
+                verb="reinstate", writes=True, compact=True),
+    ReviewsVerb("/reviews forget <run-id>", "Delete one run's report and working notes",
+                verb="forget", writes=True, compact=True),
+)
+
+
+def reviews_rows(*, compact: bool = False) -> str:
+    """The `/reviews` rows of a Markdown help table, without a header."""
+    verbs = [v for v in REVIEWS_VERBS if v.compact] if compact else list(REVIEWS_VERBS)
+    return "\n".join(f"| `{v.command}` | {v.summary} |" for v in verbs)
+
+
+REVIEWS_HELP = f"""\
 **`/reviews` — literature reviews on this machine**
 
 | Command | What it does |
 |---|---|
-| `/reviews` | The 20 most recent runs |
-| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
-| `/reviews verify --all` | Re-prove every finished report |
-| `/reviews check` | Can this machine run a review? What to change |
-| `/reviews settings` | Retraction checks: automatic or manual, and what each means |
-| `/reviews reinstate <paper>` | Add back a paper that was retracted and later reinstated (your decision) |
-| `/reviews forget <run-id>` | Delete one run's report and working notes |
+{reviews_rows()}
 
-Everything except `check` reads local files only, so it works with the model
-server switched off, and nothing here is sent to a model. `check` asks the
-server which models it has, and nothing else.
+Everything here works with the model server switched off, and nothing here
+sends your question, your papers or a report to a model. Two of them do change
+something on this machine: `settings` saves your choice, and `reinstate`
+records your decision to add a paper back. `check` is the one that asks the
+server anything, and only which models it has.
 """
 
 
@@ -352,11 +402,16 @@ async def run_review_job(
     cancel: threading.Event,
     notify: Notify,
     progress: Callable[[str], None],
+    tick: Callable[[str, int, int, str], None] | None = None,
 ) -> bool:
     """Run one review and report it. Never raises; True means a finished report.
 
     Every failure the pipeline can produce is turned into a notice here, so the
     app's own bookkeeping - the one-review-at-a-time flag - always gets to run.
+
+    `tick` is the per-item signal from inside the stages, which the app puts in
+    the status bar rather than in a notice; `progress` stays the milestone
+    lines. See `litreview/progress.py`.
     """
     from bedrock.litreview.config import ConfigError
     from bedrock.litreview.llm import ReviewInterrupted
@@ -389,6 +444,7 @@ async def run_review_job(
             scheduler=scheduler,
             progress=progress_to_toasts(progress),
             cancel=cancel,
+            tick=tick,
         )
     except ReviewInterrupted as exc:
         run_id = await asyncio.to_thread(_unfinished_run_id, settings)
@@ -460,8 +516,9 @@ async def run_reviews_command(
     notify: Notify,
     full_settings_for=None,
     backend=None,
+    can_start_reviews: bool = True,
 ) -> None:
-    """`/reviews`, and its `verify`, `check` and `forget` verbs.
+    """`/reviews`, and every verb in `REVIEWS_VERBS`.
 
     `settings_for` is a zero-argument callable returning litreview's settings,
     so a broken `[litreview]` table is reported here rather than at startup.
@@ -474,6 +531,11 @@ async def run_reviews_command(
     must still be able to manage its past runs. `backend` lets `check` ask the
     server which models it has; without one it checks the configuration alone
     and says so.
+
+    `can_start_reviews` is False in agent-pack mode, where `/review` is
+    refused. Every verb here still works there - they act on reviews already on
+    this machine - but telling someone with no reviews yet to "start one with
+    `/review`" would send them to the one command that mode will not run.
     """
     from bedrock.litreview.config import ConfigError
 
@@ -514,11 +576,14 @@ async def run_reviews_command(
         await notify(safe_line(exc, limit=400), "error")
         return
     if not rows:
-        await notify(
-            "No literature reviews on this machine yet. Start one with "
-            "`/review <question> --corpus <file.jsonl>`.",
-            "info",
+        start = (
+            "Start one with `/review <question> --corpus <file.jsonl>`."
+            if can_start_reviews
+            else "Starting one needs the default mode (`bedrock` without "
+                 "`BEDROCK_BACKEND=agentpack`) or a shell: "
+                 "`bedrock-litreview ask \"<question>\" --corpus <file.jsonl>`."
         )
+        await notify(f"No literature reviews on this machine yet. {start}", "info")
         return
 
     lines = [

@@ -13,7 +13,39 @@ server.
 > Each carries a note on what it actually turned out to be — two of them were
 > not quite what this list described, and one (the title between review calls)
 > was a real scheduler bug now covered by a test that fails without the fix.
-> Sections A, B, C and E are untouched by that branch.
+> Sections A, B, C and E are untouched by that branch. Renumbered 16-21 to
+> 15-20 when that branch merged `main`, so section E still starts at 21.
+
+> **Update, 29 September 2026** (same branch): three UX and hygiene items from
+> a separate deploy review, none of which had a row in this document.
+>
+> - **Long silences during a run.** `rank`, `extract` and `write` make one
+>   model call per item and said nothing between milestones — about four
+>   minutes of silence while papers were graded, against a run of over two
+>   hours. They now emit a per-item *tick* (`litreview/progress.py`), which the
+>   app shows in the status bar and the shell prints about once per tenth of a
+>   stage. Ticks never become notices (40 toasts) and never change the run: the
+>   report is byte-identical with and without one, which is tested. Counts and
+>   elapsed time only — no ETA, because call durations vary more than tenfold
+>   and a confident wrong one is worse than none. Writing the throttle turned
+>   up a flaw in its own first draft: with a 15-second floor, a *slower* stage
+>   printed *more* lines (40 against 11), which the test now pins.
+> - **`SyntaxWarning` on import.** `agentpack_app.py` wrote a Markdown-escaped
+>   pipe as `\|` in an ordinary string. Harmless today, a `SyntaxError` in a
+>   future Python — the agent-pack app would stop importing over a help table.
+>   Fixed on branch `litreview/syntax-warning`, off `main`, with a test that
+>   compiles every file under `src/`, `tests/` and `scripts/` with
+>   `SyntaxWarning` as an error. It was the only offender, and it first failed
+>   on its own docstring.
+> - **`/reviews settings` and `/reviews reinstate` were undiscoverable in
+>   agent-pack mode.** Both work there; neither was in that mode's help. The
+>   cause was three hand-maintained copies of one table, so all three are now
+>   generated from `REVIEWS_VERBS` and a test fails if a dispatched verb is
+>   missing from any of them. Two nearby claims were wrong and are fixed: those
+>   two verbs *write* (a preference, a decision), so "reads local files only"
+>   no longer says that; and the agent-pack help ended "see `/review` below"
+>   with no such row, while an empty `/reviews` told people to start one with
+>   `/review` — the one command that mode refuses.
 
 **26 September 2026, section A.** Every report-accuracy item in section A has
 since been worked through. Five are gone from this list because code now

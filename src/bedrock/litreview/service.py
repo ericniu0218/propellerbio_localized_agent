@@ -366,6 +366,7 @@ async def run_review(
     cancel: threading.Event,
     warn: Callable[[str], None] | None = None,
     timeout_floor_applied: bool = False,
+    tick=None,
 ) -> RunResult:
     """Run one review and return its result.
 
@@ -429,6 +430,7 @@ async def run_review(
         out_dir=request.out_dir,
         resume_run_id=request.resume,
         progress=progress,
+        tick=tick,
         integrity_check=integrity_check,
     )
 

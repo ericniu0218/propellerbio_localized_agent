@@ -583,6 +583,7 @@ def extract_paper(
     knowledge: Knowledge | None = None,
     stats: Counter | None = None,
     outcomes: dict | None = None,
+    on_chunk=None,
 ) -> list[EvidenceUnit]:
     """Extract every verified finding from one paper.
 
@@ -614,7 +615,7 @@ def extract_paper(
     planned = plan_chunks(paper, job, query, chunk_chars=chunk_chars, max_chunks=max_chunks)
     if outcomes is not None:
         outcomes["planned"] = [f"{section}:{i}" for section, i, _ in planned]
-    for section, chunk_i, text in planned:
+    for done, (section, chunk_i, text) in enumerate(planned, 1):
         entry = {"id": f"{section}:{chunk_i}", "status": "failed", "findings": 0, "rejected": {}}
         chunk_log.append(entry)
         before = Counter(stats)
@@ -624,7 +625,14 @@ def extract_paper(
         except (LLMError, ValidationError) as exc:
             log.warning("extraction failed: paper=%s section=%s chunk=%d: %s", paper.id, section, chunk_i, exc)
             stats["chunk_failed"] += 1
+            # Reported before `continue`: a chunk whose call failed is a chunk
+            # this paper will not spend time on again, so the caller's count
+            # must not stall on it.
+            if on_chunk is not None:
+                on_chunk(done, len(planned))
             continue
+        if on_chunk is not None:
+            on_chunk(done, len(planned))
         stats["chunks"] += 1
         entry["status"] = "completed"
         if result.is_review:
@@ -800,6 +808,7 @@ def extract_plan(
     *,
     model: str,
     progress=None,
+    tick=None,
     traces: dict[str, dict] | None = None,
     **kwargs,
 ) -> tuple[list[EvidenceUnit], dict[str, int]]:
@@ -808,15 +817,27 @@ def extract_plan(
     The tally matters as much as the units. A run where 30% of findings fail
     quote verification is telling you something broke upstream, and it
     should be loud.
+
+    `progress` stays one line per finished paper. `tick` is finer, because a
+    paper is up to `max_chunks` model calls at roughly two minutes each: it
+    reports the chunk within the paper, so the longest silence in the run is
+    one call rather than one paper. Display only; see `progress.py`.
     """
+    from bedrock.litreview.progress import safe_tick
+
+    tick = safe_tick(tick)
     stats: Counter = Counter()
     all_units: list[EvidenceUnit] = []
     for i, job in enumerate(plan.jobs, 1):
         outcomes = None if traces is None else traces.setdefault(job.paper_id, {})
+        tick("extract", i - 1, len(plan.jobs), f"reading paper {i}")
         units = extract_paper(
-            papers[job.paper_id], job, spec, facets, client, model=model, stats=stats, outcomes=outcomes, **kwargs
+            papers[job.paper_id], job, spec, facets, client, model=model, stats=stats, outcomes=outcomes,
+            on_chunk=lambda done, total, _i=i: tick("extract", _i - 1, len(plan.jobs), f"paper {_i} chunk {done}/{total}"),
+            **kwargs,
         )
         all_units.extend(units)
+        tick("extract", i, len(plan.jobs))
         if progress:
             progress(f"extracted {i}/{len(plan.jobs)} papers, {len(all_units)} findings")
     if stats["findings"] and stats["quote_failed"] / stats["findings"] > 0.3:

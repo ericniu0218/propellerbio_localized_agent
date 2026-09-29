@@ -37,6 +37,11 @@ class LocalCommandsMixin:
 
     LOCAL_DIGEST_USES_MODEL = False
 
+    CAN_START_REVIEWS = True
+    """False in agent-pack mode, which refuses `/review`. Only changes what
+    `/reviews` suggests to someone with no reviews yet: every verb itself
+    works in both modes."""
+
     settings: Settings
     services: ComplianceServices
     _context_store: ContextStore | None
@@ -150,6 +155,7 @@ class LocalCommandsMixin:
             # it finishes starting; `check` then reports the configuration half
             # and says the server was not asked.
             backend=getattr(getattr(self, "scheduler", None), "backend", None),
+            can_start_reviews=self.CAN_START_REVIEWS,
         )
 
     @work(group="history")

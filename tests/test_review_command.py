@@ -698,3 +698,68 @@ def _run_id(lines: list[str]) -> str:
         if "Literature review finished" in line:
             return line.split("run `")[1].split("`")[0]
     raise AssertionError(f"no finished review in: {lines}")
+
+
+# ---------------------------------------------------------------------------
+# The status bar during a run
+# ---------------------------------------------------------------------------
+
+
+async def test_the_status_bar_shows_the_position_while_a_review_runs(
+    corpus_file, review_dir, models_yaml
+):
+    """The reported gap: rank/extract/write make one model call per item and
+    said nothing between milestones, so a working run and a hung one looked
+    the same. The count goes in the status bar rather than in notices, because
+    one notice per graded paper would be 40 toasts that cover the screen and
+    then fade."""
+    from bedrock.ui.widgets import StatusBar
+
+    backend = ReviewBackend()
+    backend.hold_reviews = asyncio.Event()  # freeze mid-run and look at the bar
+    app = make_app(backend)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --corpus {corpus_file}")
+        for _ in range(12):
+            await pilot.pause()
+
+        bar = app.query_one(StatusBar)
+        assert bar.review_progress is not None, "nothing shown while a review is running"
+        assert bar.review_progress.startswith("review: ")
+
+        backend.hold_reviews.set()
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        assert bar.review_progress is None, "the bar must clear when the run ends"
+
+
+async def test_the_status_bar_clears_even_when_a_review_fails(review_dir, models_yaml):
+    """A position frozen on screen after a failed run is exactly the "is it
+    still going?" confusion this feature removes."""
+    from bedrock.ui.widgets import StatusBar
+
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # No corpus and no --search: the run stops with "no papers".
+        await run(app, f"/review {QUESTION}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        assert app.query_one(StatusBar).review_progress is None
+        assert not app._review_running
+
+
+async def test_the_progress_counts_never_become_notices(corpus_file, review_dir, models_yaml):
+    """If ticks were routed through `progress`, a 40-paper rank would post 40
+    toasts. The milestone lines stay; the per-item counts do not."""
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        assert not [n for n in notices(app) if n.startswith("review: ")]

@@ -261,6 +261,8 @@ the same papers produces a byte-identical report.
 /reviews                          # the 20 most recent runs
 /reviews verify 4b66f48fec0a      # re-prove a report against the papers it pinned
 /reviews check                    # can this machine run a review? what to change
+/reviews settings                 # retraction checks: automatic or manual
+/reviews reinstate <paper>        # add back a retracted-then-reinstated paper
 /reviews forget 4b66f48fec0a      # delete one run's report and working notes
 ```
 
@@ -268,6 +270,22 @@ A review runs **beside the chat**: keep asking questions while it works. Its
 calls queue behind your own, so at worst you wait for the one call in flight.
 On a laptop that can be a minute or two, because an extraction call may write
 4,096 tokens. `Esc` stops a streaming reply, never a review.
+
+**Knowing it is still working.** A review is hours of model calls, and three of
+its stages make one call per item — grading each paper, reading each chunk,
+writing each section. The status bar carries the position while it runs:
+
+```text
+review: extract 7/16 · paper 7 chunk 2/6 · 41m 12s
+```
+
+It replaces itself rather than adding a message, so the count is never noise,
+and the elapsed time keeps moving during a single long call — which is how you
+tell a slow run from a stuck one. Counts and elapsed time only: no estimate of
+time remaining, because call durations vary by more than tenfold between a
+grade and an extraction, and a confident wrong ETA is worse than none. From a
+shell, `bedrock-litreview ask` prints the same positions about once every tenth
+of a stage.
 
 On a machine that holds one model at a time (the `laptop` profile's Ollama
 settings), chat with the review's model while it runs. Otherwise every chat

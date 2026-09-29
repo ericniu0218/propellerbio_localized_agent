@@ -59,6 +59,7 @@ from bedrock.ui.fold_command import (
 )
 from bedrock.ui.journal import JournalledAction
 from bedrock.ui.local_commands import LocalCommandsMixin
+from bedrock.ui.review_command import reviews_rows
 from bedrock.ui.rendering import safe_line
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.widgets import AssistantMessage, PromptInput, StatusBar, SystemNotice, UserMessage
@@ -81,11 +82,13 @@ REVIEWING_PREFIX = "_🔍 Reviewing before this is shown as final…_\n\n---\n\n
 AGENTPACK_REVIEW_NOTICE = (
     "Literature reviews are not available in agent-pack mode. Run one in the "
     "default mode (start `bedrock` without `BEDROCK_BACKEND=agentpack`) or from "
-    "a shell with `bedrock-litreview ask`. `/reviews` works here either way: it "
-    "only reads what is already on this machine."
+    "a shell with `bedrock-litreview ask`. `/reviews` works here either way, on "
+    "the reviews already on this machine — including `/reviews settings` and "
+    "`/reviews reinstate`, which record a choice of yours. `/reviews help` "
+    "lists all of it."
 )
 
-AGENTPACK_HELP_TEXT = """\
+AGENTPACK_HELP_TEXT = f"""\
 **Commands**
 
 | Command | What it does |
@@ -97,8 +100,8 @@ AGENTPACK_HELP_TEXT = """\
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
-| `/reviews` | Literature reviews recorded on this machine |
-| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
+| `/review <question>` | Not available in this mode — use the default mode, or `bedrock-litreview ask` in a shell |
+{reviews_rows(compact=True)}
 | `/audit` | What this client has done on this machine |
 | `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
@@ -123,10 +126,13 @@ interactively in PyMOL.”
   `/runs --project X --since 2026-07-01 --before 2026-10-01`
 - Export the action history: `/audit export "/approved/review/actions.jsonl"`
 
-`/runs`, `/confidence`, `/reviews` and `/audit` read local files only. They keep
-working when the AI system is unreachable, and nothing they show is sent to a
-model. Starting a literature review needs the default mode or a shell; see
-`/review` below.
+`/runs`, `/confidence`, `/reviews` and `/audit` keep working when the AI system
+is unreachable, and nothing they show is sent to a model. They only read, with
+three exceptions that change something on this machine and say so when you run
+them: `/reviews settings`, `/reviews reinstate` and `/reviews forget`.
+*Starting* a literature review is the one thing this mode cannot do, as the
+`/review` row above says; everything that inspects reviews already run works
+here exactly as it does in the default mode.
 """
 
 
@@ -140,6 +146,9 @@ TIER_LABELS = {"runner": "Quick Answer", "specialist": "Standard Task", "directo
 class AgentPackApp(LocalCommandsMixin, App[None]):
     TITLE = "Bedrock Private AI"
     CSS_PATH = "ui/styles.tcss"
+    # `/review` is refused here (AGENTPACK_REVIEW_NOTICE), so `/reviews` must
+    # not tell someone with no reviews yet to start one with it.
+    CAN_START_REVIEWS = False
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear"),

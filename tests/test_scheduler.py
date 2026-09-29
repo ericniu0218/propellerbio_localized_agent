@@ -53,6 +53,29 @@ async def test_a_job_does_not_change_the_chat_usage_or_loaded_model():
     assert scheduler.loaded_model is None
 
 
+async def test_each_call_is_told_its_own_usage():
+    """Per-call counts for callers such as the agent server's budgets, where
+    ``last_usage`` would belong to whichever of many users finished last."""
+    backend = FakeBackend()
+    backend.usage = Usage(prompt_tokens=40, completion_tokens=7)
+    scheduler = scheduler_for(backend, "server")
+    seen: list[Usage] = []
+
+    await scheduler.complete("test-model", CHAT, priority=Priority.USER_JOB, on_usage=seen.append)
+
+    assert seen == [backend.usage]
+    assert scheduler.last_usage is None  # a job still leaves the chat's counts alone
+
+
+async def test_no_usage_is_reported_when_the_server_sends_none():
+    backend = FakeBackend()
+    seen: list[Usage] = []
+
+    await scheduler_for(backend).complete("test-model", CHAT, priority=Priority.CHAT, on_usage=seen.append)
+
+    assert seen == []
+
+
 async def test_background_without_a_model_uses_the_one_that_last_answered():
     backend = FakeBackend()
     scheduler = scheduler_for(backend)

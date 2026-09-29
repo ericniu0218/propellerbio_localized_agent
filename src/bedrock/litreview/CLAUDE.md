@@ -44,7 +44,7 @@ it works elsewhere.
 3. `extract/provenance.py` — the same guard, for every other field a finding carries
 4. `report/guard.py` — the same guard, applied to report sentences
 5. `report/invariants.py` — what code proves about a finished report
-6. `knowledge/` — exact terms and near-misses, meaning words, and the matcher
+6. `knowledge/` — exact terms and near-misses, meaning words, outcome measures, a paper's own abbreviations, and the matcher
 7. `docs/litreview/README.md` § The pipeline — what each stage owes the next
 8. `service.py` and `llm/scheduled.py` — how a run reaches the model server
 
@@ -151,6 +151,21 @@ as `improved`. Models skip these unless explicitly told not to.
   model add a term. A request may reach only `www.ebi.ac.uk` and
   `eutils.ncbi.nlm.nih.gov` (`SOURCE_HOSTS` in `sources/http.py`), redirects
   included: a search URL carries the scientist's terms in its query string
+- Retraction checks (`sources/integrity.py`) are the other way out, decided by
+  the owner on 26 September 2026: automatic at the start of each *new* review
+  unless the scientist chose manual (`/reviews settings`, `preferences.py`),
+  and by hand with `bedrock-litreview integrity refresh --yes`. They send
+  publication identifiers only, to `INTEGRITY_HOSTS` (the two source hosts
+  plus `api.crossref.org`, which the search itself cannot reach). Never check
+  from `verify-run`, a resume or report viewing; never add another host
+  without the owner's approval; never let a check failure fail a review; and
+  never add a retracted paper back automatically - a reinstated one waits
+  for a person (`/reviews reinstate`)
+- Tests never reach the network: `tests/conftest.py` turns the automatic check
+  off for the whole suite; test it with `httpx.MockTransport`
+- New run state goes in versioned auxiliary artifacts (`put_artifact`), not
+  in `Report`, `Paper` or `EvidenceUnit`: a new defaulted field there changes
+  every stored body's bytes and breaks `check_pinned` for old runs
 - Sources are listed in code (`SOURCES` in `sources/literature.py`), not read
   from a config file, so nothing gets wired in by editing one
 - Model names live only in `defaults/models.yaml`, or in a whole-file
@@ -197,7 +212,12 @@ as `improved`. Models skip these unless explicitly told not to.
 | Setup check | Built. `bedrock-litreview doctor`, `/reviews check`; same checks as a run's preflight |
 | Deleting a run | Built. `bedrock-litreview forget`, `/reviews forget`; the run's own output only |
 | `office` model names | **Unconfirmed.** `defaults/models.yaml` names two guesses; a vLLM server answers to its `--served-model-name`. `doctor` reports what the server really offers. Needs IT, then ship the real names |
-| Stage 9 (chat), PPTX, patents, drop folder | Not started |
+| Coverage ledger, study design, drift disclosure | Built and tested offline: `coverage.v1`, `study_design.v1`, `verification_context.v1` run artifacts, never in the report; `verify-run` compares environments (`--require-same-rules`). `rank.selection: evidence_aware` is opt-in and unmeasured on a real model |
+| Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |
+| Background from reviews | A code-written report section quoting reviews with links; never counted as evidence |
+| Fresh-inference determinism | Harness built (`bench determinism`, runbook in `docs/litreview/DETERMINISM_RUNBOOK.md`); not run on vLLM |
+| Patents | Built and tested offline; search confirmed live against EPO OPS. `bedrock-litreview patents`, `ask --patents`, `/review --patents`; the code-written "Competitor landscape" section only, never evidence. `claim_1`'s XML shape is unconfirmed — see `sources/epo_ops.py` |
+| Stage 9 (chat), PPTX, drop folder | Not started |
 
 Working and tested today, with no GPU and no network: everything above except
 real-model quality. Run `pytest tests/litreview` for this package, `pytest` for

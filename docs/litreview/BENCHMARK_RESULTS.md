@@ -5,6 +5,200 @@
 > and `evals/` is `evals/litreview/`; the numbers are unaffected. The to-do
 > list in § Next steps is still the to-do list.
 
+# Benchmark results — the mechanical fix batch (27 September 2026)
+
+Run after the eight-item fix batch `5373d99..de1915b` (see
+[FIX_BATCH_PROGRESS.md](FIX_BATCH_PROGRESS.md)). qwen3:8b at temperature 0,
+`--models laptop`, the three frozen searcher corpora in
+`evals/litreview/corpora-searcher`, the file judge in
+`evals/litreview/judge/answers.jsonl`.
+
+**This run earned its keep.** It found a false drop in a rule that this
+branch had just added and whose unit tests were all green, and it found that
+one of the gates the previous write-up called passing had never actually run.
+Neither was visible from `pytest`.
+
+| | before (26 Sep) | this run | gates |
+|---|---|---|---|
+| obesity | 66.6 | 68.3, then 67.9 | 7 of 9 |
+| asthma | 68.2 | 69.4, then 69.2 | 9 of 9 (8 of 9 on one pass) |
+| migraine | 80.0 | 70.0 | 9 of 9 |
+
+## Read these numbers with three caveats, or not at all
+
+**The file judge is keyed by claim text, so this batch invalidated its own
+comparison.** Items 4, 5 and 6 change which sentences are written and how they
+are worded, and a reworded or new claim has no answer on file. The migraine run
+logged 8 cache misses and reports "judged 30/42" then "40/42" pipeline claims;
+its 70.0 against the earlier 80.0 is substantially unjudged claims, not
+measured regression. A before/after score difference in this table cannot be
+attributed to the pipeline.
+
+**One gate is non-deterministic on identical input.** The asthma report
+`3367ba2e60f434df` was scored three times: 69.4, 69.2, 69.2, and 9 of 9, 8 of
+9, 9 of 9 gates. Same report id, so the pipeline output was byte-identical and
+the variation is entirely in judging. `judge catches flipped effects` also went
+FAIL then PASS across two runs of identical *pre-batch* code
+(`20260927T004710Z`, `20260927T004749Z`). This is OPEN_ISSUES item 25, and it
+is large enough to swamp the differences in the table above.
+
+**Asthma and obesity numbers before tonight were produced without a verified
+context window.** `bench/run.py` builds its own `Settings` and calls
+`runner.answer_question` directly, never `service.preflight`, so unlike the
+employee-facing path it has no check on the 12,288-token minimum in
+`defaults/models.yaml`. The default `laptop` profile is 8,192, and
+`inference/openai_compatible.py` never sends `num_ctx`, so the real limit is
+whatever `ollama serve` was started with. `OLLAMA_CONTEXT_LENGTH` was unset
+before this run. It was set to 12,288 and verified in the running server's own
+environment and in `ollama ps` for every run reported here.
+
+## Where the pipeline lost points
+
+**The hedge rule fired once, and the firing was wrong.** Obesity, section
+`targets:TMEM135`, evidence unit E189 (PMID37773161). The cited qualifier
+sentence states a fact and then speculates about its cause: "high fat feeding
+in male mice did not elicit a significant body weight difference between the
+genotypes, presumably because the already rapid diet-induced weight gain in
+male C57BL/6J mice could not be further increased by the TMEM135
+inactivation". The report sentence — "TMEM135 knockout in mice led to glucose
+intolerance, hyperinsulinemia, and insulin resistance, while high fat feeding
+in male mice did not elicit a significant body weight difference between
+genotypes" — repeated only the fact and never asserted the guess. Nothing was
+unhedged, and a legitimate finding was deleted. Fixed in `0a2822f`, with both
+narrowings tested from these real sentences; the asthma S25 case the rule
+exists for is still caught.
+
+**Confirmed by re-running obesity after the fix** (`20260927T082510Z`). The
+writer drafted the same sentence again, and the guard now keeps it: the
+identical text citing E189 is `"kept": true, "drop_reason": null`, where in
+`20260927T070944Z` it was `"kept": false` with `"drops a hedge the cited
+evidence carries"`. The hedge reason appears zero times in the whole report,
+`sentences_kept` is 32 against 31, and `sentences_dropped` is 14 against 15 -
+one sentence recovered, and nothing else changed hands. `integrity check
+passes` and `claims supported by citations` still PASS. Overall 67.90.
+
+Two other things that rerun settles. `judge catches flipped effects` came back
+PASS on the same corpus where it had FAILed twice, which is further evidence it
+is the flaky gate of item 25 rather than a property of the pipeline. And `no
+distractor leaked` FAILs again at exactly 0.40, unchanged by the hedge fix,
+which is what a genuinely pre-existing weakness should do.
+
+**Obesity leaks 2 of 5 distractor papers, and always did.** `no distractor
+leaked` FAILs at a 0.40 leak rate, where the two pre-batch runs PASSed — but
+their `distractors.json` is `{}`. No distractors were ever made, so that gate
+passed vacuously and the earlier write-up's "every gate passes on all three"
+was not a measurement. This run made 5 and 2 leaked, both graded 3 and about
+the exact entity. Migraine made 5 and leaked 0, so the machinery works and the
+obesity result is real. **This is a pre-existing weakness this batch exposed,
+not one it caused.**
+
+## What the batch demonstrably fixed, on real data
+
+Read from the obesity report `cb23593c148f1697` against the pre-batch
+`20260927T004749Z` claims:
+
+- **Item 8, other-work lead-ins.** "Human genetic studies have identified
+  GPR75 loss-of-function variants to be strongly protective against obesity"
+  was a claim before and is gone now. `evidence_units` 206 to 205.
+- **Item 4, garbled drafts.** "Hypoth, hypothalamic Sik3 mRNA levels were
+  significantly increased ..." was a claim before and is gone now. The
+  report's own methods line reads "1 removed as a corrupted,
+  duplicated-fragment draft" — the counter fired exactly once, on exactly the
+  sentence it was built for. Migraine: 0, asthma: unchanged behaviour.
+- **Item 5, leftover connective.** "However, when challenged with chronic
+  positive energy balance through 10 weeks of HFD feeding, NPY cre/+ ,SIK3
+  lox/lox mice exhibited significantly reduced body weight gain ..." is
+  replaced by the same sentence without the connective. The guard still judged
+  the model's original words.
+- **Item 3, abstract labels.** `integrity check passes` PASSes on all three
+  corpora and `quote_validity` is 1.00, so advancing `start` alongside the
+  stripped text did not break the `section[start:end] == text` invariant that
+  `verify_run` re-checks. This was the failure mode with the worst blast
+  radius and it did not happen.
+
+## What this run cannot measure
+
+**Item 7 is unreachable through any stored corpus.** `ingest.prepare()` sets
+`paper.full_text = None` after the one-time section split at corpus-build
+time, and re-splits only when `sections` is empty. All three corpora were
+built 2026-09-25, before `de1915b`, so every one of their 208 papers carries
+sections frozen from the old parser with no raw text left to re-split. This is
+not confined to PMID41596081 and PMID41858165: no stored corpus can exercise
+the new "unknown" bucket at all. **An unchanged number here is not evidence
+that the fix is inert.** Measuring it needs a corpus rebuilt from source, which
+also means the numbered-heading gap in `parsing/sections.py` should be fixed
+first, or the rebuild will simply file both papers as "unknown" again.
+
+# Completeness and integrity branch — what was and was not measured (26 September 2026)
+
+Branch `litreview/completeness-integrity-11-15`, rebased onto `995d193` (OPEN_ISSUES
+items 10–14; numbered 11–15 at `d3e3342`). **No real model was run for this branch.** No live literature
+search and no live provider request were made either. Every number in this
+section is either a code-only measurement or a *synthetic* control, labelled
+as such. All earlier results below are unchanged history.
+
+**Synthetic selection control.**
+- *Method (the audit's):* every paper chosen for grading is *assigned* grade
+  3; nothing is judged by a model. The real planner and chunker are then run
+  on the frozen searcher corpora (`evals/litreview/corpora-searcher/`), with
+  the exact benchmark questions.
+- *What it counts:* reference targets (Open Targets) *named* in the papers
+  read and in their planned chunks. That is a mention count under the
+  current matcher, not supported-target recall.
+- *Reproduce:* `selector_sensitivity.py` in the branch handoff notes.
+
+| Corpus | Policy | Graded/read | Grounded human papers read | Ref. targets named in papers read | …in planned chunks |
+|---|---|---|---|---|---|
+| obesity | lexical (default) | 40/16 | 2 | 9 | 8 |
+| obesity | evidence_aware | 40/16 | 4 | 9 | 9 |
+| asthma | lexical (default) | 40/16 | 2 | 9 | 6 |
+| asthma | evidence_aware | 40/16 | 5 | 5 | 5 |
+| obesity | lexical | 40/32 | 3 | 11 | 10 |
+| asthma | lexical | 40/32 | 5 | 9 | 6 |
+| obesity | lexical | 80/16 | 3 | 7 | 7 |
+| asthma | lexical | 80/16 | 3 | 5 | 5 |
+
+- The lexical rows reproduce the audit's figures exactly.
+- `evidence_aware` does what it is built to do: it reads more human studies.
+- On asthma it also displaced papers that name other reference targets, so
+  it stays opt-in (`rank.selection`).
+- Acceptance needs a matched real-model run on these frozen corpora, and it
+  must report:
+  - raw mention, corpus-conditional and adjudicated recall (the new `cov_*`
+    scorecard rows);
+  - precision and exactness;
+  - model calls and latency.
+
+**Gate renamed.** When the benchmark's re-run goes through the call cache, the
+gate is now called "same report twice (cached replay, not fresh inference)".
+The old name overstated what it shows. The PASS rows recorded below were all
+cached replays, and their wording is kept as it was run. Fresh-inference
+repeatability (old step 36) is measured by the new harness:
+
+```sh
+python -m bedrock.litreview.bench determinism evals/litreview/determinism/payloads.jsonl \
+  --mode fresh --models office --repeats 20 --condition same-process-serial \
+  --out evals/litreview/results/determinism/<date> --manifest deployment.json
+```
+
+It has **not been run**. It needs the office vLLM server, an agreed compute
+budget, and IT for the restart conditions.
+
+**Report text change.** Reports written after this branch differ from
+earlier ones in three places, and nowhere else. This was checked section by
+section on the fixture and both frozen corpora; rankings and plans are
+byte-identical.
+
+- Gaps and "What the answer needed" now count papers with verified findings,
+  not papers planned.
+- A new "Background from reviews (not primary evidence)" section appears.
+- When publication notices are recorded, retracted papers are excluded and
+  concern-flagged findings are ranked last and kept out of the Answer, as
+  described in OPEN_ISSUES item 12.
+
+Measured against `995d193`, the fixture report's id changed from `0ef23b491fe436c4` to `0b858528433bc13f`.
+Stored reports are unchanged and still verify.
+
 # Benchmark results — anchored evidence (before/after)
 
 **24 September 2026.** This section measures the "anchored evidence" change on
@@ -1123,7 +1317,9 @@ evals/judge/answers.jsonl`, or with `--from-run <id>` for a stored report.
 36. **Prove determinism on vLLM.**
     - *What:* Show byte-identical reports with a warm cache, a cold cache with serial requests, and a cold cache under concurrent load. If the concurrent case fails, serialise model calls or document that determinism comes from cache replay.
     - *Why:* The client's first acceptance test so far has passed only on the laptop with a warm cache.
-    - *Where:* The benchmark's "same report twice" gate, run on the office box.
+    - *Where:* ~~The benchmark's "same report twice" gate~~ - that gate replays the call cache. Use
+      `python -m bedrock.litreview.bench determinism --mode fresh` (harness built 26 September 2026, not yet run),
+      on the office box.
     - *Done when:* The results are recorded in this file.
     - *Owner:* Foreman · *Depends on:* 32–35
 37. **Re-benchmark on the office model, timed, and choose an on-site judge.**

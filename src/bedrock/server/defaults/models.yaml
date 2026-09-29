@@ -1,0 +1,79 @@
+# Single source of truth for every model identifier, endpoint, and serving
+# parameter used by the agent pack. Nothing else in the codebase should
+# hardcode a model name — see docs/ARCHITECTURE.md section 3 for the
+# rationale behind each pick, and the caveat that these are recent (2026)
+# releases that should be re-verified against the vendor model card before
+# procurement.
+
+director:
+  role: director
+  # Reasoning model: expensive, called rarely, thinks a lot when it runs.
+  model_name: ${DIRECTOR_MODEL_NAME:-deepseek-ai/DeepSeek-V4-Flash-0731}
+  endpoint: ${DIRECTOR_LLM_URL:-http://director-llm:8001/v1}
+  served_via: vllm
+  precision: fp8
+  context_length: ${DIRECTOR_CONTEXT_LENGTH:-131072}          # capped below the model's 1M max for KV-cache budget; raise if hardware allows
+  supports_thinking_mode: true
+  thinking_mode_default: true      # Director should "think a lot" per spec
+  api_key_env: DIRECTOR_LLM_API_KEY   # optional; local vLLM usually needs none
+  max_parallel: ${DIRECTOR_MAX_PARALLEL:-8}   # calls at once on this server; roles sharing a server share a queue
+  fallback:
+    note: "If a second node is available, swap to the higher-quality sibling."
+    model_name: deepseek-ai/DeepSeek-V4-Pro-0813
+    context_length: 131072
+
+specialist:
+  role: specialist
+  # Large workhorse model: does most real work via tools.
+  model_name: ${SPECIALIST_MODEL_NAME:-Qwen/Qwen3.8-27B}
+  endpoint: ${SPECIALIST_LLM_URL:-http://specialist-llm:8002/v1}
+  served_via: vllm
+  precision: fp8
+  context_length: ${SPECIALIST_CONTEXT_LENGTH:-65536}
+  supports_thinking_mode: true
+  thinking_mode_default: false     # only enabled when Director marks a task "hard"
+  api_key_env: SPECIALIST_LLM_API_KEY
+  max_parallel: ${SPECIALIST_MAX_PARALLEL:-8}
+  fallback:
+    note: "Higher-end MoE swap if GPU budget allows; same interface."
+    model_name: Qwen/Qwen3.8-2.4T-A95B
+    context_length: 65536
+
+runner:
+  role: runner
+  # Small, fast, cheap: classification, summarization, extraction, redaction,
+  # compaction, formatting. Configurable size per spec's request.
+  model_name: ${RUNNER_MODEL_NAME:-Qwen/Qwen3.6-35B-A3B}
+  endpoint: ${RUNNER_LLM_URL:-http://runner-llm:8003/v1}
+  served_via: vllm
+  precision: fp8
+  context_length: ${RUNNER_CONTEXT_LENGTH:-32768}
+  supports_thinking_mode: false
+  thinking_mode_default: false
+  api_key_env: RUNNER_LLM_API_KEY
+  max_parallel: ${RUNNER_MAX_PARALLEL:-8}
+  alternatives:
+    # Swap the model_name above to any of these for a cheaper/smaller Runner
+    # tier; no code changes required.
+    - Qwen/Qwen3.8-27B        # if you want Runner and Specialist on shared weights
+    - Qwen/Qwen3.5-0.8B       # extreme-low-latency classification-only tier
+
+notes:
+  role: notes
+  # Meeting notes from recorded meetings (bedrock.server.meetings). The
+  # recorder's own variables still set it. The window defaults to 8192, the
+  # laptop-profile window notes were always sized for; raise it with
+  # MEETING_SUMMARY_CONTEXT when this points at a larger server model.
+  model_name: ${MEETING_SUMMARY_MODEL:-llama3.1:8b}
+  endpoint: ${MEETING_SUMMARY_ENDPOINT:-http://localhost:11434/v1}
+  served_via: ollama
+  context_length: ${MEETING_SUMMARY_CONTEXT:-8192}
+  supports_thinking_mode: false
+  thinking_mode_default: false
+  max_parallel: ${MEETING_SUMMARY_MAX_PARALLEL:-1}
+
+# Global serving defaults, overridable per-model above.
+defaults:
+  request_timeout_s: 120
+  max_retries: 2
+  stream: true

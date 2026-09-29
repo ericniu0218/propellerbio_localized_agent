@@ -58,7 +58,7 @@ DEFAULT_CONFIG_DIR = Path.home() / ".config" / "bedrock" / "litreview"
 # test ever touches a real home directory.
 
 #: Every key the `[litreview]` table in bedrock's config.toml may contain.
-KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email")
+KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email", "entailment_check", "integrity_checks")
 
 #: Which model set a machine profile gets when nothing says otherwise.
 PROFILE_MODEL_SETS = {"server": "office"}
@@ -179,6 +179,15 @@ class Settings:
     separate, lower-confidence lane (sources/patents_base.py) — these are
     read only by `bedrock-litreview patents`, never by the model-facing
     pipeline."""
+    entailment_check: bool = False
+    """Run the optional local entailment check in Stage 7
+    (`report/entailment.py`). Off by default: it is unmeasured, and a false
+    drop loses real evidence."""
+    integrity_checks: str = "auto"
+    """`auto`: each new review asks PubMed and Crossref about retractions and
+    other notices for its papers (identifiers only). `manual`: only
+    `bedrock-litreview integrity refresh` does. Set in the app with
+    `/reviews settings`; see `preferences.py`."""
 
     def model_for(self, job: str) -> str:
         tier = self.jobs.get(job, "medium")
@@ -291,7 +300,15 @@ def load_settings(
         contact_email=str(env.get("SOURCES_CONTACT_EMAIL") or table.get("contact_email") or ""),
         epo_ops_key=env.get("EPO_OPS_KEY", ""),
         epo_ops_secret=env.get("EPO_OPS_SECRET", ""),
+        entailment_check=_flag(env.get("BEDROCK_LITREVIEW_ENTAILMENT_CHECK"), table.get("entailment_check", False),
+                               "entailment_check"),
     )
+    from bedrock.litreview.preferences import PreferenceError, integrity_mode
+
+    try:
+        settings.integrity_checks = integrity_mode(data_dir, table, env)
+    except PreferenceError as exc:
+        raise ConfigError(str(exc)) from exc
     if check_endpoint:
         assert_local_url(settings.base_url, allowed)
         for spec in models.values():
@@ -313,6 +330,24 @@ def _table(bedrock_settings) -> dict[str, Any]:
             f"Allowed keys: {', '.join(KNOWN_KEYS)}."
         )
     return table
+
+
+def _flag(env_value: str | None, table_value: Any, key: str) -> bool:
+    """An on/off setting: the environment variable, else the table's value.
+
+    Strict on purpose. TOML `entailment_check = "false"` is a string, and a
+    string is truthy in Python: read loosely, it would switch the check ON.
+    """
+    if env_value is not None:
+        word = env_value.strip().lower()
+        if word in ("1", "true", "yes", "on"):
+            return True
+        if word in ("", "0", "false", "no", "off"):
+            return False
+        raise ConfigError(f"{key}: expected 1 or 0 in the environment, got {env_value!r}")
+    if not isinstance(table_value, bool):
+        raise ConfigError(f"{key} in the [litreview] table must be true or false, got {table_value!r}")
+    return table_value
 
 
 def _allowed_hosts(env: Mapping[str, str], table: Mapping[str, Any]) -> tuple[str, ...]:

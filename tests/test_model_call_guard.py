@@ -56,3 +56,53 @@ def test_the_guard_would_catch_a_direct_call(tmp_path):
         "        yield part\n"
     )
     assert stream_chat_calls(sneaky) == [3]
+
+
+def chat_completion_urls(path: Path) -> list[int]:
+    """String constants naming the chat-completions endpoint, docstrings aside.
+
+    Calling ``stream_chat`` is one way round the scheduler; talking to the
+    server's HTTP endpoint directly is the other (the agent-pack server's old
+    ``HTTPModelClient`` did exactly that). Only ``bedrock.inference`` may build
+    that URL.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "/chat/completions" in node.value
+        and id(node) not in docstrings
+    ]
+
+
+def test_only_the_inference_package_calls_the_chat_endpoint():
+    offenders = [
+        f"{path.relative_to(SOURCE.parent)}:{line}"
+        for path in sorted(SOURCE.rglob("*.py"))
+        if ALLOWED not in path.parents
+        for line in chat_completion_urls(path)
+    ]
+    assert offenders == [], (
+        "These talk to a model server's HTTP endpoint directly; go through Scheduler instead: "
+        + ", ".join(offenders)
+    )
+
+
+def test_the_endpoint_guard_would_catch_a_direct_request(tmp_path):
+    sneaky = tmp_path / "feature.py"
+    sneaky.write_text(
+        '"""Posts to /chat/completions in a docstring, which is fine."""\n'
+        "async def go(client, base):\n"
+        '    return await client.post(f"{base}/chat/completions", json={})\n'
+    )
+    assert chat_completion_urls(sneaky) == [3]

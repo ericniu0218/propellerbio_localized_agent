@@ -48,7 +48,24 @@ CREATE TABLE IF NOT EXISTS bench_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, question_id TEXT NOT NULL,
     created TEXT NOT NULL, body TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS integrity_observations (
+    observation_id TEXT PRIMARY KEY, provider TEXT NOT NULL, retrieved_at TEXT NOT NULL,
+    raw_sha256 TEXT, body TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS integrity_subjects (
+    subject_id TEXT NOT NULL, observation_id TEXT NOT NULL, PRIMARY KEY (subject_id, observation_id)
+);
+CREATE INDEX IF NOT EXISTS integrity_by_time ON integrity_observations (provider, retrieved_at);
+CREATE TABLE IF NOT EXISTS integrity_raw (sha256 TEXT PRIMARY KEY, body BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS integrity_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, subject_id TEXT NOT NULL, decision TEXT NOT NULL,
+    decided_by TEXT NOT NULL, decided_at TEXT NOT NULL, note TEXT
+);
 """
+
+MAX_RAW_BYTES = 5_000_000
+"""The largest provider response kept verbatim. A lookup of a few hundred
+identifiers is far below this; a larger body is recorded by hash only."""
 
 Manifest = list[tuple[str, str]]
 """(paper id, sha256 of its body), in the order the run read the papers."""
@@ -333,6 +350,77 @@ class Database:
     def ratings(self, report_id: str) -> list[Rating]:
         rows = self.conn.execute("SELECT body FROM ratings WHERE report_id = ? ORDER BY id", (report_id,)).fetchall()
         return [Rating.model_validate_json(r[0]) for r in rows]
+
+    # publication integrity: append-only -----------------------------------------------
+
+    def add_integrity_observation(self, obs, raw: bytes | None = None) -> str:
+        """Append one observation (and its raw response, by hash). Never
+        updates or deletes: a later observation is a new row, and the current
+        status is derived from all of them (`publication_integrity.derive_state`).
+        Returns the observation id; adding the same observation twice is a no-op."""
+        oid = obs.observation_id
+        subjects = set(obs.requested_ids) | set(obs.resolved_ids)
+        subjects |= {e.subject_id for e in obs.events if e.subject_id} | {e.notice_id for e in obs.events if e.notice_id}
+        subjects |= {alias for e in obs.events for alias in e.subject_aliases}
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO integrity_observations (observation_id, provider, retrieved_at, raw_sha256, body) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (oid, obs.provider, obs.retrieved_at, obs.raw_sha256, obs.model_dump_json()),
+            )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO integrity_subjects (subject_id, observation_id) VALUES (?, ?)",
+                [(sid, oid) for sid in sorted(subjects)],
+            )
+            if raw is not None and obs.raw_sha256 and len(raw) <= MAX_RAW_BYTES:
+                self.conn.execute("INSERT OR IGNORE INTO integrity_raw (sha256, body) VALUES (?, ?)",
+                                  (obs.raw_sha256, raw))
+        return oid
+
+    def integrity_observations(self, subject_ids: Iterable[str]):
+        """Every stored observation that mentions any of these identifiers."""
+        from bedrock.litreview.publication_integrity import PublicationIntegrityObservation
+
+        ids = sorted(set(subject_ids))
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT DISTINCT o.body FROM integrity_observations o JOIN integrity_subjects s "
+            f"ON s.observation_id = o.observation_id WHERE s.subject_id IN ({marks}) "
+            f"ORDER BY o.retrieved_at, o.observation_id", ids,
+        ).fetchall()
+        return [PublicationIntegrityObservation.model_validate_json(b) for (b,) in rows]
+
+    def add_integrity_decision(self, subject_id: str, decision: str, *, by: str, at: str, note: str | None) -> None:
+        """A person's decision about a paper that was retracted and later
+        reinstated: `include` adds it back to new reviews, `exclude` takes it
+        out again. Appended, never edited; the latest one counts."""
+        if decision not in ("include", "exclude"):
+            raise ValueError(f"decision must be include or exclude, not {decision!r}")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO integrity_decisions (subject_id, decision, decided_by, decided_at, note) "
+                "VALUES (?, ?, ?, ?, ?)", (subject_id, decision, by, at, note))
+
+    def integrity_decision(self, subject_ids: Iterable[str]) -> dict | None:
+        """The latest decision recorded about any of these identifiers."""
+        ids = sorted(set(subject_ids))
+        if not ids:
+            return None
+        row = self.conn.execute(
+            f"SELECT subject_id, decision, decided_by, decided_at, note FROM integrity_decisions "
+            f"WHERE subject_id IN ({','.join('?' * len(ids))}) ORDER BY id DESC LIMIT 1", ids).fetchone()
+        if row is None:
+            return None
+        return dict(zip(("subject_id", "decision", "decided_by", "decided_at", "note"), row))
+
+    def integrity_observation(self, observation_id: str):
+        from bedrock.litreview.publication_integrity import PublicationIntegrityObservation
+
+        row = self.conn.execute("SELECT body FROM integrity_observations WHERE observation_id = ?",
+                                (observation_id,)).fetchone()
+        return PublicationIntegrityObservation.model_validate_json(row[0]) if row else None
 
     def add_bench_result(self, report_id: str, question_id: str, created: str, body: str) -> None:
         with self.conn:

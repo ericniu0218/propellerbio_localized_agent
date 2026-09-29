@@ -87,6 +87,8 @@ REVIEWS_HELP = """\
 | `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
 | `/reviews verify --all` | Re-prove every finished report |
 | `/reviews check` | Can this machine run a review? What to change |
+| `/reviews settings` | Retraction checks: automatic or manual, and what each means |
+| `/reviews reinstate <paper>` | Add back a paper that was retracted and later reinstated (your decision) |
 | `/reviews forget <run-id>` | Delete one run's report and working notes |
 
 Everything except `check` reads local files only, so it works with the model
@@ -215,10 +217,18 @@ def start_notice(request: ReviewRequest, settings: ReviewSettings) -> str:
         papers = "the papers already collected for this question"
     model = "no model (rules and code only)" if not request.use_model else f"model set {as_code(settings.model_set)}"
     question = markdown_text(request.question) if request.question else "(resumed run)"
+    if request.resume:
+        checks = "as when the run started"
+    elif getattr(settings, "integrity_checks", "auto") == "auto":
+        checks = ("automatic — the papers' ID numbers (not your question) go to PubMed and Crossref; "
+                  "`/reviews settings` to change")
+    else:
+        checks = "manual — nothing is sent; `/reviews settings` to change"
     return (
         f"**Literature review started** — {question}\n\n"
         f"- Papers: {papers}\n"
-        f"- Models: {model}\n\n"
+        f"- Models: {model}\n"
+        f"- Retraction check: {checks}\n\n"
         "It runs beside the chat: keep asking questions while it works. "
         "`/review stop` stops it, and the run can be resumed afterwards."
     )
@@ -485,6 +495,12 @@ async def run_reviews_command(
     if text.casefold().startswith("verify"):
         await _verify(text[len("verify"):].strip(), settings, notify)
         return
+    if text.casefold().startswith("settings"):
+        await _settings(text[len("settings"):].strip(), settings, notify)
+        return
+    if text.casefold().startswith("reinstate"):
+        await _reinstate(text[len("reinstate"):].strip(), settings, notify)
+        return
     if text.casefold().startswith("forget"):
         await _forget(text[len("forget"):].strip(), settings, notify)
         return
@@ -517,6 +533,88 @@ async def run_reviews_command(
     ]
     lines += ["", f"{as_code('/reviews verify <run-id>')} re-proves one report against the papers it pinned."]
     await notify("\n".join(lines), "info")
+
+
+async def _settings(argument: str, settings: "ReviewSettings", notify: Notify) -> None:
+    """`/reviews settings [auto|manual]`: show or change how reviews check
+    their papers for retractions, explained for someone who is not technical."""
+    import os
+
+    from bedrock.litreview.preferences import (
+        INTEGRITY_EXPLAINED,
+        INTEGRITY_MODES,
+        PreferenceError,
+        integrity_mode,
+        save_integrity_mode,
+    )
+
+    choice = argument.strip().casefold()
+    if choice and choice not in INTEGRITY_MODES:
+        await notify(f"/reviews settings: choose `auto` or `manual`, not `{markdown_text(argument)}`.", "error")
+        return
+    if choice:
+        try:
+            await asyncio.to_thread(save_integrity_mode, settings.data_dir, choice)
+        except (OSError, PreferenceError) as exc:
+            await notify(safe_line(exc, limit=400), "error")
+            return
+    try:
+        current = integrity_mode(settings.data_dir)
+    except PreferenceError as exc:
+        await notify(safe_line(exc, limit=400), "error")
+        return
+    names = {"auto": "Automatic", "manual": "Manual"}
+    lines = [f"**Retraction checks: {names[current]}**" + (" — saved." if choice else ""), ""]
+    if os.environ.get("BEDROCK_LITREVIEW_INTEGRITY_CHECKS"):
+        lines += ["This machine sets it with `BEDROCK_LITREVIEW_INTEGRITY_CHECKS`, which wins over the choice "
+                  "saved here.", ""]
+    lines += ["Before a review, the app can check whether any of its papers has been retracted, questioned "
+              "by its journal (an *expression of concern*) or corrected. Your two choices:", ""]
+    for mode in INTEGRITY_MODES:
+        marker = " ← current" if mode == current else ""
+        lines += [INTEGRITY_EXPLAINED[mode] + marker, ""]
+    other = "manual" if current == "auto" else "auto"
+    lines.append(f"To switch: {as_code(f'/reviews settings {other}')}. The choice applies to reviews started "
+                 "from now on; reports already written do not change.")
+    await notify("\n".join(lines), "info")
+
+
+async def _reinstate(argument: str, settings: "ReviewSettings", notify: Notify) -> None:
+    """`/reviews reinstate <paper> [--undo] [--note TEXT]`: a scientist adds
+    back a paper that was retracted and later reinstated. Nothing is added
+    back unless someone does this."""
+    import getpass
+    import os
+    from datetime import datetime, timezone
+
+    parser = CommandParser("/reviews reinstate")
+    parser.add_argument("paper")
+    parser.add_argument("--undo", action="store_true")
+    parser.add_argument("--note")
+    try:
+        options = parser.parse_args(split_arguments(argument))
+    except CommandUsageError as exc:
+        await notify(str(exc), "error")
+        return
+    who = os.environ.get("BEDROCK_USER") or getpass.getuser()
+
+    def decide() -> str:
+        from bedrock.litreview.db import Database
+        from bedrock.litreview.publication_integrity import decide_reinstated
+
+        db = Database(settings.db_path)
+        try:
+            return decide_reinstated(db, options.paper, include=not options.undo, by=who, note=options.note,
+                                     now=datetime.now(timezone.utc))
+        finally:
+            db.conn.close()
+
+    try:
+        message = await asyncio.to_thread(decide)
+    except (ValueError, OSError) as exc:
+        await notify(f"/reviews reinstate: {safe_line(exc, limit=400)}", "error")
+        return
+    await notify(message, "info")
 
 
 def _recent_rows(settings: ReviewSettings) -> list[tuple[str, str, str | None, str]]:
@@ -559,21 +657,38 @@ async def _verify(argument: str, settings: "ReviewSettings", notify: Notify) -> 
 
     lines = ["**Verification**", ""]
     failed = False
-    for run_id, violations in results:
+    changed = False
+    for run_id, violations, summary, differences, advisories in results:
         if violations:
             failed = True
             lines.append(f"- {as_code(run_id)}: **{len(violations)} violation(s)**")
             lines.extend(f"  - {safe_line(v, limit=200)}" for v in violations[:5])
         else:
             lines.append(f"- {as_code(run_id)}: OK")
+        # The same three answers `bedrock-litreview verify-run` prints: the
+        # environment is a disclosure beside the verdict, not a violation.
+        if summary:
+            lines.append(f"  - {safe_line(summary, limit=400)}")
+            lines.extend(f"    - {safe_line(d, limit=200)}" for d in differences[:5])
+            changed = changed or bool(differences)
+        # Recorded retractions or concerns about cited papers: advice for a
+        # person, from this machine's own records; nothing is fetched here.
+        lines.extend(f"  - ! {safe_line(x, limit=300)}" for x in advisories[:5])
     if failed:
         lines += ["", "A violation is a bug in the pipeline, not a judgement about the papers."]
+    if changed:
+        lines += ["", "A changed environment means today's checks are not the ones the run was built "
+                  "under; it does not mean the report is corrupt."]
     await notify("\n".join(lines), "error" if failed else "info")
 
 
-def _verify_runs(settings: ReviewSettings, run_id: str | None, all_runs: bool) -> list[tuple[str, list[str]]]:
+def _verify_runs(
+    settings: ReviewSettings, run_id: str | None, all_runs: bool
+) -> list[tuple[str, list[str], str | None, list[str], list[str]]]:
+    """(run id, violations, one-line summary, environment differences,
+    publication advisories) per run."""
     from bedrock.litreview.db import Database
-    from bedrock.litreview.report.invariants import verify_run
+    from bedrock.litreview.report.invariants import assess_run
 
     if not Path(settings.db_path).exists():
         return []
@@ -584,9 +699,12 @@ def _verify_runs(settings: ReviewSettings, run_id: str | None, all_runs: bool) -
         out = []
         for one in run_ids:
             try:
-                out.append((one, verify_run(db, one)))
+                a = assess_run(db, one)
+                changes = [d.line() for d in a.environment.differences
+                           if d.kind in ("changed", "source_changed", "missing_now")]
+                out.append((one, a.violations, a.summary(), changes, a.advisories))
             except Exception as exc:  # noqa: BLE001 - an unreadable run is a failure too
-                out.append((one, [f"cannot be verified: {type(exc).__name__}: {exc}"]))
+                out.append((one, [f"cannot be verified: {type(exc).__name__}: {exc}"], None, [], []))
         return out
     finally:
         db.conn.close()

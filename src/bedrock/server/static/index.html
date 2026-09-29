@@ -616,7 +616,7 @@ async function startSessionForName(name) {
 }
 
 document.getElementById("sso-btn").onclick = () => {
-  window.location.href = `${API}/auth/login`;
+  window.location.href = `${API}/auth/login?next=/legacy`;
 };
 
 document.getElementById("login-btn").onclick = async () => {

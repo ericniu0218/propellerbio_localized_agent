@@ -172,6 +172,155 @@ def infer_evidence_type(species: str, stated: str) -> str:
     return stated
 
 
+# --- evidence type from the quote's own words ------------------------------------
+#
+# `infer_evidence_type` trusts the species, and the species can come from the
+# wrong sentence. On the qwen3:8b asthma run a quote about bronchial epithelial
+# cells in a dish ("HBECs were exposed to CRE ... EN4 effectively suppressed
+# CRE-induced c-Myc expression") was labelled in_vivo, species "mice": the mice
+# were in the context sentence, not in the experiment the quote reports. And on
+# the obesity run a Western blot of "mast cells from individuals with obesity"
+# was labelled human_genetic, though nothing about it is genetic.
+#
+# So the quote's own words about the system decide, ahead of the species:
+# cells in a dish -> in_vitro, animals -> in_vivo, people or their tissue ->
+# human. When the quote names none of these, or names two ("in mice and in
+# patients"), it decides nothing and the species-based inference above stands.
+# `stages/s5_extract.py` `settle_evidence_type` applies it and writes every
+# change on the unit.
+#
+# `human_clinical` is the bucket for any human study that is not genetic,
+# observational tissue work included. The four evidence types are in_vitro,
+# in_vivo, human_clinical and human_genetic (`models.EvidenceType`); a Western
+# blot of patients' cells is human evidence and it is not genetic, so it is
+# human_clinical - the same bucket a cross-sectional cohort already lands in.
+# `human_genetic` needs genetic-study words (a variant, a polymorphism, GWAS,
+# Mendelian randomisation, carriers of an allele ...) in the quote or its
+# context sentence, *and* people.
+#
+# Measured on the 593 stored qwen3:8b findings (obesity, asthma, migraine):
+# 43 change type - 26 human_genetic -> human_clinical (tissue, expression and
+# single-cell data from patients; background sentences), 9 in_vivo -> in_vitro
+# (HBECs, BMMCs, hiPSC cardiomyocytes, co-cultures, each with mice only in the
+# context sentence), 3 in_vitro -> human_clinical (pharmacokinetics in healthy
+# individuals, "in pre-school children"), 2 in_vitro -> in_vivo, 1 each
+# in_vitro -> human_genetic, in_vivo -> human_clinical and human_clinical ->
+# in_vitro ("our ... cell culture studies"). Read one by one; the rules below
+# that look fussy (singular "mouse", the in_vitro guard, no pre-verb
+# "treated ... cells", no promotion of a trial to human_genetic) each remove
+# a wrong change found that way.
+
+# Work in a dish. Deliberately not a bare "cells": "Th17 cells rose in
+# patients" and "mast cells from individuals with obesity" are observations of
+# people's cells, not cell culture. A named line, an organoid, culture words,
+# or cells described as being exposed, treated, stimulated or transfected.
+# Not "G36-treated MAIT cells" on its own: those were transferred into mice,
+# and the quote that says so need not name the mice.
+_CELL_WORK = re.compile(
+    r"\b(?:in\s+vitro|cell\s+lines?|cell\s+cultures?|cultured|in\s+culture|co-?cultures?"
+    r"|culture\s+(?:system|medium|media|model|studies|assays?)|organoids?|spheroids?"
+    r"|n?hbecs?|hbe|beas-?2b|16hbe\w*|calu-?3|a549|hek\s*-?\s*293\w*|hela|jurkat|thp-?1|u937|caco-?2|hacat"
+    r"|raw\s*264(?:\.7)?|3t3-?l1|hepg2|huh-?7|c2c12|mcf-?7|sh-?sy5y|pc-?12|cho\s+cells?"
+    r"|h?ipsc\w*|bmdms?|bmdcs?|bmmcs?"
+    r"|(?:cells?|lines?)\s+(?:were|was|are|is)\s+(?:\w+\s+){0,2}?(?:exposed|treated|stimulated|transfected"
+    r"|pretreated|incubated|infected|challenged|cultured|seeded|differentiated))\b",
+    re.I,
+)
+# Animals, as the animals themselves. The singular "mouse", "rat" and
+# "murine" are nearly always adjectives - "mouse Chrm1", "mouse WT protein",
+# "human and murine dendritic cells" - and name an animal only before a model
+# or an organ ("mouse model", "mouse lungs"). "In vivo" and a named disease
+# model count too: "in both the HDM asthma model and the in vitro cell models"
+# is both, and must decide nothing.
+_ANIMALS = re.compile(
+    r"\b(?:mice|rats|c57bl\w*|balb/?c|db/db|ob/ob|zebrafish|primates|macaques|monkeys|cynomolgus|rhesus"
+    r"|pigs|piglets|minipigs|dogs|rabbits|hamsters|guinea\s+pigs|sheep|animals|rodents|pups|dams|in\s+vivo"
+    r"|(?:rodent|animal|primate|hdm|ova|asthma|obesity)\s+models?"
+    r"|(?:mouse|murine|rat)\s+(?:[\w-]+\s+)?(?:models?|lungs?|livers?|brains?|hearts?|kidneys?|tissues?|adipose"
+    r"|skin|airways?|hypothalam\w*|intestines?|colons?|sera|serum|plasma|blood))\b",
+    re.I,
+)
+# People, and tissue or samples taken from them. The adjective "human" alone
+# does not count ("human bronchial epithelial cells" are cells); "human" with
+# a tissue or sample noun does. "Subjects" and "cohort" are left out: mouse
+# studies use both (`knowledge/meaning_words.yaml`).
+_PEOPLE = re.compile(
+    r"\b(?:patients?|participants?|volunteers?|individuals|people|persons?|children|adolescents|adults"
+    r"|infants|neonates|newborns|women|men|donors?|carriers|twins|probands?|cases\s+and\s+controls"
+    r"|healthy\s+controls?|clinical\s+trials?|phase\s+(?:[1-4]|i{1,3}v?)[ab]?\s+(?:clinical\s+)?(?:trial|study)"
+    r"|(?:human|patient)\s+(?:[\w-]+\s+){0,2}?(?:tissues?|samples?|biops(?:y|ies)|specimens?|sera|serum|plasma"
+    r"|blood|sputum|skin|lungs?|airways?|adipose|fat|brains?|livers?|muscle|cohorts?|subjects?|populations?"
+    r"|studies|data))\b",
+    re.I,
+)
+# A word joined to the next by a hyphen names no people where it stands:
+# "adult-onset deletion" was done in mice, "donor-derived cells" are cells.
+_HYPHENATED = re.compile(r"\b[^\W\d_]+-(?=[^\W\d_])")
+# Any cells at all, cultured or not ("MAIT cells", "PBMCs", "macrophages").
+# "Single-cell analysis" is a method, not cells.
+_ANY_CELLS = re.compile(
+    r"(?<!single-)\b(?:cells?|pbmcs?|macrophages?|monocytes?|neutrophils?|eosinophils?|lymphocytes?"
+    r"|fibroblasts?|keratinocytes?|adipocytes?|myocytes?|cardiomyocytes?|neurons?|hepatocytes?|epithelium)\b",
+    re.I,
+)
+_GENETIC = re.compile(
+    r"\b(?:variants?|polymorphisms?|snps?|gwas|genome-?wide\s+association|mendelian\s+randomi[sz]ation"
+    r"|heritab\w*|loss-of-function|gain-of-function|lof|alleles?|allelic|genotypes?|genotyp\w*|haplotypes?"
+    r"|rs\d{3,}|carriers?|homozyg\w*|heterozyg\w*|exome\w*|eqtls?|polygenic|germline|susceptibility\s+loc(?:us|i)"
+    r"|risk\s+(?:loc(?:us|i)|genes?|alleles?)|mutations?\s+carriers?|genetic(?:ally)?\s+(?:associat\w*|variation"
+    r"|predispos\w*|risk|determined|proxied|predicted))\b",
+    re.I,
+)
+
+
+def genetic_words(text: str) -> str | None:
+    """The first genetic-study word in `text` ("variant", "GWAS", "carriers"),
+    or None."""
+    m = _GENETIC.search(text or "")
+    return m.group(0) if m else None
+
+
+def system_in_quote(quote: str, stated: str, context: str = "") -> tuple[str, str] | None:
+    """(evidence type, the word that decided it) from the quote's own words
+    about what was studied, or None when the quote does not say, or says two
+    things.
+
+    - Cells in a dish win over people: "HBECs from patients were exposed to
+      CRE" is an experiment on cells, whoever donated them. Cells in a dish
+      and an animal together ("in both the HDM asthma model and the in vitro
+      cell models") decide nothing.
+    - A model's `in_vitro` label is not overruled by animals or people when
+      the quote names cells of any kind: a dish of people's or animals'
+      cells is named for its donors ("ligand-activated MAIT cells from
+      healthy individuals", "PBMCs from asthmatic children").
+    - Animals alone -> in_vivo; people alone -> human; both decide nothing.
+    - People with genetic-study words in the quote or context sentence are
+      human_genetic, unless the model said human_clinical: a Setmelanotide
+      trial "in MC4R mutation carriers" is a clinical trial whose population
+      is defined by a gene, not a genetic study. People without genetic words
+      are human_clinical, whatever the model said.
+
+    The context sentence is read only for genetic words, never for the
+    system: reading the system from it is the mistake this function exists
+    to undo.
+    """
+    cells = _CELL_WORK.search(quote)
+    animal = _ANIMALS.search(quote)
+    people = _PEOPLE.search(_HYPHENATED.sub(" ", quote))
+    if cells:
+        return None if animal else ("in_vitro", cells.group(0))
+    if stated == "in_vitro" and _ANY_CELLS.search(quote):
+        return None
+    if animal and not people:
+        return "in_vivo", animal.group(0)
+    if people and not animal:
+        genetic = genetic_words(quote) or genetic_words(context)
+        if not genetic:
+            return "human_clinical", people.group(0)
+        return (stated, genetic) if stated.startswith("human") else ("human_genetic", genetic)
+    return None
+
+
 # --- direction and outcome ----------------------------------------------------
 #
 # The model copies two phrases out of its quote: what was done to the target
@@ -218,6 +367,42 @@ def classify_direction(change: str) -> str | None:
     if activate and not block:
         return "activate"
     return None
+
+
+_DOSING_WORDS = re.compile(r"(\btreat|administ|inject|infus|\bdos(?:e|ed|es|ing)\b)", re.I)
+
+
+def names_intervention(change: str) -> bool:
+    """Do the words the model copied for "what was done to the target" name
+    an intervention at all, even one whose direction is not clear? A block or
+    activate word, a genetic variant ("LOF variants", "variant homozygotes"),
+    or dosing ("treatment with").
+
+    The model fills the field with whatever is to hand when nothing was done:
+    "observed", "showed increased", "continued progressively", "children
+    under 10 years of age" (all from the qwen3:8b obesity run). Those name
+    nothing done to anything, and neither does a diet or an allergen that
+    makes the disease model - which is why feeding and exposure are not here.
+    """
+    return bool(_BLOCK_WORDS.search(change) or _ACTIVATE_WORDS.search(change) or genetic_words(change)
+                or _DOSING_WORDS.search(change))
+
+
+def target_changed_in(quote: str, target: str) -> bool:
+    """Does the quote itself put a block or activate word right beside the
+    target's name - "PGGT1B deficiency", "Sirt6-deficient cells", "anti-IL-17A",
+    "inhibition of TSLP"? Within two words either side, hyphen-joined words
+    included. A backstop for when the words the model copied for the change
+    are not in the quote: the quote may still say the target was changed, and
+    a knockout that worsened disease must not be filed as an association."""
+    target = (target or "").strip()
+    if not target:
+        return False
+    near = re.compile(rf"(?:\S+\s+){{0,2}}\S*{re.escape(target)}\S*(?:\s+\S+){{0,2}}", re.I)
+    for m in near.finditer(quote):
+        if _BLOCK_WORDS.search(m.group(0)) or _ACTIVATE_WORDS.search(m.group(0)):
+            return True
+    return False
 
 
 def classify_outcome(effect: str) -> str | None:

@@ -1,0 +1,45 @@
+{"report":"qwen_obesity_after","s":"S1","grade":"faithful","note":"paper's own background line about prior human genetic work, attributed as such ('Human genetic studies have identified'), not as this paper's result; unit label evidence=human_genetic species='human' is wrong for a mouse paper"}
+{"report":"qwen_obesity_after","s":"S2","grade":"faithful","note":"exact; drops that it is a reanalysis of public transcriptome data (GEO: GSE94753), not the authors' own cohort"}
+{"report":"qwen_obesity_after","s":"S3","grade":"faithful","note":"verbatim abstract sentence; sits in the MC4R target section although the result it reports is that POMC-defect patients respond better than MC4R-deficient ones"}
+{"report":"qwen_obesity_after","s":"S4","grade":"faithful","note":"'compared to lean individuals' comes from the next sentence (>2-fold vs lean), which the paragraph supplies; overweight null result not claimed"}
+{"report":"qwen_obesity_after","s":"S6","grade":"misleading","note":"'In animal studies' fronts an in vitro knockdown validation in Gpr75-overexpressing HEK293 cells (a human cell line); the cited quote is female mouse body weight, the claim comes wholly from the naming sentence"}
+{"report":"qwen_obesity_after","s":"S9","grade":"faithful","note":""}
+{"report":"qwen_obesity_after","s":"S13","grade":"faithful","note":"claim exact, but the rendered sentence is corrupted: it begins 'Hypoth, hypothalamic Sik3 mRNA levels...'"}
+{"report":"qwen_obesity_after","s":"S16","grade":"faithful","note":"keeps 'specifically in a sub-cohort'; variant and BMI direction match the quote"}
+{"report":"qwen_obesity_after","s":"S18","grade":"weak_citation","note":"cited quote is a different result (glucose intolerance, hyperinsulinemia, insulin resistance); the male null-weight claim is the qualifier sentence only. Also drops 'adipose-specific' (Tmem135-AKO), reading as whole-body knockout"}
+{"report":"qwen_obesity_after","s":"S20","grade":"faithful","note":"verbatim; the attached context sentence ('Transgenic mice that overexpress TMEM135 ... previously described') is unrelated boilerplate"}
+{"report":"qwen_obesity_after","s":"S23","grade":"faithful","note":""}
+{"report":"qwen_obesity_after","s":"S24","grade":"faithful","note":"near-duplicate of S23 from the same unit E188; 'reduced body weight gain' and 'fed a high-fat diet' are a paraphrase of 'prevented diet-induced obesity', entailed but not measured in the quote"}
+{"report":"qwen_obesity_after","s":"S25","grade":"faithful","note":"accurate, including the HKO vs F/F comparison; 'acetyl-CoA' is a metabolite filed as a therapeutic target, and the real intervention is hepatic FASN ablation"}
+{"report":"qwen_obesity_after","s":"S29","grade":"weak_citation","note":"cited quote is generic AMPK/FAO textbook background ('In response to energy deprivation, AMPK promotes FAO...'); the whole claim is the qualifier sentence. Leading 'However,' is carried over with no antecedent, and the context sentence is a methods exclusion criterion"}
+{"report":"qwen_obesity_after","s":"S32","grade":"faithful","note":"quote plus context give the preventive design, dose and 8 weeks; matches"}
+{"report":"qwen_asthma_after","s":"S2","grade":"faithful","note":"verbatim first clause of the abstract sentence; label outcome=improved direction=block is wrong for an observed higher-ER association"}
+{"report":"qwen_asthma_after","s":"S3","grade":"faithful","note":"verbatim; inherits the broken subscripts 'FEV 1 /FVC' from extraction"}
+{"report":"qwen_asthma_after","s":"S4","grade":"faithful","note":"paper says butyrate 'or' CCL8 neutralisation (each alone); 'along with' could be read as a combination, and 'especially in Itln1 deficiency' is narrowed to 'in Itln1-deficient mice'"}
+{"report":"qwen_asthma_after","s":"S5","grade":"faithful","note":"verbatim, null result on mucus kept"}
+{"report":"qwen_asthma_after","s":"S6","grade":"faithful","note":"copies the paper's own summary wording but drops that the higher ER expression is on MAIT cells, not asthmatics generally"}
+{"report":"qwen_asthma_after","s":"S9","grade":"faithful","note":"sentence verbatim, but the unit is filed target='GPER-1' while the quote's result is estrogen's; GPER-1 appears only in the later naming sentence"}
+{"report":"qwen_asthma_after","s":"S13","grade":"faithful","note":""}
+{"report":"qwen_asthma_after","s":"S20","grade":"faithful","note":"quote covers only 'reprograms the allergen-induced epithelial response'; the ROS/senescence clause comes from the discussion context sentence, not the quote"}
+{"report":"qwen_asthma_after","s":"S23","grade":"faithful","note":"GPX4 half verbatim; the COX2 half comes from the qualifier sentence, which is shown to the reader, and is stated accurately"}
+{"report":"qwen_asthma_after","s":"S25","grade":"misleading","note":"paper says hospitalisation is 'potentially due to leukotriene mediated airway inflammation'; the hedge is dropped and background speculation becomes an association in a [mechanism] section"}
+{"report":"qwen_asthma_after","s":"S32","grade":"faithful","note":"numbers exact; the pre-specified bar was >86%, so only 3.0 mg/kg met it, but the sentence claims nothing more"}
+{"report":"qwen_asthma_after","s":"S34","grade":"faithful","note":"quote gives the 90% at 3.0 mg/kg; 'potentially therapeutic' comes from the conclusion sentence shown beside it and the hedge is kept"}
+{"report":"qwen_asthma_after","s":"S37","grade":"faithful","note":"AHR correctly expanded and 'but not sensitization' kept; target='AHR' is an outcome measure, not a target"}
+{"report":"qwen_asthma_after","s":"S41","grade":"faithful","note":"target='collagen deposition' is an outcome measure, not a target; FR is never expanded to FR900359 anywhere in the sentence"}
+{"report":"qwen_asthma_after","s":"S44","grade":"faithful","note":"verbatim conclusion, consistent with the paper's PBMC result"}
+{"report":"qwen_migraine_after","s":"S2","grade":"faithful","note":"AE/SAE percentages exact; same safety numbers reappear as S41 in the safety section"}
+{"report":"qwen_migraine_after","s":"S3","grade":"faithful","note":"species stated; scoped to the CGRP stimulus, so the next paragraph's olcegepant failure against IM is not a dropped qualifier"}
+{"report":"qwen_migraine_after","s":"S4","grade":"faithful","note":"verbatim, but it is the abstract's background about prior clinical observations, not this paper's own result; unit labels it evidence=human_clinical"}
+{"report":"qwen_migraine_after","s":"S5","grade":"weak_citation","note":"the cited quote is the CSF/periosteum result; this sentence is the paper's motivating knowledge gap, taken from the qualifier line, and the same paper goes on to answer it"}
+{"report":"qwen_migraine_after","s":"S6","grade":"faithful","note":"mouse result; sentence omits species but NTG/restraint-stress model and the unit's species=mouse make it clear"}
+{"report":"qwen_migraine_after","s":"S9","grade":"faithful","note":""}
+{"report":"qwen_migraine_after","s":"S13","grade":"faithful","note":"null arm (mCherry control) kept"}
+{"report":"qwen_migraine_after","s":"S20","grade":"faithful","note":"both halves of the quote used correctly; unit's direction=activate is wrong for a PAR2-blocking antibody, not visible in the sentence"}
+{"report":"qwen_migraine_after","s":"S23","grade":"faithful","note":"p-values and comparison group correct; drops the 2nd-hemisphere electrical-threshold half of the quote, which does not change the claim"}
+{"report":"qwen_migraine_after","s":"S25","grade":"faithful","note":"null result kept; species (rats) only in the unit, not the sentence"}
+{"report":"qwen_migraine_after","s":"S27","grade":"faithful","note":"authors' mechanistic conclusion from mouse work, restated flatly without 'Mechanistically' or the species; supported by the paper's own AC1903/LY294002 results"}
+{"report":"qwen_migraine_after","s":"S32","grade":"faithful","note":"PK in 20 healthy Chinese volunteers, not migraine patients; the sentence does not claim patients, though it sits in the clinical section"}
+{"report":"qwen_migraine_after","s":"S34","grade":"faithful","note":"quote reproduced exactly; hypothesis-generating case series of 5 women, and the preceding sentence gives the counterpart 17/20 cycles (85%) prevented"}
+{"report":"qwen_migraine_after","s":"S41","grade":"faithful","note":"repeats the SAE figures already given in S2; 'unrelated to study drug' is in the quote"}
+{"report":"qwen_migraine_after","s":"S42","grade":"faithful","note":"drops 'COVID-19' from the verbatim AE list (keeps the separate term 'coronavirus infection'); 'included' keeps it accurate"}

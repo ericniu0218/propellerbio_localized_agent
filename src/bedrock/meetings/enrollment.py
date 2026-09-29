@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
 
 ENROLLMENT_MISSING = (
     "Voice prints are unavailable: sherpa-onnx is not installed. "
-    "Install requirements.txt to enable them."
+    'Install them with pip install "bedrock-private-ai[speakers]".'
 )
 
 # Cosine similarity a cluster has to reach before it is given a name. Tuned to

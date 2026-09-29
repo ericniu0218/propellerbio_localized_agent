@@ -98,3 +98,90 @@ def drops_negation(claim: str, sentence: str) -> bool:
                 and len(claim_stems & _stem_set(sentence)) / len(claim_stems) >= SAME_TOPIC:
             return True
     return False
+
+
+# A paper that says a result is "potentially due to" some mechanism is
+# speculating, not reporting it. Restating that mechanism as settled fact
+# ("X is associated with Y") is the same kind of error as dropping a
+# negation: real information the paper carries - that it is a guess, not a
+# finding - goes missing. Asthma S25: the paper's background sentence says
+# insufficient response to inhaled beta-agonist and corticosteroid was
+# "potentially due to leukotriene mediated airway inflammation"; the report
+# sentence stated the same thing as "is associated with", unhedged.
+#
+# This is the same bounded lexical check as `_NULL` above, over a small,
+# closed set of epistemic-hedge cues - not entailment, and not a general
+# hedge detector. It reads only the cues in `_HEDGE` and the few words after
+# one, so a hedge with no cue here ("indicates a possible link", "suggests
+# that") is invisible to it, same as `_NULL` misses negation it has no cue
+# for. Cues are added only alongside a real example that needs them.
+_HEDGE = re.compile(
+    r"\b(?:potentially|possibly|presumably|may reflect|might reflect|could be due to|"
+    r"is thought to|appears to|seems to)\b((?:\s+[\w-]+){0,6})", re.I,
+)
+
+
+def _hedged(match: re.Match[str]) -> set[str]:
+    """What one hedge cue governs: the content words in the few words after
+    it ("potentially due to leukotriene mediated airway inflammation" ->
+    leuko, media, airway, inflam).
+
+    Words that already appeared BEFORE the cue in the same sentence are not
+    counted. A sentence often states a fact and then speculates about its
+    cause, reusing the fact's own words to do it: "high fat feeding in male
+    mice did not elicit a significant body weight difference between the
+    genotypes, presumably because the already rapid diet-induced weight gain
+    ... could not be further increased". "weight" belongs to the stated fact,
+    not to the guess, so a claim that repeats only the fact has dropped
+    nothing. Without this, the generic shared word alone made the claim look
+    like it had unhedged the speculation - a real false drop on the obesity
+    TMEM135 report, measured in the benchmark, see
+    docs/litreview/BENCHMARK_RESULTS.md.
+    """
+    before = {w[:5] for w in _WORD.findall(normalize_text(match.string[:match.start()])) if len(w) > 3}
+    after = match.group(1)
+    return {w[:5] for w in _WORD.findall(normalize_text(after)) if len(w) > 3} - before
+
+
+def drops_hedge(claim: str, sentence: str) -> bool:
+    """Does the claim state, as settled fact, something this sentence only
+    speculates about?
+
+    Mirrors `drops_negation`. Every hedge cue in `sentence` is read. One is
+    dropped when its governed words are also what the claim is about
+    (`SAME_TOPIC`) and the claim does not cover those same words with a hedge
+    of its own: "potentially due to leukotriene mediated airway inflammation"
+    -> "leukotriene mediated airway inflammation is associated with ..." has
+    dropped "potentially". A claim that keeps its own hedge over the same
+    words is a faithful restatement and is left alone - "presumably due to
+    the already rapid ... weight gain" restated with "presumably" intact is
+    not penalized, even in different words, as long as it names the same
+    governed content the source hedge names.
+
+    Lexical, not entailment: a hedge the claim rephrases into different
+    governing words it does not otherwise state is invisible to this check,
+    same as `drops_negation`.
+    """
+    # A claim that hedges at all is not stating settled fact, so it is left
+    # alone whatever words its own hedge governs. Matching the two hedges'
+    # governed words against each other was too strict: "potentially due to
+    # leukotriene mediated airway inflammation" restated as "is potentially
+    # associated with ..." is faithfully hedged, but the claim's cue governs
+    # "associated with" rather than "leukotriene ...", so a governed-word
+    # comparison called it a drop. This is deliberately the cautious side of
+    # the trade: a claim that hedges one clause while unhedging another is
+    # missed, and a missed hedge leaves a soft claim slightly too firm, where
+    # a false drop deletes a faithful sentence from the report entirely.
+    if _HEDGE.search(claim):
+        return False
+    claim_stems = _stem_set(claim)
+    if not claim_stems:
+        return False
+    for match in _HEDGE.finditer(sentence):
+        governed = _hedged(match)
+        if not governed:
+            continue
+        if governed & claim_stems \
+                and len(claim_stems & _stem_set(sentence)) / len(claim_stems) >= SAME_TOPIC:
+            return True
+    return False

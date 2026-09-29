@@ -52,7 +52,7 @@ except ImportError:  # pragma: no cover - deployments without the extra
 
 DIARIZATION_MISSING = (
     "Speaker identification is unavailable: sherpa-onnx is not installed. "
-    "Install requirements.txt to enable it."
+    'Install it with pip install "bedrock-private-ai[speakers]".'
 )
 
 # Segments shorter than this are not embedded. A very short stretch of speech

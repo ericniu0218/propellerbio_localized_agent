@@ -107,6 +107,8 @@ AGENTPACK_HELP_TEXT = """\
 | `/sources` | List the company data sources you can pull from |
 | `/workspace` | List private team workspaces |
 | `/workspace help` | Show workspace actions |
+| `/tier [quick\|standard\|deep\|auto]` | Choose who answers: a quick answer, the standard agents, or a deep analysis with a review |
+| `/cancel` | Stop the request that is running |
 | `/clear` | Clear the conversation |
 | `/help` | Show this help |
 | `/exit` | Quit (also `Ctrl+C`) |
@@ -126,6 +128,13 @@ working when the AI system is unreachable, and nothing they show is sent to a
 model. Starting a literature review needs the default mode or a shell; see
 `/review` below.
 """
+
+
+# `/tier` names -> the server's force_tier values (GET /agent-tiers names them
+# "Quick Answer", "Standard Task", "Deep Analysis"). A high-stakes request
+# still goes to the deep tier whatever is chosen; the server enforces that.
+TIERS = {"quick": "runner", "standard": "specialist", "deep": "director", "auto": None}
+TIER_LABELS = {"runner": "Quick Answer", "specialist": "Standard Task", "director": "Deep Analysis"}
 
 
 class AgentPackApp(LocalCommandsMixin, App[None]):
@@ -185,6 +194,12 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         # Two requests can fail in the same words; the stream's own event id
         # keeps a genuinely new failure from being mistaken for a replay.
         self._seen_completions: set[tuple[str, str, str | None, str | None, str | None]] = set()
+        # Chosen with /tier; None lets the server's classifier decide.
+        self._force_tier: str | None = None
+        # What the server supports beyond the original API (GET /health). An
+        # older server supports nothing extra, and this app then sends what it
+        # always sent.
+        self._server_features: set[str] = set()
 
     # ---- Screen layout ------------------------------------------------------
 
@@ -218,6 +233,8 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         except InferenceError as exc:
             await self.post_notice(str(exc), kind="error")
             return
+        features = getattr(self.client, "features", None)
+        self._server_features = await features() if features is not None else set()
         self.listen_for_events(self.session_id)
 
     @work(exclusive=True, group="events")
@@ -257,6 +274,10 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
                 await self.action_clear_chat()
             case "exit" | "quit":
                 await self.action_quit()
+            case "tier":
+                await self.set_tier(command.args)
+            case "cancel":
+                await self.cancel_running()
             case "tools":
                 await self.show_tool_status()
             case "fold":
@@ -283,6 +304,39 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",
                     kind="error",
                 )
+
+    async def set_tier(self, args: str) -> None:
+        choice = args.strip().lower()
+        if not choice:
+            current = TIER_LABELS.get(self._force_tier or "", "automatic")
+            await self.post_notice(f"Answers come from: **{current}**. Choose with `/tier quick`, `standard`, `deep` or `auto`.")
+            return
+        if choice not in TIERS:
+            await self.post_notice(f"`/tier {choice}` isn't a tier. Use `quick`, `standard`, `deep` or `auto`.", kind="error")
+            return
+        self._force_tier = TIERS[choice]
+        label = TIER_LABELS.get(self._force_tier or "")
+        self.query_one(StatusBar).model_name = f"AI system · {label}" if label else "AI system"
+        await self.post_notice(
+            f"Next requests go to **{label}**. Regulatory and clinical requests still get the full review."
+            if label else "The AI system chooses who answers each request again."
+        )
+
+    async def cancel_running(self) -> None:
+        cancel = getattr(self.client, "cancel_task", None)
+        if not self._waiting_for:
+            await self.post_notice("Nothing is running.")
+            return
+        if cancel is None or "cancel" not in self._server_features:
+            await self.post_notice("This AI system can't stop a request once it has started.", kind="error")
+            return
+        try:
+            status = await cancel(self._waiting_for)
+        except InferenceError as exc:
+            await self.post_notice(str(exc), kind="error")
+            return
+        if status != "cancelled":
+            await self.post_notice(f"That request had already finished ({status}).")
 
     async def show_tool_status(self) -> None:
         await self.post_notice(tool_status_text(self.biotech_workflow))
@@ -372,17 +426,37 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         if injected is not None:
             await self.post_notice(f"{injected.summary} {AUTO_CONTEXT_OFF_HINT}")
 
-        # The server owns session history, but the same builder owns placement
-        # and budgeting of this turn's context in both app modes.
-        turn = Conversation()
-        turn.add_user(text, attached)
-        extras = {"passages": injected.prompt_block} if injected is not None else {}
-        prompt = PromptBuilder(PromptBudget.from_profile(self.settings.profile)).build(turn, extras)
-        outgoing_text = prompt.messages[-1]["content"]
-        for notice in prompt.notices:
-            await self.post_notice(notice)
+        # The server owns session history (one that lists `server_history`
+        # also gives it to the agents). This turn's files go either as separate
+        # material, or - to an older server - placed and budgeted into the
+        # message by the same builder the default mode uses.
+        send_options: dict = {}
+        if self._force_tier:
+            send_options["force_tier"] = self._force_tier
+        if "context_blocks" in self._server_features:
+            # A server that takes material apart from the question: it fences
+            # and sizes the files for the agent that drafts, and its router
+            # classifies what was typed instead of reading every file.
+            outgoing_text = text
+            blocks = [
+                {"id": f"file-{number}", "title": item.name, "text": item.text, "kind": "attachment"}
+                for number, item in enumerate(attached, 1)
+            ]
+            if injected is not None:
+                blocks.append({"id": "stored-context", "title": "Stored context (/digest)",
+                               "text": injected.prompt_block, "kind": "passage"})
+            if blocks:
+                send_options["context"] = blocks
+        else:
+            turn = Conversation()
+            turn.add_user(text, attached)
+            extras = {"passages": injected.prompt_block} if injected is not None else {}
+            prompt = PromptBuilder(PromptBudget.from_profile(self.settings.profile)).build(turn, extras)
+            outgoing_text = prompt.messages[-1]["content"]
+            for notice in prompt.notices:
+                await self.post_notice(notice)
         try:
-            task_id = await self.client.send_message(self.session_id, outgoing_text)
+            task_id = await self.client.send_message(self.session_id, outgoing_text, **send_options)
         except InferenceError as exc:
             await self.post_notice(str(exc), kind="error")
             if self._running_item is not None:
@@ -637,6 +711,16 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         fingerprint = approval_fingerprint(event.session_id, task_id, reason, preview)
         if fingerprint in self._pending_approvals:
             return
+        # The preview is the first 500 characters; a newer server stores the
+        # whole answer before asking, and that exact text is what gets delivered.
+        result_ref = payload.get("result_ref")
+        if result_ref:
+            try:
+                full = await self.client.get_result(str(result_ref))
+            except InferenceError:
+                full = None
+            if full and len(full) > len(preview):
+                await self.post_notice("**The full answer awaiting your decision:**\n\n" + full)
         prompt = ApprovalPrompt(
             task_id=task_id,
             reason=reason,

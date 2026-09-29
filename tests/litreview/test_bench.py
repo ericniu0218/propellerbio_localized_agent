@@ -87,6 +87,7 @@ def test_the_benchmark_scores_all_three_systems(bench_setup, tmp_path):
     assert systems["pipeline"].claims > 0
     assert card.pipeline["quote_validity"] == 1.0
     assert card.pipeline["deterministic"] == "yes"
+    assert card.pipeline["determinism_mode"] == "same_client_uncached"
     # The fake grades relevance by keyword ("IL-23" in the title), which is
     # exactly the grader distractors exist to expose: they leak, and the gate fails.
     assert card.pipeline["distractor_leak_rate"] > 0
@@ -95,6 +96,28 @@ def test_the_benchmark_scores_all_three_systems(bench_setup, tmp_path):
     assert systems["closed_book"].cited_support is None, "a closed-book answer has nothing to cite"
     assert (out_dir / "scorecard.md").exists() and (out_dir / "pipeline").exists()
     assert (tmp_path / "results" / "history.jsonl").read_text().strip()
+    # Stage-by-stage coverage, each with its own denominator, beside the score.
+    p = card.pipeline
+    assert p["cov_ref_targets"] == 2 and p["cov_ledger"] == "coverage.v1"
+    assert p["cov_adjudicated_recall"] is None and p["cov_adjudicated_denominator"] == "not_available"
+    assert p["cov_answer_targets"] <= p["cov_narrative_targets"] <= p["cov_verified_unit_targets"]
+    assert p["cov_conditional_mention_recall"] == systems["pipeline"].target_recall
+
+
+def test_a_re_run_through_the_call_cache_is_labelled_cached_replay(bench_setup, tmp_path):
+    """Identical reports from cached replies prove the pipeline is
+    deterministic over the same model outputs - not that the server repeats."""
+    from bedrock.litreview.llm.cache import CachedClient, CallCache
+
+    settings, corpus_dir, bq = bench_setup
+    inner = FakeLLMClient(responder=bench_responder)
+    client = CachedClient(inner, CallCache(tmp_path / "calls"))
+    card, _ = evaluate(bq, settings=settings, client=client, corpus_dir=corpus_dir, results_root=tmp_path / "results",
+                       skip_baselines=True, skip_distractors=True, skip_perturb=True)
+    assert card.pipeline["determinism_mode"] == "cached_replay"
+    assert "same report twice (cached replay, not fresh inference)" in card.gates
+    assert "same report twice" not in card.gates
+    assert any("not that fresh inference repeats" in n for n in card.notes)
 
 
 def test_sentences_split_without_breaking_numbers_or_abbreviations():

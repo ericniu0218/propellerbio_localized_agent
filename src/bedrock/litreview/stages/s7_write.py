@@ -7,6 +7,13 @@ Two kinds of section (layout in config/report.yaml):
   written     one model call, from one slice of evidence, returning sentences
               that each carry the evidence ids they rely on. Every sentence
               then passes the citation guard (report/guard.py) or is dropped.
+              A sentence that repeats one already kept earlier in the report
+              is dropped too, even though it came from a different section's
+              model call — see `already_kept` in `write_section_text`.
+              With `entailment_check` on (off by default), a sentence the
+              guard kept is then read by the local model against its cited
+              text, and dropped if it is not supported
+              (report/entailment.py).
   generated   written by code: the most relevant source, the gaps, the
               evidence plan, the relevance ranking, the evidence table, the
               method and the excluded papers. These are facts about the run,
@@ -46,7 +53,8 @@ from bedrock.litreview.models import (
     ReportSection,
     Sentence,
 )
-from bedrock.litreview.report.guard import CitationGuard
+from bedrock.litreview.report.entailment import report_stats
+from bedrock.litreview.report.guard import CitationGuard, GuardResult
 from bedrock.litreview.report.layout import SectionSpec, load_layout
 from bedrock.litreview.stages.s6_score import TARGET_ORDER_RULE, best_units
 
@@ -128,6 +136,28 @@ class WriteContext:
     Read only by `_competitors` below, generated (code, no model call) for
     exactly the reason no other generated section takes one: nothing here is
     a biological claim, so there is nothing for the citation guard to check."""
+    entailment: object = None
+    """A `report.entailment.EntailmentCheck`, or None (the default): the
+    optional model check run on sentences the guard kept. See that module."""
+    demoted: frozenset[str] = frozenset()
+    """Papers with a published expression of concern: their findings are kept
+    and marked, ranked after all others, and never used in the Answer."""
+    reinstated_waiting: dict[str, str] = field(default_factory=dict)
+    """Retracted, later reinstated, and not (yet) added back by a person."""
+    added_back: dict[str, dict] = field(default_factory=dict)
+    """Retracted, later reinstated, and added back by a person: who and when."""
+    integrity_checked: set[str] | None = None
+    """Papers with at least one successful retraction lookup recorded when the
+    run started; None when the run did not record it."""
+    integrity_check_stopped: str | None = None
+    """Why this run's automatic retraction check stopped early, if it did."""
+    integrity_notes: dict[str, str] = field(default_factory=dict)
+    """Paper id -> recorded publication notices (concern, correction...), from
+    the run's integrity snapshot. Shown beside the paper wherever it is cited;
+    never used to drop a finding - a person decides what a notice means."""
+    section_inputs: dict[str, list[str]] = field(default_factory=dict)
+    """Section id (`targets:IL23A` for a subsection) -> the unit ids it was
+    given to write from. For the coverage ledger; never in the report."""
 
     def __post_init__(self) -> None:
         self.rank_of = {r.paper_id: r.rank for r in self.ranked}
@@ -151,7 +181,19 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
     No model-written text is offered as a source of wording: the old "Result"
     line was the extraction model's summary, and sentences built from it
     carried details no quote contained. The context sentence, when there is
-    one, is the paper's own Methods or Results sentence naming the subjects."""
+    one, is the paper's own Methods or Results sentence naming the subjects.
+    The qualifier, when there is one, is the paper's very next sentence and
+    limits the quote ("Although this result did not reach statistical
+    significance ..."). Its label says so, because the prompt file only
+    explains Quote and Context, and the citation guard drops a sentence that
+    leaves out a "not significant" it states. The naming sentence, when there
+    is one, is the paper's sentence that names the target or agent the quote
+    does not ("about:" would otherwise be a name the writer cannot see in any
+    quote); its label says the quote's result stays with what the quote
+    names, which the citation guard enforces (check 9). A finding whose
+    quote is a conclusion naming people the paper's Methods never studied
+    (`methods_subjects`) says so, since the quote's own "patients" would
+    otherwise invite the writer to repeat it, and the guard drops that."""
     lines = []
     for u in units:
         sid = ctx.summary.short_ids[u.id]
@@ -160,6 +202,15 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
         who = (f"studied in {_WHO.get(u.evidence_type, u.evidence_type)} ({u.species_raw}{n})"
                if u.species_raw else "who was studied: not stated in the quoted text")
         context = f'\n    Context: "{u.context_quote}"' if u.context_quote else ""
+        if u.qualifier_quote:
+            context += ("\n    Qualifier (the paper's next sentence; it may limit the quote, e.g. \"not "
+                        f'significant\" - keep any such limit when you use the quote): "{u.qualifier_quote}"')
+        if u.naming_quote:
+            context += ("\n    Names (the paper's sentence that names what the quote does not; the quote's result "
+                        f'belongs to what the quote itself names - name that too): "{u.naming_quote}"')
+        if u.methods_subjects:
+            context += (f"\n    Subjects: the quote is the authors' conclusion; the paper's Methods studied only "
+                        f"{u.methods_subjects}, not people - do not say patients or people for it")
         lines.append(
             f"[{sid}] about: {u.target_raw or u.target}{drug} · {who}\n"
             f"    Paper: {ctx.labels.get(u.paper_id, u.paper_id)}\n"
@@ -169,9 +220,27 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
 
 
 def write_section_text(
-    ctx: WriteContext, spec: SectionSpec, units: list[EvidenceUnit], subsection: str = ""
+    ctx: WriteContext,
+    spec: SectionSpec,
+    units: list[EvidenceUnit],
+    subsection: str = "",
+    already_kept: list[set[str]] | None = None,
 ) -> tuple[list[Sentence], str | None]:
-    """One model call, then the guard. Returns sentences and an optional note."""
+    """One model call, then the guard. Returns sentences and an optional note.
+
+    `already_kept` is the content words of every sentence already kept
+    earlier in this same report (from an earlier section, or an earlier
+    per-target subsection). Each writing call only ever sees its own slice of
+    evidence, so the same finding can be the best evidence for more than one
+    section — the "answer" section and a target's own subsection, say — and
+    the model then drafts the same sentence twice. `already_kept` is threaded
+    through every call by `write_report`, one shared list, so a sentence a
+    later section drafts is checked against it with the exact same repeat
+    test used within one call, and dropped the same way: silently, and
+    without ever becoming a shown or counted "dropped" sentence — a repeat
+    states nothing new, it is not a claim that failed a check.
+    """
+    ctx.section_inputs[f"{spec.id}:{subsection}" if subsection else spec.id] = [u.id for u in units]
     if not units:
         return [], "No evidence for this section in the papers read."
     if ctx.client is None or not ctx.model:
@@ -195,25 +264,66 @@ def write_section_text(
         log.warning("writing failed for section %s: %s", spec.id, exc)
         return [], "Not written: the model call failed."
 
-    guard = CitationGuard(ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary)
+    guard = CitationGuard(
+        ctx.spec, ctx.knowledge, short, paper_labels=ctx.labels, vocabulary=ctx.vocabulary, findings=spec.findings
+    )
     sentences = []
-    said: list[set[str]] = []
+    # Seeded with the report's earlier kept sentences, so a repeat of one of
+    # those is caught by the very same check that catches a repeat within
+    # this call — `said` just starts non-empty instead of the check running
+    # twice with two thresholds that could drift apart.
+    said: list[set[str]] = list(already_kept) if already_kept is not None else []
+    drafted = 0  # sentences the model actually wrote something for (not blank)
+    repeated = 0  # ... of those, how many were dropped as a repeat
     for draft_sentence in draft.sentences:
         text = draft_sentence.text.strip()
         if not text:
             continue
+        drafted += 1
         citations = list(dict.fromkeys(draft_sentence.citations))
         if len(text) < MIN_SENTENCE_CHARS:
             ctx.sentence_stats["too_short"] += 1
             continue
+        if _garbled_start(text):
+            # A small-model drafting glitch, the same family as the two
+            # checks above: the writer duplicates and truncates its own
+            # first word ("Hypoth, hypothalamic Sik3 mRNA levels were
+            # significantly increased ..." - obesity S13, evals/litreview/
+            # hand_audit/qwen_obesity_after.md). Not a guard failure - the
+            # words are the paper's own, just mangled in the retelling - so
+            # it is dropped the same silent way as `too_short` and
+            # `repeated`, not surfaced as a citation-guard drop reason.
+            ctx.sentence_stats["garbled"] += 1
+            continue
         words = _content_words(text)
         if any(_overlap(words, earlier) >= REPEAT_OVERLAP for earlier in said):
             # Small models loop: the MedGemma run wrote one sentence four times
-            # in a row. A repeat adds nothing and reads as extra evidence.
+            # in a row. A repeat adds nothing and reads as extra evidence. The
+            # same is true of a sentence this report already kept elsewhere —
+            # `said` may hold those too, so this one check covers both.
             ctx.sentence_stats["repeated"] += 1
+            repeated += 1
             continue
         said.append(words)
         verdict = guard.check(text, citations)
+        if verdict.kept and getattr(ctx, "entailment", None) is not None:
+            # Optional and off by default (report/entailment.py): the local
+            # model's second look at a sentence the guard kept. It can only
+            # remove, and what it removes is stored as dropped like any other
+            # sentence, so the pure-code re-check never needs the model.
+            why = ctx.entailment.review(text, {c: short[c] for c in citations}, ctx.sentence_stats)
+            if why:
+                verdict = GuardResult(False, why)
+        if verdict.kept:
+            # A leftover connective from the source sentence the model
+            # paraphrased ("However, weight loss was observed ..." lifting a
+            # paper's own "However, X"), never something the writer meant
+            # relative to a preceding sentence it cannot see - the prompt
+            # asks for standalone report sentences, never connected
+            # discourse. Safe to do only now, after the guard has judged the
+            # model's real words - stripping first would let the guard judge
+            # a sentence the model never actually wrote.
+            text = _strip_leading_connective(text)
         if text[-1] not in ".!?":
             # The model often returns a copied clause with no full stop, and
             # several of those run together are unreadable. Punctuation is not
@@ -221,9 +331,36 @@ def write_section_text(
             text += "."
         ctx.sentence_stats["kept" if verdict.kept else "dropped"] += 1
         sentences.append(Sentence(text=text, citations=citations, kept=verdict.kept, drop_reason=verdict.reason))
+    # The layout's maximum, applied after the guard so it counts only
+    # sentences that survived it: a model asked for "3 to 5" that writes nine
+    # keeps its first five. Nothing is ever added to reach the minimum.
+    kept_so_far = 0
+    for i, sentence in enumerate(sentences):
+        if not sentence.kept:
+            continue
+        kept_so_far += 1
+        if kept_so_far > spec.max_sentences:
+            sentences[i] = sentence.model_copy(update={
+                "kept": False, "drop_reason": f"over this section's limit of {spec.max_sentences} sentences"})
+            ctx.sentence_stats["kept"] -= 1
+            ctx.sentence_stats["over_limit"] += 1
+    if already_kept is not None:
+        # Recorded for the sections written after this one - only what is
+        # still kept after the limit above, so a later section never drops a
+        # sentence as a repeat of one the reader was not shown.
+        already_kept.extend(_content_words(s.text) for s in sentences if s.kept)
     note = None
     if sentences and not any(s.kept for s in sentences):
         note = "Every drafted sentence failed the citation check and was removed."
+    elif not sentences and drafted and repeated == drafted:
+        # Nothing too short, nothing that ever reached the guard — every
+        # sentence the model wrote was a repeat, and (because `said` starts
+        # from `already_kept`) that can only happen when it repeated content
+        # already kept earlier in this report. Left silent, this is the
+        # "heading with nothing under it" a scientist has no way to read: a
+        # gap in the papers looks identical to a section whose only content
+        # was already said. Say which one this is.
+        note = "Everything drafted here is already stated in an earlier section."
     return sentences, note
 
 
@@ -233,9 +370,71 @@ REPEAT_OVERLAP = 0.8
 MIN_SENTENCE_CHARS = 25
 _WORD = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
 
+# A short alphabetic fragment, a comma, then a longer word straight after -
+# only ever checked at the very start of the sentence. Deliberately not "any
+# word is a prefix of the next word" (that fires constantly on ordinary
+# English: "an animal", "over overexpressed"); anchoring to the opening of
+# the sentence is what keeps this safe, because a real sentence essentially
+# never opens "Word, longerword-starting-with-word ...".
+_GARBLED_START = re.compile(r"^([a-zA-Z]{3,12}),\s+([a-zA-Z]+)")
+
+
+def _garbled_start(text: str) -> bool:
+    """A small model's drafting glitch: it duplicates and truncates its own
+    first word ("Hypoth, hypothalamic Sik3 mRNA levels were significantly
+    increased ..." - the real obesity S13 sentence in evals/litreview/
+    hand_audit/qwen_obesity_after.md). Scoped tightly to that shape: the
+    fragment must be a case-insensitive prefix of the word right after the
+    comma, and strictly shorter than it."""
+    m = _GARBLED_START.match(text)
+    if not m:
+        return False
+    fragment, word = m.group(1), m.group(2)
+    return len(word) > len(fragment) and word.lower().startswith(fragment.lower())
+
 
 def _content_words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if len(w) > 2}
+
+
+# Only "However," - deliberately not "Moreover,". See the docstring below:
+# "however" is already in `extract/verify.py`'s `_FILLER`, so removing it
+# cannot change `content_words()` and cannot change a guard verdict.
+# "moreover" is not filtered, and removing it provably can.
+_LEADING_CONNECTIVE = re.compile(r"^however,\s+", re.IGNORECASE)
+
+
+def _strip_leading_connective(text: str) -> str:
+    """Drop a leading "However, " (case-insensitive) from an already-kept
+    sentence, and capitalize the letter now at the start.
+
+    Real example, obesity S29 (evals/litreview/hand_audit/
+    qwen_obesity_after.md): "However, fasting plasma levels of FFAs and
+    β-hydroxybutyrate were higher and lower, respectively, in ob/ob HKO mice
+    ..." - the model paraphrased the paper's own qualifier sentence,
+    connective included. The writer is asked for standalone report
+    sentences, never connected discourse, so a leading "However" is always a
+    leftover from the source, never something the writer meant relative to a
+    preceding sentence it cannot see.
+
+    Why only "However," and not "Moreover," too: this runs *after* the
+    citation guard, so the stored text differs from the text the guard
+    judged - and `report/invariants.py` `check_sentences` re-runs that same
+    guard over the stored text on every `verify-run`. The two must therefore
+    always agree. They do for "however", which `extract/verify.py`'s
+    `_FILLER` already excludes from `content_words()`, so removing it cannot
+    move guard check 8's or check 10's word arithmetic. "moreover" is not
+    filtered: removing it changes the denominator of check 8's overlap ratio
+    and was measured flipping a real verdict, which would report a correctly
+    written sentence as a violation forever. Making it safe means adding
+    "moreover" to `_FILLER`, which moves those checks for every sentence in
+    every report - an accuracy change that needs its own measurement, not a
+    side effect of a cosmetic fix."""
+    match = _LEADING_CONNECTIVE.match(text)
+    if not match:
+        return text
+    rest = text[match.end():]
+    return rest[:1].upper() + rest[1:] if rest else text
 
 
 def _overlap(a: set[str], b: set[str]) -> float:
@@ -249,23 +448,27 @@ def _slice(ctx: WriteContext, source: str) -> list[EvidenceUnit]:
     units = ctx.summary.units
     limit = ctx.max_units_per_section
     if source == "all":
-        return best_units(units, ctx.rank_of, limit)
+        return best_units(units, ctx.rank_of, limit, ctx.demoted)
     if source == "negative":
         conflict_ids = {uid for c in ctx.summary.conflicts for uid in c.unit_ids}
         chosen = [u for u in units if u.outcome in ("no_effect", "worsened", "mixed") or u.id in conflict_ids]
-        return best_units(chosen, ctx.rank_of, limit)
+        return best_units(chosen, ctx.rank_of, limit, ctx.demoted)
     if source == "prevention":
         # By setting, not by facet: a prophylaxis finding is prevention
         # evidence whichever information need it was filed under, and it
         # belongs in the clinical section too.
-        return best_units([u for u in units if u.setting == "prevention"], ctx.rank_of, limit)
+        return best_units([u for u in units if u.setting == "prevention"], ctx.rank_of, limit, ctx.demoted)
     if source.startswith("facet:"):
         facet_id = source.split(":", 1)[1]
-        return best_units([u for u in units if u.facet == facet_id], ctx.rank_of, limit)
+        return best_units([u for u in units if u.facet == facet_id], ctx.rank_of, limit, ctx.demoted)
     if source == "top_targets":
+        # The Answer recommends. Findings from a paper with a published
+        # expression of concern are not used here; they stay in the target
+        # sections and the table, marked (`_withheld_note`).
         chosen: list[EvidenceUnit] = []
         for t in ctx.summary.targets[: ctx.max_targets]:
-            chosen += best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, 2)
+            usable = [ctx.by_unit_id[i] for i in t.unit_ids if ctx.by_unit_id[i].paper_id not in ctx.demoted]
+            chosen += best_units(usable, ctx.rank_of, 2)
         return chosen[: max(limit, 2 * ctx.max_targets)]
     raise ValueError(f"unknown section source {source!r}")
 
@@ -301,20 +504,49 @@ def _best_source(ctx: WriteContext, refs: dict[str, int]) -> str:
     return "\n".join(lines)
 
 
+def _realized(ctx: WriteContext) -> dict[str, set[str]]:
+    """Facet -> the papers that gave at least one verified finding for it.
+
+    What a need actually got, as opposed to the plan's `status`, which only
+    says papers whose abstracts looked right were chosen to be read."""
+    out: dict[str, set[str]] = {}
+    for u in ctx.summary.units:
+        out.setdefault(u.facet or "other", set()).add(u.paper_id)
+    return out
+
+
+def _realized_status(ctx: WriteContext, facet: Facet, got: int) -> str:
+    if ctx.client is None and not ctx.summary.units:
+        return "not extracted"
+    if got == 0:
+        return "gap"
+    return "thin" if got < facet.min_sources else "covered"
+
+
 def _gaps(ctx: WriteContext) -> str:
     subject = subject_label(ctx.spec)
     bullets = []
-    units_by_facet = Counter(u.facet for u in ctx.summary.units)
+    realized = _realized(ctx)
+    extracted = ctx.client is not None or bool(ctx.summary.units)
     for fp in ctx.plan.facets:
         f = fp.facet
-        if fp.status == "gap":
+        got, planned = len(realized.get(f.id, ())), len(fp.paper_ids)
+        if not extracted:
+            if planned == 0:
+                bullets.append(f"No paper selected for reading could supply **{f.title.lower()}** ({f.need}).")
+            continue
+        if got == 0 and planned == 0:
             bullets.append(f"No paper that was read supplied **{f.title.lower()}** ({f.need}).")
-        elif fp.status == "thin":
+        elif got == 0:
             bullets.append(
-                f"Only {len(fp.paper_ids)} paper(s) supplied **{f.title.lower()}**; {f.min_sources} were wanted."
+                f"{planned} paper(s) were read for **{f.title.lower()}**, but no verified finding was extracted from them."
             )
-        elif units_by_facet.get(f.id, 0) == 0:
-            bullets.append(f"Papers were read for **{f.title.lower()}**, but no verified finding was extracted.")
+        elif got < f.min_sources:
+            bullets.append(
+                f"Only {got} paper(s) gave verified findings for **{f.title.lower()}**; {f.min_sources} were wanted."
+            )
+    if not extracted:
+        bullets.append("No findings were extracted: this report was assembled without a model.")
     jobs = ctx.plan.jobs
     abstract_only = sum(1 for j in jobs if j.abstract_only)
     if abstract_only:
@@ -337,6 +569,41 @@ def _gaps(ctx: WriteContext) -> str:
             f"The question concerns {ctx.spec.population}. Findings were not filtered by population; "
             "check who was studied in the evidence table."
         )
+    if any(u.paper_id in ctx.demoted for u in ctx.summary.units):
+        bullets.append(
+            "Findings from papers with a published expression of concern are kept, marked ⚠, ranked after all "
+            "other evidence and not used in the Answer. Each such reference quotes the notice and links to it."
+        )
+    if ctx.integrity_checked is not None and jobs:
+        unchecked = [j.paper_id for j in jobs if j.paper_id not in ctx.integrity_checked]
+        if unchecked:
+            bullets.append(
+                f"{len(unchecked)} of the {len(jobs)} papers read have never been checked for retractions or "
+                "expressions of concern (the retraction-check setting is manual, or the services could not be "
+                "reached). `/reviews settings` explains the choice."
+            )
+    if ctx.integrity_check_stopped:
+        bullets.append(f"The automatic retraction check stopped early: {ctx.integrity_check_stopped}.")
+    for pid, notices in sorted(ctx.reinstated_waiting.items()):
+        paper = ctx.papers.get(pid)
+        name = f"{paper_label(paper)} “{paper.title.rstrip('.')}”" if paper else pid
+        bullets.append(
+            f"{name} ({pid}) was retracted and later **reinstated** ({notices}). It is left out of this report "
+            f"until a scientist reviews it and adds it back: `/reviews reinstate {pid}` in the app, or "
+            f"`bedrock-litreview integrity include {pid} --by <name>`."
+        )
+    for pid, decision in sorted(ctx.added_back.items()):
+        bullets.append(
+            f"{pid} was retracted, later reinstated, and added back by {decision.get('decided_by')} on "
+            f"{str(decision.get('decided_at', ''))[:10]}"
+            + (f" (“{decision['note']}”)" if decision.get("note") else "") + "."
+        )
+    noticed = [pid for pid in ctx.plan.paper_ids if pid in ctx.integrity_notes]
+    if noticed:
+        bullets.append(
+            f"{len(noticed)} paper(s) read have a recorded publication notice (expression of concern, correction "
+            "or similar); their findings are kept and marked, for a person to judge."
+        )
     preprints = sum(1 for j in jobs if ctx.papers[j.paper_id].signals.is_preprint)
     if preprints:
         bullets.append(f"{preprints} paper(s) read are preprints, not yet peer reviewed.")
@@ -347,13 +614,17 @@ def _gaps(ctx: WriteContext) -> str:
 
 def _plan(ctx: WriteContext) -> str:
     units_by_facet = Counter(u.facet for u in ctx.summary.units)
-    rows = ["| Information needed | Papers wanted | Papers read that can supply it | Findings | Status |", "|---|---|---|---|---|"]
+    realized = _realized(ctx)
+    rows = ["| Information needed | Papers wanted | Papers read that could supply it | Papers with verified findings "
+            "| Findings | Status |", "|---|---|---|---|---|---|"]
     for fp in ctx.plan.facets:
         f = fp.facet
+        got = len(realized.get(f.id, ()))
         rows.append(
             f"| **{cell(f.title)}** — {cell(f.need)} | {f.min_sources}–{f.max_sources} | "
-            f"{len(fp.paper_ids)} | {units_by_facet.get(f.id, 0)} | {fp.status} |"
+            f"{len(fp.paper_ids)} | {got} | {units_by_facet.get(f.id, 0)} | {_realized_status(ctx, f, got)} |"
         )
+    rows += ["", "Status counts papers that gave verified findings, not papers chosen to be read."]
     jobs = ctx.plan.jobs
     full = sum(1 for j in jobs if not j.abstract_only)
     rows += ["", f"Papers read: **{len(jobs)}** ({full} in full text, {len(jobs) - full} abstract only)."]
@@ -399,10 +670,12 @@ def _evidence_table(ctx: WriteContext, refs: dict[str, int]) -> str:
     for u in ctx.summary.units:
         n = f" (n={u.n})" if u.n is not None else ""
         rows.append(
-            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)} | {cell(u.intervention or '')} | "
+            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)}{' (measured)' if u.outcome_measure else ''} | "
+            f"{cell(u.intervention or '')} | "
             f"{u.evidence_type}{' · discussion' if u.from_discussion else ''} | "
             f"{cell(u.species_raw) if u.species_raw else 'not stated'}{n} | "
-            f"{u.outcome} | {u.setting} | {cell(u.effect_detail)} | {refs.get(u.paper_id, '')} |"
+            f"{u.outcome} | {u.setting} | {cell(u.effect_detail)} | {refs.get(u.paper_id, '')}"
+            f"{' ⚠ concern' if u.paper_id in ctx.demoted else ''} |"
         )
     if not ctx.summary.units:
         rows.append("| – | no verified findings | | | | | | | |")
@@ -423,20 +696,36 @@ def _method(ctx: WriteContext) -> str:
         f"their quote is not in the paper ({s.get('quote_meaning_changed', 0)} of them because the model's copy "
         f"changed a number, a negation or another word that carries meaning); "
         f"{s.get('near_miss', 0) + s.get('other_disease', 0)} discarded as about another entity; "
+        f"{s.get('other_work', 0)} discarded as someone else's result, not this paper's own; "
+        f"{s.get('not_a_result', 0)} discarded because their quote states an aim, a method, a prediction or an "
+        f"open question rather than a result; "
         f"{s.get('target_unlocated', 0)} discarded because the text the model read never names their target; "
         f"{s.get('duplicates', 0)} duplicates merged; **{len(ctx.summary.units)} verified findings kept**.",
         f"- **Fields the paper does not state:** blanked rather than shown — who was studied on "
         f"{s.get('species_unlocated', 0)} findings (shown as \"not stated\"), sample size on "
         f"{s.get('n_unlocated', 0)}, the result summary on {s.get('effect_detail_unlocated', 0)}, the agent on "
         f"{s.get('intervention_unlocated', 0)}.",
+        f"- **Outcome measures:** {s.get('target_outcome_measure', 0)} findings kept as evidence but given no "
+        f"target row, because what they name is a measurement (airway hyperresponsiveness, monthly migraine days, "
+        f"BMI and the like), judged from the paper's own abbreviation definitions where it gives one.",
         f"- **Written:** {ctx.sentence_stats.get('kept', 0)} sentences kept; {ctx.sentence_stats.get('dropped', 0)} "
         f"removed by the citation check; {ctx.sentence_stats.get('repeated', 0)} removed as repeats; "
-        f"{ctx.sentence_stats.get('too_short', 0)} too short to state anything.",
+        f"{ctx.sentence_stats.get('too_short', 0)} too short to state anything; "
+        f"{ctx.sentence_stats.get('garbled', 0)} removed as a corrupted, duplicated-fragment draft.",
         "- Every sentence cites the findings it relies on. Every quote shown is the paper's own sentence, taken "
         "from a recorded position in the paper; a \"fuzzy\" match means the model's copy differed from it only in "
         "typography or a word that carries no meaning. Numbers, names and who was studied in each sentence were "
         "checked against the paper's text it cites.",
     ]
+    if getattr(ctx, "entailment", None) is not None:
+        st = ctx.sentence_stats
+        lines.insert(len(lines) - 1, (
+            f"- **Entailment check (optional, not yet measured):** the local model re-read "
+            f"{st.get('entailment_checked', 0)} sentence(s) the citation check kept against the text they cite; "
+            f"{st.get('entailment_dropped', 0)} removed as not supported (included in the removals above), "
+            f"{st.get('entailment_partial', 0)} kept as only partly supported, "
+            f"{st.get('entailment_failed', 0)} left unchecked because the call failed."
+        ))
     return "\n".join(lines)
 
 
@@ -487,6 +776,83 @@ def _competitors(ctx: WriteContext, limit: int = 60) -> str:
                    f"is recorded for {sum(1 for p in ctx.patents if p.claim_1)} of {len(ctx.patents)} families "
                    f"in the JSON report, for a human to read — not summarised by any model here."]
     return "\n".join(lines)
+
+
+BACKGROUND_QUOTED = 12
+BACKGROUND_LISTED = 40
+
+
+def background_reviews(ctx: WriteContext) -> list[str]:
+    """The review articles to show as background: excluded from the evidence
+    as reviews (by the gate, or by the relevance check), naming the exact
+    subject, most relevant first. Retracted ones never reach here - the gate
+    marks them retracted, not review."""
+    from bedrock.litreview.knowledge import TermMatcher
+
+    matchers = [TermMatcher(e.exact_terms) for e in ctx.spec.required_entities]
+    reviews = {g.paper_id for g in ctx.gates.values() if g.status == "review"}
+    reviews |= {r.paper_id for r in ctx.ranked if r.gate == "pass" and r.study_kind == "review"}
+    keep = [pid for pid in reviews
+            if all(m.exact_count(ctx.papers[pid].head_text()) for m in matchers)]
+    order = {r.paper_id: (-r.lexical_score, r.paper_id) for r in ctx.ranked}
+    return sorted(keep, key=lambda pid: order.get(pid, (0.0, pid)))
+
+
+def _background_quotes(ctx: WriteContext, paper: Paper, limit: int = 2) -> list[str]:
+    """Up to two of the review's own abstract sentences that name the subject,
+    the ones sharing most words with the question, in the review's order."""
+    from bedrock.litreview.extract.verify import split_sentences
+    from bedrock.litreview.knowledge import TermMatcher
+    from bedrock.litreview.lexical import BM25
+    from bedrock.litreview.stages.s3_rank import query_text
+
+    subject = ctx.spec.subject
+    matcher = TermMatcher(subject.exact_terms) if subject else None
+    sentences = [x.strip() for x in split_sentences(paper.abstract or "") if x.strip()]
+    named = {i: x for i, x in enumerate(sentences) if 30 <= len(x) <= 450 and (matcher is None or matcher.exact_count(x))}
+    if not named:
+        return []
+    scores = dict(BM25({str(i): x for i, x in named.items()}).rank(query_text(ctx.spec)))
+    best = sorted(named, key=lambda i: (-scores.get(str(i), 0.0), i))[:limit]
+    return [named[i] for i in sorted(best)]
+
+
+def _background(ctx: WriteContext) -> str:
+    """Reviews found for the question, with links and their own words - shown
+    so the scientist sees everything the search turned up, and counted as
+    evidence nowhere: a review describing a trial is not a trial. No model is
+    involved; the quotes are sentences copied from each review's abstract."""
+    from bedrock.litreview.study_design import design_signals
+
+    ids = background_reviews(ctx)
+    if not ids:
+        return "No review article about the exact subject was collected."
+    blocks = [
+        "Review articles found for this question, for context. **They are not evidence in this report**: "
+        "nothing below is counted in the targets, the evidence table or the Answer, which rest only on the "
+        "primary studies themselves. Quotes are each review's own words."
+    ]
+    names = {"systematic_review": "systematic review", "meta_analysis": "meta-analysis",
+             "narrative_review": "review", "guideline": "guideline"}
+    for pid in ids[:BACKGROUND_QUOTED]:
+        paper = ctx.papers[pid]
+        roles = [names[r] for r in design_signals(paper)["roles"] if r in names] or ["review"]
+        url = paper_url(paper)
+        head = f"**{paper_label(paper)}** — *{paper.title.rstrip('.')}* · {', '.join(roles)}"
+        if url:
+            head += f" · <{url}>"
+        if pid in ctx.integrity_notes:
+            head += f" · ⚠ publication notice: {ctx.integrity_notes[pid]}"
+        quotes = _background_quotes(ctx, paper)
+        blocks.append("\n".join([head, *(f"> {q}" for q in quotes)]))
+    rest = ids[BACKGROUND_QUOTED:BACKGROUND_QUOTED + BACKGROUND_LISTED]
+    if rest:
+        blocks.append("Also collected:\n" + "\n".join(
+            f"- {paper_label(ctx.papers[pid])} — {ctx.papers[pid].title.rstrip('.')}"
+            + (f" <{paper_url(ctx.papers[pid])}>" if paper_url(ctx.papers[pid]) else "") for pid in rest))
+    if len(ids) > BACKGROUND_QUOTED + BACKGROUND_LISTED:
+        blocks.append(f"… and {len(ids) - BACKGROUND_QUOTED - BACKGROUND_LISTED} more.")
+    return "\n\n".join(blocks)
 
 
 def _excluded(ctx: WriteContext, limit: int = 80) -> str:
@@ -542,6 +908,15 @@ def build_references(ctx: WriteContext, sections: list[ReportSection]) -> dict[s
 def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str]) -> Report:
     layout = load_layout(ctx.spec.question_type)
     sections: list[ReportSection] = []
+    # Each written section, and each per-target subsection, sees only its own
+    # slice of evidence and is written by its own model call — that is the
+    # whole point of Stage 7 (see the module docstring). But the same finding
+    # can be the best evidence for two different sections (the answer and
+    # that target's own subsection, most often), and a model then drafts the
+    # same sentence twice. One list, appended to as sections are written in
+    # this order and read by every call after it, is what makes a report-wide
+    # repeat check possible without the sections calling each other.
+    already_kept: list[set[str]] = []
 
     for spec in layout:
         if spec.kind != "written":
@@ -550,8 +925,9 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         if spec.source == "per_target":
             section = ReportSection(id=spec.id, title=spec.title, kind="written")
             for t in ctx.summary.targets[: ctx.max_targets]:
-                units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target)
-                sentences, note = write_section_text(ctx, spec, units, subsection=t.target)
+                units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target,
+                                   ctx.demoted)
+                sentences, note = write_section_text(ctx, spec, units, subsection=t.target, already_kept=already_kept)
                 names = [n for n in t.names_seen if n != t.target][:3]
                 title = t.target + (f" ({', '.join(names)})" if names else "")
                 section.subsections.append(
@@ -565,12 +941,21 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             sections.append(section)
             continue
         units = _slice(ctx, spec.source or "all")
-        sentences, note = write_section_text(ctx, spec, units)
+        sentences, note = write_section_text(ctx, spec, units, already_kept=already_kept)
+        if spec.source == "top_targets" and ctx.demoted:
+            withheld = _withheld_note(ctx)
+            if withheld and not units:
+                note = withheld  # the evidence exists; it was kept out on purpose
+            elif withheld:
+                note = f"{note} {withheld}" if note else withheld
         sections.append(ReportSection(id=spec.id, title=spec.title, kind="written", sentences=sentences, note=note))
 
     refs = build_references(ctx, sections)
+    if ctx.integrity_notes:
+        _flag_notices(ctx, sections, refs)
     generators = {
         "best_source": lambda: _best_source(ctx, refs),
+        "background": lambda: _background(ctx),
         "gaps": lambda: _gaps(ctx),
         "plan": lambda: _plan(ctx),
         "ranking": lambda: _ranking(ctx, refs),
@@ -586,11 +971,15 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     references = []
     for pid, number in sorted(refs.items(), key=lambda kv: kv[1]):
         paper = ctx.papers[pid]
+        notice = ctx.integrity_notes.get(pid)
+        if notice and pid in ctx.demoted:
+            notice += (". Ranked after all other evidence and not used in the Answer; the scientist makes the "
+                       "final call")
         references.append(
             Reference(
                 number=number,
                 paper_id=pid,
-                citation=citation_text(paper),
+                citation=citation_text(paper) + (f" — **Publication notice:** {notice}." if notice else ""),
                 url=paper_url(paper),
                 signals=paper.signals,
                 text_source=paper.text_source,
@@ -613,14 +1002,21 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "chunks_failed": ctx.extract_stats.get("chunk_failed", 0),
         "findings_proposed": ctx.extract_stats.get("findings", 0),
         "labels_corrected": ctx.extract_stats.get("direction_corrected", 0)
-        + ctx.extract_stats.get("outcome_corrected", 0),
+        + ctx.extract_stats.get("outcome_corrected", 0)
+        + ctx.extract_stats.get("evidence_type_corrected", 0),
         "findings_quote_failed": ctx.extract_stats.get("quote_failed", 0),
         "findings_other_entity": ctx.extract_stats.get("near_miss", 0) + ctx.extract_stats.get("other_disease", 0),
+        "findings_other_work": ctx.extract_stats.get("other_work", 0),
+        "findings_not_a_result": ctx.extract_stats.get("not_a_result", 0),
         "evidence_units": len(ctx.summary.units),
         "sentences_kept": ctx.sentence_stats.get("kept", 0),
         "sentences_dropped": ctx.sentence_stats.get("dropped", 0),
         "sentences_repeated": ctx.sentence_stats.get("repeated", 0),
     }
+    if getattr(ctx, "entailment", None) is not None:
+        # Only when the check ran, so a report written with it off keeps the
+        # exact bytes it had before the check existed.
+        stats.update(report_stats(ctx.sentence_stats))
     interpretation = {
         "question_type": ctx.spec.question_type,
         "goal": ctx.spec.goal,
@@ -652,6 +1048,40 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         model_versions=model_versions,
         prompt_versions=prompt_versions,
     )
+
+
+def _withheld_note(ctx: WriteContext) -> str | None:
+    """Say which leading targets the Answer left out, and why, so nothing is
+    hidden: their only evidence comes from papers with an expression of concern."""
+    names = [t.target for t in ctx.summary.targets[: ctx.max_targets]
+             if t.unit_ids and all(ctx.by_unit_id[i].paper_id in ctx.demoted for i in t.unit_ids)]
+    if not names:
+        return None
+    return ("Not used in this answer: " + ", ".join(names) + " - the only evidence for "
+            + ("it comes" if len(names) == 1 else "them comes")
+            + " from paper(s) with a published expression of concern. It is shown, marked, under Candidate "
+            "targets and in the evidence table for a scientist to judge.")
+
+
+def _flag_notices(ctx: WriteContext, sections: list[ReportSection], refs: dict[str, int]) -> None:
+    """Put a recorded concern or correction next to every written section that
+    cites the paper, so no conclusion rests on it unqualified."""
+    by_short = {short: uid for uid, short in ctx.summary.short_ids.items()}
+
+    def walk(section: ReportSection) -> None:
+        cited = {ctx.by_unit_id[by_short[c]].paper_id for s in section.sentences if s.kept
+                 for c in s.citations if c in by_short and by_short[c] in ctx.by_unit_id}
+        flagged = sorted((refs[pid], ctx.integrity_notes[pid]) for pid in cited
+                         if pid in ctx.integrity_notes and pid in refs)
+        if flagged:
+            line = "Cites " + "; ".join(f"[{n}], which has a publication notice: {note}" for n, note in flagged) + "."
+            section.note = f"{section.note} {line}" if section.note else line
+        for sub in section.subsections:
+            walk(sub)
+
+    for section in sections:
+        if section.kind == "written":
+            walk(section)
 
 
 def _target_line(t) -> str:

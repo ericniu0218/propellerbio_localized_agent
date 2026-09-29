@@ -44,6 +44,17 @@ rank:
   # those that pass the exact-entity gate. The rest are ranked lexically only.
   # Each grade is one small model call, so this bounds the cost of a question.
   max_graded: 40
+  # Which papers get those grades. `lexical`: the top max_graded by BM25.
+  # `evidence_aware` (experimental, opt-in): the same budget, but lanes of it
+  # are reserved first for papers whose own publication type or design
+  # wording says human trial, human cohort/genetics, prevention (prevention
+  # questions only) and animal/cell experiment, in that order, then BM25
+  # fills the rest; reviews and notices get no grade; the read planner then
+  # tries human studies first for the clinical and prevention needs. Not the
+  # default until a matched frozen-corpus benchmark shows it helps without
+  # losing precision (docs/litreview/OPEN_ISSUES.md).
+  selection: lexical
+  reservations: {human_interventional: 8, human_genetic_observational: 4, prevention: 4, mechanistic: 8}
 
 plan:
   # How many papers are read in full (well: in sections) for one report.
@@ -72,3 +83,12 @@ write:
   max_targets: 10
   units_per_target: 5
   max_units_per_section: 14
+
+integrity:
+  # Publication-integrity status (retractions, expressions of concern,
+  # corrections) is refreshed only by `bedrock-litreview integrity refresh`,
+  # never during a review. A paper's recorded status is called stale this many
+  # days after the last successful lookup. A proposed operating default for the
+  # owner to confirm - not a safety guarantee; a recorded notice stays visible
+  # however old the lookup.
+  stale_after_days: 7

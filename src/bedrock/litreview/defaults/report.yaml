@@ -13,8 +13,18 @@
 #   negative      no-effect / worse / mixed results, and conflicts
 #   all           the strongest evidence overall
 #
-# generated sections: best_source, gaps, plan, ranking, evidence_table,
-# method, excluded.
+# generated sections: best_source, background, gaps, plan, ranking,
+# evidence_table, method, excluded. `background` quotes review articles for
+# context; they are never counted as evidence.
+#
+# findings (written sections only, default true): every sentence must cite at
+# least one quote that reports a result, not just mention the subject - a
+# methods, demographics or generic-background sentence that states no finding
+# is dropped even though it names nothing wrong (report/guard.py). Every
+# written section below draws its evidence from extracted findings and exists
+# to state some of them, so none sets this to false today; it is here so a
+# future section that is genuinely not about a result (a scope note, say) can
+# opt out without weakening the check everywhere else.
 
 target_identification:
   - id: answer
@@ -70,6 +80,7 @@ target_identification:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise the adverse effects and risks reported for acting on these targets.
+  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
   - {id: competitors, title: Competitor landscape, kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
@@ -125,6 +136,7 @@ intervention_efficacy:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise adverse events and risks reported.
+  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}
@@ -152,6 +164,7 @@ default:
     source: negative
     sentences: "1 to 4"
     instructions: Report results that disagree with the others or show no effect.
+  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
   - {id: gaps, title: Gaps and caveats, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}

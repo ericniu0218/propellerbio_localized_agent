@@ -44,6 +44,7 @@ jobs:
   relevance: small     # grade one paper's title+abstract against the question
   extract: medium      # copy findings out of one chunk of one section
   write: medium        # write one report section from its evidence slice
+  entail: medium       # optional, off by default: does a kept sentence's cited text support it
   judge: medium        # benchmark only: does the cited evidence support a sentence
   baseline: medium     # benchmark only: the chatbot-style comparison answers
 

@@ -156,10 +156,9 @@ def grade_from(judgement: RelevanceJudgement, *, quote_ok: bool, tested: str | N
     return 3 if tested else 2
 
 
-def grade_paper(
-    paper: Paper, spec: QuestionSpec, client, *, model: str
-) -> tuple[RelevanceJudgement | None, str]:
-    """One model call. Returns the judgement (None on failure) and the quote status."""
+def relevance_request(paper: Paper, spec: QuestionSpec) -> tuple[str, dict]:
+    """The prompt and schema one relevance grade sends. No model involved -
+    the determinism benchmark pins these to replay against a server."""
     subject = spec.subject
     prompt = load_prompt(PROMPT)
     near = subject.near_miss_terms if subject else []
@@ -178,7 +177,14 @@ def grade_paper(
         abstract=(paper.abstract or "(no abstract)")[:ABSTRACT_CHARS],
         tested_rule=rule.format(subject=label, agent=agent_label(spec)),
     )
-    schema = strict_schema(RelevanceJudgement.model_json_schema())
+    return rendered, strict_schema(RelevanceJudgement.model_json_schema())
+
+
+def grade_paper(
+    paper: Paper, spec: QuestionSpec, client, *, model: str
+) -> tuple[RelevanceJudgement | None, str]:
+    """One model call. Returns the judgement (None on failure) and the quote status."""
+    rendered, schema = relevance_request(paper, spec)
     try:
         data = ask_json(client, rendered, model=model, schema=schema, max_tokens=600)
         judgement = RelevanceJudgement.model_validate(data)
@@ -193,6 +199,108 @@ def grade_paper(
     return judgement, located.status
 
 
+# --- which papers get a grade -----------------------------------------------------------
+
+POLICIES = ("lexical", "evidence_aware")
+DEFAULT_RESERVATIONS = {"human_interventional": 8, "human_genetic_observational": 4, "prevention": 4, "mechanistic": 8}
+_LANES = (
+    ("human_interventional", {"human_rct", "human_interventional_other"}),
+    ("human_genetic_observational", {"human_genetic", "human_observational"}),
+    ("prevention", None),
+    ("mechanistic", {"animal_interventional", "in_vitro"}),
+)
+
+
+def evidence_aware_selection(
+    passing: list[RankedPaper],
+    papers: dict[str, Paper],
+    spec: QuestionSpec,
+    designs: dict[str, dict],
+    *,
+    max_graded: int,
+    reservations: dict[str, int] | None = None,
+    knowledge=None,
+) -> tuple[list[str], dict[str, str]]:
+    """Which gate-passing papers get a relevance grade, and why each one does or not.
+
+    The lexical policy grades the top `max_graded` by BM25, which on a real
+    corpus fills the budget with mechanism papers and leaves human trials and
+    cohorts ungraded - and an ungraded paper is never read. This policy keeps
+    the same budget and reserves part of it, lane by lane in a fixed order:
+
+      human_interventional         a human trial, by publication type or the
+                                   paper's own design wording
+      human_genetic_observational  a human cohort, case-control or genetic study
+      prevention                   (prevention questions only) prevention wording
+      mechanistic                  an animal or cell experiment the paper reports
+
+    then fills what is left by lexical score. Within a lane, papers that name
+    an approved target or drug no chosen paper names yet go first, then by
+    lexical score; ties break on paper id, so input order never matters. A
+    lane with too few papers gives its slots back to the fill. Reviews,
+    guidelines and notices take no slot at all: they are not primary evidence.
+
+    Design labels decide what is *looked at*; they certify nothing. A human
+    paper that grades 1 is still a grade-1 paper. The model is not involved.
+    """
+    from bedrock.litreview.facets import _FACET_WORDS
+    from bedrock.litreview.knowledge import load_knowledge
+    from bedrock.litreview.study_design import grounded_labels, is_nonprimary
+
+    kb = knowledge or load_knowledge()
+    reservations = dict(DEFAULT_RESERVATIONS if reservations is None else reservations)
+    why: dict[str, str] = {}
+    pool: list[RankedPaper] = []
+    for row in sorted(passing, key=lambda r: (-r.lexical_score, r.paper_id)):
+        design = designs.get(row.paper_id)
+        if is_nonprimary(design):
+            why[row.paper_id] = "excluded_nonprimary:" + ",".join(
+                r for r in design["roles"] if r != "primary")
+        else:
+            pool.append(row)
+
+    names = {
+        row.paper_id: {e.canonical for e, _ in kb.scan(papers[row.paper_id].head_text(), ("target", "drug"))}
+        for row in pool
+    }
+    chosen: list[str] = []
+    covered: set[str] = set()
+
+    def take(pid: str, reason: str) -> None:
+        chosen.append(pid)
+        covered.update(names[pid])
+        why[pid] = reason
+
+    for lane, labels in _LANES:
+        quota = min(int(reservations.get(lane, 0)), max_graded - len(chosen))
+        if quota <= 0:
+            continue
+        if lane == "prevention":
+            if spec.goal != "prevent":
+                continue
+            fits = [r for r in pool if _FACET_WORDS["prevention"].search(papers[r.paper_id].head_text())]
+        else:
+            fits = [r for r in pool if grounded_labels(designs.get(r.paper_id)) & labels]
+        fits = [r for r in fits if r.paper_id not in why]
+        taken = 0
+        for new_names_only in (True, False):
+            for r in fits:
+                if taken >= quota:
+                    break
+                if r.paper_id in why or (new_names_only and not (names[r.paper_id] - covered)):
+                    continue
+                take(r.paper_id, f"reserved:{lane}")
+                taken += 1
+    for r in pool:
+        if len(chosen) >= max_graded:
+            break
+        if r.paper_id not in why:
+            take(r.paper_id, "lexical_fill")
+    for r in pool:
+        why.setdefault(r.paper_id, f"below_budget_{max_graded}")
+    return chosen, why
+
+
 def rank_papers(
     papers: list[Paper],
     gates: dict[str, GateResult],
@@ -202,7 +310,21 @@ def rank_papers(
     *,
     model: str | None = None,
     max_graded: int = 40,
+    selection: dict[str, str] | None = None,
+    policy: str = "lexical",
+    designs: dict[str, dict] | None = None,
+    reservations: dict[str, int] | None = None,
+    knowledge=None,
 ) -> list[RankedPaper]:
+    """`selection`, when given, is filled with why each gate-passing paper was
+    or was not sent for a grade, for the coverage ledger. It changes nothing.
+
+    `policy` picks which papers get a grade within `max_graded`: `lexical`
+    (the default: top BM25) or `evidence_aware` (reserved lanes by study
+    design, then BM25; `evidence_aware_selection`). It never changes how a
+    grade is given."""
+    if policy not in POLICIES:
+        raise ValueError(f"unknown rank.selection {policy!r}; expected one of {', '.join(POLICIES)}")
     by_id = {p.id: p for p in papers}
     bm25 = BM25({p.id: f"{p.title} {p.title} {p.abstract or ''}" for p in papers})
     query = query_text(spec)
@@ -227,9 +349,26 @@ def rank_papers(
         (r for r in rows.values() if r.gate == "pass"), key=lambda r: (-r.lexical_score, r.paper_id)
     )
     graded_ids: set[str] = set()
+    if policy == "evidence_aware":
+        if designs is None:
+            from bedrock.litreview.study_design import designs_for
+
+            designs = designs_for([by_id[r.paper_id] for r in passing])
+        chosen_ids, reasons = evidence_aware_selection(
+            passing, by_id, spec, designs, max_graded=max_graded, reservations=reservations, knowledge=knowledge)
+        rows_by_id = {r.paper_id: r for r in passing}
+        to_grade = [rows_by_id[pid] for pid in chosen_ids]
+    else:
+        to_grade = passing[:max_graded]
+        reasons = {
+            row.paper_id: f"lexical_top_{max_graded}" if i < max_graded else f"below_lexical_cutoff_{max_graded}"
+            for i, row in enumerate(passing)
+        }
+    if selection is not None:
+        selection.update(reasons)
     if client is not None and model:
         graded_by = version_of(client, model)
-        for row in passing[:max_graded]:
+        for row in to_grade:
             paper = by_id[row.paper_id]
             judgement, status = grade_paper(paper, spec, client, model=model)
             if judgement is None:

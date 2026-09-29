@@ -52,6 +52,7 @@ def make_client(
     fake: LLMClient | None = None,
     cache: bool = True,
     read_cache: bool = True,
+    legacy_cache: bool = False,
 ) -> LLMClient:
     """The client a run uses, wrapped in the call cache.
 
@@ -76,7 +77,7 @@ def make_client(
         )
     if not cache:
         return inner
-    return CachedClient(inner, CallCache(settings.cache_dir), read=read_cache)
+    return CachedClient(inner, CallCache(settings.cache_dir), read=read_cache, legacy_read=legacy_cache)
 
 
 def version_of(client: Any, model: str) -> str:

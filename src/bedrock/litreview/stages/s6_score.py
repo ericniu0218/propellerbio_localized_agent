@@ -62,7 +62,12 @@ _CELL_LINES = re.compile(
 def _is_subject(unit: EvidenceUnit, spec: QuestionSpec) -> bool:
     """A 'target' that is the disease or virus itself, a cell line, or a word that
     names nothing one could act on ("dropout", "participants"), says nothing
-    about what to target. Its findings stay in the evidence; it gets no row."""
+    about what to target. Its findings stay in the evidence; it gets no row.
+    Nor does an outcome measure: Stage 5 flags "AHR" that the paper defines
+    as airway hyperresponsiveness, and "MMDs", so neither joins a receptor's
+    row by its letters (`knowledge/abbreviations.py`)."""
+    if unit.outcome_measure:
+        return True
     if unit.target.strip().lower() in _GENERIC_TARGETS or _CELL_LINES.search(unit.target):
         return True
     if not looks_like_target(unit.target) and not load_knowledge().lookup(unit.target):
@@ -81,7 +86,12 @@ def summarize(
     facets: list[Facet],
     ranked: list[RankedPaper],
     plan: EvidencePlan | None = None,
+    demoted: frozenset[str] | set[str] = frozenset(),
 ) -> EvidenceSummary:
+    """`demoted`: papers with a published expression of concern
+    (`publication_integrity.concern_papers`). Their findings stay in the
+    table, but do not count towards a target's place in the order: a target
+    they alone support sorts after every target with other evidence."""
     facet_index = {f.id: i for i, f in enumerate(facets)}
     rank_of = {r.paper_id: r.rank for r in ranked}
     ordered = sorted(
@@ -149,15 +159,17 @@ def summarize(
     def papers_with(tunits: list[EvidenceUnit], types: tuple[str, ...], outcomes: tuple[str, ...] | None) -> int:
         return len({
             u.paper_id for u in tunits
-            if u.evidence_type in types and (outcomes is None or u.outcome in outcomes)
+            if u.evidence_type in types and (outcomes is None or u.outcome in outcomes) and u.paper_id not in demoted
         })
 
     def target_key(s: TargetSummary) -> tuple:
         tunits = by_target[s.target]
         return (
+            all(u.paper_id in demoted for u in tunits),
             -papers_with(tunits, ("human_clinical",), ("improved",)),
             -papers_with(tunits, ("human_genetic",), None),
             -papers_with(tunits, ("in_vivo",), ("improved",)),
+            -len({u.paper_id for u in tunits if u.paper_id not in demoted}),
             -len(s.paper_ids),
             s.target.lower(),
         )
@@ -173,12 +185,16 @@ def summarize(
     )
 
 
-def best_units(units: list[EvidenceUnit], rank_of: dict[str, int], limit: int) -> list[EvidenceUnit]:
+def best_units(
+    units: list[EvidenceUnit], rank_of: dict[str, int], limit: int, demoted: frozenset[str] | set[str] = frozenset()
+) -> list[EvidenceUnit]:
     """Pick the most informative units for a section: strongest evidence tier,
-    then most relevant paper, spreading across papers before doubling up."""
+    then most relevant paper, spreading across papers before doubling up.
+    Findings from `demoted` papers (a published expression of concern) come
+    after all others."""
     ordered = sorted(
         units,
-        key=lambda u: (_TIER.get(u.evidence_type, 9), rank_of.get(u.paper_id, 10**6), u.quote),
+        key=lambda u: (u.paper_id in demoted, _TIER.get(u.evidence_type, 9), rank_of.get(u.paper_id, 10**6), u.quote),
     )
     picked: list[EvidenceUnit] = []
     seen_papers: set[str] = set()

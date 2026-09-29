@@ -1,0 +1,5 @@
+This SOP describes the standard procedure for mammalian cell culture maintenance in the tissue culture suite, including media preparation, passage schedule, and contamination checks.
+
+Cells must be checked for mycoplasma contamination every 14 days using the approved PCR-based detection kit. Any positive result triggers immediate quarantine of the affected line and notification of the QA lead within 24 hours.
+
+Passage number must not exceed 30 for any research cell line used in a GLP study without documented justification and QA sign-off.

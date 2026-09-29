@@ -196,6 +196,17 @@ def no_idle_wait(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_automatic_retraction_checks(monkeypatch):
+    """Reviews check their papers for retractions over the network by default
+    (`litreview.service.auto_integrity_check`). No test may reach the network,
+    so the suite turns that off; `test_integrity_runs.py` tests it with a mock
+    transport by asking for it explicitly."""
+    from bedrock.litreview import service
+
+    monkeypatch.setattr(service, "auto_integrity_check", lambda settings: None)
+
+
+@pytest.fixture(autouse=True)
 def fresh_token_estimate():
     """Forget any characters-per-token ratio a previous test taught ``tokens``."""
     tokens.reset()

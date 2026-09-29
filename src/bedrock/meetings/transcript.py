@@ -9,11 +9,11 @@ Malformed blocks are skipped rather than raising. A partial transcript is still
 worth summarising, and a meeting is not worth losing because one cue arrived
 truncated.
 
-bedrock-agent-pack's meeting_transcripts tool imports this module instead of
-keeping its own copy, pinned to a commit in its requirements.txt. It uses Cue,
-parse_vtt and speakers, plus Cue.timestamp and Cue.render(). Changing any of
-those needs a matching change in that repo when it next updates the pin; the
-backend's tests will fail on the update if they drift.
+The agent-pack server's meeting_transcripts tool (bedrock.server.tools) imports
+this module rather than keeping its own copy. It uses Cue, parse_vtt and
+speakers, plus Cue.timestamp and Cue.render(). Changing any of those needs a
+matching change there, in the same commit; tests/server/test_meeting_transcripts.py
+fails if they drift.
 """
 
 from __future__ import annotations

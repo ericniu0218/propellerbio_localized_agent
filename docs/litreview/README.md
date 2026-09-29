@@ -253,7 +253,13 @@ sentence whose numbers, names or subjects ("in mice") do not appear in the
 paper text it cites. Then [`report/invariants.py`](../../src/bedrock/litreview/report/invariants.py)
 re-checks the finished report against the exact paper versions the run pinned;
 a violation puts a warning banner on the report. `bedrock-litreview verify-run <id>`
-repeats the check on any stored run.
+repeats the check on any stored run. It also says whether today's code,
+knowledge tables, word lists and prompts are the ones the run recorded
+(`report/verification_context.py`). A changed environment is reported beside
+a passing report, never counted as a violation, and
+`verify-run --require-same-rules` turns it into a failure for CI. It is a
+comparison of recorded hashes, not a signed attestation: someone able to
+rewrite the local database could rewrite both.
 
 ### Why raw and normalised are separate fields
 
@@ -305,6 +311,36 @@ paper whose title is about a sibling, with the sibling outnumbering the
 subject, is excluded as a near-miss. Reviews are excluded: a review citing a
 trial is not a trial. Every excluded paper is listed with its reason.
 
+Retracted papers are excluded too. A paper counts as retracted when its own
+record says so (a "Retracted Publication" type, or a "Retraction in" link),
+or when this machine has *recorded* a retraction notice for it.
+
+- **When notices are recorded.** By default, each new review first asks PubMed
+  and Crossref about its papers. It sends ID numbers only, never the question,
+  and skips papers checked in the last week. Scientists can make this manual
+  with `/reviews settings`; the app explains both choices. They can also be
+  recorded by `bedrock-litreview integrity refresh` or by importing an
+  offline bundle.
+- **Expressions of concern.** The paper is kept and shown, never recommended.
+  Its findings are ranked after all other evidence and left out of the
+  Answer, and the Answer says which targets were left out for that reason.
+  They are marked ⚠ in the evidence table, and the reference quotes the
+  notice's own title and opening words with a link.
+- **Corrections** are marked only.
+- **Reinstated papers.** A paper that was retracted and later reinstated
+  stays out until a scientist adds it back (`/reviews reinstate <paper>`); the
+  report tells them.
+- **History is never rewritten.** What the run knew is pinned in its
+  `publication_integrity_snapshot.v1`. A notice recorded later never rewrites
+  an old report: `verify-run` reports it as an advisory.
+
+See [`publication_integrity.py`](../../src/bedrock/litreview/publication_integrity.py).
+
+Review articles are not evidence, but they are not thrown away. A separate
+report section, "Background from reviews", lists them with links and a
+couple of sentences quoted from each abstract. Nothing in it counts toward
+the targets, the evidence table or the Answer.
+
 ### Stage 3 — Rank · *code, plus one small-model call per paper*
 
 BM25 over title and abstract (the question's words plus the vocabulary of its
@@ -328,6 +364,16 @@ abstract's study-design words, not by the model — a small model asked for
 either a grade or a list of needs gives every paper the maximum. The top
 usable paper is reported as the *most relevant source*.
 
+Which papers get a grade is `rank.selection` in `pipeline.yaml`. The default,
+`lexical`, grades the top `max_graded` by BM25. The opt-in `evidence_aware`
+policy keeps the same budget but first reserves lanes for papers whose own
+publication type or design wording says human trial, human cohort or
+genetics, prevention (prevention questions only) and animal or cell
+experiment ([`study_design.py`](../../src/bedrock/litreview/study_design.py)).
+Reviews and notices get no grade. It is not the default until a matched
+real-model benchmark shows it helps: in a synthetic check it read more human
+studies but named fewer reference targets on the asthma corpus.
+
 ### Stage 4 — Plan · *pure code*
 
 Facet templates per question type ([`facets.py`](../../src/bedrock/litreview/facets.py)) say what
@@ -336,7 +382,15 @@ targets with causal evidence, human clinical evidence, prevention-specific
 evidence, negative results, safety. The planner fills every facet's minimum
 before topping any up, within a paper budget, preferring full text among
 equally relevant papers. A facet no paper supplies is a **gap**, stated in
-the report, never filled from elsewhere.
+the report, never filled from elsewhere. The report's gaps and "What the
+answer needed" count papers that gave *verified findings* for a need. A
+paper chosen because its abstract looked right does not count until one of
+its findings survives verification.
+
+Every run also writes a coverage ledger (`coverage.v1`) beside the report:
+the stage at which each collected paper stopped, and why, with counts that
+reconcile. It is how "the report does not mention X" is told apart from "no
+paper we had supports X". See [`coverage.py`](../../src/bedrock/litreview/coverage.py).
 
 ### Stage 5 — Extract · *model copies, code checks*
 
@@ -376,6 +430,37 @@ Generated by code, not the model: most relevant source, gaps and caveats, the
 evidence plan, the relevance ranking, the evidence table, the method, and the
 excluded papers.
 
+#### Optional: the entailment check (off by default, not yet measured)
+
+The guard's direction and negation checks are word-level: they cannot tell
+whether a reworded sentence means what its quote means
+([OPEN_ISSUES.md](OPEN_ISSUES.md) #10).
+[`report/entailment.py`](../../src/bedrock/litreview/report/entailment.py)
+adds one narrow question for the local model, asked of every sentence the
+guard kept: does the paper's text it cites (quote, context sentence,
+qualifying next sentence) support it fully, partially, not at all, or say
+the opposite? `not_supported` and `contradicted` drop the sentence ("the
+entailment check found the cited text does not support it: ..."); `partial`
+keeps it and is counted in the report's stats; a failed call keeps it. Like
+every other call it is structured, at temperature 0, cached, through the
+scheduler at `USER_JOB`, on the model pinned for the `entail` job in
+`models.yaml`, with its own prompt (`llm/prompts/entail.md`). A run with it
+on records `entail` in its model and prompt versions.
+
+```toml
+# ~/.config/bedrock/config.toml
+[litreview]
+entailment_check = true        # or BEDROCK_LITREVIEW_ENTAILMENT_CHECK=1
+```
+
+**Leave it off.** Nobody has measured how often it is wrong, and a check that
+drops a sentence the paper really supports loses real evidence. It stays off
+until its verdicts have been compared with the strong judge's
+(`python -m evals.litreview.entailment_agreement <report.json> ... --models <set>`
+prints the confusion matrix and lists every sentence it would drop that the
+judge supports) and a scientist has reviewed the disagreements. With it off,
+a report is byte-identical to one written before the check existed.
+
 ### Stage 8 — Render
 
 JSON → Markdown → self-contained HTML (no external assets; hovering a citation
@@ -389,7 +474,7 @@ narrow and question-scoped.
 
 ## Models
 
-**Two model files. Six jobs. Zero training.**
+**Two model files. Seven jobs. Zero training.**
 
 | Job | Tier | What the model is asked for |
 |---|---|---|
@@ -397,6 +482,7 @@ narrow and question-scoped.
 | `relevance` | **small** | narrow questions about one abstract — code grades it |
 | `extract` | medium | copy findings out of one chunk of one section, with their quotes |
 | `write` | medium | one report section from one slice of evidence |
+| `entail` | medium | *optional, off by default* — does a kept sentence's cited text support it |
 | `judge` | medium | *benchmark only* — find the evidence sentence for a claim |
 | `baseline` | medium | *benchmark only* — the chatbot answers we compare against |
 
@@ -451,16 +537,31 @@ These are the acceptance criteria that matter to them.
 ### "I ask the same question twice and get different answers"
 
 - `temperature=0.0` everywhere, pinned model versions, fixed prompts
-- **Every model call is cached**, keyed on `hash(prompt + model + params)`.
+- **Every model call is cached**, keyed on the prompt, the model, the call's
+  parameters and the client's *generation context*: seed, thinking policy,
+  weights where the server reports them, declared revision, and which server.
   A re-run replays the cache. See [`llm/cache.py`](../../src/bedrock/litreview/llm/cache.py).
   Editing a prompt changes the key, so a prompt change invalidates exactly the
   entries it should and nothing else
+- **What is and is not promised.** The pipeline's own choices are
+  deterministic over pinned inputs. Replaying cached replies, or rendering
+  from recorded ones, reproduces the report byte for byte. Whether the
+  *model server* repeats itself with no cache is a property of one
+  deployment: vLLM documents no default guarantee, and a seed alone does not
+  make one. `python -m bedrock.litreview.bench determinism --mode fresh`
+  measures it; it has not been run on the office server yet
 - **The paper set is frozen.** Re-running a report uses the papers already
   gathered; going back out to the sources is a separate, explicit action
 - Every run has a `run_id`; reports are immutable
 
 > **The acceptance test: run the same project twice, get byte-identical
 > reports.** One sentence the client can verify themselves.
+>
+> It holds while the inputs hold. If a retraction, expression of concern or
+> correction is recorded on the machine between the two runs (`bedrock-litreview
+> integrity refresh` or `import`), the second report differs on purpose - it
+> marks or excludes that paper - and each run's
+> `publication_integrity_snapshot.v1` shows what it knew.
 
 ### "It can't remember earlier conversation"
 

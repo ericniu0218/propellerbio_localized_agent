@@ -412,6 +412,8 @@ async def run_review(
         )
 
     searcher = _searcher(request, settings)
+    # A resumed run keeps what it knew when it started; only a new one checks.
+    integrity_check = None if request.resume else auto_integrity_check(settings)
 
     return await asyncio.to_thread(
         answer_question,
@@ -427,15 +429,26 @@ async def run_review(
         out_dir=request.out_dir,
         resume_run_id=request.resume,
         progress=progress,
+        integrity_check=integrity_check,
     )
+
+
+def auto_integrity_check(settings: Settings):
+    """The retraction check a new review runs before it reads its papers, or
+    None when the setting is `manual` (`/reviews settings`, `preferences.py`).
+    See `sources.integrity.automatic_check_for`."""
+    from bedrock.litreview.sources.integrity import automatic_check_for
+
+    return automatic_check_for(settings)
 
 
 def _searcher(request: ReviewRequest, settings: Settings):
     """Where this run's papers come from.
 
     `None` means the question's frozen set, already in the database. The
-    literature searcher is built only when someone asked for it: a review must
-    never reach the internet by default.
+    literature searcher is built only when someone asked for it: a review
+    never *searches* by default. (The retraction check is separate and sends
+    identifiers only; see `auto_integrity_check`.)
     """
     if request.corpus is not None:
         return CorpusSearcher(request.corpus)

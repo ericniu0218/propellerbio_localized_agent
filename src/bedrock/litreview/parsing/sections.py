@@ -12,14 +12,26 @@ Three input shapes, in descending order of how much we like them:
                         the other two first.
 
 Everything funnels into the same canonical names, because Stage 5 keys off them:
-abstract, methods, results, discussion, other.
+abstract, methods, results, discussion, other - plus "unknown", used only when
+a paper has no recognisable structure at all (see `_Collector.result`).
 """
 
 from __future__ import annotations
 
 import re
 
-CANONICAL = ("abstract", "methods", "results", "discussion", "other")
+CANONICAL = ("abstract", "methods", "results", "discussion", "other", "unknown")
+
+# The sections that tell us the parser actually found the paper's real
+# structure. "abstract" doesn't count - it comes from a dedicated XML tag,
+# not a recognised heading, so it says nothing about whether the body is
+# structured. "other" doesn't count either - it catches both a genuine
+# Introduction/Background heading and pure boilerplate (Acknowledgments,
+# Funding, Author Contributions), so its presence alone cannot tell us
+# whether the leftover unlabelled text is late-paper Discussion or is exactly
+# the Methods/Results/Discussion the paper never labelled. Only these three
+# say the parser found real narrative structure to hang the rest on.
+_STRUCTURAL_SECTIONS = frozenset({"methods", "results", "discussion"})
 
 # Journals name these sections a dozen ways. Longest-matching wins, so
 # "materials and methods" is not caught by the "results" pattern inside it.
@@ -121,10 +133,24 @@ class _Collector:
         # Some journals put results under descriptive headings with no
         # "Results" parent at all. If nothing was labelled results, those
         # unlabelled sections are the results; otherwise they are 'other'.
+        #
+        # But when NONE of methods, results or discussion was recognised
+        # anywhere in the paper, that guess has nothing to rest on - usually
+        # because every heading carries a numeral the patterns don't expect
+        # ("1. Introduction", "3. Results"), so not even Methods or
+        # Discussion matched, only unnumbered boilerplate like Acknowledgments
+        # did. Filing the leftover text as "results" there would silently
+        # relabel the paper's actual Introduction and Discussion; two real
+        # papers in the corpus are exactly this shape (see
+        # docs/litreview/OPEN_ISSUES.md item 6). File it as "unknown"
+        # instead of guessing.
         if self.unlabelled:
-            self.parts.setdefault("results" if "results" not in self.parts else "other", []).extend(
-                self.unlabelled
-            )
+            if _STRUCTURAL_SECTIONS.isdisjoint(self.parts):
+                self.parts.setdefault("unknown", []).extend(self.unlabelled)
+            else:
+                self.parts.setdefault("results" if "results" not in self.parts else "other", []).extend(
+                    self.unlabelled
+                )
         return {name: "\n\n".join(chunks).strip() for name, chunks in self.parts.items() if "".join(chunks).strip()}
 
 

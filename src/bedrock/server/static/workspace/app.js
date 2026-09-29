@@ -339,11 +339,13 @@
       } else {
         const meta = [];
         if (m.citations && m.citations.length) meta.push(m.citations.length + " source(s) cited");
+        const { body: answerText, sources } = splitSources(m.text || "");
         thread.appendChild(el("div", { class: "msg assistant" }, [
           el("span", { class: "avatar" }, "AI"),
           el("div", { class: "bubble" }, [
-            el("div", {}, m.text),
-            meta.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
+            el("div", {}, answerText),
+            sources.length ? renderSourceList(sources, chat) : null,
+            meta.length && !sources.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
           ]),
         ]));
       }
@@ -416,6 +418,33 @@
     dock.appendChild(enterHint);
 
     $("#center").appendChild(dock);
+  }
+
+  // An answer ends with "**Sources**" and one numbered line per source
+  // (bedrock.server.answers). Shown as a short list, not raw markdown; a file
+  // opens its download and a memory note opens Memory.
+  function splitSources(text) {
+    const marker = "\n\n**Sources**\n";
+    const at = text.lastIndexOf(marker);
+    if (at < 0) return { body: text, sources: [] };
+    const sources = text.slice(at + marker.length).split("\n").map((l) => l.trim()).filter(Boolean)
+      .map((l) => { const m = l.match(/^(?:(\d+)\.|-)\s*(.*)$/); return m ? { n: m[1] || "", label: m[2] } : { n: "", label: l }; });
+    return { body: text.slice(0, at), sources };
+  }
+  function renderSourceList(sources, chat) {
+    const list = el("div", { class: "msg-sources" }, [el("div", { class: "msg-sources-title" }, "Sources")]);
+    sources.forEach((s) => {
+      let node;
+      const file = s.label.startsWith("File: ") && (state.artifacts || []).find((a) => a.name === s.label.slice(6)
+        && (!chat || a.chatId === chat.id || (chat.projectId && a.projectId === chat.projectId) || (!a.chatId && !a.projectId)));
+      if (file) node = el("a", { href: `${API}/artifacts/${file.id}/download`, title: "Download this file" }, s.label);
+      else if (s.label.startsWith("Memory: ")) node = el("a", { onclick: (e) => {
+        e.preventDefault(); view = "memory"; $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "memory")); render(true);
+      }, href: "#", title: "Open Memory" }, s.label);
+      else node = el("span", {}, s.label);
+      list.appendChild(el("div", { class: "msg-source" }, [s.n ? el("span", { class: "muted" }, `[${s.n}] `) : null, node]));
+    });
+    return list;
   }
 
   async function createChat(projectId = null) {

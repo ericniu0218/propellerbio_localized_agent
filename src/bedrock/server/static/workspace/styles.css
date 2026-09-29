@@ -499,3 +499,8 @@ a.btn { text-decoration: none; }
 .research-form .check-row input { flex: none; padding: 0; }
 .modal .field select { width: 100%; }
 #research-activity:not(:empty) + #activity-body .empty-state { display: none; }
+.msg-sources { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
+.msg-sources-title { color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.msg-source { margin: 2px 0; overflow-wrap: anywhere; }
+.msg-source a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.msg-source a:hover { text-decoration: underline; }

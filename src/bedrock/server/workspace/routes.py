@@ -90,8 +90,11 @@ class FollowupInput(BaseModel):
 def config():
     from bedrock.server.config import get_settings
     settings = get_settings()
-    if demo_mode():
+    # Mirrors execute_run: a demo with a real model configured uses the model.
+    if demo_mode() and settings.mode != "real":
         ai = "Demo provider"
+    elif demo_mode():
+        ai = "Local model (demo data)"
     elif settings.mode == "real":
         ai = "Local agents — real model backend"
     else:

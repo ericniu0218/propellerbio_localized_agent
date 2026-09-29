@@ -61,7 +61,8 @@ def render_context(blocks: list[ContextBlock], budget_tokens: int) -> str:
     """The blocks, fenced, in the order sent; the last ones cut if they do not fit."""
     if not blocks:
         return ""
-    parts = [DATA_NOT_INSTRUCTIONS + " Cite a source as [source:ID] where you use it."]
+    parts = [DATA_NOT_INSTRUCTIONS + " Use only the material below that bears on the question, and ignore"
+             " the rest - do not mention it. Where a statement comes from one of them, cite it as [source:ID]."]
     used = estimate_tokens(parts[0])
     for block in blocks:
         header = f"{block.title} [source:{block.id}]"

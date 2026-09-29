@@ -12,7 +12,7 @@ director:
   endpoint: ${DIRECTOR_LLM_URL:-http://director-llm:8001/v1}
   served_via: vllm
   precision: fp8
-  context_length: 131072          # capped below the model's 1M max for KV-cache budget; raise if hardware allows
+  context_length: ${DIRECTOR_CONTEXT_LENGTH:-131072}          # capped below the model's 1M max for KV-cache budget; raise if hardware allows
   supports_thinking_mode: true
   thinking_mode_default: true      # Director should "think a lot" per spec
   api_key_env: DIRECTOR_LLM_API_KEY   # optional; local vLLM usually needs none
@@ -29,7 +29,7 @@ specialist:
   endpoint: ${SPECIALIST_LLM_URL:-http://specialist-llm:8002/v1}
   served_via: vllm
   precision: fp8
-  context_length: 65536
+  context_length: ${SPECIALIST_CONTEXT_LENGTH:-65536}
   supports_thinking_mode: true
   thinking_mode_default: false     # only enabled when Director marks a task "hard"
   api_key_env: SPECIALIST_LLM_API_KEY
@@ -47,7 +47,7 @@ runner:
   endpoint: ${RUNNER_LLM_URL:-http://runner-llm:8003/v1}
   served_via: vllm
   precision: fp8
-  context_length: 32768
+  context_length: ${RUNNER_CONTEXT_LENGTH:-32768}
   supports_thinking_mode: false
   thinking_mode_default: false
   api_key_env: RUNNER_LLM_API_KEY

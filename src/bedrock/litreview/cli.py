@@ -302,6 +302,19 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--sources", help=f"comma-separated subset of {','.join(SOURCES)} (default: defaults/pipeline.yaml)")
         p.add_argument("--no-full-text", action="store_true", help="abstracts only; skip open-access full text")
 
+    aliases = sub.add_parser(
+        "aliases", help="propose names for the knowledge table from HGNC and MeSH downloads; a person approves them")
+    asub = aliases.add_subparsers(dest="aliases_command", required=True)
+    propose = asub.add_parser("propose", help="write proposed names to a file for a person to read (no network)")
+    propose.add_argument("--hgnc", type=Path, help="HGNC complete set or custom download (tab-separated)")
+    propose.add_argument("--mesh", type=Path, help="MeSH descriptors, NLM's XML download (descYYYY.xml)")
+    propose.add_argument("--symbol", action="append", default=[],
+                         help="an HGNC symbol the table does not know yet, to propose a new target entry (repeatable)")
+    propose.add_argument("--out", type=Path, required=True, help="where to write the proposals (.yaml)")
+    approve_cmd = asub.add_parser("approve", help="write the names marked `approve: true` into the table")
+    approve_cmd.add_argument("proposals", type=Path)
+    approve_cmd.add_argument("--table", type=Path, help="the table to edit (default: the package's knowledge/entities.yaml)")
+
     verify = sub.add_parser("verify-run", help="re-check a stored run's report against the papers it pinned")
     verify.add_argument("run_id", nargs="?", help="the run to check")
     verify.add_argument("--all", action="store_true", help="check every finished run in the database")
@@ -381,6 +394,48 @@ def _doctor() -> int:
     return 0 if operational(checks) else 1
 
 
+def _aliases(args) -> int:
+    """`aliases propose` and `aliases approve` (`knowledge/aliases.py`). Files
+    only: nothing here reaches the network or a model."""
+    from bedrock.litreview.knowledge import TABLE, Knowledge
+    from bedrock.litreview.knowledge import aliases as al
+
+    try:
+        if args.aliases_command == "propose":
+            if not args.hgnc and not args.mesh:
+                _say("aliases propose: give --hgnc, --mesh or both")
+                return 1
+            if args.symbol and not args.hgnc:
+                _say("aliases propose: --symbol needs --hgnc")
+                return 1
+            kb = Knowledge.load(TABLE)
+            proposals, sources = [], []
+            if args.hgnc:
+                proposals += al.propose_targets(kb, al.read_hgnc(args.hgnc), args.symbol)
+                sources.append({"kind": "hgnc", "file": args.hgnc.name, "sha256": al.sha256(args.hgnc)})
+            if args.mesh:
+                proposals += al.propose_diseases(kb, al.read_mesh(args.mesh))
+                sources.append({"kind": "mesh", "file": args.mesh.name, "sha256": al.sha256(args.mesh)})
+            al.write_proposals(proposals, sources, args.out)
+            named = sum(len(p.names) for p in proposals)
+            refused = sum(len(p.refused) for p in proposals)
+            print(f"{args.out}: {named} names proposed for {len(proposals)} entities, {refused} refused. "
+                  "Nothing is used until a person marks names `approve: true` and runs `aliases approve`.")
+            return 0
+        changes = al.approve(args.proposals, args.table or TABLE)
+    except (al.AliasError, OSError) as exc:
+        _say(f"aliases: {exc}")
+        return 1
+    if not changes:
+        print("no names are marked `approve: true`; the table is unchanged")
+        return 0
+    for line in changes:
+        print(line)
+    print(f"wrote {args.table or TABLE}. Review the diff and commit it; searches for these entities now use "
+          "the new names, so their frozen paper sets are collected again the next time a search is asked for.")
+    return 0
+
+
 def _run(args) -> int:
     """Everything after the arguments are read. Split out so `main` has exactly
     one place that turns a `ConfigError` into a message."""
@@ -408,6 +463,9 @@ def _run(args) -> int:
 
     if args.command == "ask":
         return _ask(args)
+
+    if args.command == "aliases":
+        return _aliases(args)
 
     if args.command == "runs":
         from bedrock.litreview.db import Database

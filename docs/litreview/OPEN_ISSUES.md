@@ -444,9 +444,20 @@ offline with fake models; nothing here has been measured on a real model yet.
         scientist-adjudicated `evals/litreview/goldset.jsonl`, which does
         not exist yet (item 23).
       - Adaptive batch expansion (80/32 caps).
-      - Curated aliases.
+      - Curated aliases. *The tool is built* (`bedrock-litreview aliases
+        propose|approve`, `knowledge/aliases.py`): names from HGNC and MeSH
+        downloads, refused in code where provably wrong, written into
+        `entities.yaml` only when a person marks them. What is left is a
+        person's approval, then the before-and-after below.
+      - Citation snowballing (FRONTIER_LITREVIEW.md task D). *Built, off*
+        (`search.snowball.seeds: 0`): the references and citations of the
+        best searched papers, through Europe PMC and PubMed's `elink`,
+        passing the same gate. Waits for the before-and-after below.
       - The real-model before/after comparison on the frozen
-        obesity/asthma corpora.
+        obesity/asthma corpora. With aliases approved and
+        snowballing on, the corpora are collected once again
+        (`build-corpus --searcher`) and target recall compared with
+        the same model and settings.
     - *Size:* big.
 11. **Background from reviews is not covered.** *Done (owner decision, 26 September 2026: keep all the
     evidence, in a separate area with links).*

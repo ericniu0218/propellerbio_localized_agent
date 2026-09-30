@@ -36,8 +36,9 @@ of the ladder is still to build):
 - Search with at least the exact names. `SearchRequest.exact_terms` carries
   the pipeline's own exact names for each entity; searching with anything
   broader is fine — the gate removes near-misses — but searching with less
-  loses recall that nothing downstream can recover. (Alias lookup against
-  HGNC / NCBI Gene / UniProt and MeSH / EFO would widen this; not built.)
+  loses recall that nothing downstream can recover. More names reach
+  `exact_terms` only through the knowledge table, which a person widens
+  from HGNC and MeSH downloads (`knowledge/aliases.py`).
 - Acquisition ladder: Europe PMC XML (built), then open-access PDF via
   GROBID, then preprint PDF, then abstract only (flagged). Plus the drop
   folder. Never Sci-Hub or any pirated source.

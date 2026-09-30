@@ -39,17 +39,21 @@ def search_request(spec: QuestionSpec, max_results: int = 200) -> SearchRequest:
     )
 
 
-def terms_signature(spec: QuestionSpec) -> str:
+def terms_signature(spec: QuestionSpec, extra: dict | None = None) -> str:
     """What a search for this reading of the question asks for: each required
     entity and the exact terms that count as it. Two runs of the same question
     text can read it differently - a run without a model sees only the
     entities the knowledge table knows, a run with one also sees names the
     table does not know - and papers searched for one reading are not a
-    search for the other."""
+    search for the other.
+
+    `extra` is what the searcher itself adds (`LiteratureSearcher.signature`:
+    the citation-snowballing policy when it is on). It is left out entirely
+    when None, so a search without it keeps the signature it always had."""
     entities = sorted(
         [e.canonical.lower(), sorted({t.lower() for t in e.exact_terms})] for e in spec.required_entities
     )
-    return json.dumps({"kind": "search", "entities": entities}, sort_keys=True)
+    return json.dumps({"kind": "search", "entities": entities, **(extra or {})}, sort_keys=True)
 
 
 def collection_signature(spec: QuestionSpec, searcher: PaperSearcher | None) -> str | None:
@@ -62,7 +66,8 @@ def collection_signature(spec: QuestionSpec, searcher: PaperSearcher | None) -> 
     sha = getattr(searcher, "sha256", None)
     if getattr(searcher, "path", None) is not None:
         return json.dumps({"kind": "corpus", "sha256": sha or ""}, sort_keys=True)
-    return terms_signature(spec)
+    extra = searcher.signature() if callable(getattr(searcher, "signature", None)) else None
+    return terms_signature(spec, extra)
 
 
 def stale_collection(recorded: str | None, spec: QuestionSpec) -> str | None:

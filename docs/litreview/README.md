@@ -639,6 +639,34 @@ list[Paper]` — and, like the rest of the system, it is code from end to end:
   carry on. All sources down raises `SearchFailed` instead of returning
   nothing — an empty list would be frozen as the question's paper set and read
   as "no literature found".
+- **Citation snowballing, off by default**
+  ([`sources/snowball.py`](../../src/bedrock/litreview/sources/snowball.py),
+  `search.snowball` in `pipeline.yaml`). With `seeds` above 0, the first
+  searched papers that name every required entity (chosen by code, before any
+  model sees a paper) have their references and citations followed through
+  Europe PMC and PubMed's `elink`, on the same two hosts, sending only
+  identifiers. Linked papers the search did not already keep are added after
+  the searched ones, each saying how it was found ("snowball: cited by
+  PMID…"), and pass the same gate as any other. The policy is part of the
+  frozen set's search signature, so turning it on collects a question's
+  papers again the next time a search is asked for. It stays off until a
+  before-and-after on the benchmark corpora says what it does to target recall
+  ([FRONTIER_LITREVIEW.md](FRONTIER_LITREVIEW.md) task D).
+
+**More names for the search, approved by a person.** A paper that names a
+target only by an alias the knowledge table lacks is never found and never
+passes the gate. `bedrock-litreview aliases propose --hgnc
+hgnc_complete_set.txt [--mesh descYYYY.xml] [--symbol TMEM135 ...] --out
+proposals.yaml` reads files a person downloaded from HGNC and NLM (no network)
+and writes proposed names, every one `approve: false`; code refuses, with the
+reason, names another entity holds, near-misses, names HGNC gives another
+gene, names of two characters or fewer and MeSH's inverted forms. Only a MeSH
+heading's preferred concept is read, never its narrower concepts or its tree.
+A person marks what they have checked and runs `bedrock-litreview aliases
+approve proposals.yaml`, which edits `knowledge/entities.yaml` as text (its
+comments survive), re-checks every refusal, and proves the reloaded table
+changed only by the approved names. Review and commit the diff like any other
+change to the table ([`knowledge/aliases.py`](../../src/bedrock/litreview/knowledge/aliases.py)).
 
 **What leaves the network**: the search terms and paper identifiers, sent to
 Europe PMC and NCBI, plus the contact address in `SOURCES_CONTACT_EMAIL` to
@@ -757,7 +785,8 @@ scripts/litreview/judge_answers.py  the file-judge helper
 | Benchmark (`bedrock.litreview.bench`) | **Built and tested** with a fake model; sample corpora for two questions frozen in `evals/litreview/corpora/` |
 | Benchmark results with a real model | **Run** on MedGemma 1.5 4B for both sample questions — [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) |
 | In bedrock | **Built.** `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. Every model call goes through bedrock's `Scheduler` at `USER_JOB` |
-| Stage 9 (chat), PPTX, patents, drop folder, GROBID PDF rung, alias lookup | Not started |
+| Alias import, citation snowballing | **Built and tested offline.** Aliases wait for a person's approval; snowballing is off until measured |
+| Stage 9 (chat), PPTX, patents, drop folder, GROBID PDF rung | Not started |
 
 `pytest tests/litreview` runs the pipeline's own tests with no GPU and no
 network; `pytest` runs the whole of bedrock. Measured quality on two sample
@@ -856,7 +885,7 @@ screen. Role 4 wraps around all three.
 Owns every connection to the outside world. Everything downstream is blocked on
 this, so it starts day one.
 
-Builds: source connectors · alias lookup · deduplication · the acquisition
+Builds: source connectors · alias import · citation snowballing · deduplication · the acquisition
 ladder · GROBID parsing · **the drop folder**.
 
 **Done when:** type in a target, get 200 deduplicated papers with full text

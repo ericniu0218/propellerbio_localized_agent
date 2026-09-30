@@ -95,7 +95,7 @@ def acquisition_summary(report, collected: int) -> dict[str, Any]:
     found them - only how many were sent to each source, how many records
     came back, how many survived merging and the per-question cap, and which
     sources failed. Recorded once, when the papers were collected."""
-    return {
+    out = {
         "status": "recorded",
         "queries_sent": {source: len(qs) for source, qs in sorted(report.queries.items())},
         "records_returned": dict(sorted(report.hits.items())),
@@ -109,6 +109,13 @@ def acquisition_summary(report, collected: int) -> dict[str, Any]:
         "failed_queries": sorted(report.failures),
         "searched_question_text": report.searched_question_text,
     }
+    # Only when citation snowballing ran, so a summary without it keeps the
+    # bytes it always had.
+    seeds = getattr(report, "snowball_seeds", None)
+    if seeds:
+        out["snowball"] = {"seeds": list(seeds), "links_returned": report.snowball_links,
+                           "papers_added": report.snowball_added}
+    return out
 
 
 def policy_fingerprint(knobs: dict[str, Any]) -> str:

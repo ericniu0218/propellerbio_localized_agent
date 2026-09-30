@@ -182,6 +182,14 @@ as `improved`. Models skip these unless explicitly told not to.
   every stored body's bytes and breaks `check_pinned` for old runs
 - Sources are listed in code (`SOURCES` in `sources/literature.py`), not read
   from a config file, so nothing gets wired in by editing one
+- Citation snowballing (`sources/snowball.py`) runs only inside a search,
+  seeds are chosen by code from the searched order (never from a model's
+  grades), link requests carry identifiers only, and its policy is part of
+  the search signature only when it is on. Keep all four
+- New names reach `knowledge/entities.yaml` only through a person:
+  `knowledge/aliases.py` proposes from downloaded HGNC and MeSH files and
+  writes nothing until a name is marked `approve: true`. Never walk an
+  ontology tree or read MeSH's narrower concepts, and never approve in code
 - Model names live only in `defaults/models.yaml`, or in a whole-file
   replacement at `~/.config/bedrock/litreview/models.yaml`. Nothing else
   hardcodes one. The *server* is bedrock's `api_base`, or in agent-pack mode
@@ -216,7 +224,8 @@ as `improved`. Models skip these unless explicitly told not to.
 | Part | State |
 |---|---|
 | Stages 0-8 (question → report) | Built and tested; runs end to end with `FakeLLMClient` |
-| Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text, on a two-host allowlist. GROBID/PDF rung, alias lookup and drop folder not built |
+| Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text, on a two-host allowlist. Citation snowballing built, off (`search.snowball.seeds: 0`) until measured. GROBID/PDF rung and drop folder not built |
+| Alias import | Built and tested offline: `bedrock-litreview aliases propose` (HGNC, MeSH preferred concepts; never a tree walk) and `approve` (a person's marks only, written into `entities.yaml` as text). No names approved yet |
 | Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
 | Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
 | Front ends | `/review` and `/reviews` in the terminal app - both modes, `ui/review_mixin.py` - `bedrock-litreview` in a shell, the server's Research tab, the FastAPI app as the optional `api` extra. All call `service.run_review`. `bedrock-litreview doctor` (`readiness.py`) checks a machine can run one |

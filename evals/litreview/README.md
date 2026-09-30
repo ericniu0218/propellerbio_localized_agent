@@ -113,6 +113,26 @@ byte for byte, scored 69.4, 69.2 and 69.2 across three passes of one judge
 (OPEN_ISSUES #25). A difference inside that spread is not a change, however
 cleanly compare prints it.
 
+### A scientist's check on the judge
+
+Every accuracy number so far came from an AI judge. To find out how far a
+scientist agrees with it:
+
+```
+python -m evals.litreview.rejudge_sheet draw <run id> <run id> ...   # 40 claims, seeded
+python -m evals.litreview.rejudge_sheet agree evals/litreview/rejudge/0-40
+```
+
+`draw` writes a **blind** sheet: each row is a kept claim from a stored
+benchmark run and exactly the evidence the judge was shown, with no system,
+question, run, paper or verdict on it. The scientist grades each row in the
+template (`faithful`, `misleading`, `weak_citation` or `unfaithful`, as in
+the hand audits, with `"rater": "scientist:<name>"`) without opening
+`key.json`, and saves it as `grades.jsonl`. `agree` then prints raw
+agreement and Cohen's kappa against the judge file's verdicts, per run and
+overall, with the mapping to supported / not supported beside them. Claims
+the judge file has no answer for are counted and left out.
+
 ## The gold set
 
 **Build this before writing a single prompt.** Everything in Stage 5 is

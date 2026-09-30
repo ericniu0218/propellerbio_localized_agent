@@ -253,6 +253,18 @@ def test_approve_rechecks_against_the_table_as_it_is_now(files, tmp_path):
         al.approve(proposals, files[0])
 
 
+def test_two_blocks_for_one_entity_are_approved_together(files, tmp_path):
+    """Two proposal files joined, or a block a person added by hand, can name
+    one entity twice; every marked name in both is written."""
+    proposals = proposals_file(tmp_path, files, {("IL23A", "SGRF")})
+    body = yaml.safe_load(proposals.read_text(encoding="utf-8"))
+    body["proposals"].append({"entity": "IL23A", "kind": "target", "new_entity": False,
+                              "names": [{"name": "interleukin 23 subunit alpha", "approve": True}]})
+    proposals.write_text(yaml.safe_dump(body), encoding="utf-8")
+    assert al.approve(proposals, files[0]) == ["IL23A: added SGRF", "IL23A: added interleukin 23 subunit alpha"]
+    assert Knowledge.load(files[0]).get("IL23A").terms[-2:] == ("SGRF", "interleukin 23 subunit alpha")
+
+
 def test_a_name_yaml_would_misread_is_quoted():
     assert al._yaml_item("IL-23") == "IL-23"
     assert al._yaml_item("yes") == '"yes"'
@@ -281,3 +293,19 @@ def test_the_command_proposes_then_approves(files, tmp_path, capsys):
     assert cli.main(["aliases", "approve", str(out), "--table", str(table)]) == 0
     assert "the table is unchanged" in capsys.readouterr().out
     assert cli.main(["aliases", "propose", "--out", str(out)]) == 1
+
+
+def test_the_command_proposes_against_the_table_it_approves_into(files, tmp_path):
+    """TMEM135 is a target in this table and not in the package's, so only a
+    proposal read against this table offers its names."""
+    table, hgnc, _ = files
+    table.write_text(TABLE + "  TMEM135:\n    terms: [TMEM135]\n", encoding="utf-8")
+    out = tmp_path / "p.yaml"
+    assert cli.main(["aliases", "propose", "--hgnc", str(hgnc), "--table", str(table), "--out", str(out)]) == 0
+    body = yaml.safe_load(out.read_text(encoding="utf-8"))
+    tmem = next(p for p in body["proposals"] if p["entity"] == "TMEM135")
+    assert tmem["new_entity"] is False and [n["name"] for n in tmem["names"]][0] == "PMP52"
+    tmem["names"][0]["approve"] = True
+    out.write_text(yaml.safe_dump(body), encoding="utf-8")
+    assert cli.main(["aliases", "approve", str(out), "--table", str(table)]) == 0
+    assert Knowledge.load(table).get("TMEM135").terms == ("TMEM135", "PMP52")

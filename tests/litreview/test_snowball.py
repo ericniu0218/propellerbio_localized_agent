@@ -194,6 +194,33 @@ def test_limits_hold_per_seed_and_in_all(spec):
     assert added == ["777", "999"]
 
 
+def test_the_cap_counts_only_the_searched_papers(spec):
+    """Snowballing adds after the cap, so its papers are neither kept by the
+    cap nor evidence that the cap truncated less."""
+    s = searcher(LinkServers(), ON)
+    papers = s.search(search_request(spec, max_results=3))
+    report = s.last_report
+    assert report.unique > 3 and report.snowball_added == 4
+    summary = acquisition_summary(report, len(papers))
+    assert summary["kept_after_cap"] == 3
+    assert summary["truncated_by_cap"] == report.unique - 3
+    assert summary["snowball"]["papers_added"] == len(papers) - 3
+    assert any(f"{report.unique} unique papers, 3 kept and 4 added by snowballing:" in line
+               for line in report.lines())
+
+
+def test_a_linked_paper_the_search_kept_under_another_id_is_not_counted_as_added(spec, monkeypatch):
+    # 777 is the preprint the search found, published: the same title, and
+    # the preprint's record has no PubMed id to match it by.
+    monkeypatch.setitem(FOUNDATION, "title", PREPRINT["title"])
+    s = searcher(LinkServers(), ON)
+    papers = s.search(search_request(spec))
+    added = [p.pmid for p in papers if p.found_by_queries and p.found_by_queries[0].startswith("snowball:")]
+    assert added == ["999", "888", "666"]
+    assert s.last_report.snowball_added == 3
+    assert acquisition_summary(s.last_report, len(papers))["snowball"]["papers_added"] == 3
+
+
 # --- seeds -----------------------------------------------------------------------
 
 

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -190,9 +191,10 @@ def check_best_source(report: Report, papers: dict[str, Paper], kb: Knowledge) -
 
     for section in walk(report.sections):
         for line in (section.body_markdown or "").splitlines():
-            # The background section quotes reviews, not the best source;
-            # `check_background` holds those quotes to their own papers.
-            if section.id != "background" and line.startswith("> ") and normalize(line[2:]) not in normalize(head):
+            # These sections quote their own papers. Their dedicated checks
+            # below bind those quotes to the sources they cite.
+            if section.id not in ("background", "disagreements") and line.startswith("> ") \
+                    and normalize(line[2:]) not in normalize(head):
                 out.append(f"quote: [{section.id}] the most relevant source's quote is not in its title or abstract")
             if line.startswith("Why it ranks first: ") and not text_supported(line[20:], head, kb):
                 out.append(f"fields: [{section.id}] the ranking reason shown is not supported by the abstract")
@@ -213,6 +215,43 @@ def check_background(report: Report, papers: dict[str, Paper]) -> list[str]:
     return out
 
 
+def check_disagreements(report: Report) -> list[str]:
+    """Each whole quote belongs to evidence from its displayed reference.
+
+    A study record starts with its reference number; subsequent quote blocks
+    belong to that paper until another record or entry starts. Whitespace is
+    folded for the single-line Markdown view, but words and typography must
+    match exactly. Reports predating this section have nothing to check.
+    """
+    refs = {r.number: r.paper_id for r in report.references}
+    quotes: dict[str, set[str]] = {}
+    for u in report.evidence:
+        quotes.setdefault(u.paper_id, set()).update(
+            " ".join(q.split()) for q in (u.quote, u.qualifier_quote) if q)
+    out = []
+
+    def walk(sections):
+        for section in sections:
+            yield section
+            yield from walk(section.subsections)
+
+    for section in walk(report.sections):
+        if section.id != "disagreements":
+            continue
+        pid = None
+        for line in (section.body_markdown or "").splitlines():
+            if match := re.match(r"^\[(\d+)\] ", line):
+                pid = refs.get(int(match[1]))
+            elif line.startswith("> "):
+                quote = " ".join(line[2:].split())
+                if pid is None or quote not in quotes.get(pid, set()):
+                    out.append(f"quote: [disagreements] {quote[:80]!r} is not a whole quote or qualifier "
+                               "from evidence for the cited paper")
+            elif line.strip():
+                pid = None
+    return out
+
+
 def check_report(
     report: Report, papers: list[Paper], spec: QuestionSpec, kb: Knowledge, added_back: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -221,7 +260,8 @@ def check_report(
     publication-integrity snapshot)."""
     by_id = {p.id: p for p in papers}
     return [*check_units(report.evidence, by_id, kb, added_back), *check_sentences(report, spec, kb, by_id),
-            *check_best_source(report, by_id, kb), *check_background(report, by_id), *check_flags(papers)]
+            *check_best_source(report, by_id, kb), *check_background(report, by_id),
+            *check_disagreements(report), *check_flags(papers)]
 
 
 def check_pinned(db, run_id: str) -> list[str]:

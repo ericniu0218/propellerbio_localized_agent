@@ -13,12 +13,13 @@
 #   negative      no-effect / worse / mixed results, and conflicts
 #   all           the strongest evidence overall
 #
-# generated sections: glance, synthesis, numbers, glossary, best_source,
+# generated sections: glance, synthesis, disagreements, numbers, glossary, best_source,
 # background, gaps, plan, ranking, evidence_table, method, excluded.
 # `background` quotes review articles for context; they are never counted as
-# evidence. glance/synthesis/numbers/glossary are report/synthesis.py: study
+# evidence. glance/synthesis/disagreements/numbers/glossary are report/synthesis.py: study
 # designs, independent-study counts, agreement and an evidence level by a
-# written rule, the papers' quantitative sentences with their study context,
+# written rule, disagreeing studies with whole quotes and qualifiers,
+# the papers' quantitative sentences with their study context,
 # and the abbreviations the main text uses. best_source, plan, evidence_table,
 # ranking, method and excluded are rendered in the Appendix
 # (report/layout.py APPENDIX).
@@ -44,6 +45,7 @@ target_identification:
       supports it (human trial, human genetics, animal model, cells).
   - {id: glance, title: Evidence at a glance, kind: generated}
   - {id: synthesis, title: How the studies line up, kind: generated}
+  - {id: disagreements, title: Where the studies disagree, kind: generated}
   - id: targets
     title: Candidate targets
     kind: written
@@ -111,6 +113,7 @@ intervention_efficacy:
       result comes from, as its quote or context says.
   - {id: glance, title: Evidence at a glance, kind: generated}
   - {id: synthesis, title: How the studies line up, kind: generated}
+  - {id: disagreements, title: Where the studies disagree, kind: generated}
   - id: clinical
     title: Clinical efficacy
     kind: written
@@ -174,6 +177,7 @@ default:
       with the comparison and time point its quote states.
   - {id: glance, title: Evidence at a glance, kind: generated}
   - {id: synthesis, title: How the studies line up, kind: generated}
+  - {id: disagreements, title: Where the studies disagree, kind: generated}
   - id: evidence
     title: Evidence
     kind: written

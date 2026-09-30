@@ -993,9 +993,11 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     ctx.studies = studies
     ctx.refs = refs
     _decisive_fallback(ctx, sections, refs, studies)
+    comparison_rows = synthesis.synthesis_rows(ctx, studies)
     generators = {
         "glance": lambda: synthesis.glance(ctx, refs, studies),
-        "synthesis": lambda: synthesis.synthesis(ctx, refs, studies),
+        "synthesis": lambda: synthesis.render_synthesis(comparison_rows, refs),
+        "disagreements": lambda: synthesis.disagreements(ctx, refs, studies, comparison_rows),
         "numbers": lambda: synthesis.key_results(ctx, refs, studies),
         "best_source": lambda: _best_source(ctx, refs),
         "background": lambda: _background(ctx),
@@ -1012,7 +1014,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     # Last: it expands the abbreviations the main text actually uses.
     main_text = "\n".join(
         [s.text for sec in sections if sec.id not in APPENDIX for _, s in _kept(sec)]
-        + [sec.body_markdown or "" for sec in sections if sec.id in ("glance", "synthesis", "numbers")]
+        + [sec.body_markdown or "" for sec in sections if sec.id in ("glance", "synthesis", "disagreements", "numbers")]
     )
     for section in sections:
         if section.id == "glossary":

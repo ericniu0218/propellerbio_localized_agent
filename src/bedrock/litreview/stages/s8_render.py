@@ -91,6 +91,8 @@ def _shown(section: ReportSection) -> bool:
     nothing kept and nothing to explain is an empty heading - the Gaps section
     already says which needs no paper met - so it is left out of the reading
     view (it stays in the JSON, and in the Appendix's evidence plan)."""
+    if section.id == "disagreements" and section.kind == "generated":
+        return bool((section.body_markdown or "").strip())
     if section.kind != "written":
         return True
     if any(x.kept for x in section.sentences) or any(_shown(sub) for sub in section.subsections):

@@ -209,8 +209,9 @@ def group_studies(paper_ids: list[str], papers: dict[str, Paper]) -> dict[str, t
 def _subjects(units: list[EvidenceUnit]) -> str:
     """Who was studied, in the paper's words, with the largest stated n - and
     "per group" when the paper's sentence says that is what it counts."""
-    words = sorted({u.species_raw.strip() for u in units if u.species_raw.strip()}, key=len)
-    with_n = [u for u in units if u.n]
+    words = sorted({u.species_raw.strip() for u in units
+                    if u.species_raw.strip() and u.provenance.get("species", "none") != "none"}, key=len)
+    with_n = [u for u in units if u.n and u.provenance.get("n", "none") != "none"]
     who = words[0] if words else ""
     if with_n:
         top = max(with_n, key=lambda u: u.n)
@@ -616,6 +617,97 @@ def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Stud
 def _rank(tier: str) -> int:
     order = ("rct", "trial", "genetic", "observational", "human", "case", "animal", "cell", "unknown")
     return order.index(tier) if tier in order else len(order)
+
+
+# --- where the studies disagree -------------------------------------------------------
+
+DISAGREEMENT_RULE = (
+    "The study records below show design, subjects, access and reported directions for each disagreement. "
+    "The scientist decides which differences, if any, explain it. Publications from the same trial are shown "
+    "together as one independent study."
+)
+
+
+@dataclass
+class Disagreement:
+    """One set of disagreeing papers and the report lines it explains."""
+
+    explanations: list[str] = field(default_factory=list)
+    units: list[EvidenceUnit] = field(default_factory=list)
+
+
+def disagreement_entries(ctx: "WriteContext", studies: dict[str, Study],
+                         rows: list[SynthesisRow]) -> list[Disagreement]:
+    """Both disagreement rules, with identical paper sets displayed once.
+
+    Synthesis disagrees within systems; Stage 6 target conflicts also span
+    systems. Keep each rule's wording and each supporting finding when the
+    same papers explain both. Nothing here infers a cause of disagreement.
+    """
+    entries: dict[frozenset[str], Disagreement] = {}
+
+    def add(explanation: str, units: list[EvidenceUnit]) -> None:
+        units = [u for u in units if u.paper_id in studies]
+        if not units:
+            return
+        key = frozenset(u.paper_id for u in units)
+        entry = entries.setdefault(key, Disagreement())
+        if explanation not in entry.explanations:
+            entry.explanations.append(explanation)
+        seen = {u.id for u in entry.units}
+        entry.units.extend(u for u in units if u.id not in seen)
+
+    for row in rows:
+        if row.basis != "Studies disagree":
+            continue
+        better = row.directions.get("improved", set())
+        other = (row.directions.get("no_effect", set()) | row.directions.get("worsened", set())) - better
+        human = {k for k in better | other if row.tiers.get(k) in HUMAN_TIERS}
+        kind = HUMAN_TIERS if human else ("animal", "cell")
+        keys = {k for k in better | other if row.tiers.get(k) in kind}
+        add(f"How the studies line up: **{_cell(row.label)}** (Studies disagree)",
+            [u for u in row.units if studies[u.paper_id].key in keys
+             and u.outcome in ("improved", "no_effect", "worsened")])
+    for conflict in ctx.summary.conflicts:
+        ids = set(conflict.unit_ids)
+        pids = set(conflict.supporting_papers) | set(conflict.opposing_papers)
+        label = "Candidate targets" if ctx.spec.question_type == "target_identification" else "Target conflict"
+        add(f"{label}: **{_cell(conflict.target)}** (Papers disagree on this target; {conflict.direction})",
+            [u for u in ctx.summary.units if u.id in ids and u.paper_id in pids
+             and u.outcome in ("improved", "no_effect", "worsened")])
+    return list(entries.values())
+
+
+def disagreements(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study],
+                  rows: list[SynthesisRow]) -> str:
+    entries = disagreement_entries(ctx, studies, rows)
+    if not entries:
+        return ""
+    lines = [DISAGREEMENT_RULE]
+    order = {outcome: i for i, outcome in enumerate(("improved", "no_effect", "worsened"))}
+    for entry in entries:
+        lines += ["", "; ".join(entry.explanations) + "."]
+        independent: dict[str, list[EvidenceUnit]] = defaultdict(list)
+        for u in entry.units:
+            independent[studies[u.paper_id].key].append(u)
+        groups = sorted(independent.values(),
+                        key=lambda units: (min(order[u.outcome] for u in units),
+                                           min(refs[u.paper_id] for u in units)))
+        for units in groups:
+            lines += ["", f"- **Independent study {_refs([u.paper_id for u in units], refs)}**"]
+            seen: set[tuple[str, str, str, str | None]] = set()
+            for u in sorted(units, key=lambda u: (order[u.outcome], refs[u.paper_id], u.id)):
+                # Abstract and Results can repeat the same finding. Keep a
+                # distinct qualifier or direction, and every cited paper.
+                key = (u.paper_id, u.outcome, u.quote, u.qualifier_quote)
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines += ["", f"{study_label(studies[u.paper_id], refs)}; direction: **{DIRECTION[u.outcome]}**.",
+                          "", "> " + " ".join(u.quote.split())]
+                if u.qualifier_quote:
+                    lines += ["", "> " + " ".join(u.qualifier_quote.split())]
+    return "\n".join(lines)
 
 
 # --- 3. key results, with their context -------------------------------------------------------

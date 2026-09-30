@@ -423,3 +423,240 @@ async def test_the_delete_signature_covers_the_method(tmp_path, monkeypatch):
     )
     note = await wrong.forget("recording:m1")
     assert note and "rejected our signature" in note
+
+
+# --- Which speech model, and which languages ----------------------------------
+
+
+def _config(tmp_path, **overrides) -> RecordingConfig:
+    base = dict(
+        speech_model=tmp_path / "ggml-large-v3-turbo.bin",
+        vad_model=tmp_path / "vad.bin",
+        segmentation_model=tmp_path / "seg.onnx",
+        embedding_model=tmp_path / "emb.onnx",
+        threads=4,
+        vocabulary=None,
+        language="detect",
+        storage_dir=tmp_path,
+    )
+    base.update(overrides)
+    return RecordingConfig(**base)
+
+
+def test_the_multilingual_model_is_preferred_and_the_old_one_still_accepted(tmp_path, monkeypatch):
+    """An installation from before the model change has only small.en. It keeps
+    working; a fresh one is pointed at the multilingual model by name."""
+    monkeypatch.setenv("MEETING_MODEL_DIR", str(tmp_path))
+    monkeypatch.delenv("MEETING_SPEECH_MODEL", raising=False)
+    assert RecordingConfig.from_env().speech_model.name == "ggml-large-v3-turbo.bin"
+
+    (tmp_path / "ggml-small.en.bin").write_bytes(b"x")
+    assert RecordingConfig.from_env().speech_model.name == "ggml-small.en.bin"
+    assert not RecordingConfig.from_env().multilingual
+
+    (tmp_path / "ggml-large-v3-turbo.bin").write_bytes(b"x")
+    assert RecordingConfig.from_env().speech_model.name == "ggml-large-v3-turbo.bin"
+    assert RecordingConfig.from_env().multilingual
+
+
+def test_an_english_only_model_is_refused_for_another_language(tmp_path):
+    (tmp_path / "ggml-small.en.bin").write_bytes(b"x")
+    (tmp_path / "vad.bin").write_bytes(b"x")
+    english_only = _config(tmp_path, speech_model=tmp_path / "ggml-small.en.bin")
+
+    assert not [i for i in readiness_issues(english_only) if "model" in i.lower() and "voice" not in i]
+    issues = readiness_issues(RecordingConfig(**{**english_only.__dict__, "language": "zh"}))
+    assert any("English-only" in i and "ggml-large-v3-turbo.bin" in i for i in issues)
+
+
+def test_readiness_tells_the_dialog_which_languages_it_can_offer(tmp_path, monkeypatch):
+    from bedrock.server.meetings import routes
+
+    (tmp_path / "ggml-small.en.bin").write_bytes(b"x")
+    (tmp_path / "ggml-large-v3-turbo.bin").write_bytes(b"x")
+    (tmp_path / "vad.bin").write_bytes(b"x")
+
+    monkeypatch.setattr(routes, "config", lambda: _config(tmp_path, speech_model=tmp_path / "ggml-small.en.bin"))
+    answer = routes.readiness(user={"id": "u"})
+    assert answer["multilingual"] is False
+    assert [l["code"] for l in answer["languages"]] == ["en"]
+    assert answer["recommendedModel"] == "ggml-large-v3-turbo.bin"
+
+    monkeypatch.setattr(routes, "config", lambda: _config(tmp_path))
+    answer = routes.readiness(user={"id": "u"})
+    assert answer["multilingual"] is True
+    codes = [l["code"] for l in answer["languages"]]
+    assert "zh" in codes and "auto" in codes and codes[:2] == ["detect", "en"]
+    assert answer["defaultLanguage"] == "detect"
+    assert answer["consentRequired"] is False
+
+
+def test_a_language_the_server_cannot_do_is_refused_before_the_upload_is_kept(tmp_path):
+    from fastapi import HTTPException
+
+    from bedrock.server.meetings.routes import _resolve_language
+
+    multilingual = _config(tmp_path)
+    assert _resolve_language(None, multilingual) is multilingual
+    assert _resolve_language("", multilingual) is multilingual
+    assert _resolve_language("ZH", multilingual).language == "zh"
+    assert _resolve_language("auto", multilingual).language == "auto"
+
+    with pytest.raises(HTTPException) as refused:
+        _resolve_language("klingon", multilingual)
+    assert refused.value.status_code == 422
+
+    english_only = _config(tmp_path, speech_model=tmp_path / "ggml-small.en.bin")
+    assert _resolve_language("en", english_only).language == "en"
+    # Detection on an English-only model simply means English; not an error.
+    assert _resolve_language("detect", english_only).language == "detect"
+    with pytest.raises(HTTPException) as refused:
+        _resolve_language("zh", english_only)
+    assert refused.value.status_code == 422
+    assert "English-only" in refused.value.detail
+
+
+def test_the_language_survives_a_restart(tmp_path):
+    """A job resumed after a restart is transcribed in the language it was
+    recorded in, not the server's default."""
+    from bedrock.server.meetings.job_store import PersistedJob, RecordingJobStore
+
+    store = RecordingJobStore(tmp_path / "jobs.sqlite")
+    store.save(PersistedJob(
+        id="j1", owner="u", title="t", audio_path=str(tmp_path / "a.webm"),
+        work_dir=str(tmp_path / "w"), status="queued", stage="Queued",
+        started_at="2026-09-28T00:00:00+00:00", language="zh",
+    ))
+    (job,) = store.unfinished()
+    assert job.language == "zh"
+
+    # Rows written before the field existed carry no language and mean "default".
+    store.save(PersistedJob(
+        id="j0", owner="u", title="t", audio_path=str(tmp_path / "b.webm"),
+        work_dir=str(tmp_path / "w0"), status="queued", stage="Queued",
+        started_at="2026-09-28T00:00:00+00:00",
+    ))
+    assert {j.id: j.language for j in store.unfinished()} == {"j1": "zh", "j0": None}
+
+
+def test_the_vocabulary_is_the_whole_prompt_and_the_language_passes_through(tmp_path):
+    """The Mandarin script hint is the transcriber's job, added once it knows
+    the recording is Mandarin — chosen or detected — so the server's prompt is
+    only the vocabulary."""
+    from bedrock.server.meetings.pipeline import _whisper_config
+
+    assert _whisper_config(_config(tmp_path)).initial_prompt is None
+    assert _whisper_config(_config(tmp_path, vocabulary="KRAS, Priya")).initial_prompt == "KRAS, Priya"
+    zh = _whisper_config(_config(tmp_path, language="zh", vocabulary="KRAS, Priya"))
+    assert zh.initial_prompt == "KRAS, Priya"
+    assert zh.language == "zh"
+    assert _whisper_config(_config(tmp_path, language="detect")).language == "detect"
+
+
+def test_room_sensitivity_reaches_whisper(tmp_path, monkeypatch):
+    from bedrock.server.meetings.pipeline import _whisper_config
+
+    monkeypatch.setenv("MEETING_MODEL_DIR", str(tmp_path))
+    for name in ("MEETING_VAD_THRESHOLD", "MEETING_VAD_PAD_MS", "MEETING_NORMALIZE_AUDIO"):
+        monkeypatch.delenv(name, raising=False)
+    whisper = _whisper_config(RecordingConfig.from_env())
+    assert whisper.normalize_audio is False  # measured to lower speech-to-noise on a real room
+    assert whisper.vad_threshold == 0.4
+    assert whisper.vad_speech_pad_ms == 60
+
+    monkeypatch.setenv("MEETING_VAD_THRESHOLD", "0.3")
+    monkeypatch.setenv("MEETING_VAD_PAD_MS", "100")
+    monkeypatch.setenv("MEETING_NORMALIZE_AUDIO", "on")
+    whisper = _whisper_config(RecordingConfig.from_env())
+    assert (whisper.vad_threshold, whisper.vad_speech_pad_ms, whisper.normalize_audio) == (0.3, 100, True)
+
+
+def test_a_meeting_nobody_named_is_marked_for_naming_from_its_notes(tmp_path):
+    from bedrock.server.meetings.job_store import PersistedJob, RecordingJobStore
+
+    store = RecordingJobStore(tmp_path / "jobs.sqlite")
+    store.save(PersistedJob(
+        id="j1", owner="u", title="Meeting — 28 Sep 2026, 21:00", audio_path=str(tmp_path / "a.webm"),
+        work_dir=str(tmp_path / "w"), status="queued", stage="Queued",
+        started_at="2026-09-28T00:00:00+00:00", auto_title=True,
+    ))
+    (job,) = store.unfinished()
+    assert job.auto_title is True
+
+
+def test_the_meeting_page_is_told_what_was_heard():
+    from bedrock.meetings.transcribe import LanguageDecision
+    from bedrock.server.meetings.pipeline import describe_language
+
+    one = describe_language(LanguageDecision(language="zh", heard={"zh": 0.93, "en": 0.07}, sampled=8))
+    assert one == "Transcribed as Mandarin (detected: Mandarin 93%, English 7%)."
+    mixed = describe_language(LanguageDecision(language="auto", heard={"zh": 0.6, "en": 0.4}, sampled=8))
+    assert mixed.startswith("More than one language was heard (Mandarin 60%, English 40%)")
+    assert "each speaker turn" in mixed
+
+
+# --- Speaker labels after diarisation ----------------------------------------
+
+
+def _cue(start, end, text, speaker=None):
+    from bedrock.meetings.transcript import Cue
+
+    return Cue(start_ms=start, end_ms=end, text=text, speaker=speaker)
+
+
+def test_speaker_labels_are_renumbered_in_order_of_appearance():
+    from bedrock.server.meetings.pipeline import tidy_speakers
+
+    # Speaker 5's one line is long enough to be a person, not a phantom.
+    cues = [_cue(0, 1000, "a", "Speaker 2"), _cue(2000, 6000, "b", "Speaker 5"), _cue(7000, 8000, "c", "Speaker 2"),
+            _cue(9000, 10000, "d", "Priya")]
+    tidied, count = tidy_speakers(cues)
+    assert [c.speaker for c in tidied] == ["Speaker 1", "Speaker 2", "Speaker 1", "Priya"]
+    assert count == 3
+
+
+def test_an_unlabelled_line_goes_to_its_nearest_neighbour_within_two_seconds():
+    from bedrock.server.meetings.pipeline import tidy_speakers
+
+    cues = [
+        _cue(0, 1000, "a", "Speaker 1"),
+        _cue(1500, 2000, "what?"),               # 500 ms after Speaker 1
+        _cue(2200, 3000, "b", "Speaker 2"),
+        _cue(20000, 21000, "far away"),          # nobody within two seconds
+        _cue(30000, 31000, "lead-in"),           # only a following neighbour, 400 ms later
+        _cue(31400, 32000, "c", "Speaker 2"),
+    ]
+    tidied, count = tidy_speakers(cues)
+    assert [c.speaker for c in tidied] == ["Speaker 1", "Speaker 1", "Speaker 2", None, "Speaker 2", "Speaker 2"]
+    assert count == 2
+
+
+def test_tidying_nothing_is_nothing():
+    from bedrock.server.meetings.pipeline import tidy_speakers
+
+    assert tidy_speakers([]) == ([], 0)
+    cues = [_cue(0, 1000, "a"), _cue(9000, 10000, "b")]
+    assert tidy_speakers(cues) == (cues, 0)
+
+
+def test_a_one_line_phantom_speaker_is_folded_into_the_previous_speaker():
+    from bedrock.server.meetings.pipeline import tidy_speakers
+
+    cues = [
+        _cue(0, 3000, "a", "Speaker 1"), _cue(3500, 6000, "b", "Speaker 2"),
+        _cue(6200, 6800, "Ha!", "Speaker 5"),                 # one short line: folded into Speaker 2
+        _cue(7000, 9000, "c", "Speaker 1"),
+        _cue(9500, 14000, "a long remark from somebody else", "Speaker 7"),  # long: kept
+        _cue(15000, 16000, "d", "Speaker 2"),
+    ]
+    tidied, count = tidy_speakers(cues)
+    assert [c.speaker for c in tidied] == ["Speaker 1", "Speaker 2", "Speaker 2", "Speaker 1", "Speaker 3", "Speaker 2"]
+    assert count == 3
+
+
+def test_phantoms_are_not_folded_when_everyone_would_be_one():
+    from bedrock.server.meetings.pipeline import tidy_speakers
+
+    cues = [_cue(0, 1000, "a", "Speaker 3"), _cue(2000, 3000, "b", "Speaker 8")]
+    tidied, count = tidy_speakers(cues)
+    assert [c.speaker for c in tidied] == ["Speaker 1", "Speaker 2"] and count == 2

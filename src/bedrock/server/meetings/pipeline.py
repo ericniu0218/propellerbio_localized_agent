@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # The transcription engine is bedrock's own (bedrock.meetings), shipped in the
 # same package, so it is always importable. Only its optional speaker and
 # screen-reading extras are guarded, where they are used.
-from bedrock.meetings.summarize import MeetingSummary, summarize_meeting
+from bedrock.meetings.summarize import suggest_title, MeetingSummary, summarize_meeting
 from bedrock.meetings.transcribe import (
     WhisperConfig,
     WhisperTranscriber,
@@ -69,10 +69,103 @@ class TranscriptionOutcome:
     """Which mis-heard words were repaired against the configured terms."""
     notes: list[str] = field(default_factory=list)
     """Plain-language caveats worth showing the person who pressed Record."""
+    language: str | None = None
+    """What whisper ran as: a language code, or ``auto`` for per-turn detection."""
+    languages_heard: dict[str, float] = field(default_factory=dict)
+    """Share of sampled speech per detected language, when detection ran."""
+    suggested_title: str | None = None
+    """A name taken from the content, for a meeting that was not given one."""
 
     @property
     def is_empty(self) -> bool:
         return not self.cues
+
+
+from bedrock.meetings.transcribe import MANDARIN_PROMPT  # noqa: E402  (re-exported for tests)
+
+
+_GENERIC_LABEL = re.compile(r"^Speaker \d+$")
+NEIGHBOUR_GAP_MS = 2000
+PHANTOM_MAX_MS = 3000
+
+
+def tidy_speakers(cues: list["Cue"], gap_ms: int = NEIGHBOUR_GAP_MS) -> tuple[list["Cue"], int]:
+    """Contiguous labels, and a label for the lines that had none.
+
+    Clusters that were dropped as noise leave holes in the numbering, so a
+    two-person meeting read "Speaker 1, Speaker 2, Speaker 5". Labels are
+    renumbered in order of first appearance; a real name from enrolment or
+    the meeting window is not a generic label and is left alone.
+
+    A cue the diariser did not cover — too short to segment, or spoken over
+    somebody — is given to whoever spoke just before it, or failing that just
+    after, when that neighbour is within ``gap_ms``. Further away than that it
+    stays unlabelled: a line ten seconds from anything is not obviously
+    anyone's.
+
+    Returns the cues and the number of distinct speakers left.
+    """
+    from dataclasses import replace
+
+    # A generic speaker with one short line is not a person; it is a cough, a
+    # laugh or a word of overlap that clustered on its own. On a real
+    # two-person recording the diariser produced "Speaker 5" for two such
+    # lines. That line goes to whoever spoke just before it. A named voice
+    # is never folded, and neither is anyone with two lines or a long one.
+    counts: dict[str, int] = {}
+    for cue in cues:
+        if cue.speaker and _GENERIC_LABEL.match(cue.speaker):
+            counts[cue.speaker] = counts.get(cue.speaker, 0) + 1
+    phantom = {label for label, n in counts.items() if n == 1}
+    if phantom and len(counts) > len(phantom):
+        folded: list["Cue"] = []
+        for cue in cues:
+            if (cue.speaker in phantom and cue.end_ms - cue.start_ms <= PHANTOM_MAX_MS
+                    and folded and folded[-1].speaker):
+                cue = replace(cue, speaker=folded[-1].speaker)
+            folded.append(cue)
+        cues = folded
+
+    order: dict[str, str] = {}
+    for cue in cues:
+        if cue.speaker and _GENERIC_LABEL.match(cue.speaker) and cue.speaker not in order:
+            order[cue.speaker] = f"Speaker {len(order) + 1}"
+    tidied = [
+        replace(cue, speaker=order[cue.speaker]) if cue.speaker in order else cue
+        for cue in cues
+    ]
+
+    filled: list["Cue"] = []
+    for index, cue in enumerate(tidied):
+        if cue.speaker:
+            filled.append(cue)
+            continue
+        before = filled[index - 1] if index else None
+        after = next((c for c in tidied[index + 1:] if c.speaker), None)
+        if before is not None and before.speaker and cue.start_ms - before.end_ms <= gap_ms:
+            filled.append(replace(cue, speaker=before.speaker))
+        elif after is not None and after.start_ms - cue.end_ms <= gap_ms:
+            filled.append(replace(cue, speaker=after.speaker))
+        else:
+            filled.append(cue)
+    return filled, len({c.speaker for c in filled if c.speaker})
+
+
+def describe_language(decision) -> str:
+    """One line for the meeting page on what was heard and how it was run."""
+    names = {"en": "English", "zh": "Mandarin", "es": "Spanish", "ja": "Japanese", "ko": "Korean",
+             "de": "German", "fr": "French", "pt": "Portuguese", "hi": "Hindi"}
+    heard = ", ".join(f"{names.get(code, code)} {round(share * 100)}%" for code, share in decision.heard.items())
+    if decision.language == "auto":
+        return (f"More than one language was heard ({heard}), so each speaker turn was "
+                "transcribed in its own language.")
+    return f"Transcribed as {names.get(decision.language, decision.language)} (detected: {heard})."
+
+
+def _initial_prompt(config: RecordingConfig) -> str | None:
+    """The vocabulary. The transcriber adds the Mandarin script hint itself
+    once it knows the recording is Mandarin, whether chosen or detected."""
+    return config.vocabulary or None
 
 
 def _whisper_config(config: RecordingConfig) -> "WhisperConfig":
@@ -81,7 +174,10 @@ def _whisper_config(config: RecordingConfig) -> "WhisperConfig":
         vad_model=config.vad_model,
         threads=config.threads,
         language=config.language,
-        initial_prompt=config.vocabulary,
+        initial_prompt=_initial_prompt(config),
+        normalize_audio=config.normalize_audio,
+        vad_threshold=config.vad_threshold,
+        vad_speech_pad_ms=config.vad_speech_pad_ms,
     )
 
 
@@ -190,6 +286,7 @@ async def transcribe(
         if on_progress:
             await _report_progress(work, work_dir, on_progress)
         cues = await work
+        decision = transcriber.last_language
     except Exception as exc:
         # An empty recording is a real, ordinary outcome — somebody pressed
         # Record on a muted microphone. It is reported as an empty transcript
@@ -289,6 +386,8 @@ async def transcribe(
         except Exception as exc:
             logger.warning("Cue re-scoring failed: %s", exc)
 
+    cues, speaker_count = tidy_speakers(cues)
+
     outcome = TranscriptionOutcome(
         vtt=to_vtt(cues),
         cues=cues,
@@ -296,8 +395,12 @@ async def transcribe(
         attributed=speaker_count > 0,
         speaker_count=speaker_count,
         vocabulary=vocabulary_report,
+        language=decision.language if decision else None,
+        languages_heard=dict(decision.heard) if decision else {},
         notes=[speaker_note],
     )
+    if decision and decision.sampled:
+        outcome.notes.append(describe_language(decision))
     if vocabulary_report.total:
         outcome.notes.append(
             f"Corrected {vocabulary_report.total} mis-heard word(s) against the "
@@ -387,8 +490,13 @@ async def summarise(
     meeting_date: date | None = None,
     notes: str | None = None,
     on_progress=None,
+    name_it: bool = False,
 ) -> TranscriptionOutcome:
     """Write the notes, and keep going if the model is unavailable.
+
+    `name_it` is for a meeting nobody typed a name for: once the notes exist a
+    short title is taken from them, and the dated placeholder is kept only if
+    that fails.
 
     `summarize_meeting` already degrades to computed facts — duration, word
     count, speaker count — when inference is down, and sets `degraded_reason`
@@ -420,6 +528,13 @@ async def summarise(
             meeting_date=meeting_date,
             notes=notes,
         )
+        if name_it and outcome.summary is not None and outcome.summary.degraded_reason is None:
+            try:
+                outcome.suggested_title = await suggest_title(
+                    get_model_hub().scheduler_for("notes"), notes_model.model_name, outcome.summary
+                )
+            except Exception as exc:  # the dated name is fine; never fail the job for this
+                logger.info("No title suggested for %r: %s", title, exc)
     except Exception as exc:
         # Deliberately broad: a transcript that exists must be saved even if
         # the summariser fails in a way its own degradation path did not catch.
@@ -512,6 +627,8 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
         "findings": [point.render() for point in summary.details],
         "deadlines": [],
         "questions": [],
+        "language": outcome.language,
+        "languagesHeard": outcome.languages_heard,
         "people": list(summary.facts.speakers),
         "enhancedNotes": summary.enhanced_notes,
         "durationMinutes": summary.facts.duration_minutes,

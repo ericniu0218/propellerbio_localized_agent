@@ -207,8 +207,13 @@ async def process(
     access_groups: list[str] | None = None,
     voice_prints: list | None = None,
     screen=None,
+    auto_title: bool = False,
 ) -> None:
-    """The whole path from a file on disk to a meeting somebody can ask about."""
+    """The whole path from a file on disk to a meeting somebody can ask about.
+
+    `auto_title` means nobody named the meeting: it is named from its notes
+    once they exist, and keeps the dated placeholder only if that fails.
+    """
 
     def progress(stage: str) -> None:
         jobs.advance(job, stage)
@@ -230,7 +235,10 @@ async def process(
         meeting_date=started_at.date(),
         notes=typed_notes,
         on_progress=progress,
+        name_it=auto_title,
     )
+    if auto_title and outcome.suggested_title:
+        job.title = outcome.suggested_title
 
     jobs.advance(job, "Saving")
     fields = to_record_fields(outcome)

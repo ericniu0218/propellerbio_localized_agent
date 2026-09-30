@@ -126,7 +126,7 @@ workspace under Keycloak is marked `true`.
   - whisper.cpp (`whisper-cli`, `whisper-vad-speech-segments`) and ffmpeg on
     `PATH` (the Docker image has ffmpeg; mount whisper.cpp);
   - the speech and voice-activity models in `MEETING_MODEL_DIR`
-    (`ggml-small.en.bin`, `ggml-silero-v5.1.2.bin`);
+    (`ggml-large-v3-turbo.bin`, `ggml-silero-v5.1.2.bin`);
   - the meeting-search embedding model: download `minishlab/potion-base-8M`
     once on a connected machine, copy the folder over and set
     `MEETING_TEXT_MODEL` to its path. Without it, meeting search ranks by

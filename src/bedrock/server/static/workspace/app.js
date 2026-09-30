@@ -960,7 +960,7 @@
     } }, recording.paused ? "Resume" : "Pause");
     bar.appendChild(el("span", { class: recording.paused ? "record-dot-idle" : "record-dot-live" }));
     bar.appendChild(el("div", { class: "record-live-info" }, [
-      el("div", { class: "record-live-title" }, recording.meetingTitle),
+      el("div", { class: "record-live-title" }, recording.meetingTitle || "Recording — named from the notes afterwards"),
       el("div", { class: "record-live-sub" }, [
         clock, el("span", {}, " · "),
         el("span", {}, recording.paused ? "paused — nothing is being recorded" : recording.sourceLabel),
@@ -1136,15 +1136,29 @@
       return;
     }
 
-    const titleInput = el("input", { placeholder: "e.g. KRAS research weekly" });
-    const micSelect = el("select", {});
-    const useMic = el("input", { type: "checkbox", checked: true });
-    const useSystem = el("input", { type: "checkbox" });
+    // As little to fill in as possible. The server works out the speakers,
+    // the language and the vocabulary from the audio, and names the meeting
+    // from its notes if the name is left blank. The one thing it cannot know
+    // is where the meeting is — a room, or a call in a browser tab — so that
+    // is the one question asked up front. Everything else is under "More
+    // options" for the times it matters.
+    const titleInput = el("input", { placeholder: "Optional — named from what was said if left blank" });
     const notesInput = el("textarea", { rows: "3", placeholder: "Optional. Anything you jot here is rewritten into the notes using the transcript as the source of fact." });
 
     const projSelect = el("select", {}, [el("option", { value: "" }, "Personal — no project")]);
     (state.projects || []).forEach((p) => projSelect.appendChild(el("option", { value: p.id }, p.name)));
 
+    const sourceChoice = (value, label, hint, checked) => {
+      const input = el("input", { type: "radio", name: "rec-source", value });
+      if (checked) input.checked = true;
+      return { input, row: check(input, label, hint) };
+    };
+    const inRoom = sourceChoice("mic", "In this room", "This device's microphone. Voices at the far end of the table are lifted to match the near ones.", true);
+    const online = sourceChoice("tab", "An online meeting in a browser tab", "Chrome will ask which tab to share — pick the meeting tab and tick \u201cAlso share tab audio\u201d. On macOS whole-screen audio is not available, so join the call in a browser tab.");
+    const both = sourceChoice("both", "Both", "A call in a browser tab with other people in the room with you.");
+    const sourceOf = () => (both.input.checked ? "both" : online.input.checked ? "tab" : "mic");
+
+    const micSelect = el("select", {});
     micSelect.appendChild(el("option", { value: "" }, "Default microphone"));
     try {
       // Labels are blank until the page has been granted microphone access
@@ -1156,26 +1170,45 @@
       });
     } catch (_) {}
 
+    // Which language is spoken. The list comes from the server because it
+    // depends on which speech model is installed: an English-only model gets
+    // one entry and a line saying why. The default listens and decides.
+    const langSelect = el("select", {});
+    (ready.languages || [{ code: "en", label: "English" }]).forEach((l) => {
+      langSelect.appendChild(el("option", { value: l.code, selected: l.code === (ready.defaultLanguage || "detect") }, l.label));
+    });
+    const langHelp = ready.multilingual
+      ? "Detection listens to a sample first: one dominant language is used for the whole recording, and a meeting that genuinely switches languages gets each speaker turn in its own. Pick a language only to override that."
+      : `This server's speech model (${ready.speechModel || "unknown"}) is English-only. Ask whoever runs it to install ${ready.recommendedModel || "a multilingual model"} for other languages and for heavily accented English.`;
 
-    const speakerInput = el("input", { type: "number", min: "1", max: "40", placeholder: "Leave blank if you don't know" });
-    body.appendChild(field("Meeting name", titleInput));
-    body.appendChild(field("Project", projSelect));
-    body.appendChild(field("At least how many people? (optional)", speakerInput,
-      "Only if you happen to know, and a rough floor is fine — “at least 5” for a club meeting nobody counted. Speakers are worked out from the audio either way; this just stops the count being merged below what you know is there."));
+    const speakerInput = el("input", { type: "number", min: "1", max: "40", placeholder: "Leave blank — worked out from the audio" });
     const roomMode = el("input", { type: "checkbox", checked: true });
-    body.appendChild(check(useMic, "This device's microphone", "For a meeting in a room, and for your own voice on a call."));
-    body.appendChild(check(roomMode, "Several people in the room",
-      "Turns off the noise suppression and echo cancellation a laptop applies by default. Both are tuned for one person close to the microphone and treat a voice across the room as noise to remove — which is the voice you want. Turn this off if you are recording only yourself."));
-    body.appendChild(check(useSystem, "Audio from an online meeting",
-      "Captures a browser tab. Chrome will ask which to share — pick the meeting tab and tick “Also share tab audio”. On macOS whole-screen audio is not available, so join the call in a browser tab, or select a loopback device above."));
-    body.appendChild(field("Microphone", micSelect));
-    body.appendChild(field("Your notes during the meeting", notesInput));
     const consent = el("input", { type: "checkbox" });
     const whoElse = el("input", { placeholder: "e.g. Luke, Priya, Ravi" });
-    body.appendChild(check(consent, "Everyone present knows they are being recorded",
-      "In several US states every party has to agree. This records that you said so, with your name and the time — it is your statement, not proof."));
-    body.appendChild(field("Who else is here (optional)", whoElse,
-      "As many or as few as you know. Stored with the meeting as a record of who was in the room; it does not affect the transcript."));
+
+    body.appendChild(field("Meeting name", titleInput));
+    body.appendChild(el("div", { class: "field" }, [el("label", {}, "Where is the meeting?"), inRoom.row, online.row, both.row]));
+    if (ready.consentRequired) {
+      body.appendChild(check(consent, "Everyone present knows they are being recorded",
+        "This deployment requires it. It records that you said so, with your name and the time — it is your statement, not proof."));
+    }
+
+    const more = el("details", { class: "research-options" }, [el("summary", {}, "More options")]);
+    more.appendChild(field("Project", projSelect));
+    more.appendChild(field("Language spoken", langSelect, langHelp));
+    more.appendChild(field("Microphone", micSelect));
+    more.appendChild(check(roomMode, "Several people in the room",
+      "On by default. Turns off the noise suppression and echo cancellation a laptop applies for one person close to the microphone, and lifts quiet voices at the far end of the table. Turn it off only when recording yourself alone."));
+    more.appendChild(field("At least how many people? (optional)", speakerInput,
+      "Speakers are worked out from the audio. This only stops the count being merged below a number you know is there."));
+    more.appendChild(field("Your notes during the meeting", notesInput));
+    if (!ready.consentRequired) {
+      more.appendChild(check(consent, "Everyone present knows they are being recorded",
+        "In several US states every party has to agree. This records that you said so, with your name and the time — it is your statement, not proof."));
+    }
+    more.appendChild(field("Who else is here (optional)", whoElse,
+      "Stored with the meeting as a record of who was in the room; it does not affect the transcript."));
+    body.appendChild(more);
 
     const startBtn = el("button", { class: "btn primary" }, "Start recording");
     const error = el("p", { class: "form-error", hidden: true });
@@ -1187,14 +1220,16 @@
       startBtn.disabled = true;
       startBtn.textContent = "Starting…";
       try {
+        const source = sourceOf();
         await beginRecording({
           title: titleInput.value.trim(),
           projectId: projSelect.value || null,
           notes: notesInput.value.trim() || null,
-          useMic: useMic.checked,
-          useSystem: useSystem.checked,
+          useMic: source !== "tab",
+          useSystem: source !== "mic",
           roomMode: roomMode.checked,
           deviceId: micSelect.value || null,
+          language: langSelect.value || null,
           minimumSpeakers: parseInt(speakerInput.value, 10) || null,
           consentConfirmed: consent.checked,
           participants: whoElse.value.trim() || null,
@@ -1266,7 +1301,9 @@
       });
     } catch (_) { liveSessionId = null; }
 
-    session.meetingTitle = opts.title || "Untitled meeting";
+    // Blank is sent as blank: the server names an unnamed meeting from its
+    // notes, and a placeholder typed in here would be taken as the name.
+    session.meetingTitle = opts.title || "";
     session.sourceLabel = opts.useMic && opts.useSystem ? "microphone + meeting audio"
       : opts.useSystem ? "meeting audio" : "microphone";
     session.options = opts;
@@ -1303,7 +1340,7 @@
     const durationSeconds = (Date.now() - result.startedAt.getTime()) / 1000;
     const pending = {
       id: "upload-" + Date.now(),
-      title: session.meetingTitle,
+      title: session.meetingTitle || "New recording — being named from its notes",
       status: "running",
       stage: "Uploading",
       notes: [],
@@ -1322,6 +1359,7 @@
         minimumSpeakers: session.options.minimumSpeakers,
         consentConfirmed: session.options.consentConfirmed,
         participants: session.options.participants,
+        language: session.options.language,
         liveSessionId: finishedLiveSession,
         durationSeconds,
         onProgress: (fraction) => {

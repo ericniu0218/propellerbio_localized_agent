@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 SupportLabel = Literal["supported", "partially_supported", "unsupported", "contradicted"]
+GateStatus = Literal["pass", "fail", "not_measured"]
 CoverageLabel = Literal["covered", "partial", "not_covered"]
 
 SUPPORT_SCORE = {"supported": 1.0, "partially_supported": 0.5, "unsupported": 0.0, "contradicted": 0.0}
@@ -151,6 +152,36 @@ class SystemScore(BaseModel):
     overall: float | None = None
 
 
+class Gate(BaseModel):
+    """One pipeline check: it passed, it failed, or it was not measured.
+
+    Two states were not enough. A gate stored as a bool, computed as
+    "value is None or value == 0", passed when its input was never built:
+    obesity's "no distractor leaked" PASSed on 26 September with no
+    distractor made at all, and "every gate passes" was repeated from that
+    run as a measurement (OPEN_ISSUES #27). Now a gate with no input says so,
+    and why, and is left out of both counts.
+    """
+
+    status: GateStatus
+    reason: str | None = None
+    """Why the gate was not measured: which input was missing."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_bool(cls, data):
+        # Scorecards written before 30 September 2026 stored a bool - and
+        # counted a gate with no input as passed, which cannot be undone here.
+        if isinstance(data, bool):
+            return {"status": "pass" if data else "fail"}
+        return data
+
+    def __bool__(self) -> bool:
+        # `if gate:` is the bug this class exists to end: a gate that was
+        # not measured would read as passed.
+        raise TypeError("a gate is pass, fail or not measured; read its .status")
+
+
 class Scorecard(BaseModel):
     question_id: str
     question: str
@@ -171,5 +202,19 @@ class Scorecard(BaseModel):
     `created` stamp of the history row it was read from."""
     systems: list[SystemScore]
     pipeline: dict[str, float | int | str | None] = Field(default_factory=dict)
-    gates: dict[str, bool] = Field(default_factory=dict)
+    gates: dict[str, Gate] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
+
+    @property
+    def gates_passed(self) -> int:
+        return sum(1 for g in self.gates.values() if g.status == "pass")
+
+    @property
+    def gates_measured(self) -> int:
+        """The gates that measured something: the denominator of "passed"."""
+        return sum(1 for g in self.gates.values() if g.status != "not_measured")
+
+    @property
+    def gates_not_measured(self) -> dict[str, str]:
+        """Gate -> why it was not measured."""
+        return {name: g.reason or "" for name, g in self.gates.items() if g.status == "not_measured"}

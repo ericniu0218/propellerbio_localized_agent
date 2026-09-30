@@ -19,7 +19,7 @@ from typing import Callable
 
 from bedrock.litreview.bench.baselines import closed_book, naive_rag
 from bedrock.litreview.bench.claims import pipeline_claims, text_claims
-from bedrock.litreview.bench.distractors import leak_test, make_distractors
+from bedrock.litreview.bench.distractors import leak_test, make_distractors, why_none
 from bedrock.litreview.bench.history import recorded_report_windows, window_text
 from bedrock.litreview.bench.judge import CorpusIndex, Judge
 from bedrock.litreview.bench.models import (
@@ -28,6 +28,7 @@ from bedrock.litreview.bench.models import (
     BenchQuestion,
     Claim,
     ClaimResult,
+    Gate,
     Nugget,
     Scorecard,
     SystemScore,
@@ -197,6 +198,48 @@ def _same_report_gate(pipeline: dict) -> str:
     if pipeline.get("determinism_mode") == "cached_replay":
         return "same report twice (cached replay, not fresh inference)"
     return "same report twice"
+
+
+def _gate(value, passes: Callable[[object], bool], missing: str) -> Gate:
+    """A gate from the measurement it rests on. `None` means the input was
+    never built, and that is "not measured" - never a pass."""
+    if value is None:
+        return Gate(status="not_measured", reason=missing)
+    return Gate(status="pass" if passes(value) else "fail")
+
+
+def pipeline_gates(pipeline: dict, score: SystemScore, *, integrity: list, distractors_missing: str,
+                   perturb_missing: str) -> dict[str, Gate]:
+    """The pipeline's checks, each pass, fail or not measured.
+
+    `pipeline` holds the measurements (`quote_validity`, `deterministic`, ...)
+    and `score` the pipeline's claim scores; the two `*_missing` strings say
+    why the distractor and perturbation measurements are absent when they are.
+    """
+    claims = score.claims
+    deterministic = pipeline.get("deterministic")
+    return {
+        "quotes all verified (1.00)": _gate(
+            pipeline.get("quote_validity"), lambda v: v == 1.0, "the report has no evidence units"),
+        "every sentence cited": _gate(
+            pipeline.get("citation_coverage"), lambda v: v == 1.0, "the report kept no sentences"),
+        "no near-miss claims": _gate(
+            score.near_miss_claims if claims else None, lambda v: v == 0, "the report has no claims"),
+        "numbers all in cited evidence": _gate(
+            score.numeric_fidelity, lambda v: v == 1.0,
+            "no claim states a number" if claims else "the report has no claims"),
+        "no distractor leaked": _gate(
+            pipeline.get("distractor_leak_rate"), lambda v: v == 0.0, distractors_missing),
+        _same_report_gate(pipeline): _gate(
+            deterministic if deterministic in ("yes", "no") else None, lambda v: v == "yes",
+            "a stored report was scored; the pipeline was not re-run"),
+        # The invariants run on every finished report, so this one always measures.
+        "integrity check passes": Gate(status="fail" if integrity else "pass"),
+        "claims supported by citations >= 0.85": _gate(
+            score.cited_support, lambda v: v >= 0.85, "no pipeline claim was judged"),
+        "judge catches flipped effects >= 0.7 (benchmark validity)": _gate(
+            pipeline.get("judge_catches_flip"), lambda v: v >= 0.7, perturb_missing),
+    }
 
 
 def evaluate(
@@ -383,17 +426,28 @@ def evaluate(
         [1.0 if result.gates[p].status == "pass" else 0.0 for p in cited_papers]
     ) if cited_papers else None
 
+    # A distractors.json of `{}` means none were built. That is what let
+    # obesity's gate pass on 26 September: an absent rate read as no leak.
     distractor_result = {}
-    if not skip_distractors:
+    distractors_missing = "no distractor papers were built"
+    if from_run:
+        distractors_missing += ": a stored report was scored, and distractors test today's ranking"
+    elif skip_distractors:
+        distractors_missing += ": skipped with --skip-distractors"
+    else:
         say(f"[{bq.id}] distractor papers")
         distractors = make_distractors(by_id, result.ranked, spec, k=5)
         distractor_result = leak_test(
             distractors, spec, facets_for(spec), client, model=settings.model_for("relevance"),
             min_grade=int(settings.knob("plan.min_grade", 2)),
         )
+        pipeline["distractors_made"] = distractor_result.get("made", 0)
         pipeline["distractor_leak_rate"] = distractor_result.get("leak_rate")
+        if not distractors:
+            distractors_missing += f": {why_none(result.ranked, spec)}"
 
     perturb_rows = []
+    perturb_missing = "skipped with --skip-perturb"
     if not skip_perturb:
         say(f"[{bq.id}] judge sensitivity")
         units = {report.short_ids[u.id]: u for u in report.evidence}
@@ -421,6 +475,8 @@ def evaluate(
                 pipeline[f"guard_or_judge_catches_{kind}"] = _mean(
                     [1.0 if (x["judge_caught"] or x["guard_caught"]) else 0.0 for x in rows])
         pipeline["perturbations"] = sum(by_kind.values())
+        perturb_missing = ("no claim could be flipped" if supported else
+                           "no pipeline claim was judged supported, so there was nothing to corrupt")
 
     if from_run:
         pipeline["deterministic"] = "not re-run"
@@ -444,21 +500,8 @@ def evaluate(
             notes.append("\"Same report twice\" re-ran the pipeline through the call cache: it shows cached "
                          "replay and rendering are deterministic, not that fresh inference repeats.")
 
-    gates = {
-        "quotes all verified (1.00)": pipeline.get("quote_validity") in (None, 1.0),
-        "every sentence cited": pipeline.get("citation_coverage") in (None, 1.0),
-        "no near-miss claims": systems["pipeline"].near_miss_claims == 0,
-        "numbers all in cited evidence": systems["pipeline"].numeric_fidelity in (None, 1.0),
-        "no distractor leaked": pipeline.get("distractor_leak_rate") in (None, 0.0),
-        _same_report_gate(pipeline): pipeline["deterministic"] == "yes",
-        "integrity check passes": not result.report.integrity,
-        "claims supported by citations >= 0.85": (systems["pipeline"].cited_support or 0) >= 0.85,
-        "judge catches flipped effects >= 0.7 (benchmark validity)": (
-            pipeline.get("judge_catches_flip") is None or (pipeline.get("judge_catches_flip") or 0) >= 0.7
-        ),
-    }
-    if from_run:
-        gates.pop(_same_report_gate(pipeline))
+    gates = pipeline_gates(pipeline, systems["pipeline"], integrity=result.report.integrity,
+                           distractors_missing=distractors_missing, perturb_missing=perturb_missing)
     if judge_client is None:
         notes.append(
             f"The judge is {settings.model_for('judge')}, the same model family that wrote the report; "
@@ -523,7 +566,10 @@ def evaluate(
             "question_id": bq.id, "created": created, "report_id": result.report_id,
             "prompt_versions": result.run.prompt_versions, "model_versions": model_versions,
             "overall": {s.system: s.overall for s in card.systems},
-            "gates_passed": sum(gates.values()), "gates_total": len(gates),
+            # `gates_total` counts measured gates only; rows written before
+            # 30 September 2026 counted a gate with no input as passed.
+            "gates_passed": card.gates_passed, "gates_total": card.gates_measured,
+            "gates_not_measured": card.gates_not_measured,
             "context_windows": context_windows, "report_context_windows": report_windows,
         }) + "\n")
     db.add_bench_result(result.report_id, spec.id, created, card.model_dump_json())
@@ -537,6 +583,21 @@ def _fmt(x) -> str:
     if isinstance(x, float):
         return f"{x:.2f}"
     return str(x)
+
+
+def _gate_cell(gate: Gate) -> str:
+    """PASS only for a gate that measured something."""
+    if gate.status == "pass":
+        return "PASS"
+    if gate.status == "fail":
+        return "**FAIL**"
+    return f"not measured: {gate.reason}"
+
+
+def _gate_summary(card: Scorecard) -> str:
+    unmeasured = len(card.gates_not_measured)
+    line = f"{card.gates_passed} of {card.gates_measured} measured checks pass"
+    return line + (f"; {unmeasured} not measured, and counted in neither." if unmeasured else ".")
 
 
 def _window_lines(card: Scorecard) -> list[str]:
@@ -582,9 +643,9 @@ def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nugg
     for label, attr in metrics:
         rows.append(f"| {label} | " + " | ".join(_fmt(getattr(s, attr)) for s in card.systems) + " |")
 
-    rows += ["", "## Pipeline checks", "", "| Check | Result |", "|---|---|"]
-    for gate, ok in card.gates.items():
-        rows.append(f"| {gate} | {'PASS' if ok else '**FAIL**'} |")
+    rows += ["", "## Pipeline checks", "", _gate_summary(card), "", "| Check | Result |", "|---|---|"]
+    for name, gate in card.gates.items():
+        rows.append(f"| {name} | {_gate_cell(gate)} |")
     rows += ["", "| Measure | Value |", "|---|---|"]
     for k, v in card.pipeline.items():
         rows.append(f"| {k} | {_fmt(v)} |")

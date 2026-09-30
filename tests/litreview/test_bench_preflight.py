@@ -211,7 +211,8 @@ def test_history_rows_written_before_preflight_read_as_not_recorded(tmp_path, ca
     (tmp_path / "history.jsonl").write_text(json.dumps(old) + "\n")
     assert main(["history", "--results", str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    assert "| 20260926T000000Z | q | abc | 66.6 | 9 of 9 | not recorded |" in out
+    assert "| 20260926T000000Z | q | abc | 66.6 | 9 of 9 † | not recorded |" in out
+    assert "counted as passed" in out
 
 
 def test_every_row_of_the_real_history_still_loads():

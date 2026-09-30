@@ -32,6 +32,17 @@ def pick_near_miss(spec: QuestionSpec) -> str | None:
     return None
 
 
+def why_none(ranked: list[RankedPaper], spec: QuestionSpec) -> str:
+    """Why `make_distractors` made nothing, in the scorecard's words."""
+    if spec.subject is None:
+        return "the question has no single subject to swap out"
+    if pick_near_miss(spec) is None:
+        return f"{subject_label(spec)} has no near-miss term long enough to swap in"
+    if not any(r.usable and (r.grade or 0) >= 2 for r in ranked):
+        return "no paper was graded relevant enough (2 or more) to copy"
+    return "unknown"
+
+
 def _swap(text: str, matcher: TermMatcher, replacement: str) -> str:
     out, last = [], 0
     from bedrock.litreview.knowledge import clean

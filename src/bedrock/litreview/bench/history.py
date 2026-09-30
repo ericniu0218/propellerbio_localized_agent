@@ -35,6 +35,10 @@ class HistoryRow(BaseModel):
     overall: dict[str, float | None] = {}
     gates_passed: int | None = None
     gates_total: int | None = None
+    """Measured gates. Before `gates_not_measured` existed, every gate."""
+    gates_not_measured: dict[str, str] | None = None
+    """Gate -> why it was not measured. None: the row was written before a
+    gate could be "not measured", when a gate with no input counted as passed."""
     context_windows: dict[str, int] | None = None
     """Model -> the window preflight established for this run's model calls."""
     report_context_windows: dict[str, int] | None = None
@@ -69,15 +73,32 @@ def recorded_report_windows(path: Path, report_id: str) -> tuple[dict[str, int],
     return None
 
 
+def gates_text(row: HistoryRow) -> str:
+    """"8 of 8 measured, 1 not measured", or, for a row written before gates
+    could be unmeasured, "9 of 9 †" - see `OLD_GATES`."""
+    if row.gates_total is None:
+        return NOT_RECORDED
+    if row.gates_not_measured is None:
+        return f"{row.gates_passed} of {row.gates_total} †"
+    text = f"{row.gates_passed} of {row.gates_total} measured"
+    return text + (f", {len(row.gates_not_measured)} not measured" if row.gates_not_measured else "")
+
+
+OLD_GATES = ("† written before a gate could be \"not measured\": a gate whose input was never built "
+             "counted as passed.")
+
+
 def render_history(rows: list[HistoryRow]) -> str:
     """A table of runs, oldest first, for reading in a terminal."""
-    lines = ["| Created | Question | Report | Pipeline overall | Gates | Report context window |",
+    lines = ["| Created | Question | Report | Pipeline overall | Gates passed | Report context window |",
              "|---|---|---|---|---|---|"]
     for row in rows:
-        gates = f"{row.gates_passed} of {row.gates_total}" if row.gates_total is not None else NOT_RECORDED
+        gates = gates_text(row)
         overall = row.overall.get("pipeline")
         lines.append(
             f"| {row.created} | {row.question_id} | {row.report_id} | "
             f"{'–' if overall is None else overall} | {gates} | {window_text(row.report_context_windows)} |"
         )
+    if any(r.gates_total is not None and r.gates_not_measured is None for r in rows):
+        lines += ["", OLD_GATES]
     return "\n".join(lines) + "\n"

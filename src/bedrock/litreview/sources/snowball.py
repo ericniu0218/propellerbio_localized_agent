@@ -162,7 +162,6 @@ def follow(policy: SnowballPolicy, seeds: list[Paper], clients: dict, known_pmid
     papers = _records(wanted, clients, report)
     for paper in papers:
         paper.found_by_queries = found_by[paper.pmid]
-    report.snowball_added = len(papers)
     return papers
 
 

@@ -311,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--symbol", action="append", default=[],
                          help="an HGNC symbol the table does not know yet, to propose a new target entry (repeatable)")
     propose.add_argument("--out", type=Path, required=True, help="where to write the proposals (.yaml)")
+    propose.add_argument("--table", type=Path,
+                         help="the table to propose for (default: the package's knowledge/entities.yaml)")
     approve_cmd = asub.add_parser("approve", help="write the names marked `approve: true` into the table")
     approve_cmd.add_argument("proposals", type=Path)
     approve_cmd.add_argument("--table", type=Path, help="the table to edit (default: the package's knowledge/entities.yaml)")
@@ -408,7 +410,9 @@ def _aliases(args) -> int:
             if args.symbol and not args.hgnc:
                 _say("aliases propose: --symbol needs --hgnc")
                 return 1
-            kb = Knowledge.load(TABLE)
+            # The table `approve --table` will edit, so what is proposed and
+            # what is refused are read against the same names.
+            kb = Knowledge.load(args.table or TABLE)
             proposals, sources = [], []
             if args.hgnc:
                 proposals += al.propose_targets(kb, al.read_hgnc(args.hgnc), args.symbol)

@@ -94,14 +94,19 @@ def acquisition_summary(report, collected: int) -> dict[str, Any]:
     Query strings are not copied - the paper records already say which query
     found them - only how many were sent to each source, how many records
     came back, how many survived merging and the per-question cap, and which
-    sources failed. Recorded once, when the papers were collected."""
+    sources failed. Recorded once, when the papers were collected.
+
+    The cap counts are about the searched papers only: citation snowballing
+    adds its papers after the cap, and they are counted in the `snowball`
+    block, not as papers the cap kept."""
+    kept = report.returned - (getattr(report, "snowball_added", 0) or 0)
     out = {
         "status": "recorded",
         "queries_sent": {source: len(qs) for source, qs in sorted(report.queries.items())},
         "records_returned": dict(sorted(report.hits.items())),
         "unique_after_merge": report.unique,
-        "kept_after_cap": report.returned,
-        "truncated_by_cap": max(0, report.unique - report.returned),
+        "kept_after_cap": kept,
+        "truncated_by_cap": max(0, report.unique - kept),
         "collected_after_ingest": collected,
         "full_text_tried": report.full_text_tried,
         "full_text_fetched": report.full_text,

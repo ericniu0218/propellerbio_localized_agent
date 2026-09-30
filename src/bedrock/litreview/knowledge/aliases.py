@@ -380,7 +380,9 @@ def approve(proposals_path: Path, table: Path = TABLE) -> list[str]:
             items = ", ".join(_yaml_item(n) for n in names)
             lines[end:end] = [f"  {_yaml_item(entity)}:", f"    terms: [{items}]"]
             changes.append(f"{entity}: new {kind}, terms {', '.join(names)}")
-        expected[entity] = set(names)
+        # An entity can have more than one block (two files joined, or one
+        # added by hand); what it must read back as is every block's names.
+        expected.setdefault(entity, set()).update(names)
         owners = _owners(_reload("\n".join(lines)))
     if not changes:
         return []

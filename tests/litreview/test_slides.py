@@ -179,3 +179,13 @@ def test_the_answer_slide_leads_with_the_limitations_that_change_its_reading():
     report.sections[-1].body_markdown = "\n".join(f"- {g}" for g in gaps)
     answer = next(s for s in slides.outline(report) if s.title == "Answer")
     assert gaps[4] in [p.text for p in answer.paras]
+
+
+def test_missing_human_effects_are_key_limitations_on_the_answer_and_limitations_slides():
+    report = _dense()
+    bullet = 'No tested effect in humans among the papers read for: Liver fat [1]; Insulin resistance [2].'
+    report.sections[-1].body_markdown = f'- {bullet}\n- Figures and tables are not read.'
+    assert slides.key_limitations([bullet]) == [bullet]
+    outline = slides.outline(report)
+    for title in ('Answer', 'Limitations and open questions'):
+        assert bullet in [p.text for s in outline if s.title == title for p in s.paras]

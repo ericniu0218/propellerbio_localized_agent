@@ -597,7 +597,7 @@ def _realized_status(ctx: WriteContext, facet: Facet, got: int) -> str:
     return "thin" if got < facet.min_sources else "covered"
 
 
-def _gaps(ctx: WriteContext) -> str:
+def _gaps(ctx: WriteContext, comparison_rows: list[synthesis.SynthesisRow] | None = None) -> str:
     subject = subject_label(ctx.spec)
     bullets = [f"**Incomplete search.** {ctx.collection_note}"] if ctx.collection_note else []
     realized = _realized(ctx)
@@ -621,6 +621,16 @@ def _gaps(ctx: WriteContext) -> str:
             )
     if not extracted:
         bullets.append("No findings were extracted: this report was assembled without a model.")
+    rows = comparison_rows if comparison_rows is not None else synthesis.synthesis_rows(ctx, ctx.studies)
+    no_human = [row for row in rows if row.basis is not None and not row.tested_human]
+    if no_human:
+        measures = []
+        for row in no_human:
+            numbers = sorted({ctx.refs[u.paper_id] for u in row.units if u.paper_id in ctx.refs})
+            refs = "".join(f"[{n}]" for n in numbers)
+            measures.append(f"{cell(row.label)} {refs}".rstrip())
+        noun = " targets" if ctx.spec.question_type == "target_identification" else ""
+        bullets.append(f"No tested effect in humans among the papers read for{noun}: " + "; ".join(measures) + ".")
     jobs = ctx.plan.jobs
     abstract_only = sum(1 for j in jobs if j.abstract_only)
     if abstract_only:
@@ -993,13 +1003,15 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     ctx.studies = studies
     ctx.refs = refs
     _decisive_fallback(ctx, sections, refs, studies)
+    comparison_rows = synthesis.synthesis_rows(ctx, studies)
     generators = {
         "glance": lambda: synthesis.glance(ctx, refs, studies),
-        "synthesis": lambda: synthesis.synthesis(ctx, refs, studies),
+        "synthesis": lambda: synthesis.render_synthesis(comparison_rows, refs),
+        "disagreements": lambda: synthesis.disagreements(ctx, refs, studies, comparison_rows),
         "numbers": lambda: synthesis.key_results(ctx, refs, studies),
         "best_source": lambda: _best_source(ctx, refs),
         "background": lambda: _background(ctx),
-        "gaps": lambda: _gaps(ctx),
+        "gaps": lambda: _gaps(ctx, comparison_rows),
         "plan": lambda: _plan(ctx),
         "ranking": lambda: _ranking(ctx, refs),
         "evidence_table": lambda: _evidence_table(ctx, refs),
@@ -1012,7 +1024,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     # Last: it expands the abbreviations the main text actually uses.
     main_text = "\n".join(
         [s.text for sec in sections if sec.id not in APPENDIX for _, s in _kept(sec)]
-        + [sec.body_markdown or "" for sec in sections if sec.id in ("glance", "synthesis", "numbers")]
+        + [sec.body_markdown or "" for sec in sections if sec.id in ("glance", "synthesis", "disagreements", "numbers")]
     )
     for section in sections:
         if section.id == "glossary":

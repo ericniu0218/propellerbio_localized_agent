@@ -17,7 +17,7 @@ import yaml
 from bedrock.litreview.config import config_file
 
 GENERATED = {"best_source", "background", "gaps", "plan", "ranking", "evidence_table", "method", "excluded",
-             "glance", "synthesis", "numbers", "glossary"}
+             "glance", "synthesis", "disagreements", "numbers", "glossary"}
 
 APPENDIX = ("best_source", "plan", "evidence_table", "ranking", "method", "excluded")
 """Sections a scientist reaches for to check the work, not to read the answer:

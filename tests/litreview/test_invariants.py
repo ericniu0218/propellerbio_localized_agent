@@ -40,6 +40,25 @@ def test_a_sound_run_passes_at_run_time_and_when_re_verified(result):
     assert verify_run(db, r.run.id) == []
 
 
+def test_a_stored_report_without_the_new_disagreements_section_still_verifies(result):
+    from bedrock.litreview.models import Report
+    from bedrock.litreview.stages.s8_render import to_json
+
+    r, db = result
+    legacy = r.report.model_copy(update={"sections": [s for s in r.report.sections if s.id != "disagreements"]})
+    body = to_json(legacy)
+    assert to_json(Report.model_validate_json(body)) == body
+    assert _check(r, legacy) == []
+    # Persist in the same form as a run written before this section existed,
+    # including its pinned hash. Verification must not add the new section.
+    import hashlib
+    db.put_artifact(r.run.id, "report", body)
+    run = db.get_run(r.run.id)
+    run.report_sha256 = hashlib.sha256(body.encode()).hexdigest()
+    db.save_run(run)
+    assert verify_run(db, r.run.id) == []
+
+
 def test_a_quote_that_is_not_the_papers_text_is_caught(result):
     r, _ = result
     units = [u.model_copy(update={"quote": u.quote.replace("mice", "patients")}) if i == 0 else u

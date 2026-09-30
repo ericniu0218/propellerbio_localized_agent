@@ -209,8 +209,9 @@ def group_studies(paper_ids: list[str], papers: dict[str, Paper]) -> dict[str, t
 def _subjects(units: list[EvidenceUnit]) -> str:
     """Who was studied, in the paper's words, with the largest stated n - and
     "per group" when the paper's sentence says that is what it counts."""
-    words = sorted({u.species_raw.strip() for u in units if u.species_raw.strip()}, key=len)
-    with_n = [u for u in units if u.n]
+    words = sorted({u.species_raw.strip() for u in units
+                    if u.species_raw.strip() and u.provenance.get("species", "none") != "none"}, key=len)
+    with_n = [u for u in units if u.n and u.provenance.get("n", "none") != "none"]
     who = words[0] if words else ""
     if with_n:
         top = max(with_n, key=lambda u: u.n)
@@ -399,6 +400,12 @@ def section_preference(ctx: "WriteContext"):
                       not claims.attributable(u, ctx.spec, ctx.papers.get(u.paper_id)), not about(u))
 
 
+def _tested_studies(directions: dict[str, set[str]]) -> set[str]:
+    studies = set().union(*directions.values()) if directions else set()
+    return studies - (directions.get("association", set()) - (directions.get("improved", set())
+                      | directions.get("no_effect", set()) | directions.get("worsened", set())))
+
+
 def _level(directions: dict[str, set[str]], tiers: dict[str, str], abstract_only: bool) -> tuple[str, str]:
     """(basis, why) by the written rule in `LEVEL_RULE`: what kind of evidence
     there is, stated as a fact - never a verdict on how good it is.
@@ -409,9 +416,7 @@ def _level(directions: dict[str, set[str]], tiers: dict[str, str], abstract_only
     study counts against only when it reports no benefit at all for this
     measure (two subgroups of one trial going different ways is that trial's
     mixed result)."""
-    studies = set().union(*directions.values()) if directions else set()
-    tested = studies - (directions.get("association", set()) - (directions.get("improved", set())
-                        | directions.get("no_effect", set()) | directions.get("worsened", set())))
+    tested = _tested_studies(directions)
     human = {k for k in tested if tiers.get(k) in HUMAN_TIERS}
     pre = {k for k in tested if tiers.get(k) in ("animal", "cell")}
     rct = {k for k in human if tiers.get(k) == "rct"}
@@ -514,17 +519,44 @@ def _subject_name(ctx: "WriteContext") -> str:
     return e.text if e.text.lower() != e.canonical.lower() else e.canonical
 
 
-def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study], limit: int = 10) -> str:
-    groups = outcome_groups(ctx, studies)
-    if not groups:
-        return "No verified findings to compare."
-    lines = []
-    for g in groups[:limit]:
+@dataclass
+class SynthesisRow:
+    """One measure's comparison, shared by synthesis, disagreements and gaps.
+
+    This is a transient view, never added to stored report or evidence models.
+    `units` contains only counted findings; `aside` explains the rest.
+    Compute every measure before a renderer applies its display limit.
+    """
+
+    label: str
+    units: list[EvidenceUnit]
+    directions: dict[str, set[str]]
+    tiers: dict[str, str]
+    papers: dict[str, set[str]]
+    aside: dict[str, set[str]]
+    within: set[str]
+    basis: str | None
+    why: str
+
+    @property
+    def tested_human(self) -> bool:
+        """Human tested effects by the same rule that computes the basis.
+
+        An animal-only disagreement still has no tested human effect, even
+        though its basis says 'Studies disagree' rather than 'Animal only'.
+        """
+        return any(self.tiers.get(k) in HUMAN_TIERS for k in _tested_studies(self.directions))
+
+
+def synthesis_rows(ctx: "WriteContext", studies: dict[str, Study]) -> list[SynthesisRow]:
+    rows = []
+    for g in outcome_groups(ctx, studies):
         directions: dict[str, set[str]] = defaultdict(set)
         tiers: dict[str, str] = {}
         papers: dict[str, set[str]] = defaultdict(set)
         aside: dict[str, set[str]] = defaultdict(set)
         within: set[str] = set()
+        counted = []
         for u in g.units:
             s = studies.get(u.paper_id)
             if s is None:
@@ -545,16 +577,30 @@ def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Stud
                 within.add(u.paper_id)
             directions[u.outcome].add(s.key)
             papers[u.outcome].add(u.paper_id)
+            counted.append(u)
             # A trial's strongest design stands for it (the RCT, not its post hoc).
             if tiers.get(s.key) is None or _rank(s.tier) < _rank(tiers[s.key]):
                 tiers[s.key] = s.tier
         keys = set().union(*directions.values()) if directions else set()
-        if not keys:
-            reasons = "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in aside.items())
-            lines.append(f"- **{_cell(g.label)}** — no finding here can be counted for the requested treatment: {reasons}.")
-            continue
         all_abstract = all(not studies[u.paper_id].full_text for u in g.units if u.paper_id in studies)
-        level, why = _level(directions, tiers, all_abstract)
+        basis, why = _level(directions, tiers, all_abstract) if keys else (None, "")
+        rows.append(SynthesisRow(g.label, counted, dict(directions), tiers, dict(papers), dict(aside), within,
+                                 basis, why))
+    return rows
+
+
+def render_synthesis(rows: list[SynthesisRow], refs: dict[str, int], limit: int = 10) -> str:
+    """Keep the established Markdown shape: the slides parse these lines."""
+    if not rows:
+        return "No verified findings to compare."
+    lines = []
+    for row in rows[:limit]:
+        directions, tiers, papers = row.directions, row.tiers, row.papers
+        keys = set().union(*directions.values()) if directions else set()
+        if not keys:
+            reasons = "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items())
+            lines.append(f"- **{_cell(row.label)}** — no finding here can be counted for the requested treatment: {reasons}.")
+            continue
         parts = []
         for outcome in ("improved", "no_effect", "worsened", "mixed", "association"):
             if directions.get(outcome):
@@ -565,21 +611,116 @@ def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Stud
             designs[TIER_TEXT[tiers[k]]] += 1
         mix = ", ".join(f"{v} {_plural(d, v)}" for d, v in sorted(designs.items()))
         extra = ""
-        if within:
-            extra += f" Change from baseline, with no comparison group, in {_refs(within, refs)}."
-        if aside:
-            extra += " Not counted: " + "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in aside.items()) + "."
-        lines.append(f"- **{_cell(g.label)}** — {len(keys)} independent stud{'y' if len(keys) == 1 else 'ies'} "
-                     f"({mix}): {'; '.join(parts)}. Basis: **{level}** ({why}).{extra}")
-    if len(groups) > limit:
-        lines.append(f"- {len(groups) - limit} further measures are in the evidence table (Appendix).")
+        if row.within:
+            extra += f" Change from baseline, with no comparison group, in {_refs(row.within, refs)}."
+        if row.aside:
+            extra += " Not counted: " + "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items()) + "."
+        lines.append(f"- **{_cell(row.label)}** — {len(keys)} independent stud{'y' if len(keys) == 1 else 'ies'} "
+                     f"({mix}): {'; '.join(parts)}. Basis: **{row.basis}** ({row.why}).{extra}")
+    if len(rows) > limit:
+        lines.append(f"- {len(rows) - limit} further measures are in the evidence table (Appendix).")
     lines += ["", LEVEL_RULE]
     return "\n".join(lines)
+
+
+def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study], limit: int = 10) -> str:
+    return render_synthesis(synthesis_rows(ctx, studies), refs, limit)
 
 
 def _rank(tier: str) -> int:
     order = ("rct", "trial", "genetic", "observational", "human", "case", "animal", "cell", "unknown")
     return order.index(tier) if tier in order else len(order)
+
+
+# --- where the studies disagree -------------------------------------------------------
+
+DISAGREEMENT_RULE = (
+    "The study records below show design, subjects, access and reported directions for each disagreement. "
+    "The scientist decides which differences, if any, explain it. Publications from the same trial are shown "
+    "together as one independent study."
+)
+
+
+@dataclass
+class Disagreement:
+    """One set of disagreeing papers and the report lines it explains."""
+
+    explanations: list[str] = field(default_factory=list)
+    units: list[EvidenceUnit] = field(default_factory=list)
+
+
+def disagreement_entries(ctx: "WriteContext", studies: dict[str, Study],
+                         rows: list[SynthesisRow]) -> list[Disagreement]:
+    """Both disagreement rules, with identical paper sets displayed once.
+
+    Synthesis disagrees within systems; Stage 6 target conflicts also span
+    systems. Keep each rule's wording and each supporting finding when the
+    same papers explain both. Nothing here infers a cause of disagreement.
+    """
+    entries: dict[frozenset[str], Disagreement] = {}
+
+    def add(explanation: str, units: list[EvidenceUnit]) -> None:
+        units = [u for u in units if u.paper_id in studies]
+        if not units:
+            return
+        key = frozenset(u.paper_id for u in units)
+        entry = entries.setdefault(key, Disagreement())
+        if explanation not in entry.explanations:
+            entry.explanations.append(explanation)
+        seen = {u.id for u in entry.units}
+        entry.units.extend(u for u in units if u.id not in seen)
+
+    for row in rows:
+        if row.basis != "Studies disagree":
+            continue
+        better = row.directions.get("improved", set())
+        other = (row.directions.get("no_effect", set()) | row.directions.get("worsened", set())) - better
+        human = {k for k in better | other if row.tiers.get(k) in HUMAN_TIERS}
+        kind = HUMAN_TIERS if human else ("animal", "cell")
+        keys = {k for k in better | other if row.tiers.get(k) in kind}
+        add(f"How the studies line up: **{_cell(row.label)}** (Studies disagree)",
+            [u for u in row.units if studies[u.paper_id].key in keys
+             and u.outcome in ("improved", "no_effect", "worsened")])
+    for conflict in ctx.summary.conflicts:
+        ids = set(conflict.unit_ids)
+        pids = set(conflict.supporting_papers) | set(conflict.opposing_papers)
+        label = "Candidate targets" if ctx.spec.question_type == "target_identification" else "Target conflict"
+        add(f"{label}: **{_cell(conflict.target)}** (Papers disagree on this target; {conflict.direction})",
+            [u for u in ctx.summary.units if u.id in ids and u.paper_id in pids
+             and u.outcome in ("improved", "no_effect", "worsened")])
+    return list(entries.values())
+
+
+def disagreements(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study],
+                  rows: list[SynthesisRow]) -> str:
+    entries = disagreement_entries(ctx, studies, rows)
+    if not entries:
+        return ""
+    lines = [DISAGREEMENT_RULE]
+    order = {outcome: i for i, outcome in enumerate(("improved", "no_effect", "worsened"))}
+    for entry in entries:
+        lines += ["", "; ".join(entry.explanations) + "."]
+        independent: dict[str, list[EvidenceUnit]] = defaultdict(list)
+        for u in entry.units:
+            independent[studies[u.paper_id].key].append(u)
+        groups = sorted(independent.values(),
+                        key=lambda units: (min(order[u.outcome] for u in units),
+                                           min(refs[u.paper_id] for u in units)))
+        for units in groups:
+            lines += ["", f"- **Independent study {_refs([u.paper_id for u in units], refs)}**"]
+            seen: set[tuple[str, str, str, str | None]] = set()
+            for u in sorted(units, key=lambda u: (order[u.outcome], refs[u.paper_id], u.id)):
+                # Abstract and Results can repeat the same finding. Keep a
+                # distinct qualifier or direction, and every cited paper.
+                key = (u.paper_id, u.outcome, u.quote, u.qualifier_quote)
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines += ["", f"{study_label(studies[u.paper_id], refs)}; direction: **{DIRECTION[u.outcome]}**.",
+                          "", "> " + " ".join(u.quote.split())]
+                if u.qualifier_quote:
+                    lines += ["", "> " + " ".join(u.qualifier_quote.split())]
+    return "\n".join(lines)
 
 
 # --- 3. key results, with their context -------------------------------------------------------

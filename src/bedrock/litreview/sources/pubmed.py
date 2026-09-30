@@ -27,6 +27,10 @@ _MONTHS = {m: i for i, m in enumerate(
 _YEAR = re.compile(r"\b(1[89]\d\d|20\d\d)\b")
 
 
+#: elink's names for the two citation lists.
+LINK_NAMES = {"citations": "pubmed_pubmed_citedin", "references": "pubmed_pubmed_refs"}
+
+
 def phrase(term: str) -> str:
     """One exact term, searched in title and abstract."""
     return f'"{term}"[tiab]'
@@ -205,6 +209,27 @@ class PubMed:
             papers.extend(parse_articles(resp.text, query))
         order = {pmid: i for i, pmid in enumerate(pmids)}
         return sorted(papers, key=lambda p: order.get(p.pmid or "", len(order)))
+
+    def linked(self, pmid: str, relation: str, limit: int) -> list[str]:
+        """PubMed ids of the papers that cite this one (`relation`
+        "citations") or that it cites ("references"), from elink, in
+        PubMed's order. Used only by citation snowballing
+        (`sources/snowball.py`)."""
+        if relation not in LINK_NAMES:
+            raise ValueError(f"unknown relation {relation!r}")
+        resp = self.http.get(f"{EUTILS}/elink.fcgi", params=self._params(
+            dbfrom="pubmed", db="pubmed", id=pmid, linkname=LINK_NAMES[relation], retmode="json",
+        ))
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("ERROR") or data.get("error"):
+            raise SourceError(f"PubMed elink: {data.get('ERROR') or data.get('error')}")
+        ids: list[str] = []
+        for linkset in data.get("linksets") or []:
+            for db in linkset.get("linksetdbs") or []:
+                if db.get("linkname") == LINK_NAMES[relation]:
+                    ids.extend(str(i) for i in db.get("links") or [])
+        return list(dict.fromkeys(ids))[:limit]
 
     def papers(self, query: str, limit: int, *, found_by: str) -> list[Paper]:
         pmids = self.search_ids(query, limit)

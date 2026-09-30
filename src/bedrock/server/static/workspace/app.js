@@ -901,8 +901,32 @@
       else card.appendChild(el("p", { class: "muted small", style: "margin-top:14px" },
         "Nothing was extracted from this meeting. The transcript below is still complete."));
       if (meeting.transcript) {
-        card.appendChild(el("div", { class: "section-title" }, "Transcript"));
-        card.appendChild(el("div", { class: "transcript-box" }, meeting.transcript));
+        // Downloads for whoever missed it. Plain links: the API is cookie
+        // authenticated, so the browser fetches them like any file.
+        let showEnglish = false;
+        const link = (fmt, label) => el("a", { class: "btn small", download: "", title: label,
+          href: `${API}/meetings/${encodeURIComponent(meeting.id)}/transcript?format=${fmt}` + (showEnglish ? "&english=true" : "") }, label);
+        const box = el("div", { class: "transcript-box" }, meeting.transcript);
+        const links = el("div", { class: "row-actions", style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" });
+        const paintLinks = () => {
+          links.innerHTML = "";
+          links.appendChild(el("span", { class: "muted small" }, "Download:"));
+          links.appendChild(link("txt", "Text"));
+          links.appendChild(link("docx", "Word"));
+          links.appendChild(link("vtt", "Subtitles"));
+          links.appendChild(link("md", "Markdown"));
+          if (meeting.transcriptEnglish) {
+            links.appendChild(el("button", { class: "btn small", onclick: () => {
+              showEnglish = !showEnglish;
+              box.textContent = showEnglish ? meeting.transcriptEnglish : meeting.transcript;
+              paintLinks();
+            } }, showEnglish ? "Show original" : `Show English (${meeting.translatedLines || ""} lines translated)`));
+          }
+        };
+        paintLinks();
+        card.appendChild(el("div", { class: "section-title", style: "display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap" },
+          [el("span", {}, "Transcript"), links]));
+        card.appendChild(box);
       }
       // How this meeting was produced, in the meeting's own words rather than
       // one fixed sentence: a recording transcribed locally and a transcript

@@ -881,3 +881,25 @@ async def test_a_hallucinated_slice_is_dropped_and_a_real_short_one_kept(tmp_pat
     transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
     cues = await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
     assert [c.text for c in cues] == ["Order the antibody."]
+
+
+async def test_the_decided_language_picks_the_checkpoint(tmp_path):
+    from dataclasses import replace
+
+    zh_model = tmp_path / "large.bin"
+    zh_model.write_bytes(b"x")
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh", 2: "zh", 3: "zh", 5: "zh"})
+    config = replace(make_config(tmp_path), language="detect", models_by_language={"zh": zh_model})
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    detect, cmd = _detection_command(runner), _whisper_command(runner)
+    assert detect[detect.index("-m") + 1] == str(config.model)   # detection on the main model
+    assert cmd[cmd.index("-m") + 1] == str(zh_model)              # transcription on the Mandarin one
+
+    # An English decision, or a Mandarin model file that is missing, uses the main model.
+    runner = DetectingRunner(REGIONS, ["x"] * 6)
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w2")
+    assert _whisper_command(runner)[_whisper_command(runner).index("-m") + 1] == str(config.model)
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh", 2: "zh", 3: "zh", 5: "zh"})
+    gone = replace(config, models_by_language={"zh": tmp_path / "missing.bin"})
+    await WhisperTranscriber(gone, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w3")
+    assert _whisper_command(runner)[_whisper_command(runner).index("-m") + 1] == str(config.model)

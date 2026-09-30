@@ -49,6 +49,7 @@ MIN_SIMILARITY = 0.72
 # similarity, because the shape is itself evidence.
 NAME_SIMILARITY = 0.6
 MIN_TOKEN_LENGTH = 3
+MIN_REPAIR_TARGET = 4
 
 # How far a token may be from a term before it is a different word. This is
 # scaled by term length, and it is the guard that matters most: on a short
@@ -217,7 +218,18 @@ def _match(token: str, terms: list[str], sentence_initial: bool = True) -> str |
     for term in terms:
         if lowered == term.casefold() or _is_inflection(token, term):
             return None  # already right, or a legitimate variation of it
+        if len(term) < MIN_REPAIR_TARGET and not any(c.isdigit() for c in term):
+            # A three-letter acronym is one edit from half the names in a
+            # meeting: "Sam" would become "SAD" and "Pam" "PAD". Short terms
+            # still steer the decoder; they are never a repair target.
+            continue
         budget = max_edits_for(term)
+        if not looks_like_a_name(token, sentence_initial):
+            # An ordinary lower-case word gets one edit, whatever the term's
+            # length. Two edits turned "action" into "activin" the moment a
+            # domain pack put "activin" in the list; one edit still repairs
+            # "dupilumob" and "semaglutyde", which is what the latitude is for.
+            budget = 1
         if _edit_distance(lowered, term.casefold(), budget) > budget:
             continue
         ratio = SequenceMatcher(None, lowered, term.casefold()).ratio()

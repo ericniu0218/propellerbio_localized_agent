@@ -147,7 +147,10 @@ the meeting is already gone.
 |---|---|---|
 | `MEETING_MODEL_DIR` | `~/.cache/whisper-models` | models kept elsewhere |
 | `MEETING_SPEECH_MODEL` | `<dir>/ggml-large-v3-turbo.bin` | a different whisper checkpoint; `ggml-small.en.bin` is used if it is the only one present |
+| `MEETING_SPEECH_MODEL_ZH` | `<dir>/ggml-large-v3.bin` if present | the checkpoint used once a recording is decided to be Mandarin. Measured better than turbo on Chinese technical terms (EGFR, 剂量反应), worse on noisy English, 2.2x slower; download it from huggingface.co/ggerganov/whisper.cpp to turn this on |
 | `MEETING_LANGUAGE` | `detect` | listen first and decide (see Languages); a language code fixes it server-wide; the Record dialog overrides it per meeting |
+| `MEETING_VOCABULARY_PACK` | unset | bundled term lists by name: `biotech` (several hundred targets, drugs, assays, indications and companies for antibodies, peptides and siRNA in immunology & inflammation, obesity and CNS). A comma list of names or file paths |
+| `MEETING_VOCABULARY_CORPUS` | unset | a folder of `.txt`/`.md`/`.csv` documents to harvest terms from, e.g. the company's papers |
 | `MEETING_VOCABULARY_AUTO` | `true` | terms harvested from this workspace's earlier meetings are added behind `MEETING_VOCABULARY`; `false` to use only the typed list |
 | `MEETING_VAD_THRESHOLD` | `0.4` | raise towards `0.5` if a noisy room produces junk cues; lower towards `0.3` if quiet speakers are missing |
 | `MEETING_VAD_PAD_MS` | `60` | audio kept either side of each detected stretch of speech |
@@ -260,7 +263,39 @@ Whisper's reflexes on a second of noise — "Thank you.", "Thanks for
 watching" — are dropped when one of them is the entire output of a slice
 under three seconds. Non-speech tokens ("*coughs*") are suppressed.
 
-**`MEETING_VOCABULARY` is the highest-value setting here.** Whisper spells
+### For whoever missed the meeting
+
+Every meeting page has download links: **Text**, **Word**, **Subtitles**
+(WEBVTT) and **Markdown**, from `GET /workspace/api/meetings/{id}/transcript?format=txt|docx|vtt|md`.
+Each carries the notes first, then every line with its timestamp and speaker.
+
+Lines spoken in Chinese (or Japanese or Korean) get an English line beside
+them, written by the notes model after the notes. The original line is the
+record: citations quote it and retrieval searches it, so it always comes
+first and is never replaced. The page has a "Show English" toggle, and
+`&english=true` on a download puts the English under each translated line.
+A line the model leaves half-translated is retried once on its own.
+
+### Naming the speakers
+
+Labels like "Speaker 2" become names when a voice is enrolled: **Add a
+voice** on the Meetings tab takes a short sample (three seconds minimum;
+twenty is better) and keeps only a 192-number voice print, never the audio.
+Tested end to end: two enrolled voices came back named on the next
+recording, and the decisions and action items were credited to them by
+name. For a team that meets every week this is the single cheapest thing
+that makes a transcript readable, and it takes each person under a minute.
+
+**`MEETING_VOCABULARY` is the highest-value setting here.** When nobody can
+supply the customer's own list, `MEETING_VOCABULARY_PACK=biotech` is a
+starting point: the pack's first lines are the names whisper is most likely
+to misspell (cytokines and their receptors, then obesity and CNS targets),
+because whisper reads only about 200 tokens of prompt and weights the start
+most. Every term in the list, however far down, still repairs near-misses in
+the transcript — "dupilumob" becomes "dupilumab", "IL17" becomes "IL-17" — but
+a term under four characters without a digit is never a repair target, so
+"Sam" does not become "SAD". Put the customer's own terms in
+`MEETING_VOCABULARY`; they go first. Whisper spells
 words it does not know phonetically: across test runs of the same audio it
 wrote "CROS" and then "CRAS" for "KRAS", and "PREA" for "Priya". Set it to the
 drug names, assay names, gene symbols and people's names this customer actually

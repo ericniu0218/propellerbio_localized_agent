@@ -31,6 +31,10 @@ DEFAULT_SPEECH_MODEL = "ggml-large-v3-turbo.bin"
 # What an installation set up before the model change still has. Used only
 # when the multilingual model is absent, so nothing that worked stops.
 FALLBACK_SPEECH_MODEL = "ggml-small.en.bin"
+# Used for recordings decided to be Mandarin when it is present: measured
+# better on Chinese technical terms than turbo, worse on noisy English, and
+# 2.2x slower — so only for Mandarin, and only when somebody downloaded it.
+MANDARIN_SPEECH_MODEL = "ggml-large-v3.bin"
 
 # Languages the Record dialog offers. Keys are whisper language codes, plus
 # two of our own. "detect" is the default and listens first: a sample of the
@@ -123,6 +127,10 @@ class RecordingConfig:
     vad_threshold: float = DEFAULT_VAD_THRESHOLD
     vad_speech_pad_ms: int = DEFAULT_VAD_PAD_MS
     normalize_audio: bool = DEFAULT_NORMALIZE_AUDIO
+    speech_model_zh: Path | None = None
+    """``MEETING_SPEECH_MODEL_ZH``, else ``ggml-large-v3.bin`` beside the
+    speech model when that file exists; None means Mandarin uses the main
+    model like everything else."""
 
     @property
     def multilingual(self) -> bool:
@@ -158,7 +166,16 @@ class RecordingConfig:
             vad_speech_pad_ms=int(os.environ.get("MEETING_VAD_PAD_MS", DEFAULT_VAD_PAD_MS)),
             normalize_audio=os.environ.get("MEETING_NORMALIZE_AUDIO", "false").strip().lower()
             in ("1", "true", "yes", "on"),
+            speech_model_zh=_mandarin_model(model_dir),
         )
+
+
+def _mandarin_model(model_dir: Path) -> Path | None:
+    explicit = os.environ.get("MEETING_SPEECH_MODEL_ZH")
+    if explicit:
+        return Path(explicit).expanduser()
+    candidate = model_dir / MANDARIN_SPEECH_MODEL
+    return candidate if candidate.exists() else None
 
 
 def _speech_model(model_dir: Path) -> Path:

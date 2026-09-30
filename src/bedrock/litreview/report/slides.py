@@ -160,10 +160,11 @@ def synthesis_rows(md: str | None) -> tuple[list[list[str]], list[str]]:
 
 
 # The limitations that most change how the Answer should be read, in order:
-# whether the studies are the population asked about, whether their numbers
+# whether the studies are the population asked about, which measures have no
+# tested human effect, whether their numbers
 # were printed wrongly, what was only read as an abstract, notices and
 # preprints. The Limitations slide keeps all of them in the report's order.
-_KEY_LIMITS = (r"^The question is about", r"interval printed|p-value printed|different estimates",
+_KEY_LIMITS = (r"^The question is about", r"^No tested effect in humans", r"interval printed|p-value printed|different estimates",
                r"abstract only", r"publication notice", r"preprint")
 
 

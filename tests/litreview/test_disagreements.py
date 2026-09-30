@@ -211,3 +211,49 @@ def test_every_layout_places_the_generated_section_immediately_after_synthesis(k
     layout = load_layout(kind)
     i = next(i for i, s in enumerate(layout) if s.id == "synthesis")
     assert layout[i + 1].id == "disagreements" and layout[i + 1].kind == "generated"
+
+
+def test_gaps_name_animal_measures_and_human_associations_with_all_their_references():
+    ctx = context([finding('animal', species='mouse', target='IL17A'),
+                   finding('association', 'association'), finding('association2', 'association')])
+    report = report_for(ctx)
+    refs = {r.paper_id: r.number for r in report.references}
+    body = section(report, 'gaps').body_markdown
+    expected_refs = ''.join(f'[{n}]' for n in sorted([refs['association'], refs['association2']]))
+    assert f'No tested effect in humans among the papers read for targets: IL23A {expected_refs}; ' \
+           f'IL17A [{refs["animal"]}].' in body
+    rows = synthesis.synthesis_rows(ctx, ctx.studies)
+    assert {row.basis for row in rows} == {'Animal or cell studies only', 'Associations only'}
+
+
+def test_gaps_word_the_disclosure_for_measures_on_other_question_types():
+    ctx = context([finding('mouse', species='mouse')], question='Does guselkumab treat psoriasis?')
+    report = report_for(ctx)
+    assert ctx.spec.question_type == 'intervention_efficacy'
+    assert 'No tested effect in humans among the papers read for: IL23A [1].' in section(report, 'gaps').body_markdown
+    assert 'for targets:' not in section(report, 'gaps').body_markdown
+
+
+def test_gaps_do_not_claim_missing_human_effects_when_human_studies_tested_them():
+    ctx = context([finding('human'), finding('mouse', species='mouse'), finding('null', 'no_effect', target='IL17A')])
+    report = report_for(ctx)
+    assert 'No tested effect in humans' not in section(report, 'gaps').body_markdown
+
+
+def test_gaps_include_every_measure_beyond_the_synthesis_display_limit():
+    units = [finding(f'p{i}', species='mouse', target=f'Measure{i}') for i in range(15)]
+    ctx = context(units)
+    report = report_for(ctx)
+    assert '5 further measures' in section(report, 'synthesis').body_markdown
+    bullet = next(line for line in section(report, 'gaps').body_markdown.splitlines()
+                  if line.startswith('- No tested effect in humans'))
+    refs = {r.paper_id: r.number for r in report.references}
+    for u in units:
+        assert f'{u.target} [{refs[u.paper_id]}]' in bullet
+
+
+def test_an_animal_only_disagreement_still_has_no_tested_human_effect():
+    ctx = context([finding('benefit', species='mouse'), finding('null', 'no_effect', species='mouse')])
+    report = report_for(ctx)
+    assert 'Basis: **Studies disagree**' in section(report, 'synthesis').body_markdown
+    assert 'No tested effect in humans among the papers read for targets: IL23A [1][2].' in section(report, 'gaps').body_markdown

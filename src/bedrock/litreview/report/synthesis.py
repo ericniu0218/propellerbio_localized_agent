@@ -400,6 +400,12 @@ def section_preference(ctx: "WriteContext"):
                       not claims.attributable(u, ctx.spec, ctx.papers.get(u.paper_id)), not about(u))
 
 
+def _tested_studies(directions: dict[str, set[str]]) -> set[str]:
+    studies = set().union(*directions.values()) if directions else set()
+    return studies - (directions.get("association", set()) - (directions.get("improved", set())
+                      | directions.get("no_effect", set()) | directions.get("worsened", set())))
+
+
 def _level(directions: dict[str, set[str]], tiers: dict[str, str], abstract_only: bool) -> tuple[str, str]:
     """(basis, why) by the written rule in `LEVEL_RULE`: what kind of evidence
     there is, stated as a fact - never a verdict on how good it is.
@@ -410,9 +416,7 @@ def _level(directions: dict[str, set[str]], tiers: dict[str, str], abstract_only
     study counts against only when it reports no benefit at all for this
     measure (two subgroups of one trial going different ways is that trial's
     mixed result)."""
-    studies = set().union(*directions.values()) if directions else set()
-    tested = studies - (directions.get("association", set()) - (directions.get("improved", set())
-                        | directions.get("no_effect", set()) | directions.get("worsened", set())))
+    tested = _tested_studies(directions)
     human = {k for k in tested if tiers.get(k) in HUMAN_TIERS}
     pre = {k for k in tested if tiers.get(k) in ("animal", "cell")}
     rct = {k for k in human if tiers.get(k) == "rct"}
@@ -533,6 +537,15 @@ class SynthesisRow:
     within: set[str]
     basis: str | None
     why: str
+
+    @property
+    def tested_human(self) -> bool:
+        """Human tested effects by the same rule that computes the basis.
+
+        An animal-only disagreement still has no tested human effect, even
+        though its basis says 'Studies disagree' rather than 'Animal only'.
+        """
+        return any(self.tiers.get(k) in HUMAN_TIERS for k in _tested_studies(self.directions))
 
 
 def synthesis_rows(ctx: "WriteContext", studies: dict[str, Study]) -> list[SynthesisRow]:

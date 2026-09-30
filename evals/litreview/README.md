@@ -139,23 +139,104 @@ Then read all 20 as a human and write down every finding that *should* be
 extracted, in the schema from `src/bedrock/litreview/models.py`. Get a scientist to check
 it — ideally the junior scientist Person 3 is already shadowing.
 
+The picking and the paperwork are done by code; the reading is not:
+
+```
+python -m evals.litreview.goldset_sheet corpora-searcher/obesity-treatment-targets
+```
+
+picks the 20 by these quotas from a frozen corpus (seeded, `--seed N`),
+holds 5 back, and writes `evals/litreview/goldset/<corpus>/`: an `index.md`
+saying why each paper was picked, one sheet per paper, and
+`goldset.template.jsonl` with an empty entry per paper. Design and review
+categories come from what the paper says it is (`study_design.py`). The
+negative-result and "mentions but not about" categories code can only
+*propose* - a null-result cue in the abstract, or the exact-entity gate's own
+reason - so their entries say `"kind_confirmed": false` until a person
+confirms them. A corpus short of a category says so in the index; pick those
+from another corpus.
+
 Those last three categories are the whole point. Models are eager to please:
 given a paper showing a drug did not work, a naive prompt returns nothing,
 because "no finding" feels like failure. Given a review, it happily extracts
 the review's summary of someone else's trial as primary evidence. Neither
 failure is visible unless it is in here.
 
+### Labelling the gold set
+
+For the scientist doing the labelling. Open a paper's sheet and its entry in
+`goldset.template.jsonl` side by side. The sheet shows the paper and nothing
+else: exactly the parts the pipeline sends the model, and the methods
+paragraphs sent beside them. It shows nothing the pipeline produced, on
+purpose - seeing the model's answer first makes a labeller agree with it.
+
+**What counts as a finding.** A result *this paper* reports from its own
+experiments or data, about a named molecule, gene or pathway: something was
+changed or measured, and something happened (or did not). One entry per
+sentence and target. For each, fill in:
+
+| Field | What to write |
+|---|---|
+| `quote` | The sentence the result is in, copied exactly from the sheet. It is checked against the paper, so copy, do not retype |
+| `target` | The molecule the paper changed or measured, as the paper names it ("IL-23", "MC4R") |
+| `direction` | `block`, `activate`, or `unclear` |
+| `disease` | The disease or model the result is about |
+| `evidence_type` | `human_clinical`, `human_genetic`, `in_vivo` (animals) or `in_vitro` (cells) |
+| `species` | `human`, `mouse`, `rat`, `cyno`, `cell_line` or `other` |
+| `outcome` | `improved`, `no_effect`, `worsened`, `mixed`, or `association` (a measurement with no intervention) |
+| `n` | The number studied, only if the text shown states it; otherwise `null` |
+| `effect_detail` | A few words on the size of the effect. Not scored |
+
+**Not a finding:** background ("previous studies showed..."), someone else's
+result, an aim or a method ("we investigated..."), a hypothesis or the
+authors' speculation ("may", "could suggest"), and anything in a review.
+**A negative result is a finding**: "did not reduce" is `no_effect`, and
+leaving it out is exactly the mistake the gold set is there to catch. Label
+only what the sheet shows: a part the pipeline does not read cannot be
+extracted.
+
+**No finding expected.** When a paper should yield nothing - every review, a
+paper that is not really about the subject, a paper whose shown text reports
+no result of its own - leave `"findings": []` and set `"none_expected":
+true`. An empty entry without it is read as "not labelled yet", and scoring
+refuses.
+
+**Confirm the proposed kinds.** An entry with `"kind_confirmed": false` was
+proposed by code (`kind_proposed_because` says from what). While reading,
+decide whether it is right; if not, change `kind` to what the paper is. Then
+set `"kind_confirmed": true`.
+
+**Held-back papers.** Five entries say `"holdout": true`, and their sheets
+say "Held back". Label them exactly like the others and do not change the
+flag. Whoever tunes prompts must not open those sheets or entries until the
+end; see below.
+
+When every entry is done, delete the `_comment` line and put the entries in
+`evals/litreview/goldset.jsonl` (replacing the `EXAMPLE-` lines), or point
+`run_extract --goldset` at the file. `run_extract` refuses a set with a
+placeholder, an unconfirmed kind, an empty entry without `none_expected`, a
+review with findings, a quote that is not in the paper, or any value outside
+the schema, and names the line, the paper and the field.
+
 ### Hold five back
 
 Mark 5 papers `"holdout": true` and do not look at them while tuning. Without
 a holdout you will write a prompt that is excellent at fifteen specific papers
 and mediocre at everything else, and you will not find out until a client demo.
+The sheet generator marks one each from trials, animal, in vitro, negative
+and review papers.
 
 ### Running it
 
 ```
-python -m evals.litreview.run_extract
+python -m evals.litreview.run_extract [--goldset PATH] [--models laptop]
+python -m evals.litreview.run_extract --holdout      # once, at the end
 ```
+
+Each paper goes through Stage 5's own `extract_paper`, through the scheduler
+after preflight. Expected and extracted findings are paired by the sentence
+they quote, so a mouse study extracted as a human trial shows up as an
+`evidence_type` error rather than as a miss.
 
 Read the per-field table, not the headline score. "0.84 overall" is not
 actionable; "evidence_type 0.78" tells you the model is confusing in vitro with

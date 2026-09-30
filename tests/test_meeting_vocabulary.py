@@ -230,3 +230,16 @@ def test_an_ordinary_word_gets_one_edit_however_long_the_term():
     assert _match("MYOSTATEN", terms, sentence_initial=False) == "myostatin"  # name-shaped keeps its latitude
     lines, report = correct_texts(["Action item for Ravi.", "the action items"], ", ".join(terms))
     assert lines == ["Action item for Ravi.", "the action items"] and report.corrections == []
+
+
+def test_a_short_configured_name_is_still_repaired_but_an_acronym_is_not():
+    """"Raj" and "Amy" are why people type names into MEETING_VOCABULARY."""
+    from bedrock.meetings.vocabulary import _is_tiny_acronym, _match
+
+    assert _is_tiny_acronym("SAD") and _is_tiny_acronym("tau") and _is_tiny_acronym("MS")
+    assert not _is_tiny_acronym("Raj") and not _is_tiny_acronym("IL-6") and not _is_tiny_acronym("KRAS")
+    terms = ["Raj", "Amy", "SAD", "KRAS"]
+    assert _match("Raja", terms, sentence_initial=False) == "Raj"   # one edit: repaired
+    assert _match("Rash", terms, sentence_initial=False) is None    # two edits on a short name: left alone
+    assert _match("Ami", terms, sentence_initial=False) == "Amy"
+    assert _match("Sam", terms, sentence_initial=False) is None

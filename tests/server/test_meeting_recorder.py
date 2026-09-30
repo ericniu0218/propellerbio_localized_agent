@@ -818,3 +818,143 @@ def test_one_speaker_is_reported_in_the_singular():
     from bedrock.server.meetings.pipeline import _speakers
 
     assert _speakers(1) == "1 speaker was" and _speakers(3) == "3 speakers were"
+
+
+# --- Review of #36 -------------------------------------------------------------
+
+
+def test_redaction_covers_the_english_transcript_and_the_generated_title(monkeypatch):
+    from bedrock.server.meetings.governance import redact_record
+
+    monkeypatch.setenv("MEETING_REDACT_PHI", "true")
+    fields = {
+        "transcript": "Speaker 1: 病人电话是 415-555-0199。",
+        "transcriptEnglish": "Speaker 1: The patient's phone is 415-555-0199.",
+        "title": "Call 415-555-0199 about the patient",
+        "summary": "",
+    }
+    out, summary = redact_record(fields)
+    assert summary.applied
+    assert "415-555-0199" not in out["transcriptEnglish"]
+    assert "415-555-0199" not in out["title"]
+    assert "415-555-0199" not in out["transcript"]
+
+
+def test_the_speaker_note_agrees_with_the_count_after_folding():
+    """The note is written before phantom speakers are folded. It must not
+    say three where the page says two."""
+    from bedrock.server.meetings.pipeline import _speakers
+
+    note = f"{_speakers(3)} identified from the audio. Where people talk over each other"
+    before, after = 3, 2
+    fixed = _speakers(after) + note[len(_speakers(before)):]
+    assert fixed.startswith("2 speakers were identified from the audio.")
+    single = _speakers(1) + note[len(_speakers(before)):]
+    assert single.startswith("1 speaker was identified from the audio.")
+
+
+def test_the_hint_estimate_is_pessimistic_and_keeps_the_front():
+    """whisper keeps the LAST 224 prompt tokens, so an under-estimate would
+    silently drop the Mandarin hint and the most important names."""
+    from bedrock.server.meetings.pipeline import HINT_TOKEN_BUDGET, hint_within_budget, whisper_tokens
+
+    assert whisper_tokens("IL-17A") >= 4
+    assert whisper_tokens("dupilumab") >= 3
+    assert whisper_tokens("以下是普通话的句子。") >= 10
+    pack = ", ".join(["IL-17A", "IL-23p19", "TNF-α", "TSLP", "TYK2"] + [f"drug{i}mab" for i in range(300)])
+    hint = hint_within_budget(pack)
+    assert hint.startswith("IL-17A, IL-23p19")
+    assert sum(whisper_tokens(t) + 1 for t in hint.split(", ")) <= HINT_TOKEN_BUDGET
+    assert HINT_TOKEN_BUDGET + 20 < 224  # room for the Mandarin hint on top
+
+
+def test_a_chinese_title_downloads_instead_of_failing_on_the_header():
+    from starlette.responses import Response
+
+    from bedrock.server.meetings import export
+
+    zh = {**MEETING, "title": "周会：剂量反应研究"}
+    header = export.content_disposition(zh, "txt")
+    Response(b"x", headers={"Content-Disposition": header})  # Latin-1 safe or this raises
+    assert header.startswith('attachment; filename="')
+    assert "filename*=UTF-8''" in header and "%E5%91%A8" in header  # 周, percent-encoded
+    ascii_only = {**MEETING, "title": "KRAS weekly"}
+    assert export.content_disposition(ascii_only, "docx").startswith('attachment; filename="KRAS-weekly.docx"')
+    nothing = {**MEETING, "title": "！！！"}
+    assert 'filename="meeting.vtt"' in export.content_disposition(nothing, "vtt")
+
+
+def test_the_live_preview_does_not_run_a_detection_pass_per_clip(tmp_path, monkeypatch):
+    """Each whisper run loads the model; two per five-second clip would double
+    the preview's latency for nothing a single slice can use."""
+    import bedrock.server.meetings.live as live
+
+    seen = {}
+
+    class FakeTranscriber:
+        def __init__(self, config): seen["language"] = config.language
+        async def to_wav(self, clip, work_dir): return clip
+        async def transcribe_track(self, wav, work_dir): return []
+
+    import bedrock.meetings.transcribe as transcribe_module
+    monkeypatch.setattr(transcribe_module, "WhisperTranscriber", FakeTranscriber)
+    import asyncio
+    asyncio.run(live.transcribe_clip(tmp_path / "clip.webm", _config(tmp_path, language="detect"), tmp_path / "w"))
+    assert seen["language"] == "auto"
+    asyncio.run(live.transcribe_clip(tmp_path / "clip.webm", _config(tmp_path, language="zh"), tmp_path / "w"))
+    assert seen["language"] == "zh"
+
+
+def test_renaming_a_speaker_also_renames_the_english_transcript():
+    import inspect
+
+    from bedrock.server.meetings import routes
+
+    source = inspect.getsource(routes.rename_speakers)
+    assert '"transcriptEnglish"' in source
+
+
+def test_a_pack_path_that_is_a_directory_or_unreadable_is_skipped(tmp_path, monkeypatch):
+    from bedrock.server.meetings.vocabulary_source import from_packs
+
+    (tmp_path / "biotech").mkdir()          # a directory named like the pack
+    monkeypatch.chdir(tmp_path)
+    terms = from_packs("biotech")
+    assert len(terms) > 400                 # the bundled pack was used, not the directory
+    unreadable = tmp_path / "secret.txt"
+    unreadable.write_text("KRAS\n"); unreadable.chmod(0)
+    try:
+        assert from_packs(str(unreadable)) == []
+    finally:
+        unreadable.chmod(0o644)
+
+
+def test_a_misconfigured_mandarin_model_path_is_a_readiness_issue(tmp_path, monkeypatch):
+    (tmp_path / "ggml-large-v3-turbo.bin").write_bytes(b"x")
+    (tmp_path / "vad.bin").write_bytes(b"x")
+    monkeypatch.setenv("MEETING_SPEECH_MODEL_ZH", str(tmp_path / "typo.bin"))
+    cfg = _config(tmp_path, speech_model=tmp_path / "ggml-large-v3-turbo.bin", speech_model_zh=tmp_path / "typo.bin")
+    assert any("MEETING_SPEECH_MODEL_ZH" in i for i in readiness_issues(cfg))
+    monkeypatch.delenv("MEETING_SPEECH_MODEL_ZH")
+    assert not any("MEETING_SPEECH_MODEL_ZH" in i for i in readiness_issues(cfg))  # default: use if present
+
+
+def test_the_vocabulary_endpoint_separates_the_hint_from_the_repair_list(monkeypatch):
+    from bedrock.server.meetings import routes
+
+    monkeypatch.setenv("MEETING_VOCABULARY_PACK", "biotech")
+    monkeypatch.setenv("MEETING_VOCABULARY", "Priya")
+    monkeypatch.delenv("MEETING_VOCABULARY_AUTO", raising=False)
+
+    class Store:
+        def list(self, user, kind): return []
+    monkeypatch.setattr(routes, "store", lambda: Store())
+    answer = routes.vocabulary(user={"id": "u"})
+    assert answer["inUse"][0] == "Priya" and len(answer["inUse"]) > 400
+    assert answer["decoderHint"][0] == "Priya" and 20 < len(answer["decoderHint"]) < 120
+
+
+def test_the_word_export_survives_an_empty_caveat():
+    from bedrock.server.meetings import export
+
+    assert export.as_docx({**MEETING, "caveats": ["", "  ", "Real note."]})

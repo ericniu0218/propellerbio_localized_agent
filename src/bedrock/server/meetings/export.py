@@ -116,8 +116,9 @@ def as_docx(meeting: dict, english: bool = False) -> bytes:
     doc.add_heading(title, level=1)
     doc.add_paragraph(facts)
     for note in meeting.get("caveats") or []:
-        p = doc.add_paragraph(note)
-        p.runs[0].italic = True
+        if not (note or "").strip():
+            continue
+        doc.add_paragraph().add_run(note).italic = True
     for label, items in _notes(meeting):
         doc.add_heading(label, level=2)
         for item in items:
@@ -141,8 +142,22 @@ def as_docx(meeting: dict, english: bool = False) -> bytes:
 
 
 def filename(meeting: dict, fmt: str) -> str:
-    stem = re.sub(r"[^A-Za-z0-9一-鿿]+", "-", meeting.get("title") or "meeting").strip("-")[:80] or "meeting"
+    """The real name, which may be Chinese; ``content_disposition`` deals
+    with the header's Latin-1 limit."""
+    raw = meeting.get("title") or "meeting"
+    stem = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "-", raw).strip("-")[:80] or "meeting"
     return f"{stem}.{fmt}"
+
+
+def content_disposition(meeting: dict, fmt: str) -> str:
+    """HTTP headers are Latin-1, so a Chinese title in a bare ``filename=``
+    raised UnicodeEncodeError and the download was a 500. RFC 5987: an
+    ASCII fallback in ``filename=`` and the real name in ``filename*=``."""
+    from urllib.parse import quote
+
+    name = filename(meeting, fmt)
+    ascii_stem = re.sub(r"[^A-Za-z0-9\-]+", "-", name[: -len(fmt) - 1]).strip("-") or "meeting"
+    return f'attachment; filename="{ascii_stem}.{fmt}"; filename*=UTF-8\'\'{quote(name)}'
 
 
 def render(meeting: dict, fmt: str, english: bool = False) -> tuple[bytes, str]:

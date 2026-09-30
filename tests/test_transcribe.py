@@ -903,3 +903,13 @@ async def test_the_decided_language_picks_the_checkpoint(tmp_path):
     gone = replace(config, models_by_language={"zh": tmp_path / "missing.bin"})
     await WhisperTranscriber(gone, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w3")
     assert _whisper_command(runner)[_whisper_command(runner).index("-m") + 1] == str(config.model)
+
+
+def test_a_real_one_word_answer_is_never_a_reflex():
+    """"Shall we proceed?" — "Okay." A decision can hang on that word."""
+    from bedrock.meetings.transcribe import looks_hallucinated
+
+    for word in ("Okay.", "So.", "Hmm.", "Yes.", "No.", "Sure."):
+        assert not looks_hallucinated([word], 1200), word
+    assert looks_hallucinated(["you"], 1200)
+    assert looks_hallucinated(["Thank you."], 1200)

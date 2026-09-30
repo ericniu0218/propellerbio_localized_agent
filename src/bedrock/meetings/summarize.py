@@ -513,6 +513,32 @@ def needs_translation(text: str) -> bool:
     return cjk >= 2 and cjk >= count_words(text) / 2
 
 
+TRANSLATE_BATCH_TOKENS = 900
+
+
+def _translation_batches(cues: list[Cue], wanted: list[int]) -> list[list[int]]:
+    """Groups of cue indices small enough to translate in one reply: at most
+    ``TRANSLATE_BATCH`` lines and about ``TRANSLATE_BATCH_TOKENS`` of input.
+    Chinese is dense in tokens, so a 24-second window of it can be a hundred
+    tokens on its own."""
+    batches: list[list[int]] = []
+    current: list[int] = []
+    used = 0
+    for index in wanted:
+        # The general estimate is tuned for English; a CJK character is one
+        # or two tokens on its own, so they are counted on top.
+        text = cues[index].text
+        cost = estimate_tokens(text) + len(_CJK_CHAR.findall(text)) + 4
+        if current and (len(current) >= TRANSLATE_BATCH or used + cost > TRANSLATE_BATCH_TOKENS):
+            batches.append(current)
+            current, used = [], 0
+        current.append(index)
+        used += cost
+    if current:
+        batches.append(current)
+    return batches
+
+
 async def translate_cues(scheduler: Scheduler, model: str, cues: list[Cue]) -> dict[int, str]:
     """English for every cue that was spoken in Chinese, Japanese or Korean.
 
@@ -522,13 +548,18 @@ async def translate_cues(scheduler: Scheduler, model: str, cues: list[Cue]) -> d
     line whose translation cannot be matched back by number is left without
     one rather than guessed.
     """
+    import asyncio
+
     wanted = [i for i, cue in enumerate(cues) if needs_translation(cue.text)]
     out: dict[int, str] = {}
-    for start in range(0, len(wanted), TRANSLATE_BATCH):
-        batch = wanted[start:start + TRANSLATE_BATCH]
+
+    async def translate(batch: list[int]) -> None:
         numbered = "\n".join(f"{n + 1}. {cues[i].text}" for n, i in enumerate(batch))
+        # English runs longer than Chinese in tokens; a fixed per-line budget
+        # cut off batches of long lines and those lines silently lost their
+        # English. Twice the input plus headroom is never the limit.
         reply = await _complete(scheduler, model, _TRANSLATE_PROMPT.format(lines=numbered),
-                                reply_tokens=max(256, 40 * len(batch)))
+                                reply_tokens=2 * (estimate_tokens(numbered) + len(_CJK_CHAR.findall(numbered))) + 200)
         for line in reply.splitlines():
             match = _NUMBERED.match(line)
             if not match:
@@ -536,6 +567,11 @@ async def translate_cues(scheduler: Scheduler, model: str, cues: list[Cue]) -> d
             n = int(match.group(1)) - 1
             if 0 <= n < len(batch) and match.group(2):
                 out[batch[n]] = match.group(2)
+
+    # The batches are independent, so they go to the scheduler together and
+    # it decides the order; an hour of Mandarin is thirty of them, and one
+    # after another they kept a job at "Writing notes" for most of that.
+    await asyncio.gather(*(translate(batch) for batch in _translation_batches(cues, wanted)))
     # A line the model half-translated — "the CRAS-G12-D对照实验 experiment" —
     # gets one more try on its own, where there is nothing else to distract
     # it. If it is still mixed, it is kept: half is more use than none.

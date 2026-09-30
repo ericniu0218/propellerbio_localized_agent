@@ -70,7 +70,7 @@ _TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 # A cue's timing line, which must never be rewritten.
 _TIMING = re.compile(r"-->")
 
-_INFLECTIONS = ("s", "es", "ed", "ing", "'s")
+_INFLECTIONS = ("s", "es", "ed", "ing", "'s", "ly", "er", "est")
 
 
 @dataclass
@@ -137,8 +137,12 @@ def _is_sentence_initial(text: str, start: int) -> bool:
 
 
 def _is_inflection(token: str, term: str) -> bool:
+    """Either is the other plus an ordinary ending: "cohorts" beside "cohort",
+    and — the other way round — "week" beside a harvested "Weekly". A repair
+    turned two spoken "next week"s into "next Weekly" before the second
+    direction was checked."""
     lowered, base = token.casefold(), term.casefold()
-    return any(lowered == base + suffix for suffix in _INFLECTIONS)
+    return any(lowered == base + suffix or base == lowered + suffix for suffix in _INFLECTIONS)
 
 
 # Words that are never a mis-hearing of anything, however close they look.

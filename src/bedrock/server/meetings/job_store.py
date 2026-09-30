@@ -57,6 +57,12 @@ class PersistedJob:
     expected_speakers: int | None = None
     consent: dict | None = None
     access_groups: list[str] | None = None
+    language: str | None = None
+    """The language chosen in the Record dialog, kept so a job resumed after a
+    restart is transcribed in the language it was recorded in rather than the
+    server's default. None means the server default, as before."""
+    auto_title: bool = False
+    """Nobody named this meeting, so it is named from its notes."""
     attempts: int = 0
 
 
@@ -93,6 +99,8 @@ class RecordingJobStore:
                 "expected_speakers": job.expected_speakers,
                 "consent": job.consent,
                 "access_groups": job.access_groups,
+                "language": job.language,
+                "auto_title": job.auto_title,
             }
         )
         with self._db() as db:

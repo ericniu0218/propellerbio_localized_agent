@@ -54,6 +54,8 @@ _NOT_JARGON = frozenset(
     morning afternoon evening tonight meeting meetings agenda minutes action
     actions decision decisions update updates project projects team teams
     google zoom slack email report reports review reviews number numbers
+    weekly daily monthly quarterly annual biweekly sync standup kickoff
+    week weeks month months year years quarter quarters
     because before after during while there their about would could should
     something anything everything nothing someone everyone another""".split()
 )
@@ -151,5 +153,11 @@ def suggest(meetings: list[dict], corpus_dir: Path | None = None) -> list[str]:
 
 
 def auto_enabled() -> bool:
-    """Whether suggestions are fed to the decoder without anyone approving them."""
-    return os.environ.get("MEETING_VOCABULARY_AUTO", "false").lower() == "true"
+    """Whether suggestions are fed to the decoder without anyone approving them.
+
+    On by default since the recorder was asked to need as little typing as
+    possible: the terms come from this workspace's own earlier meetings, so
+    they are words these people actually say. `MEETING_VOCABULARY_AUTO=false`
+    turns it off for a deployment that wants every term approved.
+    """
+    return os.environ.get("MEETING_VOCABULARY_AUTO", "true").lower() not in ("false", "0", "no", "off")

@@ -11,9 +11,9 @@
 #
 # One-time setup:
 #   brew install whisper-cpp ffmpeg ollama
-#   brew services start ollama && ollama pull llama3.1:8b
+#   brew services start ollama && ollama pull qwen2.5:14b   # notes; llama3.1:8b also works
 #   mkdir -p ~/.cache/whisper-models && cd ~/.cache/whisper-models
-#   curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+#   curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
 #   curl -LO https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 #
 # Note the VAD model is in a *different* Hugging Face repo from the speech
@@ -34,7 +34,15 @@ for tool in whisper-cli whisper-vad-speech-segments ffmpeg ffprobe; do
   command -v "$tool" >/dev/null || MISSING+=("$tool")
 done
 MODEL_DIR="${MEETING_MODEL_DIR:-$HOME/.cache/whisper-models}"
-[ -f "$MODEL_DIR/ggml-small.en.bin" ] || MISSING+=("$MODEL_DIR/ggml-small.en.bin")
+# The multilingual model is the one to have; the English-only one from before
+# the model change still runs, so it is accepted, and the server says which.
+[ -f "$MODEL_DIR/ggml-large-v3-turbo.bin" ] || [ -f "$MODEL_DIR/ggml-small.en.bin" ] \
+  || MISSING+=("$MODEL_DIR/ggml-large-v3-turbo.bin")
+if [ ! -f "$MODEL_DIR/ggml-large-v3-turbo.bin" ] && [ -f "$MODEL_DIR/ggml-small.en.bin" ]; then
+  echo "Note: only the English-only speech model is installed. Accented English and"
+  echo "other languages need ggml-large-v3-turbo.bin — see this script's header."
+  echo
+fi
 [ -f "$MODEL_DIR/ggml-silero-v5.1.2.bin" ] || MISSING+=("$MODEL_DIR/ggml-silero-v5.1.2.bin")
 if [ ${#MISSING[@]} -gt 0 ]; then
   echo "Cannot transcribe recordings yet. Missing:"
@@ -45,7 +53,15 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 OLLAMA_URL="${MEETING_SUMMARY_ENDPOINT:-http://localhost:11434/v1}"
-SUMMARY_MODEL="${MEETING_SUMMARY_MODEL:-llama3.1:8b}"
+# The notes model. Qwen 2.5 14B when it is pulled: on a real recording its
+# brief kept every specific and it extracts decisions and actions from a
+# Mandarin transcript that llama3.1:8b returns nothing for. Otherwise the
+# 8B llama, which every earlier install has.
+if [ -z "${MEETING_SUMMARY_MODEL:-}" ] && curl -s -m 3 "${OLLAMA_URL%/v1}/api/tags" | grep -q '"qwen2.5:14b"'; then
+  SUMMARY_MODEL="qwen2.5:14b"
+else
+  SUMMARY_MODEL="${MEETING_SUMMARY_MODEL:-llama3.1:8b}"
+fi
 if ! curl -s -m 3 "${OLLAMA_URL%/v1}/api/tags" | grep -q "\"$SUMMARY_MODEL\""; then
   echo "Warning: $SUMMARY_MODEL is not available at $OLLAMA_URL."
   echo "Recordings will still be transcribed; the notes will fall back to computed"

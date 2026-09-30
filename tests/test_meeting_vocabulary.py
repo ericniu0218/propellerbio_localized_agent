@@ -179,3 +179,25 @@ def test_other_common_short_words_near_names_are_safe():
     for word, term in [("well", "Will"), ("man", "Max"), ("name", "Dane"), ("class", "Clara")]:
         texts, _ = correct_texts([f"the {word} was there"], term)
         assert word in texts[0], f"{word} was corrupted into {term}"
+
+
+def test_a_word_is_not_replaced_by_a_term_that_is_merely_its_inflection():
+    """Harvested vocabulary is full of capitalised ordinary words — "Weekly"
+    from every meeting title — and "week" is not a mis-hearing of it."""
+    from bedrock.meetings.vocabulary import _match, correct_texts
+
+    assert _match("week", ["Weekly"], sentence_initial=False) is None
+    assert _match("cohorts", ["cohort"], sentence_initial=False) is None
+    assert _match("Kras", ["KRAS"], sentence_initial=False) is None
+    lines, report = correct_texts(["See you next week.", "the cohorts were enrolled"], "Weekly, cohort")
+    assert lines == ["See you next week.", "the cohorts were enrolled"]
+    assert report.corrections == []
+
+
+def test_the_harvester_leaves_calendar_words_alone():
+    from bedrock.server.meetings.vocabulary_source import harvest
+
+    texts = ["KRAS research Weekly", "KRAS Weekly notes", "the Weekly sync on KRAS G12D"]
+    terms = [term for term, _ in harvest(texts, minimum=2)]
+    assert "KRAS" in terms
+    assert "Weekly" not in terms

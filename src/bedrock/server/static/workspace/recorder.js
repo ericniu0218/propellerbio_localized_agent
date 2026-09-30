@@ -157,6 +157,15 @@
           );
         }
         this.streams.push(mic);
+        // No compressor or makeup gain here, and that is measured. A pass
+        // that squeezed the microphone 4:1 above -40 dB and doubled it was
+        // meant to lift the far end of the table; on a real library recording
+        // it lifted the room instead — a steady -23 dB noise floor with speech
+        // only 8 dB above it, and whisper decoding the noise as words. A
+        // compressor narrows exactly the gap between speech and the silence
+        // around it that recognition depends on. Room mode's automatic gain
+        // (above) already brings a quiet voice up, and it does so slowly
+        // enough to leave the pauses alone.
         context.createMediaStreamSource(mic).connect(destination);
         sourceCount += 1;
       }
@@ -326,7 +335,7 @@
     }
   }
 
-  function upload({ blob, startedAt, mime, title, projectId, notes, minimumSpeakers, consentConfirmed, participants, liveSessionId, durationSeconds, onProgress }) {
+  function upload({ blob, startedAt, mime, title, projectId, notes, minimumSpeakers, consentConfirmed, participants, liveSessionId, durationSeconds, language, onProgress }) {
     const form = new FormData();
     form.append("audio", blob, "recording" + extensionFor(mime));
     form.append("title", title || "");
@@ -338,6 +347,7 @@
     form.append("consentConfirmed", consentConfirmed ? "true" : "false");
     if (participants) form.append("participants", participants);
     if (liveSessionId) form.append("liveSessionId", liveSessionId);
+    if (language) form.append("language", language);
 
     // XHR rather than fetch: an hour of audio is a real upload and the person
     // deserves a progress bar, which fetch cannot report.

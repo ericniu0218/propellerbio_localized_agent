@@ -1210,3 +1210,84 @@ async def test_notes_too_long_for_the_window_are_refused_plainly():
     assert any("too long to rewrite" in notice for notice in summary.notices)
     assert len(backend.prompts) == 1  # only the extraction pass was sent
     assert "too long to rewrite" in summary.render()
+
+
+def test_the_extraction_prompt_covers_everyday_task_language_and_writes_english():
+    """The requests that make up most real action items are never announced as
+    "action item". The prompt has to name them, and the notes have to come out
+    in English whatever was spoken, with the quote left in the original."""
+    from bedrock.meetings.summarize import _EXTRACT_PROMPT, _OVERVIEW_PROMPT
+
+    prompt = _EXTRACT_PROMPT.format(transcript="x")
+    for phrase in ("Can you send me", "Will do", "loop in", "I'll follow up", "Sending an email"):
+        assert phrase in prompt
+    assert "in English whatever language" in prompt
+    assert "never translated" in prompt
+    assert "in English whatever language" in _OVERVIEW_PROMPT.format(transcript="x")
+
+
+def test_chinese_is_counted_by_character_not_by_space():
+    """Splitting on whitespace made a Mandarin meeting one word per sentence,
+    which put it under the floor below which no overview is written."""
+    from bedrock.meetings.transcript import count_words
+
+    assert count_words("the controls came back clean") == 5
+    assert count_words("大家早上好，我们开始今天的周会。") == 14
+    assert count_words("第一项是KRAS G12D对照实验的结果") == 11 + 2
+    assert count_words("") == 0
+    assert count_words("   ") == 0
+
+    cues = parse_vtt("WEBVTT\n\n1\n00:00:00.000 --> 00:00:05.000\n大家早上好，我们开始今天的周会。\n")
+    assert word_count(cues) == 14
+
+
+def test_a_title_reply_is_cleaned_or_refused():
+    from bedrock.meetings.summarize import clean_title
+
+    assert clean_title("KRAS G12D control assay review") == "KRAS G12D control assay review"
+    assert clean_title('"Dose response study kickoff."') == "Dose response study kickoff"
+    assert clean_title("Title: Sequencing delay and antibody order\n\nThe meeting covered...") == "Sequencing delay and antibody order"
+    assert clean_title("**Weekly KRAS sync**") == "Weekly KRAS sync"
+    assert clean_title("Meeting about the assay") is None
+    assert clean_title("This meeting was a weekly review of the KRAS program and its many open questions") is None
+    assert clean_title("") is None
+    assert clean_title("\n  \n") is None
+
+
+async def test_a_blank_name_is_replaced_from_the_notes_but_only_when_there_are_some():
+    from bedrock.meetings.summarize import MeetingSummary, Point, compute_facts, suggest_title
+
+    facts = compute_facts(parse_vtt(VTT), title="Meeting — 28 Sep 2026, 21:00")
+
+    class Scheduler:
+        def __init__(self, reply): self.reply = reply; self.prompts = []
+        async def complete(self, model, messages, priority=None, options=None):
+            self.prompts.append(messages[0]["content"]); return self.reply
+
+    summary = MeetingSummary(facts=facts, overview="The group reviewed the G12D control assay and agreed to start the dose response study on Monday.")
+    summary.actions = [Point(text="Order the EGFR antibody before Thursday", owner="Ravi")]
+    scheduler = Scheduler("Dose response study go-ahead")
+    assert await suggest_title(scheduler, "m", summary) == "Dose response study go-ahead"
+    assert "Order the EGFR antibody" in scheduler.prompts[0]
+
+    thin = MeetingSummary(facts=facts, overview="Test.")
+    scheduler = Scheduler("Anything")
+    assert await suggest_title(scheduler, "m", thin) is None
+    assert scheduler.prompts == []
+
+
+def test_a_bullet_that_describes_the_recording_goes_and_so_does_an_empty_one():
+    """Seen on a real recording: the brief was a list whose first bullet
+    described the recording and whose second was a bare dash."""
+    from bedrock.meetings.summarize import clean_overview
+
+    brief = ("- This is a conversation between two students who are studying together in a library.\n"
+             "\n-\n- They have a lab meeting on Friday from 3:00 to 6:00 p.m.\n"
+             "- They made plans to check in later.")
+    assert clean_overview(brief) == (
+        "- They have a lab meeting on Friday from 3:00 to 6:00 p.m.\n- They made plans to check in later."
+    )
+    # A bullet about the content that happens to start with "this" stays.
+    assert clean_overview("Weekly sync.\n\n- This assay needs a repeat.\n- Site four needs a coordinator.") == (
+        "Weekly sync.\n\n- This assay needs a repeat.\n- Site four needs a coordinator."
+    )

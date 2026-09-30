@@ -170,8 +170,8 @@ class Settings:
     mailbox: it travels with every query."""
     entailment_check: bool = False
     """Run the optional local entailment check in Stage 7
-    (`report/entailment.py`). Off by default: it is unmeasured, and a false
-    drop loses real evidence."""
+    (`report/entailment.py`). Off by default: no scientist has yet checked
+    what it drops, and a false drop loses real evidence."""
     integrity_checks: str = "auto"
     """`auto`: each new review asks PubMed and Crossref about retractions and
     other notices for its papers (identifiers only). `manual`: only

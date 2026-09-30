@@ -1,5 +1,5 @@
 """The entailment check — an optional, local, model-based second look at a
-report sentence, after the citation guard. OFF BY DEFAULT, AND UNMEASURED.
+report sentence, after the citation guard. OFF BY DEFAULT.
 
 Why it exists. The citation guard (`report/guard.py`) is code, and its checks
 are word-level: a number, a name or a who-was-studied word the cited text does
@@ -16,10 +16,20 @@ How it is wired, and why each choice:
 - It runs in Stage 7 (`stages/s7_write.write_section_text`), once per sentence
   the guard KEPT, never on one the guard dropped: the guard's code checks come
   first and are never overruled by a model, only added to.
-- It sees the paper's own words a reader sees beside the sentence -
-  `guard.source_text` of each cited finding (quote, context sentence,
-  qualifying next sentence) - and the finding's "about" name, which the writer
-  saw too. Never `effect_detail` or any other model-written summary.
+- It sees the paper's own words a reader sees beside the sentence, and the
+  finding's "about" name, which the writer saw too; never `effect_detail` or
+  any other model-written summary. The quote is shown APART from the
+  sentences beside it (the context sentence, the qualifying next sentence,
+  the naming sentence), each labelled with its role, and the model is told
+  that a sentence's main claim must be stated in a quote: the others may add
+  a name, who was studied, a sample size or a limit, never the claim. This is guard check 10 (`guard.rests_on_quote`)
+  asked as a question of meaning. Prompt version 1 showed all four sentences
+  as one passage, so a sentence copied from a finding's qualifier while
+  citing a quote about something else - OPEN_ISSUES #3, the failure class the
+  second hand audit found - was "supported": every word of it really is the
+  paper's. Check 10 catches that shape by counting words, against a tuned
+  threshold; this is the second look behind it, for a sentence that rewords
+  the borrowed sentence enough to get past the count.
 - One structured call per sentence: JSON schema, temperature 0, through the
   run's own client - `SchedulerClient` at `Priority.USER_JOB` behind the call
   cache - on the model `models.yaml` pins for the `entail` job, with its own
@@ -29,10 +39,12 @@ How it is wired, and why each choice:
 - Code decides what an answer does:
     supported       kept
     partial         kept, and counted (`sentences_entailment_partial` in the
-                    report's stats). Not marked on the sentence: an unmeasured
-                    small model's "partial" is not something to show a reader
-                    as a finding about the sentence, and a new field on
-                    `Sentence` would change every stored report's bytes
+                    report's stats). Not marked on the sentence: a small
+                    model's "partial" is not something to show a reader as a
+                    finding about the sentence (on the hand audit, 35 of 105
+                    sentences moved between "supported" and "partial" when
+                    only the prompt changed), and a new field on `Sentence`
+                    would change every stored report's bytes
     not_supported   dropped, reason "the entailment check found the cited
     contradicted    text does not support it: <the model's reason>"
   A call that fails (a malformed reply, a cut-off answer) leaves the sentence
@@ -45,12 +57,18 @@ How it is wired, and why each choice:
   re-runs the guard over KEPT sentences only - never needs the model and
   never disagrees with the run: it simply does not see those sentences.
 
-Why off by default: a false drop loses real evidence, and nobody has yet
-measured how often this check is wrong. `evals/litreview/entailment_agreement.py`
-compares its verdicts with the strong judge's on stored reports; it stays off
-until that and a scientist's review say it can be trusted. Turn it on with
-`entailment_check = true` in the `[litreview]` table of
-`~/.config/bedrock/config.toml`, or `BEDROCK_LITREVIEW_ENTAILMENT_CHECK=1`.
+Why off by default: a false drop loses real evidence. Two tools measure it.
+`evals/litreview/entailment_audit.py` compares its verdicts with the hand
+audits (105 graded sentences, including every OPEN_ISSUES #3 case), and
+`evals/litreview/entailment_agreement.py` with the strong judge on stored
+benchmark reports; `docs/litreview/BENCHMARK_RESULTS.md` has the numbers. On
+the laptop model (qwen3:8b, 30 September 2026) it dropped none of the hand
+audit's 93 faithful sentences and 2 of its 12 unfaithful ones, and none of
+the five OPEN_ISSUES #3 cases: safe on that sample, but it adds little. It
+stays off until a scientist has marked the sentences it drops (the audit
+tool's `--sheet`) and it has been measured on the office model. Turn it on with `entailment_check = true` in the
+`[litreview]` table of `~/.config/bedrock/config.toml`, or
+`BEDROCK_LITREVIEW_ENTAILMENT_CHECK=1`.
 """
 
 from __future__ import annotations
@@ -64,7 +82,6 @@ from pydantic import BaseModel, ValidationError
 
 from bedrock.litreview.llm import LLMError, ask_json, load_prompt, strict_schema
 from bedrock.litreview.models import EvidenceUnit
-from bedrock.litreview.report.guard import source_text
 
 log = logging.getLogger(__name__)
 
@@ -105,13 +122,32 @@ class EntailmentVerdict:
         return DROP_REASON + (self.reason or self.label or "no reason given")
 
 
+#: The sentences shown beside a quote (`guard._shown`), in the order a reader
+#: meets them, each with the name the prompt gives its role. They may give a
+#: sentence a name, who was studied, a sample size or a limit; its claim must
+#: come from the quote.
+BESIDE = (
+    ("context", "context_quote"),
+    ("next sentence", "qualifier_quote"),
+    ("naming sentence", "naming_quote"),
+)
+
+
 def evidence_text(cited: dict[str, EvidenceUnit]) -> str:
-    """The paper's text the model is shown: per cited finding, its short id,
-    what it is about, and `guard.source_text` - the same words the guard
-    checks and the reader sees."""
-    return "\n".join(
-        f'[{sid}] about: {u.target_raw or u.target}\n    "{source_text(u)}"' for sid, u in cited.items()
-    )
+    """The paper's text the model is shown, per cited finding: its short id,
+    what it is about, the quote, and then the other sentences a reader sees
+    beside it, each labelled with its role. Apart rather than joined, because
+    the prompt asks whether the sentence's claim is in a quote, and a model
+    shown one run-on passage cannot tell (OPEN_ISSUES #3)."""
+    blocks = []
+    for sid, u in cited.items():
+        lines = [f"[{sid}] about: {u.target_raw or u.target}", f'    Quote: "{u.quote}"']
+        beside = [(role, getattr(u, name)) for role, name in BESIDE if getattr(u, name)]
+        if beside:
+            lines.append("    Shown beside the quote, for names, who was studied, a sample size or a limit only:")
+            lines += [f'    - {role}: "{text}"' for role, text in beside]
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
 
 
 def _one_line(text: str) -> str:

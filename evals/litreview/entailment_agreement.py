@@ -5,8 +5,9 @@
         --models laptop
 
 The entailment check (`src/bedrock/litreview/report/entailment.py`) is off by
-default because nobody has measured it, and a check that drops a sentence the
-paper really supports loses real evidence. This is the measurement. For every
+default until it has been measured and a scientist has checked what it drops:
+a check that drops a sentence the paper really supports loses real evidence.
+This is one of its two measurements; `entailment_audit.py` is the other. For every
 kept sentence of a stored report it asks two questions of the same sentence
 and the same cited findings:
 
@@ -20,9 +21,14 @@ and the same cited findings:
   entailment   the check's verdict, from `EntailmentCheck.check` - the very
                code Stage 7 runs - on the local model, through bedrock's
                scheduler and the call cache, like the benchmark. It is shown
-               what Stage 7 shows it (`guard.source_text`), which also carries
-               a finding's qualifying next sentence; the judge's evidence
-               (quote and context sentence) does not
+               what Stage 7 shows it (`entailment.evidence_text`): each
+               finding's quote, and apart from it, labelled, the context, next
+               and naming sentences. The judge is shown the same sentences as
+               one passage, and a claim verbatim anywhere in them is settled
+               "supported" in code, so a sentence copied from beside a quote
+               that says something else (OPEN_ISSUES #3) is "supported" to the
+               judge by construction. `entailment_audit.py` measures the check
+               against the hand audit, which can see that
 
 and prints a confusion matrix of the two, folded to three classes:
 
@@ -39,9 +45,9 @@ truth; a scientist's review of the disagreements is the other half of the
 measurement before the check is switched on anywhere.
 
 The stored report is all this needs. It carries each finding's quote, context
-sentence and qualifier - the paper's own text at recorded offsets, which the
-integrity check proved when the report was written - and those are exactly
-what both the judge and the check are shown.
+sentence, qualifier and naming sentence - the paper's own text at recorded
+offsets, which the integrity check proved when the report was written - and
+those are exactly what both the judge and the check are shown.
 
 Tests drive `compare` and `format_table` with `FakeLLMClient`; nothing here
 needs a model except `main`.

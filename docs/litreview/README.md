@@ -453,16 +453,23 @@ References follow the reading view; the evidence table and audit trail are
 in the Appendix. These additions make no model calls and add no fields to
 stored report or evidence models; existing runs keep their recorded bytes.
 
-#### Optional: the entailment check (off by default, not yet measured)
+#### Optional: the entailment check (off by default, not yet checked by a scientist)
 
 The guard's direction and negation checks are word-level: they cannot tell
 whether a reworded sentence means what its quote means
-([OPEN_ISSUES.md](OPEN_ISSUES.md) #10).
+([OPEN_ISSUES.md](OPEN_ISSUES.md) #5).
 [`report/entailment.py`](../../src/bedrock/litreview/report/entailment.py)
 adds one narrow question for the local model, asked of every sentence the
-guard kept: does the paper's text it cites (quote, context sentence,
-qualifying next sentence) support it fully, partially, not at all, or say
-the opposite? `not_supported` and `contradicted` drop the sentence ("the
+guard kept: does the quote it cites support it fully, partially, not at all,
+or say the opposite? The model is shown each cited quote apart from the
+sentences shown beside it (context, next sentence, naming sentence), each
+labelled with its role, and told that the sentence's main claim must be in a
+quote: the others may add a name, who was studied, a sample size or a limit.
+Prompt version 1 showed all four as one passage, so a sentence copied from a
+finding's next or naming sentence while citing a quote that says something
+else ([OPEN_ISSUES.md](OPEN_ISSUES.md) #3) was "supported"; guard check 10
+catches that shape by counting words, and this is the meaning-level look
+behind it. `not_supported` and `contradicted` drop the sentence ("the
 entailment check found the cited text does not support it: ..."); `partial`
 keeps it and is counted in the report's stats; a failed call keeps it. Like
 every other call it is structured, at temperature 0, cached, through the
@@ -476,13 +483,27 @@ on records `entail` in its model and prompt versions.
 entailment_check = true        # or BEDROCK_LITREVIEW_ENTAILMENT_CHECK=1
 ```
 
-**Leave it off.** Nobody has measured how often it is wrong, and a check that
-drops a sentence the paper really supports loses real evidence. It stays off
-until its verdicts have been compared with the strong judge's
-(`python -m evals.litreview.entailment_agreement <report.json> ... --models <set>`
-prints the confusion matrix and lists every sentence it would drop that the
-judge supports) and a scientist has reviewed the disagreements. With it off,
-a report is byte-identical to one written before the check existed.
+**Leave it off.** A check that drops a sentence the paper really supports
+loses real evidence. Two tools measure it, and
+[BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) has their numbers:
+
+- `python -m evals.litreview.entailment_audit --models <set> [--rows OUT.jsonl]
+  [--before EARLIER.jsonl] [--sheet OUT.md]` compares it with the hand audits
+  (105 graded sentences, every OPEN_ISSUES #3 case among them). It needs only
+  this repository and a model. `--before` lists every sentence whose verdict
+  changed since an earlier run; `--sheet` writes what the check would drop,
+  for a scientist to mark right or wrong.
+- `python -m evals.litreview.entailment_agreement <report.json> ... --models
+  <set>` compares it with the strong judge on stored benchmark reports. The
+  judge sees a quote and the sentences beside it as one passage, so it cannot
+  see the #3 class; that is what the hand audit is for.
+
+Measured on the laptop model (qwen3:8b, 30 September 2026) it dropped none of
+the hand audit's 93 faithful sentences and 2 of its 12 unfaithful ones, and
+none of the five #3 cases: safe on that sample, but it adds little there. It
+stays off until a scientist has marked the sheet and it has been measured on
+the office model. With it off, a report is byte-identical to one written
+before the check existed.
 
 ### Stage 8 — Render
 

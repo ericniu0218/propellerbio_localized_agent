@@ -263,6 +263,17 @@ What is left:
      E189, `kept: true`, no drop reason, where before it was dropped for the
      hedge. The hedge reason appears zero times in the report, and
      `sentences_kept` is 32 against 31.
+   - *A second look behind check 10* (FRONTIER_LITREVIEW.md task C). Check 10
+     is a word count against a tuned threshold, so a sentence that rewords the
+     borrowed sentence enough can pass it. The optional entailment check (#5)
+     now asks the same question by meaning: prompt version 2 shows the quote
+     apart from the sentences beside it and says the claim must be in the
+     quote. *Re-audited on the five cases above, it catches none of them on
+     qwen3:8b* (BENCHMARK_RESULTS.md, 30 September): all five are
+     "supported" or "partial" under both prompts, so the local model does not
+     apply the rule. Check 10 remains what catches four of the five; S25 (the
+     dropped hedge) is caught by neither. Whether a stronger model applies it
+     is the office-model measurement in #5. It stays off by default.
    - *Size:* done.
 4. **Two evidence labels are still wrong on purpose.** *Mostly fixed.* The
    evidence type now comes from the quote's own words (cells in a dish are
@@ -278,16 +289,29 @@ What is left:
      because nothing was done to PQBP1 itself.
    - *Size:* small.
 5. **Direction and negation are still word-level.** A local entailment check
-   now exists (`report/entailment.py`, prompt `llm/prompts/entail.md`,
-   setting `entailment_check` in the `[litreview]` table) and is **off by
-   default and unmeasured**. It asks the local model, through the same
-   scheduler and at temperature 0, whether the displayed paper text supports
-   each kept sentence, and drops the ones it calls unsupported.
-   `evals/litreview/entailment_agreement.py` compares it with the strong
-   judge.
-   - *Fix:* run the agreement tool on the benchmark reports, then have a
-     scientist check a sample, before it is turned on anywhere.
-   - *Size:* big (measurement, then a decision).
+   exists (`report/entailment.py`, prompt `llm/prompts/entail.md`, setting
+   `entailment_check` in the `[litreview]` table) and is **off by default**.
+   It asks the local model, through the same scheduler and at temperature 0,
+   whether the quote a kept sentence cites supports it, and drops the ones it
+   calls unsupported.
+   - *Narrowed (FRONTIER_LITREVIEW.md task C, prompt version 2).* The model
+     sees each quote apart from the context, next and naming sentences, each
+     labelled, and is told the sentence's main claim must be in a quote.
+     Version 1 read all four as one passage and so would have passed #3.
+   - *Measured against the hand audit* (`evals/litreview/entailment_audit.py`,
+     105 sentences, qwen3:8b, v1 before and v2 after; BENCHMARK_RESULTS.md,
+     30 September): it dropped none of the 93 faithful sentences under either
+     prompt, and 1 (v1) or 2 (v2) of the 12 unfaithful ones. Safe on this
+     sample, but it catches little on the laptop model, and its
+     supported/partial labels are unstable (35 of 105 moved when only the
+     prompt changed).
+   - *Left:* a scientist marks the two sentences it drops
+     (`evals/litreview/entailment/drops_v2_qwen3-8b.md`); the same measurement
+     on the office model (`--models office --before
+     evals/litreview/entailment/rows_v2_qwen3-8b.jsonl`); and
+     `entailment_agreement.py` on the stored benchmark reports, on the machine
+     that keeps them. Then decide whether it is on by default.
+   - *Size:* medium (a scientist's marks, then a decision).
 6. **A paper with no headings is filed wholly as "results".** The parser's
    fallback files unlabelled text as `results`
    (`parsing/sections.py` `_Collector.result`), so a paper's Introduction and

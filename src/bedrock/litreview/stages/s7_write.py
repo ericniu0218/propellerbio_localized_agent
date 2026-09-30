@@ -809,7 +809,7 @@ def _method(ctx: WriteContext) -> str:
     if getattr(ctx, "entailment", None) is not None:
         st = ctx.sentence_stats
         lines.insert(len(lines) - 1, (
-            f"- **Entailment check (optional, not yet measured):** the local model re-read "
+            f"- **Entailment check (optional, not yet checked by a scientist):** the local model re-read "
             f"{st.get('entailment_checked', 0)} sentence(s) the citation check kept against the text they cite; "
             f"{st.get('entailment_dropped', 0)} removed as not supported (included in the removals above), "
             f"{st.get('entailment_partial', 0)} kept as only partly supported, "

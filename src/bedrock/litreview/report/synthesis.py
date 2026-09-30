@@ -514,17 +514,35 @@ def _subject_name(ctx: "WriteContext") -> str:
     return e.text if e.text.lower() != e.canonical.lower() else e.canonical
 
 
-def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study], limit: int = 10) -> str:
-    groups = outcome_groups(ctx, studies)
-    if not groups:
-        return "No verified findings to compare."
-    lines = []
-    for g in groups[:limit]:
+@dataclass
+class SynthesisRow:
+    """One measure's comparison, shared by synthesis, disagreements and gaps.
+
+    This is a transient view, never added to stored report or evidence models.
+    `units` contains only counted findings; `aside` explains the rest.
+    Compute every measure before a renderer applies its display limit.
+    """
+
+    label: str
+    units: list[EvidenceUnit]
+    directions: dict[str, set[str]]
+    tiers: dict[str, str]
+    papers: dict[str, set[str]]
+    aside: dict[str, set[str]]
+    within: set[str]
+    basis: str | None
+    why: str
+
+
+def synthesis_rows(ctx: "WriteContext", studies: dict[str, Study]) -> list[SynthesisRow]:
+    rows = []
+    for g in outcome_groups(ctx, studies):
         directions: dict[str, set[str]] = defaultdict(set)
         tiers: dict[str, str] = {}
         papers: dict[str, set[str]] = defaultdict(set)
         aside: dict[str, set[str]] = defaultdict(set)
         within: set[str] = set()
+        counted = []
         for u in g.units:
             s = studies.get(u.paper_id)
             if s is None:
@@ -545,16 +563,30 @@ def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Stud
                 within.add(u.paper_id)
             directions[u.outcome].add(s.key)
             papers[u.outcome].add(u.paper_id)
+            counted.append(u)
             # A trial's strongest design stands for it (the RCT, not its post hoc).
             if tiers.get(s.key) is None or _rank(s.tier) < _rank(tiers[s.key]):
                 tiers[s.key] = s.tier
         keys = set().union(*directions.values()) if directions else set()
-        if not keys:
-            reasons = "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in aside.items())
-            lines.append(f"- **{_cell(g.label)}** — no finding here can be counted for the requested treatment: {reasons}.")
-            continue
         all_abstract = all(not studies[u.paper_id].full_text for u in g.units if u.paper_id in studies)
-        level, why = _level(directions, tiers, all_abstract)
+        basis, why = _level(directions, tiers, all_abstract) if keys else (None, "")
+        rows.append(SynthesisRow(g.label, counted, dict(directions), tiers, dict(papers), dict(aside), within,
+                                 basis, why))
+    return rows
+
+
+def render_synthesis(rows: list[SynthesisRow], refs: dict[str, int], limit: int = 10) -> str:
+    """Keep the established Markdown shape: the slides parse these lines."""
+    if not rows:
+        return "No verified findings to compare."
+    lines = []
+    for row in rows[:limit]:
+        directions, tiers, papers = row.directions, row.tiers, row.papers
+        keys = set().union(*directions.values()) if directions else set()
+        if not keys:
+            reasons = "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items())
+            lines.append(f"- **{_cell(row.label)}** — no finding here can be counted for the requested treatment: {reasons}.")
+            continue
         parts = []
         for outcome in ("improved", "no_effect", "worsened", "mixed", "association"):
             if directions.get(outcome):
@@ -565,16 +597,20 @@ def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Stud
             designs[TIER_TEXT[tiers[k]]] += 1
         mix = ", ".join(f"{v} {_plural(d, v)}" for d, v in sorted(designs.items()))
         extra = ""
-        if within:
-            extra += f" Change from baseline, with no comparison group, in {_refs(within, refs)}."
-        if aside:
-            extra += " Not counted: " + "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in aside.items()) + "."
-        lines.append(f"- **{_cell(g.label)}** — {len(keys)} independent stud{'y' if len(keys) == 1 else 'ies'} "
-                     f"({mix}): {'; '.join(parts)}. Basis: **{level}** ({why}).{extra}")
-    if len(groups) > limit:
-        lines.append(f"- {len(groups) - limit} further measures are in the evidence table (Appendix).")
+        if row.within:
+            extra += f" Change from baseline, with no comparison group, in {_refs(row.within, refs)}."
+        if row.aside:
+            extra += " Not counted: " + "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items()) + "."
+        lines.append(f"- **{_cell(row.label)}** — {len(keys)} independent stud{'y' if len(keys) == 1 else 'ies'} "
+                     f"({mix}): {'; '.join(parts)}. Basis: **{row.basis}** ({row.why}).{extra}")
+    if len(rows) > limit:
+        lines.append(f"- {len(rows) - limit} further measures are in the evidence table (Appendix).")
     lines += ["", LEVEL_RULE]
     return "\n".join(lines)
+
+
+def synthesis(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study], limit: int = 10) -> str:
+    return render_synthesis(synthesis_rows(ctx, studies), refs, limit)
 
 
 def _rank(tier: str) -> int:

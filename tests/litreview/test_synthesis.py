@@ -109,6 +109,21 @@ def _report(tmp_path):
                            db=Database(tmp_path / "db")).report
 
 
+def test_the_synthesis_refactor_preserves_the_pipeline_fixtures_markdown(tmp_path):
+    report = _report(tmp_path)
+    body = next(s.body_markdown for s in report.sections if s.id == "synthesis")
+    # Captured before separating computation from rendering. Slides consume
+    # these exact lines, including punctuation and the order of the measures.
+    expected = (
+        "- **IL17A** — 1 independent study (1 animal study): no significant effect in 1 study [1]. "
+        "Basis: **Animal or cell studies only** (no human evidence among the papers read).\n"
+        "- **IL23A** — 1 independent study (1 animal study): improved in 1 study [1]. "
+        "Basis: **Animal or cell studies only** (no human evidence among the papers read).\n\n"
+        + synthesis.LEVEL_RULE
+    )
+    assert body == expected
+
+
 def test_the_reading_view_comes_first_and_the_audit_trail_in_an_appendix(tmp_path):
     md = to_markdown(_report(tmp_path))
     main, appendix = md.split("\n# Appendix\n", 1)

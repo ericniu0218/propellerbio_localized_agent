@@ -247,6 +247,9 @@ async def process(
     # transcript and everything derived from it together — a patient name taken
     # out of the transcript but left in an action item has not been taken out.
     fields["transcript"] = outcome.vtt[:100_000]
+    # The title is in here too: when nobody named the meeting it was written
+    # by the model from the notes, and can carry whatever the notes carried.
+    fields["title"] = job.title
     fields, redaction = redact_record(fields)
 
     record = store.put(

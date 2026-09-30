@@ -60,12 +60,17 @@ def from_packs(spec: str | None = None) -> list[str]:
     terms: list[str] = []
     for name in (n.strip() for n in spec.split(",") if n.strip()):
         path = Path(name).expanduser()
-        if not path.suffix and not path.exists():
+        if not path.is_file():
             path = PACK_DIR / f"{name}.txt"
-        if not path.exists():
+        if not path.is_file():
             logger.warning("Vocabulary pack %r not found (looked at %s)", name, path)
             continue
-        for line in path.read_text(errors="replace").splitlines():
+        try:
+            text = path.read_text(errors="replace")
+        except OSError as exc:  # a pack that cannot be read must not stop a recording
+            logger.warning("Vocabulary pack %s could not be read: %s", path, exc)
+            continue
+        for line in text.splitlines():
             line = line.split("#", 1)[0].strip()
             if line:
                 terms.append(line)

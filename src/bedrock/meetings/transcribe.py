@@ -25,6 +25,7 @@ matching the AlphaFold adapter next door.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -50,6 +51,8 @@ _PARTICIPANT_DIR = "audio record"
 _AUDIO_PREFIX = "audio"
 
 # Whisper wants 16 kHz mono; anything else is resampled internally and slower.
+logger = logging.getLogger(__name__)
+
 TARGET_SAMPLE_RATE = 16_000
 
 # What `normalize_audio` applies. highpass=80 Hz is below every voice and above
@@ -175,11 +178,14 @@ _NON_SPEECH = re.compile(r"^\[?(BLANK_AUDIO|SILENCE|INAUDIBLE|NO_SPEECH|MUSIC|SO
 # confident, well-punctuated cue at 00:00:00. Dropped only when one of them is
 # the *entire* content of a short slice: a real "thank you" in the middle of a
 # conversation sits among other words and is left alone.
+# Not "okay", "so" or "hmm": those are whisper reflexes on noise too, but a
+# one-word "Okay." after "shall we proceed?" is a real answer, and a decision
+# can hang on it. Only phrases that carry no information in a meeting.
 HALLUCINATIONS = frozenset({
     "thank you", "thanks", "thank you very much", "thanks for watching",
     "thank you for watching", "thanks for listening", "please subscribe",
     "like and subscribe", "subtitles by the amara org community", "you", "bye",
-    "the end", "so", "okay", "hmm", "mm hmm", "uh",
+    "the end",
 })
 HALLUCINATION_MAX_MS = 3000
 
@@ -636,6 +642,7 @@ class WhisperTranscriber:
 
         model = self.config.models_by_language.get(decision.language) or self.config.model
         if model != self.config.model and not model.exists():
+            logger.warning("Model for %s at %s is missing; using %s", decision.language, model, self.config.model)
             model = self.config.model
         args = [
             self.config.binary,

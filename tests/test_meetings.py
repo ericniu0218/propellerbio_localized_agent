@@ -1339,3 +1339,38 @@ async def test_a_half_translated_line_gets_one_more_try_alone():
     out = await translate_cues(sched, "m", cues)
     assert out == {0: "The first item is the result of the control experiment.", 1: "I will follow up on Friday."}
     assert len(sched.prompts) == 2 and "1. 第一项是对照实验的结果。" in sched.prompts[1]
+
+
+def test_translation_batches_are_bounded_by_lines_and_by_size():
+    from bedrock.meetings.summarize import TRANSLATE_BATCH, _translation_batches
+    from bedrock.meetings.transcript import Cue
+
+    short = [Cue(i * 1000, i * 1000 + 900, "S", "好的。") for i in range(60)]
+    batches = _translation_batches(short, list(range(60)))
+    assert [len(b) for b in batches] == [TRANSLATE_BATCH, TRANSLATE_BATCH, 10]
+    long = [Cue(i * 1000, i * 1000 + 900, "S", "我们决定下周一开始剂量反应研究，" * 12) for i in range(10)]
+    batches = _translation_batches(long, list(range(10)))
+    assert len(batches) > 1 and all(len(b) < TRANSLATE_BATCH for b in batches)
+    assert [i for b in batches for i in b] == list(range(10))
+
+
+async def test_translation_batches_run_together_not_one_after_another():
+    import asyncio
+
+    from bedrock.meetings.summarize import TRANSLATE_BATCH, translate_cues
+    from bedrock.meetings.transcript import Cue
+
+    cues = [Cue(i * 1000, i * 1000 + 900, "S", f"第{i}项是对照实验的结果。") for i in range(TRANSLATE_BATCH * 3)]
+
+    class Scheduler:
+        def __init__(self): self.in_flight = 0; self.peak = 0
+        async def complete(self, model, messages, priority=None, options=None):
+            self.in_flight += 1; self.peak = max(self.peak, self.in_flight)
+            await asyncio.sleep(0.01)
+            self.in_flight -= 1
+            lines = [l for l in messages[0]["content"].splitlines() if l[:1].isdigit()]
+            return "\n".join(f"{n + 1}. Item {n} is the control result." for n in range(len(lines)))
+    sched = Scheduler()
+    out = await translate_cues(sched, "m", cues)
+    assert len(out) == TRANSLATE_BATCH * 3
+    assert sched.peak == 3  # all three batches were in flight at once

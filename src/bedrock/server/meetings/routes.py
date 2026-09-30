@@ -277,7 +277,7 @@ def download_transcript(meeting_id: str, format: str = "txt", english: bool = Fa
         raise HTTPException(501, str(exc)) from exc
     store().audit(user["id"], f"downloaded transcript ({format})", meeting_id)
     return Response(body, media_type=media_type, headers={
-        "Content-Disposition": f'attachment; filename="{export.filename(meeting, format)}"'})
+        "Content-Disposition": export.content_disposition(meeting, format)})
 
 
 @router.get("/voices")
@@ -399,7 +399,7 @@ def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity))
             return [swap(item) for item in value]
         return value
 
-    for field in ("transcript", "summary", "enhancedNotes", "decisions", "actions",
+    for field in ("transcript", "transcriptEnglish", "summary", "enhancedNotes", "decisions", "actions",
                   "findings", "deadlines", "questions", "people"):
         if field in meeting:
             meeting[field] = swap(meeting[field])
@@ -600,11 +600,20 @@ def vocabulary(user=Depends(identity)):
         if term.strip()
     ]
     everything = suggest(meetings)
+    in_use = everything if auto_enabled() else configured
+    # Two different things: the terms that steer whisper's decoder (cut to
+    # its prompt budget, from the front) and the full list that repairs
+    # near-misses afterwards. Reporting the whole list as "in use" told
+    # people a term was steering the decoder when it never reached it.
+    from bedrock.server.meetings.pipeline import hint_within_budget
+
+    hint = hint_within_budget(", ".join(in_use)) or ""
     return {
         "configured": configured,
         "suggested": [term for term in everything if term not in configured],
         "auto": auto_enabled(),
-        "inUse": everything if auto_enabled() else configured,
+        "inUse": in_use,
+        "decoderHint": [t.strip() for t in hint.split(",") if t.strip()],
     }
 
 

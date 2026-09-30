@@ -162,8 +162,6 @@ def english_vtt(outcome: "TranscriptionOutcome") -> str | None:
     speakers, or None when nothing was translated."""
     if not outcome.translations:
         return None
-    from dataclasses import replace
-
     cues = [replace(c, text=outcome.translations.get(i, c.text)) for i, c in enumerate(outcome.cues)]
     return to_vtt(cues)[:100_000]
 
@@ -179,25 +177,33 @@ def describe_language(decision) -> str:
     return f"Transcribed as {names.get(decision.language, decision.language)} (detected: {heard})."
 
 
-# whisper reads at most n_text_ctx/2 = 224 tokens of prompt and, past that,
-# drops the rest. The transcriber may prepend the Mandarin script hint (about
-# a dozen tokens), so the vocabulary gets a little less than the whole budget.
-# Terms are kept from the front, which is why packs and configured terms put
-# the most-misheard names first; everything past the cut still repairs
-# near-misses, it just does not steer the decoder.
-HINT_TOKEN_BUDGET = 200
+# whisper reads at most n_text_ctx/2 = 224 tokens of prompt and, when handed
+# more, keeps the LAST 224 — so an over-long hint loses its front, which is
+# the Mandarin script hint and the names the pack put first on purpose. The
+# budget is therefore conservative, and the estimate deliberately pessimistic
+# for the tokens whisper's BPE actually produces on jargon: "IL-17A" is four
+# tokens, "dupilumab" three or four, a CJK character one or two. Everything
+# past the cut still repairs near-misses; it just does not steer the decoder.
+HINT_TOKEN_BUDGET = 170
+_CJK = re.compile("[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]")
+
+
+def whisper_tokens(text: str) -> int:
+    """A pessimistic count of whisper BPE tokens for a hint."""
+    cjk = len(_CJK.findall(text))
+    latin = _CJK.sub("", text)
+    pieces = re.findall(r"[A-Za-z]+|\d+|[^\sA-Za-z\d]", latin)
+    return 2 * cjk + sum(-(-len(piece) // 3) for piece in pieces)
 
 
 def hint_within_budget(vocabulary: str | None, budget: int = HINT_TOKEN_BUDGET) -> str | None:
     if not vocabulary:
         return None
-    from bedrock.inference import estimate_tokens
-
     kept, used = [], 0
     for term in (t.strip() for t in re.split(r"[,;\n]", vocabulary)):
         if not term:
             continue
-        cost = estimate_tokens(term + ", ")
+        cost = whisper_tokens(term) + 1  # the separator
         if used + cost > budget:
             break
         kept.append(term)
@@ -431,7 +437,12 @@ async def transcribe(
         except Exception as exc:
             logger.warning("Cue re-scoring failed: %s", exc)
 
+    # Folding a one-line phantom can lower the count after the note above
+    # was written; the note must say the number the page shows.
+    before = speaker_count
     cues, speaker_count = tidy_speakers(cues)
+    if speaker_count != before and speaker_note.startswith(_speakers(before)):
+        speaker_note = _speakers(speaker_count) + speaker_note[len(_speakers(before)):]
 
     outcome = TranscriptionOutcome(
         vtt=to_vtt(cues),
@@ -575,6 +586,8 @@ async def summarise(
         )
         if outcome.summary is not None and outcome.summary.degraded_reason is None:
             try:
+                if on_progress:
+                    on_progress("Translating")
                 outcome.translations = await translate_cues(
                     get_model_hub().scheduler_for("notes"), notes_model.model_name, outcome.cues
                 )

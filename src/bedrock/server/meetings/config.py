@@ -231,6 +231,12 @@ def readiness_issues(config: RecordingConfig) -> list[str]:
             f"{DEFAULT_SPEECH_MODEL} from huggingface.co/ggerganov/whisper.cpp into "
             f"{config.speech_model.parent}, or record in English."
         )
+    if os.environ.get("MEETING_SPEECH_MODEL_ZH") and config.speech_model_zh and not config.speech_model_zh.exists():
+        # Only when somebody set it: the default is "use it if present".
+        issues.append(
+            f"MEETING_SPEECH_MODEL_ZH points at {config.speech_model_zh}, which does not exist. "
+            "Fix the path or unset it; Mandarin would silently fall back to the main model."
+        )
     if not config.vad_model.exists():
         issues.append(
             f"No voice-activity model at {config.vad_model}. Download "

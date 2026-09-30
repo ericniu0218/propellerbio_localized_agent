@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from bedrock.server.meetings.screen import ScreenTimeline
@@ -145,7 +145,16 @@ async def transcribe_clip(clip: Path, config, work_dir: Path) -> str:
     try:
         from bedrock.meetings.transcribe import WhisperTranscriber
 
-        transcriber = WhisperTranscriber(_whisper_config(config))
+        # A clip is one slice. "detect" would run whisper twice on it — once
+        # to sample the language, once to transcribe — and each run loads
+        # the model. whisper's own per-file detection ("auto") costs nothing
+        # extra and is the same thing for a single slice.
+        # Known trade: with "auto" the Mandarin script hint and the Mandarin
+        # model, which key on a decided "zh", do not apply to the preview. The
+        # preview is a courtesy while the meeting runs; the final transcript
+        # decides properly.
+        live_config = replace(config, language="auto") if config.language == "detect" else config
+        transcriber = WhisperTranscriber(_whisper_config(live_config))
         work_dir.mkdir(parents=True, exist_ok=True)
         wav = await transcriber.to_wav(clip, work_dir)
         cues = await transcriber.transcribe_track(wav, work_dir)

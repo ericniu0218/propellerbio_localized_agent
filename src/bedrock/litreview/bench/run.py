@@ -166,6 +166,11 @@ def summarise_system(system: str, results: list[ClaimResult], cited_applicable: 
         if r.numbers_ok and (r.cited_support == "supported" or (r.cited_support is None and r.corpus_support == "supported"))
     )
     sources = {c for r in results for c in r.claim.citations}
+    # What each judged score rests on: a claim with no verdict is left out
+    # of the mean, so the mean alone does not say how much it covers.
+    judged = {"corpus_grounded": (len(corpus), len(results))}
+    if cited_applicable:
+        judged["cited_support"] = (len(cited), len(results))
     return SystemScore(
         system=system,
         claims=len(results),
@@ -175,6 +180,7 @@ def summarise_system(system: str, results: list[ClaimResult], cited_applicable: 
         near_miss_claims=sum(1 for r in results if r.near_misses),
         quantitative_supported_claims=quantitative,
         distinct_sources_cited=len(sources),
+        judged=judged,
     )
 
 
@@ -357,7 +363,9 @@ def evaluate(
         nuggets = nuggets[:MAX_NUGGETS]
         for n in nuggets:
             v = judge.support(n.fact, [t for _, t in index.top(n.fact)])
-            n.reachable = bool(v and v.verdict in ("supported", "partially_supported"))
+            # No verdict is not "unreachable": it stays None, and counts
+            # against the judged fraction instead of leaving the denominator.
+            n.reachable = None if v is None else v.verdict in ("supported", "partially_supported")
             if not n.reachable:
                 continue
             for name, text in answers.items():
@@ -365,12 +373,20 @@ def evaluate(
                 if c:
                     n.coverage[name] = c.verdict
         reachable = [n for n in nuggets if n.reachable]
+        # Facts whose reachability had no verdict may count too: they are in
+        # the judged fraction's denominator, never in a score.
+        may_count = [n for n in nuggets if n.reachable is not False]
+        may_count_vital = [n for n in may_count if n.importance == "vital"]
         for name, score in systems.items():
             covered = [COVERAGE_SCORE[n.coverage[name]] for n in reachable if name in n.coverage]
             vital = [COVERAGE_SCORE[n.coverage[name]] for n in reachable if name in n.coverage and n.importance == "vital"]
             score.nugget_recall = _mean(covered)
             score.vital_nugget_recall = _mean(vital)
-        notes.append(f"{len(nuggets)} reference facts from reviews; {len(reachable)} supported by the collected papers.")
+            score.judged["nugget_recall"] = (len(covered), len(may_count))
+            score.judged["vital_nugget_recall"] = (len(vital), len(may_count_vital))
+        unsure = len(may_count) - len(reachable)
+        notes.append(f"{len(nuggets)} reference facts from reviews; {len(reachable)} supported by the collected papers"
+                     + (f"; for {unsure} the judge gave no verdict." if unsure else "."))
     else:
         notes.append("No review references for this question; nugget recall not measured.")
 
@@ -463,20 +479,24 @@ def evaluate(
                 perturb_rows.append({
                     "kind": kind, "original": r.claim.text, "perturbed": text,
                     "guard_caught": not guard.check(text, r.claim.citations).kept,
-                    # Caught means the judge would not pass the corrupted claim as supported.
-                    "judge_caught": bool(v and v.verdict != "supported"),
+                    # Caught means the judge would not pass the corrupted claim
+                    # as supported. No verdict is neither: it used to count as
+                    # missed, which failed the validity gate on absent answers.
+                    "judge_caught": (v.verdict != "supported") if v else None,
                     "judge_verdict": v.verdict if v else None,
                 })
         by_kind = Counter(row["kind"] for row in perturb_rows)
         for kind in ("number", "flip", "entity"):
-            rows = [row for row in perturb_rows if row["kind"] == kind]
+            rows = [row for row in perturb_rows if row["kind"] == kind and row["judge_caught"] is not None]
             if rows:
                 pipeline[f"judge_catches_{kind}"] = _mean([1.0 if x["judge_caught"] else 0.0 for x in rows])
                 pipeline[f"guard_or_judge_catches_{kind}"] = _mean(
                     [1.0 if (x["judge_caught"] or x["guard_caught"]) else 0.0 for x in rows])
         pipeline["perturbations"] = sum(by_kind.values())
-        perturb_missing = ("no claim could be flipped" if supported else
-                           "no pipeline claim was judged supported, so there was nothing to corrupt")
+        pipeline["perturbations_judged"] = sum(1 for row in perturb_rows if row["judge_caught"] is not None)
+        perturb_missing = ("no pipeline claim was judged supported, so there was nothing to corrupt" if not supported
+                           else "no claim could be flipped" if not by_kind["flip"]
+                           else "no flipped claim was judged")
 
     if from_run:
         pipeline["deterministic"] = "not re-run"
@@ -539,10 +559,19 @@ def evaluate(
 
     model_versions = dict(result.run.model_versions)
     model_versions["judge"] = version_of(judge_client or client, settings.model_for("judge"))
+    # Who supplied the verdicts. A judge file knows per answer; a model judge
+    # is one rater, its version. Code-settled verdicts have no rater's noise.
+    used = getattr(judge_client, "used", None)
+    if used is not None:
+        raters = dict(sorted(used.items()))
+    else:
+        raters = {model_versions["judge"]: judge.answered} if judge.answered else {}
+    if judge.settled_in_code:
+        raters["code"] = judge.settled_in_code
     card = Scorecard(
         question_id=bq.id, question=bq.question, report_id=result.report_id, created=created,
         model_versions=model_versions, context_windows=context_windows,
-        report_context_windows=report_windows, report_context_source=report_source,
+        report_context_windows=report_windows, report_context_source=report_source, raters=raters,
         systems=list(systems.values()), pipeline=pipeline, gates=gates,
         notes=[n for n in notes if n],
     )
@@ -566,6 +595,9 @@ def evaluate(
             "question_id": bq.id, "created": created, "report_id": result.report_id,
             "prompt_versions": result.run.prompt_versions, "model_versions": model_versions,
             "overall": {s.system: s.overall for s in card.systems},
+            "judged": {s.system: s.judged for s in card.systems},
+            "judged_fraction": {s.system: s.overall_judged_fraction() for s in card.systems},
+            "raters": raters,
             # `gates_total` counts measured gates only; rows written before
             # 30 September 2026 counted a gate with no input as passed.
             "gates_passed": card.gates_passed, "gates_total": card.gates_measured,
@@ -583,6 +615,28 @@ def _fmt(x) -> str:
     if isinstance(x, float):
         return f"{x:.2f}"
     return str(x)
+
+
+def _cell(score: SystemScore, attr: str) -> str:
+    """A score with what it rests on: "0.93 (40/42)", "67.9 (95% judged)"."""
+    value = _fmt(getattr(score, attr))
+    if attr == "overall":
+        fraction = score.overall_judged_fraction()
+        return value if fraction is None or score.overall is None else f"{value} ({fraction:.0%} judged)"
+    pair = score.judged.get(attr)
+    return value if pair is None or getattr(score, attr) is None else f"{value} ({pair[0]}/{pair[1]})"
+
+
+def raters_text(raters: dict[str, int]) -> str:
+    if not raters:
+        return "not recorded"
+    judges = [f"{name} {n}" for name, n in raters.items() if name != "code"]
+    code = [f"settled in code {raters['code']}"] if "code" in raters else []
+    return ", ".join(judges + code)
+
+
+def _raters_line(card: Scorecard) -> str:
+    return f"Verdicts by rater: {raters_text(card.raters)}"
 
 
 def _gate_cell(gate: Gate) -> str:
@@ -606,12 +660,12 @@ def _window_lines(card: Scorecard) -> list[str]:
     undersized window does not fail: the server drops the start of the prompt."""
     calls = window_text(card.context_windows) if card.context_windows else "no model was called"
     if card.report_context_source == "this run":
-        return [f"Context window: {calls} (checked by preflight before the first model call)"]
+        return [f"Context window: {calls} (checked by preflight before the first model call)  "]
     written = window_text(card.report_context_windows)
     if card.report_context_source:
         written += f" (recorded by the run of {card.report_context_source})"
     return [f"Context window the report was written at: {written}  ",
-            f"Context window of this run's model calls: {calls}"]
+            f"Context window of this run's model calls: {calls}  "]
 
 
 def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nuggets: list[Nugget],
@@ -623,6 +677,7 @@ def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nugg
         f"Question id `{card.question_id}` · report `{card.report_id}` · {card.created}",
         "",
         *_window_lines(card),
+        _raters_line(card),
         "",
         "| Metric | " + " | ".join(names.get(s.system, s.system) for s in card.systems) + " |",
         "|---|" + "---|" * len(card.systems),
@@ -641,7 +696,10 @@ def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nugg
         ("Distinct sources cited", "distinct_sources_cited"),
     ]
     for label, attr in metrics:
-        rows.append(f"| {label} | " + " | ".join(_fmt(getattr(s, attr)) for s in card.systems) + " |")
+        rows.append(f"| {label} | " + " | ".join(_cell(s, attr) for s in card.systems) + " |")
+    rows += ["", "(j/n) after a score: it rests on j of the n claims or review facts it should, the rest having no "
+             "verdict (no answer on file, or a failed judge call). The overall's percentage is its least-judged "
+             "part's. Two runs compare only when these match: `python -m bedrock.litreview.bench compare`."]
 
     rows += ["", "## Pipeline checks", "", _gate_summary(card), "", "| Check | Result |", "|---|---|"]
     for name, gate in card.gates.items():

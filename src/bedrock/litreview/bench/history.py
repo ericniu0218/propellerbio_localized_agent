@@ -43,6 +43,12 @@ class HistoryRow(BaseModel):
     """Model -> the window preflight established for this run's model calls."""
     report_context_windows: dict[str, int] | None = None
     """The windows the scored report was written at."""
+    judged: dict[str, dict[str, tuple[int, int]]] | None = None
+    """System -> judged score -> (judged, total). See `SystemScore.judged`."""
+    judged_fraction: dict[str, float | None] | None = None
+    """System -> the overall's judged fraction."""
+    raters: dict[str, int] | None = None
+    """Rater -> answers used; `code` for verdicts settled in code."""
 
 
 def read_history(path: Path) -> list[HistoryRow]:
@@ -90,14 +96,17 @@ OLD_GATES = ("† written before a gate could be \"not measured\": a gate whose 
 
 def render_history(rows: list[HistoryRow]) -> str:
     """A table of runs, oldest first, for reading in a terminal."""
-    lines = ["| Created | Question | Report | Pipeline overall | Gates passed | Report context window |",
-             "|---|---|---|---|---|---|"]
+    lines = ["| Created | Question | Report | Pipeline overall | Judged | Raters | Gates passed "
+             "| Report context window |",
+             "|---|---|---|---|---|---|---|---|"]
     for row in rows:
-        gates = gates_text(row)
         overall = row.overall.get("pipeline")
+        fraction = (row.judged_fraction or {}).get("pipeline")
+        judged = NOT_RECORDED if row.judged_fraction is None else "–" if fraction is None else f"{fraction:.0%}"
+        raters = NOT_RECORDED if row.raters is None else ", ".join(f"{k} {v}" for k, v in row.raters.items()) or "none"
         lines.append(
-            f"| {row.created} | {row.question_id} | {row.report_id} | "
-            f"{'–' if overall is None else overall} | {gates} | {window_text(row.report_context_windows)} |"
+            f"| {row.created} | {row.question_id} | {row.report_id} | {'–' if overall is None else overall} | "
+            f"{judged} | {raters} | {gates_text(row)} | {window_text(row.report_context_windows)} |"
         )
     if any(r.gates_total is not None and r.gates_not_measured is None for r in rows):
         lines += ["", OLD_GATES]

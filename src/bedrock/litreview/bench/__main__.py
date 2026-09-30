@@ -1,4 +1,4 @@
-"""python -m bedrock.litreview.bench build-corpus|run|history|determinism-payloads|determinism|replay-control ...
+"""python -m bedrock.litreview.bench build-corpus|run|compare|history|determinism-payloads|determinism|replay-control ...
 
 Every command that reaches a model runs `service.preflight` first, exactly as
 a review does: a context window too small for an extraction prompt does not
@@ -50,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
         help="judge with answers from this JSONL file instead of the local model; questions with no "
         "answer are written to <file>.pending.jsonl",
     )
+
+    cmp = sub.add_parser("compare", help="B minus A for two scored runs, or a refusal saying why they differ (no model)")
+    cmp.add_argument("a", type=Path, help="scorecard.json, or the run directory holding it")
+    cmp.add_argument("b", type=Path, help="scorecard.json, or the run directory holding it")
+    cmp.add_argument("--force", action="store_true",
+                     help="print the comparison even when the runs are not comparable, with the reasons on top")
 
     hist = sub.add_parser("history", help="list past runs from results/history.jsonl (no model)")
     hist.add_argument("--question", help="only this question id")
@@ -114,6 +120,15 @@ def main(argv: list[str] | None = None) -> int:
         say(f"{len(payloads)} payloads written")
         print(args.out)
         return 0
+
+    if args.command == "compare":
+        from bedrock.litreview.bench.compare import compare
+
+        try:
+            return compare(args.a, args.b, force=args.force, err=say)
+        except FileNotFoundError as exc:
+            say(f"compare: {exc}")
+            return 1
 
     if args.command == "history":
         from bedrock.litreview.bench.history import read_history, render_history

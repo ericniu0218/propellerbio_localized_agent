@@ -62,6 +62,57 @@ model copies the answer's sentence, code checks it.
 `--from-run <run id>` scores a stored report instead of producing a new one —
 how a report written by earlier code is put beside one written by today's.
 
+### What a score rests on
+
+Every scorecard says, above its table, the context window the report was
+written at (checked by `service.preflight` before the first model call; "not
+recorded" for anything scored before 30 September 2026) and who supplied the
+verdicts. Every judged score carries **(j/n)**: it rests on j of the n claims
+or review facts it should, and the rest had no verdict. A check whose input
+was never built says **not measured** and why, and counts neither as passed
+nor as measured. `python -m bedrock.litreview.bench history` lists past runs
+the same way.
+
+A stored report judged from a file with no baselines calls no model, so it
+needs no server:
+
+```
+python -m bedrock.litreview.bench run evals/litreview/questions/<q>.yaml --from-run <run id> \
+    --judge-file evals/litreview/judge/answers.jsonl --skip-baselines --skip-perturb
+```
+
+Every row of a judge file names its judge: `{"key": ..., "answer": {...},
+"judge": "claude-opus-4-5"}`, or `"judge": "scientist:<name>"`. Rows written
+before that field existed read as `"unknown"`.
+
+### Comparing two runs
+
+```
+python -m bedrock.litreview.bench compare results/<q>/<before> results/<q>/<after>
+```
+
+It prints B minus A for every system, score and check, or **refuses** (and
+exits non-zero) when the difference could be something other than the
+pipeline:
+
+- the two runs answer different questions;
+- any score's judged fraction differs by more than 5 percentage points
+  (`COMPARABLE_WITHIN` in `bench/compare.py`, a starting value) - 30 of 42
+  claims judged against 42 of 42 is mostly the missing twelve;
+- the raters differ, or the same raters judged in different shares
+  (verdicts settled in code do not count);
+- either run used answers whose judge is `"unknown"` - the answers on file
+  before 30 September came from more than one judge, so the fix is to
+  re-judge those claims with one named judge;
+- either run was scored before any of this was recorded.
+
+`--force` prints the comparison anyway, with the reasons at the top.
+
+**Compare does not remove one rater's own noise.** The same asthma report,
+byte for byte, scored 69.4, 69.2 and 69.2 across three passes of one judge
+(OPEN_ISSUES #25). A difference inside that spread is not a change, however
+cleanly compare prints it.
+
 ## The gold set
 
 **Build this before writing a single prompt.** Everything in Stage 5 is

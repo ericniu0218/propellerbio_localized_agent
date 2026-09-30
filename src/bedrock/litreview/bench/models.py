@@ -137,6 +137,13 @@ class Nugget(BaseModel):
     coverage: dict[str, CoverageLabel] = Field(default_factory=dict)
 
 
+JUDGED_SCORES = ("cited_support", "corpus_grounded", "nugget_recall", "vital_nugget_recall")
+"""The scores a judge's verdicts decide. The rest are counted in code."""
+
+OVERALL_PARTS = ("cited_support", "corpus_grounded", "nugget_recall")
+"""The judged scores `run.overall` is built from."""
+
+
 class SystemScore(BaseModel):
     system: str
     claims: int = 0
@@ -150,6 +157,21 @@ class SystemScore(BaseModel):
     quantitative_supported_claims: int = 0
     distinct_sources_cited: int = 0
     overall: float | None = None
+    judged: dict[str, tuple[int, int]] = Field(default_factory=dict)
+    """Judged score -> (items it rests on, items it should rest on). A claim
+    or review fact with no verdict - no answer on file, a failed judge call -
+    is left out of its score, so 0.93 over 30 of 42 claims is not 0.93 over
+    42 (OPEN_ISSUES #28). Empty on scorecards written before 30 September 2026."""
+
+    def judged_fraction(self, score: str) -> float | None:
+        pair = self.judged.get(score)
+        return pair[0] / pair[1] if pair and pair[1] else None
+
+    def overall_judged_fraction(self) -> float | None:
+        """The lowest judged fraction among the scores `overall` is built from:
+        the overall is only as judged as its least-judged part."""
+        parts = [f for f in (self.judged_fraction(s) for s in OVERALL_PARTS) if f is not None]
+        return min(parts) if parts else None
 
 
 class Gate(BaseModel):
@@ -200,6 +222,13 @@ class Scorecard(BaseModel):
     report_context_source: str | None = None
     """Which run recorded `report_context_windows`: "this run", or the
     `created` stamp of the history row it was read from."""
+    raters: dict[str, int] = Field(default_factory=dict)
+    """Who supplied the verdicts: rater -> answers used. A model judge is its
+    model version; a judge file names a judge per answer (`judge` in
+    answers.jsonl: a model id or `scientist:<name>`, "unknown" on rows written
+    before it was recorded). `code` counts verdicts settled in code (a claim
+    verbatim in its evidence, or with none). Empty on scorecards written
+    before 30 September 2026 (OPEN_ISSUES #25)."""
     systems: list[SystemScore]
     pipeline: dict[str, float | int | str | None] = Field(default_factory=dict)
     gates: dict[str, Gate] = Field(default_factory=dict)

@@ -157,6 +157,18 @@ class Scorecard(BaseModel):
     report_id: str
     created: str
     model_versions: dict[str, str] = Field(default_factory=dict)
+    context_windows: dict[str, int] | None = None
+    """Model -> the context window `service.preflight` established for this
+    run's own model calls. None when the run called no model (a stored report
+    re-scored from a judge file), and on every scorecard written before the
+    benchmark ran preflight."""
+    report_context_windows: dict[str, int] | None = None
+    """The windows the scored report was written at: this run's own, or, for a
+    stored report (`--from-run`), what the run that wrote it recorded. None
+    means not recorded, which is every report written before preflight ran."""
+    report_context_source: str | None = None
+    """Which run recorded `report_context_windows`: "this run", or the
+    `created` stamp of the history row it was read from."""
     systems: list[SystemScore]
     pipeline: dict[str, float | int | str | None] = Field(default_factory=dict)
     gates: dict[str, bool] = Field(default_factory=dict)

@@ -20,6 +20,7 @@ from typing import Callable
 from bedrock.litreview.bench.baselines import closed_book, naive_rag
 from bedrock.litreview.bench.claims import pipeline_claims, text_claims
 from bedrock.litreview.bench.distractors import leak_test, make_distractors
+from bedrock.litreview.bench.history import recorded_report_windows, window_text
 from bedrock.litreview.bench.judge import CorpusIndex, Judge
 from bedrock.litreview.bench.models import (
     COVERAGE_SCORE,
@@ -210,6 +211,7 @@ def evaluate(
     skip_perturb: bool = False,
     from_run: str | None = None,
     judge_client=None,
+    context_windows: dict[str, int] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Scorecard, Path]:
     """Run the pipeline and the baselines on a frozen corpus and score them.
@@ -223,12 +225,18 @@ def evaluate(
     pipeline always uses `client`; only the judging step changes, so a weak
     local model can be measured by a stronger judge without the report itself
     being touched by it.
+
+    `context_windows` is what `service.preflight` established for this run's
+    model calls (model -> tokens), recorded on the scorecard and in the
+    history row. None means the run called no model, or its caller did not
+    check - which the scorecard then says.
     """
     say = progress or (lambda msg: log.info(msg))
     corpus_dir = Path(corpus_dir or CORPORA / bq.id)
     created = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = Path(results_root or RESULTS) / bq.id / created
     out_dir.mkdir(parents=True, exist_ok=True)
+    history = Path(results_root or RESULTS) / "history.jsonl"
     kb = load_knowledge()
 
     papers = read_papers(corpus_dir / "papers.jsonl")
@@ -478,11 +486,21 @@ def evaluate(
         f"closest one; {judge.struck} detail(s) it called missing were in the evidence and struck off."
     )
 
+    # The window the report was written at. A stored report was written by
+    # an earlier run, whose history row recorded it if that run was preflighted.
+    if from_run:
+        recorded = recorded_report_windows(history, result.report_id)
+        report_windows, report_source = recorded if recorded else (None, None)
+    else:
+        report_windows, report_source = context_windows, ("this run" if context_windows else None)
+
     model_versions = dict(result.run.model_versions)
     model_versions["judge"] = version_of(judge_client or client, settings.model_for("judge"))
     card = Scorecard(
         question_id=bq.id, question=bq.question, report_id=result.report_id, created=created,
-        model_versions=model_versions, systems=list(systems.values()), pipeline=pipeline, gates=gates,
+        model_versions=model_versions, context_windows=context_windows,
+        report_context_windows=report_windows, report_context_source=report_source,
+        systems=list(systems.values()), pipeline=pipeline, gates=gates,
         notes=[n for n in notes if n],
     )
 
@@ -499,7 +517,6 @@ def evaluate(
     (out_dir / "scorecard.md").write_text(
         render_scorecard(card, claim_results, nuggets, target_detail, report), encoding="utf-8"
     )
-    history = Path(results_root or RESULTS) / "history.jsonl"
     history.parent.mkdir(parents=True, exist_ok=True)
     with history.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({
@@ -507,6 +524,7 @@ def evaluate(
             "prompt_versions": result.run.prompt_versions, "model_versions": model_versions,
             "overall": {s.system: s.overall for s in card.systems},
             "gates_passed": sum(gates.values()), "gates_total": len(gates),
+            "context_windows": context_windows, "report_context_windows": report_windows,
         }) + "\n")
     db.add_bench_result(result.report_id, spec.id, created, card.model_dump_json())
     say(f"[{bq.id}] judge calls: {judge.calls}; scorecard: {out_dir / 'scorecard.md'}")
@@ -521,6 +539,20 @@ def _fmt(x) -> str:
     return str(x)
 
 
+def _window_lines(card: Scorecard) -> list[str]:
+    """What context window the numbers below were produced at. Every number
+    written before preflight ran was produced at an unchecked window, and an
+    undersized window does not fail: the server drops the start of the prompt."""
+    calls = window_text(card.context_windows) if card.context_windows else "no model was called"
+    if card.report_context_source == "this run":
+        return [f"Context window: {calls} (checked by preflight before the first model call)"]
+    written = window_text(card.report_context_windows)
+    if card.report_context_source:
+        written += f" (recorded by the run of {card.report_context_source})"
+    return [f"Context window the report was written at: {written}  ",
+            f"Context window of this run's model calls: {calls}"]
+
+
 def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nuggets: list[Nugget],
                      targets: dict, report: Report) -> str:
     names = {"pipeline": "This pipeline", "naive_rag": "Chatbot + pasted abstracts", "closed_book": "Chatbot, no papers"}
@@ -528,6 +560,8 @@ def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nugg
         f"# Benchmark — {card.question}",
         "",
         f"Question id `{card.question_id}` · report `{card.report_id}` · {card.created}",
+        "",
+        *_window_lines(card),
         "",
         "| Metric | " + " | ".join(names.get(s.system, s.system) for s in card.systems) + " |",
         "|---|" + "---|" * len(card.systems),

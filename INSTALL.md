@@ -106,7 +106,14 @@ containing (for the company's full agent system - IT runs its server,
 ```toml
 backend = "agentpack"
 agent_pack_api_base = "https://the-address-your-team-gave-you"
+api_key = "the-key-your-team-gave-you"   # needed for literature reviews (/review)
 ```
+
+In this mode `/review` runs literature reviews on your machine and sends each
+of their model calls to the AI system's models; the `api_key` is the key IT
+set on the server (`BEDROCK_SERVER_INFERENCE_TOKEN`). Check it is all working
+with `bedrock-litreview doctor` - it says whether the server answers and,
+separately, whether a literature review can run.
 
 or (for a single private model server):
 

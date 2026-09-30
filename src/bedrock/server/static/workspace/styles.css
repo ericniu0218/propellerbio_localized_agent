@@ -84,8 +84,20 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 .login-card .btn { width: 100%; display: flex; justify-content: center; margin-top: 14px; text-decoration: none; box-sizing: border-box; }
 
 /* ---- shell ---- */
-#app { display: grid; grid-template-columns: 250px 1fr; height: 100vh; }
-#app.activity-open { grid-template-columns: 250px 1fr var(--activity-w, 380px); }
+#app { display: grid; grid-template-columns: var(--sidebar-w, 250px) minmax(0, 1fr); height: 100vh; }
+#app.activity-open { grid-template-columns: var(--sidebar-w, 250px) minmax(0, 1fr) var(--activity-w, 380px); }
+#app.sidebar-collapsed { --sidebar-w: 56px; }
+#sidebar { position: relative; }
+#sidebar-resizer { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 5; }
+#sidebar-resizer:hover, #sidebar-resizer.dragging, #sidebar-resizer:focus-visible,
+#activity-resizer:focus-visible { background: var(--accent-soft); outline: none; }
+.brand-row #sidebar-collapse { margin-left: auto; }
+#app.sidebar-collapsed #sidebar { padding: 16px 6px; }
+#app.sidebar-collapsed .brand, #app.sidebar-collapsed .sidebar-list, #app.sidebar-collapsed #sidebar-resizer,
+#app.sidebar-collapsed #sidebar-footer .who span, #app.sidebar-collapsed #logout-btn { display: none; }
+#app.sidebar-collapsed .brand-row { justify-content: center; padding: 4px 0 16px; }
+#app.sidebar-collapsed .nav-item { font-size: 0; justify-content: center; padding: 9px 0; }
+#app.sidebar-collapsed #sidebar-footer { justify-content: center; }
 .brand { font-weight: 700; letter-spacing: -0.02em; font-size: 15px; }
 .brand span { color: var(--accent); }
 
@@ -337,7 +349,10 @@ svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-w
 #sidebar-menu-btn { display: none; }
 #sidebar-scrim { display: none; }
 @media (max-width: 720px) {
-  #app, #app.activity-open { grid-template-columns: 1fr; }
+  #app, #app.activity-open, #app.sidebar-collapsed { grid-template-columns: 1fr; }
+  #sidebar-resizer, #sidebar-collapse { display: none; }
+  #app.sidebar-collapsed .brand, #app.sidebar-collapsed .sidebar-list { display: revert; }
+  #app.sidebar-collapsed .nav-item { font-size: inherit; justify-content: flex-start; padding: 8px 10px; }
   #sidebar-menu-btn { display: inline-flex; }
   /* No room for a third column on a phone — the panel overlays here, but
      still without dimming the page behind it (close via its own button). */
@@ -499,3 +514,17 @@ a.btn { text-decoration: none; }
 .research-form .check-row input { flex: none; padding: 0; }
 .modal .field select { width: 100%; }
 #research-activity:not(:empty) + #activity-body .empty-state { display: none; }
+.msg-sources { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
+.msg-sources-title { color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.msg-source { margin: 2px 0; overflow-wrap: anywhere; }
+.msg-source a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.msg-source a:hover { text-decoration: underline; }
+
+/* Chat request states: what is happening, in words (chat_lifecycle.py). */
+.run-status { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; }
+.run-status-line { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+.run-note { border-left: 3px solid var(--border-strong); padding: 6px 10px; margin: 4px 0 8px; border-radius: 4px; font-size: 14px; }
+.run-note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.run-note.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+.review-draft { white-space: pre-wrap; border: 1px dashed var(--border-strong); border-radius: 6px; padding: 10px; margin: 6px 0; max-height: 360px; overflow: auto; }
+.msg.assistant.incomplete .bubble { opacity: .92; }

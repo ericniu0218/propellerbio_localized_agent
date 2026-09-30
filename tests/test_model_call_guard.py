@@ -67,6 +67,20 @@ def chat_completion_urls(path: Path) -> list[int]:
     that URL.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # A route that *serves* the endpoint (``@router.post("/chat/completions")``
+    # in the agent server's inference API) is not a call to a model server:
+    # it answers one, and passes the call on through a Scheduler. Only the
+    # decorator's own path argument is exempt; any other string naming the
+    # endpoint in that file still counts.
+    served = {
+        id(decorator.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for decorator in node.decorator_list
+        if isinstance(decorator, ast.Call) and decorator.args
+        and isinstance(decorator.func, ast.Attribute) and decorator.func.attr in {"get", "post", "api_route"}
+        and isinstance(decorator.func.value, ast.Name) and decorator.func.value.id == "router"
+    }
     docstrings = {
         id(node.body[0].value)
         for node in ast.walk(tree)
@@ -82,6 +96,7 @@ def chat_completion_urls(path: Path) -> list[int]:
         and isinstance(node.value, str)
         and "/chat/completions" in node.value
         and id(node) not in docstrings
+        and id(node) not in served
     ]
 
 

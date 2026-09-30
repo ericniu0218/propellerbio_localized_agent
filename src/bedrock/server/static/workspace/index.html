@@ -24,8 +24,10 @@
 
 <div id="app" hidden>
   <aside id="sidebar">
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize navigation (arrow keys; Home resets)" tabindex="0"></div>
     <div class="brand-row">
       <div class="brand">Bedrock<span>Workspace</span></div>
+      <button id="sidebar-collapse" class="icon-btn small" type="button" aria-label="Collapse navigation" aria-expanded="true" title="Collapse navigation" data-icon="menu"></button>
     </div>
 
     <nav id="nav">
@@ -61,7 +63,7 @@
   </main>
 
   <aside id="activity-panel">
-    <div id="activity-resizer"></div>
+    <div id="activity-resizer" role="separator" aria-orientation="vertical" aria-label="Resize agent panel (arrow keys; Home resets)" tabindex="0"></div>
     <header class="activity-header">
       <h2><span data-icon="agent"></span>Agent Activity</h2>
       <div class="activity-header-actions">

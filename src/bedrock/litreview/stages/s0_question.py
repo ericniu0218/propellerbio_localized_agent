@@ -59,6 +59,26 @@ _SUBJECT_AFTER_VERB = re.compile(
 )
 
 
+# "... in adults with obesity", "... among patients with type 2 diabetes": who
+# the question is about, not what it is about. Code finds the phrase; nothing
+# a model says widens or narrows it.
+_POPULATION = re.compile(
+    r"\b(?:in|among|for)\s+((?:(?:adult|adolescent|older|elderly|young|pediatric|paediatric|obese|"
+    r"overweight|postmenopausal|pregnant)\s+)*"
+    r"(?:adults?|patients?|people|persons?|individuals?|participants?|subjects?|children|adolescents?|"
+    r"infants?|women|men|girls|boys|mice|rats|animals)\s+(?:with|who have|living with|diagnosed with)\s+"
+    r"[^?;.]+)",
+    re.I,
+)
+
+
+def population_span(question: str) -> str | None:
+    """The words naming who the question is about ("adults with obesity" in
+    "... in adults with obesity?"), or None."""
+    m = _POPULATION.search(question)
+    return m.group(1).strip() if m else None
+
+
 def classify(text: str, entity_kinds: set[str]) -> tuple[str | None, str | None]:
     """Question type and goal from wording alone. None where unsure."""
     goal = "prevent" if _PREVENT.search(text) else "treat" if _TREAT.search(text) else None
@@ -183,13 +203,31 @@ def parse_question(
             entity.exact_terms = list(dict.fromkeys([*entity.exact_terms, *extra]))
             entity.resolved_from = "approved"
 
+    # A disease named only in the population ("does tirzepatide reduce liver
+    # fat in adults with obesity?") says who was studied, not what the answer
+    # is about. Required, it made the search AND "obesity" into every query,
+    # which dropped the randomised trial that measured liver fat directly
+    # (SURPASS-3 MRI, in type 2 diabetes) along with every other study whose
+    # abstract names its patients' diabetes or MASH rather than their weight.
+    # It stays in the spec - ranking still prefers papers that name it, and
+    # the report still says who each finding was about - and it stays
+    # required when it is the only disease the question names ("does X reduce
+    # body weight in adults with obesity?").
+    population = population_span(question)
+    if population:
+        diseases = [e for e in entities.values() if e.kind in ("disease", "pathogen") and e.required]
+        in_population = [e for e in diseases if _in_question(e.text, population)
+                         and not _in_question(e.text, question.replace(population, " "))]
+        if in_population and len(in_population) < len(diseases):
+            for entity in in_population:
+                entity.required = False
+
     if not any(e.required for e in entities.values()):
         raise QuestionError(
             "Could not find a disease, pathogen, drug or target in the question. "
             "Name it explicitly, e.g. 'what should I target to prevent psoriasis?'"
         )
 
-    population = None
     if parsed and parsed.population and _in_question(parsed.population, question):
         population = parsed.population
 

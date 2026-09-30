@@ -61,44 +61,126 @@ class ReviewRequest:
     """Extra search terms a person approved by hand. HTTP only, as in the source."""
 
 
-async def preflight(settings: Settings, backend) -> None:
+@dataclass(frozen=True)
+class ReviewCapacity:
+    """What preflight established about the models a review will use."""
+
+    windows: dict[str, int]
+    """Model -> the context window every call to it is sized against: the
+    smaller of what the server reports and what was configured."""
+    served_by: dict[str, str]
+    """Model -> the weights behind it, when the server names models by alias."""
+    notes: tuple[str, ...] = ()
+    """Things worth telling the scientist that do not stop the run."""
+
+
+def _where(settings: Settings) -> str:
+    if settings.endpoint_source == "agentpack":
+        return f"the agent server's inference API at {settings.base_url}"
+    return f"the model server at {settings.base_url}"
+
+
+def _window_fix(settings: Settings, model: str) -> str:
+    need = settings.min_context_window
+    if settings.endpoint_source == "agentpack":
+        return (f"On the agent server, give the role behind {model!r} a context_length of at least {need} in its "
+                f"models.yaml (and start its vLLM with --max-model-len {need} or more), or choose a model set "
+                "whose models have one with `model_set` in the [litreview] table.")
+    return (f"Start Ollama with OLLAMA_CONTEXT_LENGTH={need} (the Ollama app: Settings -> Context length) - that "
+            f"fits on a 16 GB machine - or vLLM with --max-model-len {need}, and set `context_window = {need}` in "
+            f"~/.config/bedrock/config.toml (or BEDROCK_CONTEXT_WINDOW={need}). Otherwise use the `workstation` "
+            "profile, or the office server.")
+
+
+async def preflight(settings: Settings, backend) -> ReviewCapacity:
     """Check the machine can run a review at all, and say what to change if not.
 
     Raises `ConfigError` with the fix spelled out. Every message names a number
     or a command, because the person reading it is usually a scientist rather
     than the person who set the server up.
+
+    The window each model gets is checked against what the *server* says when
+    it says anything: vLLM and bedrock's agent server report the window a model
+    was started with, and Ollama reports the window of a model it has loaded.
+    A configured number is a claim about the server; a reported one is the
+    server's own account, and the smaller of the two is what a prompt really
+    gets. A server that reports nothing is taken at the configured number, and
+    one that reports nothing when nothing was configured is refused - a remote
+    model's window is never assumed. Each call is checked again as it runs
+    (`llm/scheduled.py` `PromptTruncated`), because Ollama loads a model with
+    whatever window it was started with and only says which once it has.
     """
-    if settings.context_window < settings.min_context_window:
+    need = settings.min_context_window
+    configured = settings.context_window if settings.context_window_source != "unset" else None
+    if configured is not None and configured < need:
         raise ConfigError(
-            f"a literature review needs a context window of at least "
-            f"{settings.min_context_window:,} tokens, and this machine is set to "
-            f"{settings.context_window:,}. Extraction sends about 4,300 tokens of prompt "
-            f"and allows a 4,096-token reply, which {settings.context_window:,} cannot hold.\n"
-            f"Set `context_window = {settings.min_context_window}` in ~/.config/bedrock/config.toml "
-            f"(or BEDROCK_CONTEXT_WINDOW={settings.min_context_window}), and start Ollama with "
-            f"OLLAMA_CONTEXT_LENGTH={settings.min_context_window} — that fits on a 16 GB machine. "
-            f"Otherwise use the `workstation` profile, or the office server."
+            f"a literature review needs a context window of at least {need:,} tokens, and this machine is set to "
+            f"{configured:,}. Extraction sends about 4,300 tokens of prompt and allows a 4,096-token reply, "
+            f"which {configured:,} cannot hold.\n" + _window_fix(settings, "the review's models")
         )
 
     try:
-        available = {info.id for info in await backend.list_models()}
+        offered = {info.id: info for info in await backend.list_models()}
     except InferenceError as exc:
-        raise ConfigError(
-            f"the model server at {settings.base_url} is not answering: {exc}\n"
-            "Start it, or point `api_base` at the office server."
-        ) from exc
+        hint = ("Check that the agent server is running and reachable, and that `agent_pack_api_base` points at it."
+                if settings.endpoint_source == "agentpack" else "Start it, or point `api_base` at the office server.")
+        raise ConfigError(f"{_where(settings)} is not answering: {exc}\n{hint}") from exc
 
     wanted = sorted({settings.model_for(job) for job in settings.jobs})
-    missing = [name for name in wanted if name not in available]
+    missing = [name for name in wanted if name not in offered]
     if missing:
-        pulls = "\n".join(f"  ollama pull {name}" for name in missing)
+        have = ", ".join(sorted(offered)) or "none"
+        if settings.endpoint_source == "agentpack":
+            fix = ("Choose a model set whose names the server offers, with `model_set` in the [litreview] table or "
+                   "BEDROCK_LITREVIEW_MODELS, or ask IT to expose those roles on the agent server.")
+        else:
+            pulls = "\n".join(f"  ollama pull {name}" for name in missing)
+            fix = (f"On a laptop running Ollama:\n{pulls}\nOn the office server (vLLM), ask IT to serve it - a vLLM "
+                   "server offers only the model it was started with.")
         raise ConfigError(
-            f"the model server at {settings.base_url} does not have "
-            f"{', '.join(repr(m) for m in missing)}, which the `{settings.model_set}` model set needs.\n"
-            f"On a laptop running Ollama:\n{pulls}\n"
-            "On the office server (vLLM), ask IT to serve it — a vLLM server offers "
-            "only the model it was started with."
+            f"{_where(settings)} does not have {', '.join(repr(m) for m in missing)}, which the "
+            f"`{settings.model_set}` model set needs. It offers: {have}.\n{fix}"
         )
+
+    windows: dict[str, int] = {}
+    served_by: dict[str, str] = {}
+    notes: list[str] = []
+    for name in wanted:
+        info = offered[name]
+        if info.root:
+            served_by[name] = info.root
+        caps = info.capabilities
+        if caps is not None and "json_schema" not in caps:
+            raise ConfigError(
+                f"{_where(settings)} says {name!r} cannot constrain its output to a JSON schema, and every call a "
+                "review makes needs it: without it a reply can be malformed JSON, and findings are lost silently. "
+                "Choose a model that supports structured output (vLLM guided decoding, Ollama structured outputs)."
+            )
+        if caps is not None and "seed" not in caps:
+            notes.append(f"{name!r} ignores the random seed, so a fresh run may word things differently; "
+                         "cached calls still replay exactly.")
+        reported = info.context_length
+        if reported and configured and reported < configured:
+            notes.append(f"{name!r} is served with a {reported:,}-token window, smaller than the {configured:,} "
+                         "configured here; calls are sized to the server's.")
+        window = min(w for w in (reported, configured) if w) if (reported or configured) else None
+        if window is None:
+            raise ConfigError(
+                f"{_where(settings)} does not say how large a context window {name!r} has, and none is "
+                f"configured for the review. It needs at least {need:,} tokens. Set `context_window = <the "
+                "model's window>` in the [litreview] table of ~/.config/bedrock/config.toml (or "
+                "BEDROCK_LITREVIEW_CONTEXT_WINDOW) to the window the server really gives it."
+            )
+        if window < need:
+            said = "reports" if reported == window else "is configured with"
+            raise ConfigError(
+                f"{_where(settings)} {said} a {window:,}-token context window for {name!r}, and a literature "
+                f"review needs at least {need:,}: extraction sends about 4,300 tokens of prompt and allows a "
+                f"4,096-token reply. A smaller window does not fail - the server drops the start of each prompt, "
+                f"and the model answers without its instructions.\n" + _window_fix(settings, name)
+            )
+        windows[name] = window
+    return ReviewCapacity(windows=windows, served_by=served_by, notes=tuple(notes))
 
 
 async def run_review(
@@ -129,12 +211,15 @@ async def run_review(
     if request.use_model:
         if scheduler is None:
             raise ValueError("a review that uses a model needs bedrock's scheduler")
-        await preflight(settings, scheduler.backend)
+        capacity = await preflight(settings, scheduler.backend)
+        for note in capacity.notes:
+            progress(note)
         client = make_client(
             settings,
             scheduler=scheduler,
             loop=asyncio.get_running_loop(),
             cancel=cancel,
+            context_windows=capacity.windows,
         )
 
     searcher = _searcher(request, settings)
@@ -187,8 +272,25 @@ def _searcher(request: ReviewRequest, settings: Settings):
     return None
 
 
+def review_backend(settings: Settings, *, timeout_floor: float = 600.0):
+    """A connection to the review's model server (`settings.base_url`), with
+    the long timeout a review needs. Opening one starts nothing: it is an HTTP
+    client, and the model runs wherever `base_url` says."""
+    from bedrock.config import Settings as BedrockSettings
+    from bedrock.inference import create_backend
+
+    # Through bedrock's factory, the one place a backend class is chosen
+    # (inference/factory.py) - and the seam tests replace.
+    return create_backend(BedrockSettings(
+        api_base=settings.base_url,
+        api_key=settings.api_key,
+        request_timeout=max(float(settings.request_timeout), timeout_floor),
+    ))
+
+
 @asynccontextmanager
-async def standalone_scheduler(bedrock_settings, *, backend=None, timeout_floor: float = 600.0):
+async def standalone_scheduler(bedrock_settings, *, backend=None, timeout_floor: float = 600.0,
+                               review_settings: Settings | None = None):
     """A scheduler for a process that is not the app: the CLI, the benchmark, the HTTP API.
 
     The app already has one, shared with the chat. Everywhere else there is no
@@ -205,7 +307,11 @@ async def standalone_scheduler(bedrock_settings, *, backend=None, timeout_floor:
     from bedrock.inference import create_backend
 
     own = backend is None
-    if own:
+    if own and review_settings is not None:
+        # The review's own endpoint, which in agent-pack mode is the agent
+        # server rather than bedrock's `api_base`.
+        backend = review_backend(review_settings, timeout_floor=timeout_floor)
+    elif own:
         timeout = max(float(bedrock_settings.request_timeout), timeout_floor)
         backend = create_backend(replace(bedrock_settings, request_timeout=timeout))
     try:

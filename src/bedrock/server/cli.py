@@ -82,6 +82,84 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def website(argv: list[str] | None = None) -> int:
+    """``website``: the browser workspace on this computer.
+
+    The same server as ``bedrock-server``, with one convenience for a laptop:
+    if a local model server (Ollama) is running at bedrock's ``api_base`` with
+    a usable model pulled, chats use it. Without this, a laptop run is in mock
+    mode and every chat answer is the canned "demo analysis" - while the
+    Research tab, which always talks to bedrock's own model server, gives real
+    answers. That split is confusing, so ``website`` points both at the same
+    model. Set ``AGENT_PACK_MODE`` yourself to turn this off.
+    """
+    use_local_model()
+    return main(argv)
+
+
+# Asked of the local model server in this order when WEBSITE_MODEL is unset.
+# qwen3:8b is what the literature review uses on a laptop; llama3.2:3b and
+# smaller are left out on purpose - they are too small to follow the
+# orchestrator's structured replies (scripts/server/demo-safe.sh).
+PREFERRED_LOCAL_MODELS = ("qwen3:8b", "qwen3:14b", "llama3.1:8b", "qwen2.5:7b", "mistral:7b")
+
+
+def use_local_model(env=None, *, list_models=None) -> str | None:
+    """Point the server's agents at a local model, if there is one. Returns its name.
+
+    Does nothing when the mode was chosen already (``AGENT_PACK_MODE``,
+    ``BEDROCK_SERVER_MODE`` or ``[server] mode``), when bedrock's model server
+    is not on this computer, or when it has none of the models above.
+    ``list_models`` is for tests.
+    """
+    from bedrock.config import load_settings as load_bedrock_settings
+    from bedrock.server.config import _server_table
+
+    env = os.environ if env is None else env
+    if env.get("AGENT_PACK_MODE") or env.get("BEDROCK_SERVER_MODE") or _server_table(env).get("mode"):
+        return None
+    bedrock = load_bedrock_settings(env=dict(env))
+    base = bedrock.api_base.rstrip("/")
+    host = base.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if host not in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        return None
+    try:
+        available = (list_models or _list_models)(base)
+    except Exception:  # noqa: BLE001 - no model server is an answer, not an error
+        print("No local model server answered at " + base + " - chats will give demo answers.")
+        print("For real answers: start Ollama, then run: ollama pull qwen3:8b")
+        return None
+    wanted = env.get("WEBSITE_MODEL") or env.get("OLLAMA_MODEL")
+    candidates = (wanted,) if wanted else PREFERRED_LOCAL_MODELS
+    model = next((m for m in candidates if m in available), None)
+    if model is None:
+        print(f"The model server at {base} has none of {', '.join(candidates)} - chats will give demo answers.")
+        print(f"For real answers: ollama pull {candidates[0]}")
+        return None
+    window = str(bedrock.profile.context_window)
+    for role in ("DIRECTOR", "SPECIALIST", "RUNNER"):
+        env.setdefault(f"{role}_LLM_URL", base)
+        env.setdefault(f"{role}_MODEL_NAME", model)
+        # The agents size their prompts to the window; tell them the real one.
+        env.setdefault(f"{role}_CONTEXT_LENGTH", window)
+        env.setdefault(f"{role}_MAX_PARALLEL", "1")
+    env["AGENT_PACK_MODE"] = "real"
+    # Keep the demo sign-in and sample data: this is a laptop, not a deployment.
+    env.setdefault("DEMO_MODE", "true")
+    # A laptop is not the air-gapped server; the Research tab needs the internet.
+    env.setdefault("AIRGAP_CHECK", "false")
+    print(f"Chats will use {model} at {base} (context window {int(window):,} tokens).")
+    return model
+
+
+def _list_models(base: str) -> set[str]:
+    import httpx
+
+    response = httpx.get(base + "/models", timeout=3)
+    response.raise_for_status()
+    return {m["id"] for m in response.json().get("data", [])}
+
+
 def missing_packages() -> list[str]:
     return [name for name in SERVER_PACKAGES if importlib.util.find_spec(name) is None]
 

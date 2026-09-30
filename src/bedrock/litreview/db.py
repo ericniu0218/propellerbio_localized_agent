@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS question_papers (
     question_id TEXT NOT NULL, paper_id TEXT NOT NULL, position INTEGER NOT NULL,
     PRIMARY KEY (question_id, paper_id)
 );
+CREATE TABLE IF NOT EXISTS question_collections (
+    question_id TEXT PRIMARY KEY, body TEXT NOT NULL, incomplete TEXT
+);
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, question_id TEXT NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts (
     run_id TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (run_id, name)
@@ -123,13 +126,29 @@ class Database:
         row = self.conn.execute("SELECT spec FROM questions WHERE id = ?", (question_id,)).fetchone()
         return QuestionSpec.model_validate_json(row[0]) if row else None
 
-    def save_papers(self, question_id: str, papers: list[Paper]) -> Manifest:
+    def save_papers(self, question_id: str, papers: list[Paper], *, collected_for: str | None = None,
+                    incomplete: str | None = None) -> Manifest:
         """Freeze the paper set for a question. Replaces any earlier set as the
         question's current one; every body is also kept as a version. Returns
-        the manifest of what was saved."""
+        the manifest of what was saved.
+
+        `collected_for` is the search signature the set was collected under
+        (`stages/s1_collect.collection_signature`): which entities and exact
+        terms were searched for. A later run whose reading of the question
+        differs must not silently reuse papers that were never searched for
+        its terms; see `collected_for`. None (a hand-given paper list) clears it.
+        `incomplete` says what the search that collected the set could not do
+        (queries that failed), so every report built on the set says so too."""
         manifest: Manifest = []
         with self.conn:
             self.conn.execute("DELETE FROM question_papers WHERE question_id = ?", (question_id,))
+            if collected_for is None:
+                self.conn.execute("DELETE FROM question_collections WHERE question_id = ?", (question_id,))
+            else:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO question_collections (question_id, body, incomplete) VALUES (?, ?, ?)",
+                    (question_id, collected_for, incomplete),
+                )
             for i, paper in enumerate(papers):
                 body = paper.model_dump_json()
                 sha = _sha256(body)
@@ -212,6 +231,22 @@ class Database:
         """Runs that got as far as writing a report."""
         rows = self.conn.execute("SELECT body FROM runs ORDER BY id").fetchall()
         return [r.id for r in (Run.model_validate_json(b) for (b,) in rows) if r.stage_reached >= 7]
+
+    def collected_for(self, question_id: str) -> str | None:
+        """The search signature the question's current paper set was collected
+        under, or None when it was not recorded (a set frozen before this was
+        kept, or papers handed in directly)."""
+        row = self.conn.execute(
+            "SELECT body FROM question_collections WHERE question_id = ?", (question_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def collection_incomplete(self, question_id: str) -> str | None:
+        """What the search behind the current paper set could not do, if anything."""
+        row = self.conn.execute(
+            "SELECT incomplete FROM question_collections WHERE question_id = ?", (question_id,)
+        ).fetchone()
+        return row[0] if row else None
 
     def get_papers(self, question_id: str) -> list[Paper]:
         rows = self.conn.execute(

@@ -59,11 +59,6 @@ SEARCH_NOTICE = (
     "question, papers and report stay on this machine"
 )
 
-AGENTPACK_NOTICE = (
-    "Literature reviews run in the default mode (start `bedrock` without "
-    "`BEDROCK_BACKEND=agentpack`) or from a shell with `bedrock-litreview ask`."
-)
-
 REVIEWS_HELP = """\
 **`/reviews` — literature reviews on this machine**
 

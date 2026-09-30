@@ -193,9 +193,12 @@
   $("#sidebar-scrim").addEventListener("click", () => appEl.classList.remove("sidebar-open"));
 
   // ---------------- activity drawer ----------------
-  function openActivity() { appEl.classList.add("activity-open"); }
+  // Opening the agent panel re-fits both panels, so the page between them
+  // keeps its minimum width (setPanelWidth, below).
+  const refitPanels = () => { setPanelWidth("activity", panelWidth("activity"), false); setPanelWidth("sidebar", panelWidth("sidebar"), false); };
+  function openActivity() { appEl.classList.add("activity-open"); refitPanels(); }
   function closeActivity() { appEl.classList.remove("activity-open"); }
-  $("#activity-toggle").addEventListener("click", () => appEl.classList.toggle("activity-open"));
+  $("#activity-toggle").addEventListener("click", () => { appEl.classList.toggle("activity-open"); refitPanels(); });
   $("#activity-collapse").addEventListener("click", closeActivity);
   $("#activity-popout").addEventListener("click", () => {
     const w = window.open("about:blank", "bedrock-agent-activity", "width=420,height=720");
@@ -221,20 +224,85 @@
     const iv = setInterval(() => { if (w.closed) { clearInterval(iv); return; } paint(); }, 1500);
   });
 
-  // resizable drawer
-  (() => {
-    const handle = $("#activity-resizer");
+  // Resizable side panels: the navigation on the left and the agent panel on
+  // the right, each by mouse or keyboard (arrows, Home to reset), each
+  // remembered, and never so wide that the page between them drops below
+  // MIN_CENTER - both can be open at once, so each clamp reads the other.
+  const MIN_CENTER = 460;
+  const PANELS = {
+    sidebar: { varName: "--sidebar-w", key: "bedrock_sidebar_w", def: 250, min: 180, max: 420, handle: "#sidebar-resizer",
+               widthAt: (x) => x },
+    activity: { varName: "--activity-w", key: "bedrock_activity_w", def: 380, min: 300, max: 720, handle: "#activity-resizer",
+                widthAt: (x) => window.innerWidth - x },
+  };
+  const panelWidth = (name) => {
+    const p = PANELS[name];
+    const v = parseInt(document.documentElement.style.getPropertyValue(p.varName), 10);
+    return Number.isFinite(v) ? v : p.def;
+  };
+  function setPanelWidth(name, width, save = true) {
+    const p = PANELS[name];
+    const app = $("#app");
+    const other = name === "sidebar" ? (app.classList.contains("activity-open") ? panelWidth("activity") : 0)
+      : (app.classList.contains("sidebar-collapsed") ? 56 : panelWidth("sidebar"));
+    const room = window.innerWidth - other - MIN_CENTER;
+    const w = Math.round(Math.max(p.min, Math.min(p.max, room, width)));
+    document.documentElement.style.setProperty(p.varName, w + "px");
+    const handle = $(p.handle);
+    if (handle) {
+      handle.setAttribute("aria-valuenow", String(w));
+      handle.setAttribute("aria-valuemin", String(p.min));
+      handle.setAttribute("aria-valuemax", String(p.max));
+    }
+    if (save) { try { localStorage.setItem(p.key, String(w)); } catch {} }
+  }
+  Object.keys(PANELS).forEach((name) => {
+    const p = PANELS[name];
+    let saved = NaN;
+    try { saved = parseInt(localStorage.getItem(p.key), 10); } catch {}
+    setPanelWidth(name, Number.isFinite(saved) ? saved : p.def, false);
+    const handle = $(p.handle);
+    if (!handle) return;
     let dragging = false;
-    handle.addEventListener("mousedown", (e) => {
-      dragging = true; handle.classList.add("dragging");
+    handle.addEventListener("mousedown", (e) => { dragging = true; handle.classList.add("dragging"); e.preventDefault(); });
+    window.addEventListener("mousemove", (e) => { if (dragging) setPanelWidth(name, p.widthAt(e.clientX)); });
+    window.addEventListener("mouseup", () => { if (dragging) { dragging = false; handle.classList.remove("dragging"); } });
+    handle.addEventListener("dblclick", () => setPanelWidth(name, p.def));
+    handle.addEventListener("keydown", (e) => {
+      const step = e.shiftKey ? 64 : 16;
+      const grow = name === "sidebar" ? 1 : -1;  // the right panel grows leftwards
+      if (e.key === "ArrowRight") setPanelWidth(name, panelWidth(name) + step * grow);
+      else if (e.key === "ArrowLeft") setPanelWidth(name, panelWidth(name) - step * grow);
+      else if (e.key === "Home") setPanelWidth(name, p.def);
+      else return;
       e.preventDefault();
     });
-    window.addEventListener("mousemove", (e) => {
-      if (!dragging) return;
-      const w = Math.min(720, Math.max(300, window.innerWidth - e.clientX));
-      document.documentElement.style.setProperty("--activity-w", w + "px");
+  });
+  window.addEventListener("resize", () => Object.keys(PANELS).forEach((n) => setPanelWidth(n, panelWidth(n), false)));
+
+  // Collapsible navigation: icons only, labels as tooltips; remembered.
+  function setSidebarCollapsed(collapsed, save = true) {
+    $("#app").classList.toggle("sidebar-collapsed", collapsed);
+    const btn = $("#sidebar-collapse");
+    if (btn) {
+      btn.setAttribute("aria-expanded", String(!collapsed));
+      btn.setAttribute("aria-label", collapsed ? "Expand navigation" : "Collapse navigation");
+      btn.title = collapsed ? "Expand navigation" : "Collapse navigation";
+    }
+    $$(".nav-item").forEach((b) => {
+      const label = b.textContent.trim();
+      if (collapsed) { b.setAttribute("aria-label", label); b.setAttribute("title", label); }
+      else if (!b.classList.contains("disabled")) { b.removeAttribute("title"); }
     });
-    window.addEventListener("mouseup", () => { dragging = false; handle.classList.remove("dragging"); });
+    if (save) { try { localStorage.setItem("bedrock_sidebar_collapsed", collapsed ? "1" : "0"); } catch {} }
+    setPanelWidth("activity", panelWidth("activity"), false);
+  }
+  (() => {
+    let collapsed = false;
+    try { collapsed = localStorage.getItem("bedrock_sidebar_collapsed") === "1"; } catch {}
+    setSidebarCollapsed(collapsed, false);
+    const btn = $("#sidebar-collapse");
+    if (btn) btn.addEventListener("click", () => setSidebarCollapsed(!$("#app").classList.contains("sidebar-collapsed")));
   })();
 
   // ---------------- modal ----------------
@@ -318,8 +386,15 @@
     const isPending = (r) => ["queued", "running", "waiting"].includes(r.status);
     const activeAskRun = chat && state.runs.find((r) => r.chatId === chat.id && ["ask", "auto"].includes(r.mode) && isPending(r));
     const activeAgentRun = chat && state.runs.find((r) => r.chatId === chat.id && !["ask", "auto"].includes(r.mode) && isPending(r));
+    // The chat's most recent quick-reply request, when it ended without an
+    // answer: it gets a visible reason and a Retry, never silence.
+    const askRuns = chat ? state.runs.filter((r) => r.chatId === chat.id && ["ask", "auto"].includes(r.mode))
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")) : [];
+    const lastAsk = askRuns[askRuns.length - 1];
+    const endedRun = lastAsk && ["failed", "cancelled", "stopped"].includes(lastAsk.status) && !lastAsk.retriedBy ? lastAsk : null;
+    const runSig = (r) => r ? [r.id, r.status, r.currentStep, r.lastProgressAt, r.error, (r.draft || "").length].join("|") : "";
     const sig = "chat:" + (chat ? chat.id + (chat.messages || []).length + JSON.stringify(chat.artifactIds || [])
-      + (activeAskRun ? activeAskRun.id + activeAskRun.status : "") + (activeAgentRun ? activeAgentRun.id + activeAgentRun.status : "") : "none");
+      + runSig(activeAskRun) + runSig(activeAgentRun) + runSig(endedRun) + ":" + Math.floor(Date.now() / 15000) : "none");
     if (sig === lastRenderSig.center && !force) return;
     lastRenderSig.center = sig;
     body.innerHTML = "";
@@ -339,21 +414,20 @@
       } else {
         const meta = [];
         if (m.citations && m.citations.length) meta.push(m.citations.length + " source(s) cited");
-        thread.appendChild(el("div", { class: "msg assistant" }, [
+        const { body: answerText, sources } = splitSources(m.text || "");
+        thread.appendChild(el("div", { class: "msg assistant" + (m.incomplete ? " incomplete" : "") }, [
           el("span", { class: "avatar" }, "AI"),
           el("div", { class: "bubble" }, [
-            el("div", {}, m.text),
-            meta.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
+            m.incomplete ? el("div", { class: "run-note warn", role: "note" }, "Incomplete — the model stopped partway through this answer. It was not reviewed and may be missing qualifications.") : null,
+            el("div", {}, answerText),
+            sources.length ? renderSourceList(sources, chat) : null,
+            meta.length && !sources.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
           ]),
         ]));
       }
     });
-    if (activeAskRun) {
-      thread.appendChild(el("div", { class: "thinking-row" }, [
-        el("span", { class: "avatar" }, "AI"),
-        el("div", { class: "thinking-dots" }, [el("span"), el("span"), el("span")]),
-      ]));
-    }
+    if (activeAskRun) thread.appendChild(renderRunStatus(activeAskRun));
+    else if (endedRun) thread.appendChild(renderRunEnded(endedRun));
     if (!(chat.messages || []).length && !activeAskRun) {
       thread.appendChild(el("div", { class: "empty-state" }, "Attach a file or ask a question to begin."));
     }
@@ -361,6 +435,56 @@
     body.scrollTop = body.scrollHeight;
     renderComposer(chat, activeAskRun, activeAgentRun);
   }
+
+  // What a request in progress is doing, in words - never just dots. A request
+  // held for review shows its draft and the decision it is waiting for.
+  const STALE_SECONDS = 45;
+  function renderRunStatus(run) {
+    const secs = run.lastProgressAt ? (Date.now() - new Date(run.lastProgressAt).getTime()) / 1000 : 0;
+    if (run.status === "waiting") {
+      const draft = run.draft || run.preview || "";
+      return el("div", { class: "msg assistant review-card", role: "region", "aria-label": "Answer waiting for your review" }, [
+        el("span", { class: "avatar" }, "AI"),
+        el("div", { class: "bubble" }, [
+          el("div", { class: "run-note warn" }, [el("strong", {}, "Waiting for your review. "),
+            "Answers about clinical or safety matters are held until a person approves them. Read the draft, then approve it to post it here, or send it back."]),
+          draft ? el("div", { class: "review-draft" }, draft) : null,
+          el("div", { class: "run-actions" }, [
+            el("button", { class: "btn primary small", onclick: () => decide(run.id, "approve") }, "Approve and post"),
+            el("button", { class: "btn small", onclick: () => decide(run.id, "reject") }, "Send back"),
+            el("button", { class: "btn ghost small", onclick: () => cancelRun(run.id) }, "Stop"),
+          ]),
+        ]),
+      ]);
+    }
+    const slow = secs > STALE_SECONDS;
+    const label = run.status === "queued" ? "Waiting for the model" : (run.currentStep || "Working");
+    return el("div", { class: "thinking-row", role: "status", "aria-live": "polite" }, [
+      el("span", { class: "avatar" }, "AI"),
+      el("div", { class: "run-status" }, [
+        el("div", { class: "run-status-line" }, [el("div", { class: "thinking-dots small" }, [el("span"), el("span"), el("span")]),
+          el("span", {}, label + "…")]),
+        slow ? el("div", { class: "small muted" }, `No word from the model for ${since(run.lastProgressAt).replace(" ago", "")} — it may be busy with another request (a literature review, say) or generating slowly. It stops by itself if nothing arrives for 10 minutes.`) : null,
+        run.contextNote ? el("div", { class: "small muted" }, run.contextNote) : null,
+        el("button", { class: "link-btn small", onclick: () => cancelRun(run.id) }, "Stop"),
+      ]),
+    ]);
+  }
+
+  function renderRunEnded(run) {
+    return el("div", { class: "msg assistant run-ended", role: "alert" }, [
+      el("span", { class: "avatar" }, "AI"),
+      el("div", { class: "bubble" }, [
+        el("div", { class: "run-note " + (run.status === "failed" ? "bad" : "warn") }, run.error || "This request did not finish."),
+        run.contextNote ? el("div", { class: "small muted" }, run.contextNote) : null,
+        el("div", { class: "run-actions" }, [el("button", { class: "btn small", onclick: () => retryRun(run.id) }, "Retry")]),
+      ]),
+    ]);
+  }
+
+  // What someone was typing survives the chat re-drawing itself while a reply
+  // is on its way (the composer is rebuilt on every status change).
+  const composerDrafts = {};
 
   function renderComposer(chat, activeAskRun, activeAgentRun) {
     let dock = document.getElementById("composer-wrap");
@@ -378,6 +502,8 @@
     const attachBtn = el("button", { type: "button", class: "icon-btn", title: "Attach a file", onclick: () => fileInput.click() }, icon("paperclip"));
     const textarea = el("textarea", { placeholder: activeAskRun ? "Waiting for a reply…" : "Ask a question…", rows: "1" });
     textarea.disabled = !!activeAskRun;
+    textarea.value = composerDrafts[chat.id] || "";
+    textarea.addEventListener("input", () => { composerDrafts[chat.id] = textarea.value; });
     textarea.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.shiftKey) return;
       const enterSends = getEnterToSend();
@@ -397,11 +523,16 @@
       e.preventDefault();
       const text = textarea.value.trim();
       if (!text) return;
-      textarea.value = ""; textarea.disabled = true; sendBtn.disabled = true;
+      textarea.disabled = true; sendBtn.disabled = true;
       try {
         await api("/runs", { method: "POST", body: { chatId: chat.id, prompt: text, mode: "ask" } });
+        textarea.value = ""; delete composerDrafts[chat.id];
         await refresh();
-      } catch (err) { alert(err.message); await refresh(); }
+      } catch (err) {
+        // Not sent: the text stays in the box to send again.
+        composerDrafts[chat.id] = text;
+        alert(err.message); await refresh();
+      }
     });
     dock.appendChild(form);
 
@@ -416,6 +547,33 @@
     dock.appendChild(enterHint);
 
     $("#center").appendChild(dock);
+  }
+
+  // An answer ends with "**Sources**" and one numbered line per source
+  // (bedrock.server.answers). Shown as a short list, not raw markdown; a file
+  // opens its download and a memory note opens Memory.
+  function splitSources(text) {
+    const marker = "\n\n**Sources**\n";
+    const at = text.lastIndexOf(marker);
+    if (at < 0) return { body: text, sources: [] };
+    const sources = text.slice(at + marker.length).split("\n").map((l) => l.trim()).filter(Boolean)
+      .map((l) => { const m = l.match(/^(?:(\d+)\.|-)\s*(.*)$/); return m ? { n: m[1] || "", label: m[2] } : { n: "", label: l }; });
+    return { body: text.slice(0, at), sources };
+  }
+  function renderSourceList(sources, chat) {
+    const list = el("div", { class: "msg-sources" }, [el("div", { class: "msg-sources-title" }, "Sources")]);
+    sources.forEach((s) => {
+      let node;
+      const file = s.label.startsWith("File: ") && (state.artifacts || []).find((a) => a.name === s.label.slice(6)
+        && (!chat || a.chatId === chat.id || (chat.projectId && a.projectId === chat.projectId) || (!a.chatId && !a.projectId)));
+      if (file) node = el("a", { href: `${API}/artifacts/${file.id}/download`, title: "Download this file" }, s.label);
+      else if (s.label.startsWith("Memory: ")) node = el("a", { onclick: (e) => {
+        e.preventDefault(); view = "memory"; $$(".nav-item[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === "memory")); render(true);
+      }, href: "#", title: "Open Memory" }, s.label);
+      else node = el("span", {}, s.label);
+      list.appendChild(el("div", { class: "msg-source" }, [s.n ? el("span", { class: "muted" }, `[${s.n}] `) : null, node]));
+    });
+    return list;
   }
 
   async function createChat(projectId = null) {
@@ -1696,6 +1854,7 @@
         el("a", { class: "btn small", href: base + "?format=html&download=1" }, [icon("download"), "HTML"]),
         el("a", { class: "btn small", href: base + "?format=md&download=1" }, [icon("download"), "Markdown"]),
         el("a", { class: "btn small", href: base + "?format=json&download=1" }, [icon("download"), "JSON"]),
+        el("a", { class: "btn small", href: base + "?format=pptx&download=1", title: "A condensed slide deck made from this report; the report is the full record" }, [icon("download"), "PowerPoint"]),
         deleteReviewButton(d),
       ]));
       if (saved) card.appendChild(el("p", { class: "small muted" }, `Saved to the workspace ${saved === 1 ? "once" : saved + " times"} — chats in that project (or your own chats, if no project) can use it.`));
@@ -1846,6 +2005,10 @@
   async function decide(runId, decision) {
     try { await api(`/runs/${runId}/decision`, { method: "POST", body: { decision } }); await refresh(); }
     catch (err) { alert(err.message); }
+  }
+  async function retryRun(runId) {
+    try { await api(`/runs/${runId}/retry`, { method: "POST" }); await refresh(); }
+    catch (err) { alert(err.message); await refresh(); }
   }
   async function cancelRun(runId) {
     try { await api(`/runs/${runId}/cancel`, { method: "POST" }); await refresh(); }

@@ -464,8 +464,18 @@ a report is byte-identical to one written before the check existed.
 ### Stage 8 — Render
 
 JSON → Markdown → self-contained HTML (no external assets; hovering a citation
-shows the exact sentence it rests on). PPTX later via `python-pptx`: the
-report is structured data, so **the deck is a renderer, not a rewrite**.
+shows the exact sentence it rests on; a table of contents and links from each
+claim to its evidence and from each reference to the sentences that cite it,
+with no scripts). The report is structured data, so **the PowerPoint deck is a
+renderer, not a rewrite**: [report/slides.py](../../src/bedrock/litreview/report/slides.py)
+condenses a finished report into slides (question and scope, Answer with key
+limitations, how the studies line up, one slide per written section, Safety
+with "no reported harm is not evidence of safety", limitations, linked
+references, and the verbatim quotes behind every cited sentence). Every
+statement on a slide is one the report kept; text that does not fit continues
+on a "(cont.)" slide rather than being cut or shrunk; there are no charts. The
+Research tab's **PowerPoint** button downloads it
+(`/report?format=pptx`; needs `python-pptx`, in the `server` extra).
 
 ### Stage 9 — Chat
 
@@ -770,15 +780,30 @@ The same review runs inside the terminal app, beside the chat:
 /reviews verify <run-id>
 ```
 
-**Before the first run with a model,** the server needs a context window of at
-least 12,288 tokens: `context_window = 12288` in `~/.config/bedrock/config.toml`
-(or `BEDROCK_CONTEXT_WINDOW=12288`), with `OLLAMA_CONTEXT_LENGTH=12288` set
-where Ollama is started. Extraction sends about 4,300 tokens of prompt and
-allows a 4,096-token reply, and a smaller window silently truncates it.
-`bedrock-litreview ask` says so before it starts rather than after.
+**Before the first run with a model,** run `bedrock-litreview doctor`. It
+checks, without sending a prompt, that the model server answers, accepts this
+client's key, offers the models the review's model set names, gives each a
+context window of at least 12,288 tokens, and can constrain output to a JSON
+schema - and says what to change if not.
 
-The server itself is bedrock's: `api_base` in `~/.config/bedrock/config.toml`,
-or `BEDROCK_API_BASE`. Only the model *names* live here, in
+The window matters most. Extraction sends about 4,300 tokens of prompt and
+allows a 4,096-token reply, and a server with a smaller window does not refuse
+it: it drops the start of the prompt - the instructions - and the model answers
+without them. **The Ollama app's default is 4,096 tokens on a 16 GB Mac**
+(measured on 28 September 2026: a 14,000-token prompt was read as 2,050
+tokens). Set `OLLAMA_CONTEXT_LENGTH=12288` where Ollama is started (or the
+app's Settings -> Context length) and `context_window = 12288` in
+`~/.config/bedrock/config.toml`. The review checks the window the server
+reports (vLLM and the agent server always; Ollama once a model is loaded)
+before it starts, and every call's reported prompt size as it runs: a
+truncated prompt stops the run with the fix, rather than producing a report
+built on answers to questions the model never saw.
+
+Where the model server is: bedrock's `api_base` (`BEDROCK_API_BASE`); in
+agent-pack mode (`backend = "agentpack"`) the agent server's inference API at
+`agent_pack_api_base` + `/v1`, with the `agentpack` model set (roles `runner`
+and `specialist`) and the window each role reports; or `[litreview] api_base`
+to point reviews somewhere else. Only the model *names* live here, in
 `src/bedrock/litreview/defaults/models.yaml`. `--models office` names the vLLM
 model set; `--models laptop` a local Ollama (`ollama pull qwen3:8b`);
 `--models medgemma` MedGemma 1.5 4B (`ollama pull medgemma1.5:4b`), which is

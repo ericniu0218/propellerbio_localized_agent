@@ -51,6 +51,9 @@ over defaults. The agent pack's variable names are unchanged.
 | `BEDROCK_SERVER_LITERATURE_DIR` | `literature_dir` | none — a local literature mirror for `literature_search` |
 | — | `[server.connectors.<name>]` | none — systems of record for `eln_lims`, same shape as the terminal app's `[connectors.<name>]` |
 | `AIRGAP_CHECK` | `airgap_check` | `true` — real mode refuses to start if the internet is reachable |
+| `BEDROCK_SERVER_INFERENCE_TOKEN` | — (a secret: environment only) | unset = in real mode the inference API refuses everyone; in mock mode it serves only this machine |
+| `BEDROCK_SERVER_INFERENCE_ROLES` | `inference_roles` | `runner,specialist,director` — the roles the inference API serves |
+| `BEDROCK_SERVER_INFERENCE_API` | `inference_api` | `true` — `false` switches `/v1` off |
 | `BEDROCK_SERVER_ALLOW_MODEL_DOWNLOAD` | — | `false` — real mode sets `HF_HUB_OFFLINE=1` |
 | `DEMO_MODE` | — | follows the mode: mock → demo data and demo sign-in, real → none |
 | `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `APP_BASE_URL` | same, lower-case | unset = development sign-in |
@@ -65,6 +68,49 @@ length and `max_parallel`. The `${VAR:-default}` entries read
 like, and `MEETING_SUMMARY_MODEL/ENDPOINT/CONTEXT`. Roles on the same endpoint
 share one queue. Every call reports its token counts, and per-task budgets
 (`budgets.yaml`) stop a request that runs over.
+
+## The inference API (literature reviews from the terminal)
+
+A scientist's `/review` (and `bedrock-litreview ask`) runs the literature
+review pipeline on their own machine. In agent-pack mode their machine has no
+model, so each of the review's model calls - hundreds per review, each a
+narrow structured job - goes to this server's **inference API**, never to the
+conversational `/messages`:
+
+    GET  /v1/models             roles served, each with its window and capabilities
+    POST /v1/chat/completions   one call to one named role
+
+Models are named by role (`runner`, `specialist`, `director`); each entry
+reports the weights behind it as `root`, and the client records them on every
+review. Every call waits in the role's model-server queue at `USER_JOB`
+priority (the same queue the agents use), and is logged as metadata only -
+role, sizes, status, duration - never its text.
+
+What IT sets:
+
+- **A token.** Set `BEDROCK_SERVER_INFERENCE_TOKEN` to a long random value
+  and give each laptop the same value as its `api_key`
+  (`api_key = "..."` in `~/.config/bedrock/config.toml`, or `BEDROCK_API_KEY`).
+  Without a token a real-mode server refuses every inference call: behind a
+  reverse proxy on the same host every caller looks local, so "local only"
+  would not be a boundary. (A mock/development server without a token serves
+  only callers on the same machine.)
+- **Windows that are true.** A review needs at least 12,288 tokens per call.
+  Each role's `context_length` in `models.yaml` must not exceed the
+  `--max-model-len` its vLLM was started with; the API reports the smaller of
+  the two, and refuses a call that would not fit rather than let vLLM truncate
+  it.
+- **Capabilities.** `supports_json_schema` and `supports_seed` (default
+  `true`, as vLLM and Ollama do both) per role. Set either to `false` for an
+  engine that ignores it: the API then refuses such a request, and the review
+  says which model cannot do what, instead of silently getting free-form text.
+
+The API refuses any parameter it does not pass on (by name, HTTP 400), and in
+mock mode it still calls the roles' real model servers - fixture agents cannot
+honour a JSON schema. `GET /health` lists `inference_api` among its features,
+so a laptop can tell an older server apart. On a laptop,
+`bedrock-litreview doctor` checks the whole path: server, key, models,
+windows, structured output.
 
 ## Migrating an existing agent-pack deployment
 

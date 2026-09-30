@@ -19,7 +19,7 @@ lists them too.
     GET    /workspace/api/research/runs/{id}         one review, with its progress
     POST   /workspace/api/research/runs/{id}/cancel  stop it (finished stages are kept)
     POST   /workspace/api/research/runs/{id}/resume  carry on from the last finished stage
-    GET    /workspace/api/research/runs/{id}/report  ?format=html|md|json
+    GET    /workspace/api/research/runs/{id}/report  ?format=html|md|json|pptx
     POST   /workspace/api/research/runs/{id}/save    report -> a workspace file (project / chat context)
     DELETE /workspace/api/research/runs/{id}         remove it from this person's list
 
@@ -69,7 +69,11 @@ def review_settings():
     """The literature review's settings: bedrock's config.toml and its [litreview] table."""
     from bedrock.litreview.config import load_settings
 
-    return load_settings()
+    # This process is the agent server. Even where its config.toml says
+    # `backend = "agentpack"` (one machine running both, in development), a
+    # review here must reach the model server directly, never loop back
+    # through this server's own inference API.
+    return load_settings(as_server=True)
 
 
 _stack: AsyncExitStack | None = None
@@ -90,7 +94,8 @@ async def review_scheduler():
         from bedrock.litreview.service import standalone_scheduler
 
         stack = AsyncExitStack()
-        scheduler = await stack.enter_async_context(standalone_scheduler(load_bedrock_settings()))
+        scheduler = await stack.enter_async_context(
+            standalone_scheduler(load_bedrock_settings(), review_settings=review_settings()))
         if _scheduler is None:
             _stack, _scheduler = stack, scheduler
         else:  # another request opened one while this one waited
@@ -435,7 +440,17 @@ async def report(review_id: str, format: str = "html", download: bool = False, u
         return PlainTextResponse(to_markdown(rep), media_type="text/markdown", headers=headers)
     if format == "json":
         return Response(to_json(rep), media_type="application/json", headers=headers)
-    raise HTTPException(400, "format is html, md or json.")
+    if format == "pptx":
+        # A condensed deck made by code from the stored report (report/slides.py):
+        # no model, and the report itself is unchanged.
+        try:
+            from bedrock.litreview.report.slides import to_pptx
+        except ImportError:
+            raise HTTPException(501, "PowerPoint export needs python-pptx on the server: pip install -e \".[server]\".")
+        deck = await asyncio.to_thread(to_pptx, rep, f"review-{review['reportId']}")
+        return Response(deck, headers={"Content-Disposition": f'attachment; filename="{name}.pptx"'},
+                        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+    raise HTTPException(400, "format is html, md, json or pptx.")
 
 
 @router.post("/runs/{review_id}/save")

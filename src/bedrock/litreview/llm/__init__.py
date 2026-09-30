@@ -21,6 +21,7 @@ from bedrock.litreview.llm.client import (
 from bedrock.litreview.llm.prompts import Prompt, load_prompt
 from bedrock.litreview.llm.scheduled import (
     ModelServerUnavailable,
+    PromptTruncated,
     ReviewCancelled,
     ReviewInterrupted,
     SchedulerClient,
@@ -32,6 +33,7 @@ __all__ = [
     "LLMError",
     "ModelServerUnavailable",
     "Prompt",
+    "PromptTruncated",
     "ReviewCancelled",
     "ReviewInterrupted",
     "SchedulerClient",
@@ -53,6 +55,7 @@ def make_client(
     cache: bool = True,
     read_cache: bool = True,
     legacy_cache: bool = False,
+    context_windows: dict[str, int] | None = None,
 ) -> LLMClient:
     """The client a run uses, wrapped in the call cache.
 
@@ -68,6 +71,7 @@ def make_client(
             model_options={spec.name: spec.options for spec in settings.models.values()},
             seed=settings.seed,
             context_window=settings.context_window,
+            context_windows=context_windows,
             cancel=cancel,
         )
     else:

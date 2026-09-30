@@ -139,6 +139,16 @@ class ModelInfo:
     same weights, so a record of it says which model actually wrote something.
     vLLM does not report one, so there it stays ``None``."""
 
+    root: str | None = None
+    """The model behind ``id`` when the server names models by an alias: vLLM's
+    ``root`` field (the path it loaded), and bedrock's agent server, which
+    names its models by role (``runner``) and reports the deployed weights here."""
+
+    capabilities: frozenset[str] | None = None
+    """What the server says it supports for this model, among ``json_schema``
+    (constrained JSON output) and ``seed``. ``None`` means the server did not
+    say - most do not - which is "unknown", never "unsupported"."""
+
 
 class InferenceBackend(Protocol):
     """Everything the client needs from a model server."""

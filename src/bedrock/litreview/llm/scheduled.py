@@ -65,6 +65,36 @@ class ModelServerUnavailable(ReviewInterrupted):
     """The model server is unreachable, or did not answer in time."""
 
 
+class PromptTruncated(ReviewInterrupted):
+    """The server read fewer prompt tokens than the prompt can possibly hold.
+
+    A server whose context window is smaller than the prompt does not refuse
+    it: Ollama keeps the *end* and drops the start, which is where the
+    instructions are, and the model then answers a question it was never
+    shown. Measured on this project's own laptop setup (Ollama 0.34, 16 GB
+    Mac, no `OLLAMA_CONTEXT_LENGTH`): a 4,096-token window read 2,050 tokens of
+    a 14,000-token prompt and answered wrongly. Every later call would be cut
+    the same way, so this stops the run rather than skipping one item.
+    """
+
+
+MAX_CHARACTERS_PER_TOKEN = 7.0
+"""No tokenizer a review runs on packs English, numbers and markup into fewer
+tokens than one per ~6 characters (`bedrock.inference.tokens` bounds its own
+learned ratio at 6). A server that reports reading fewer tokens than
+`len(prompt) / 7` did not read the whole prompt."""
+
+MIN_CHECKED_CHARACTERS = 2_000
+"""Short prompts are mostly per-message wrapping tokens; they are not checked."""
+
+
+def truncated(prompt: str, prompt_tokens: int | None) -> bool:
+    """True when a reported prompt count proves the server dropped part of it."""
+    if not prompt_tokens or len(prompt) < MIN_CHECKED_CHARACTERS:
+        return False
+    return prompt_tokens < len(prompt) / MAX_CHARACTERS_PER_TOKEN
+
+
 class SchedulerClient:
     """litreview's `LLMClient`, served by bedrock's `Scheduler`.
 
@@ -80,6 +110,7 @@ class SchedulerClient:
         model_options: dict[str, dict[str, Any]] | None = None,
         seed: int = 0,
         context_window: int = 12288,
+        context_windows: dict[str, int] | None = None,
         cancel: threading.Event | None = None,
         priority: Priority = Priority.USER_JOB,
     ) -> None:
@@ -88,10 +119,14 @@ class SchedulerClient:
         self._options = model_options or {}
         self._seed = seed
         self._window = context_window
+        # Per model, as `service.preflight` established them: the smaller of
+        # what the server reports and what was configured.
+        self._windows = dict(context_windows or {})
         self._cancel = cancel
         self._priority = priority
         self._last_model = ""
         self._digests: dict[str, str] | None = None
+        self._roots: dict[str, str] = {}
 
     # ---- The LLMClient protocol ---------------------------------------------
 
@@ -114,11 +149,12 @@ class SchedulerClient:
         # of the call cache key, so a smaller one would look like a different
         # call and re-ask the server for everything already answered - and a
         # short extraction reply is truncated JSON, which is a failure anyway.
+        window = self._windows.get(model) or self._window
         needed = estimate_tokens(prompt) + max_tokens
-        if needed > self._window:
+        if needed > window:
             raise LLMError(
                 f"prompt plus a {max_tokens}-token reply needs ~{needed} tokens; "
-                f"window is {self._window}"
+                f"window is {window}"
             )
 
         thinking = self._options.get(model, {}).get("thinking")
@@ -133,14 +169,27 @@ class SchedulerClient:
             seed=self._seed,
         )
         self._last_model = model
+        reported: list = []
         raw = self._run(
             self._scheduler.complete(
                 model,
                 [{"role": "user", "content": prompt}],
                 priority=self._priority,
                 options=options,
+                on_usage=reported.append,
             )
         )
+        read = reported[-1].prompt_tokens if reported else None
+        if truncated(prompt, read):
+            raise PromptTruncated(
+                f"the model server read only {read:,} tokens of a prompt of about "
+                f"{estimate_tokens(prompt):,} ({len(prompt):,} characters) sent to {model!r}: its context "
+                "window is smaller than this review was told, so the start of every prompt - the "
+                "instructions - is being dropped. Set the server's window to at least "
+                f"{window:,} tokens and resume: for Ollama, OLLAMA_CONTEXT_LENGTH={window} "
+                "(or the Ollama app's Settings -> Context length); for vLLM, --max-model-len. "
+                "Nothing from this call was kept."
+            )
         return strip_thinking(raw)
 
     @property
@@ -156,7 +205,11 @@ class SchedulerClient:
         that report no digest (vLLM) just give the name back.
         """
         digest = self._digest(model)
-        return f"{model}@{digest}" if digest else model
+        root = self._roots.get(model) if self._roots else None
+        # A role alias (bedrock's agent server: "specialist") says nothing about
+        # the weights; the server's `root` does, so the record names both.
+        name = f"{model}={root}" if root else model
+        return f"{name}@{digest}" if digest else name
 
     # Identity keys an operator may declare per model in models.yaml. They
     # are recorded as declared - the server is not asked to confirm them.
@@ -217,6 +270,8 @@ class SchedulerClient:
                 for info in self._run(self._scheduler.backend.list_models()):
                     if info.digest:
                         self._digests[info.id] = str(info.digest)[:12]
+                    if getattr(info, "root", None):
+                        self._roots[info.id] = str(info.root)
             except ReviewCancelled:
                 raise
             except Exception:  # noqa: BLE001 - see the docstring

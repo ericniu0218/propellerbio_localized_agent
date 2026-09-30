@@ -198,7 +198,7 @@ async def _handle_normal(
         content, citations = await specialist.execute(node, extra=extra, context=context)
         await specialist.emit_status(AgentStatus.DONE, task_id, node.title)
 
-    formatted = format_answer(content, citations)
+    formatted = format_answer(content, citations, context)
     result_ref = store.store_result(session_id, formatted)
 
     node.status = TaskStatus.COMPLETED
@@ -260,7 +260,7 @@ async def _handle_hard(
 
     # The answer is fixed now, before any human sees it: if it needs approval,
     # the text approved is the text stored here, and the text delivered.
-    formatted = format_answer(final_text, upstream_citations)
+    formatted = format_answer(final_text, upstream_citations, context)
     result_ref = store.store_result(session_id, formatted)
 
     # Human approval gate for high-stakes final output — see

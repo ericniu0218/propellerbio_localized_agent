@@ -449,11 +449,7 @@ async def test_a_model_the_server_does_not_have_names_the_pull_command(
 # ---------------------------------------------------------------------------
 
 
-async def test_agent_pack_mode_says_where_reviews_run():
-    from bedrock.agentpack_app import AGENTPACK_REVIEW_NOTICE
-
-    assert "default mode" in AGENTPACK_REVIEW_NOTICE
-    assert "bedrock-litreview" in AGENTPACK_REVIEW_NOTICE
+# Agent-pack mode runs `/review` for real: tests/test_agentpack_review.py.
 
 
 # ---------------------------------------------------------------------------

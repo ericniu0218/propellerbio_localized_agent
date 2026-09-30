@@ -18,9 +18,41 @@ delivers that same stored text afterwards.
 
 from __future__ import annotations
 
+import re
 
-def format_answer(content: str, citations: list[str]) -> str:
+# A marker the model wrote for material it was never given: an invented id.
+_STRAY_MARKER = re.compile(r"\s?\[source:[^\]\s]{1,80}\]")
+MEMORY_PREFIX = "User-approved context: "
+
+
+def source_label(block) -> str:
+    """What a person reads for one piece of material: its name, not its id."""
+    title = str(block.title)
+    if getattr(block, "kind", "") == "memory" or title.startswith(MEMORY_PREFIX):
+        return "Memory: " + title.removeprefix(MEMORY_PREFIX)
+    if getattr(block, "kind", "") == "artifact":
+        return "File: " + title
+    return title
+
+
+def format_answer(content: str, citations: list[str], sources: list | None = None) -> str:
+    """The text as drafted, with its citations numbered and named.
+
+    ``citations`` stay what they were for machines (``source:ID`` for material
+    sent with the message, a tool's own reference otherwise). For a person,
+    each ``[source:ID]`` in the text becomes ``[1]``, ``[2]``... and the list
+    below names the file or memory note it points to, rather than a 32-letter
+    id nobody can read. ``sources`` is the material the message was sent with.
+    """
     body = content.strip()
-    if not citations:
+    labels = {f"source:{block.id}": source_label(block) for block in (sources or [])}
+    ordered = list(dict.fromkeys(citations))
+    for number, citation in enumerate(ordered, 1):
+        if citation in labels:
+            body = body.replace(f"[{citation}]", f"[{number}]")
+    body = _STRAY_MARKER.sub("", body).strip()
+    if not ordered:
         return body
-    return body + "\n\n**Sources**\n" + "\n".join(f"- {citation}" for citation in citations)
+    return body + "\n\n**Sources**\n" + "\n".join(
+        f"{number}. {labels.get(citation, citation)}" for number, citation in enumerate(ordered, 1)
+    )

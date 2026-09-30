@@ -226,3 +226,34 @@ def is_nonprimary(record: dict[str, Any] | None) -> bool:
 
 def designs_for(papers: list[Paper]) -> dict[str, dict[str, Any]]:
     return {p.id: design_signals(p) for p in papers}
+
+
+_DESIGN_ORDER = ("human_rct", "human_interventional_other", "human_genetic", "human_observational")
+
+
+def design_rank(record: dict[str, Any] | None, paper: Paper | None = None) -> int:
+    """Which of two equally relevant papers to read first, by what the paper
+    itself says it is: a randomised trial, another trial, human genetics, an
+    observational study, then everything unstated, a case report, an animal
+    study, cells. A reading order, not a quality score - relevance (the
+    grade) always decides first, and every finding is still checked on its own.
+
+    Added after a tirzepatide / liver-fat review graded the randomised trial
+    that measured liver fat by MRI (SURPASS-3 MRI) 3/3 and ranked it 21st,
+    behind mouse studies of the same grade, so the 16-paper plan never read it.
+    Used for efficacy, safety and mechanism questions; target identification
+    keeps its lexical order (measured: no gain in reference-target recall on
+    the frozen corpora, and a loss on asthma)."""
+    title = (paper.title if paper is not None else "") or ""
+    types = " ".join(paper.signals.publication_types).lower() if paper is not None else ""
+    if "case report" in types or re.search(r"\bcase reports?\b|\ba (?:rare )?case of\b", title, re.I):
+        return 5
+    labels = grounded_labels(record)
+    for i, label in enumerate(_DESIGN_ORDER):
+        if label in labels:
+            return i
+    if "animal_interventional" in labels:
+        return 6
+    if "in_vitro" in labels:
+        return 7
+    return 4

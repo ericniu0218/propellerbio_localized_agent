@@ -31,6 +31,10 @@ rank:
   # those that pass the exact-entity gate. The rest are ranked lexically only.
   # Each grade is one small model call, so this bounds the cost of a question.
   max_graded: 40
+  # Ordering among equally graded papers: for efficacy, safety and mechanism
+  # questions, study design from the paper's own publication type and wording
+  # (randomised trial first, cells last; study_design.design_rank), then
+  # lexical score. Target identification uses lexical score alone.
   # Which papers get those grades. `lexical`: the top max_graded by BM25.
   # `evidence_aware` (experimental, opt-in): the same budget, but lanes of it
   # are reserved first for papers whose own publication type or design

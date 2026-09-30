@@ -36,6 +36,18 @@ class LocalCommandsMixin:
     """Own the commands whose behavior is identical in both app modes."""
 
     LOCAL_DIGEST_USES_MODEL = False
+    """Whether `/digest` adds its optional model summary. The default mode sets
+    it (its chat model is on the same server as the chat). Agent-pack mode
+    leaves it off on purpose, even though the agent server's inference API
+    (`bedrock.server.api.routes_inference`) now gives this client a route to
+    a model: the summary would send a whole file's text to the server's model,
+    which is a separate decision from chatting there; it would have to choose
+    a role; and `context.digest.summarize` sizes its sample from the local
+    machine profile's window, which says nothing about a remote model (the
+    same mistake `/review` made before its window came from the server).
+    Nothing depends on it: the digest itself - the searchable, extractive
+    store - is built without a model in both modes. `/review` does not use
+    this flag; see `bedrock.ui.review_mixin`."""
 
     settings: Settings
     services: ComplianceServices

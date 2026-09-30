@@ -21,7 +21,13 @@ from bedrock.litreview.sources.http import SourceError, SourceHTTP
 log = logging.getLogger(__name__)
 
 EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest"
-_TAG = re.compile(r"<[^>]+>")
+# A tag is "<" then a letter or "/": never "<0.05". The old pattern, "<[^>]+>",
+# ran from a literal less-than in "p<0·0001). <h4>Interpretation</h4>" to the
+# heading's ">", deleting the p-value and gluing the label to the next sentence
+# ("pInterpretationTirzepatide showed ...").
+_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9:_-]*(?:\s[^<>]*)?/?>")
+_HEADING = re.compile(r"<h[1-6][^<>]*>(.*?)</h[1-6]\s*>", re.I | re.S)
+_BLOCK = re.compile(r"</?(?:p|br|div|li|ul|ol|sec|title|abstract)\b[^<>]*/?>", re.I)
 
 
 def clean(text: str | None) -> str:
@@ -29,7 +35,13 @@ def clean(text: str | None) -> str:
         return ""
     # Unescape first: Europe PMC sends "&lt;sup&gt;+&lt;/sup&gt;", which only
     # becomes a tag to strip once it is unescaped.
-    text = _TAG.sub("", html.unescape(html.unescape(text)))
+    text = html.unescape(html.unescape(text))
+    # A structured abstract's heading becomes "Label: ", which the extraction
+    # strips from a quote (`extract/verify.strip_leading_label`), and block
+    # tags become spaces, so no two sections run together.
+    text = _HEADING.sub(lambda m: f" {m.group(1).strip()}: ", text)
+    text = _BLOCK.sub(" ", text)
+    text = _TAG.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
 
 

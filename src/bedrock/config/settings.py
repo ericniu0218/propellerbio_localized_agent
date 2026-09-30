@@ -152,6 +152,17 @@ class Settings:
     ``BEDROCK_PROFILE``; ``context_window = N`` or ``BEDROCK_CONTEXT_WINDOW``
     overrides just the window."""
 
+    context_window_configured: int | None = None
+    """The window someone actually wrote down (``context_window`` or
+    ``BEDROCK_CONTEXT_WINDOW``), or None when ``profile.context_window`` is only
+    the profile's default. The literature review needs to know the difference:
+    a default describes a laptop's own Ollama, and says nothing about a model
+    served somewhere else (``bedrock.litreview.config``)."""
+
+    profile_configured: bool = False
+    """Whether ``profile`` was chosen (config file or ``BEDROCK_PROFILE``)
+    rather than defaulted."""
+
     agent_pack_api_base: str = DEFAULT_AGENT_PACK_API_BASE
     user_id: str = field(default_factory=getpass.getuser)
     display_name: str | None = None
@@ -340,6 +351,9 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     server = file_values.get("server") or {}
     agents = _agent_settings(file_values.get("agents"))
     profile = _profile(env, file_values)
+    window_value = env.get("BEDROCK_CONTEXT_WINDOW") or file_values.get("context_window")
+    context_window_configured = profile.context_window if window_value not in (None, "") else None
+    profile_configured = bool(env.get("BEDROCK_PROFILE") or file_values.get("profile"))
 
     return Settings(
         backend=backend,
@@ -352,6 +366,8 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         save_history=save_history,
         auto_context=auto_context,
         profile=profile,
+        context_window_configured=context_window_configured,
+        profile_configured=profile_configured,
         action_history_dir=action_history_dir,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,

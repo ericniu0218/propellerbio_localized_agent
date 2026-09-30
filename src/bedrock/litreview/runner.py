@@ -70,7 +70,14 @@ from bedrock.litreview.models import (
 from bedrock.litreview.sources.base import PaperSearcher
 from bedrock.litreview.sources.corpus import file_sha256
 from bedrock.litreview.stages.s0_question import QuestionError, parse_question
-from bedrock.litreview.stages.s1_collect import NothingFound, collect
+from bedrock.litreview.stages.s1_collect import (
+    NothingFound,
+    collect,
+    collection_signature,
+    incomplete_search,
+    stale_collection,
+    terms_signature,
+)
 from bedrock.litreview.stages.s2_gate import gate_papers
 from bedrock.litreview.stages.s3_rank import rank_papers
 from bedrock.litreview.stages.s4_plan import build_plan
@@ -85,6 +92,10 @@ from bedrock.litreview.report.verification_context import append_context, captur
 from bedrock.litreview.stages.s8_render import render, to_json
 
 log = logging.getLogger(__name__)
+
+COLLECTION_NOTE = "collection_note.v1"
+"""Why this run's papers were not searched for its own reading of the
+question, when they were not. Written into the report's gaps."""
 
 _GATES = TypeAdapter(dict[str, GateResult])
 _RANKED = TypeAdapter(list[RankedPaper])
@@ -153,6 +164,25 @@ def _record_inputs(run: Run) -> None:
             run.input_hashes[k] = v
         elif run.input_hashes[k] != v:
             run.input_hashes[f"resumed:{k}"] = v
+
+
+def _inferred_collection(db: Database, question_id: str, frozen: list[Paper]) -> str | None:
+    """The search signature of a set frozen before signatures were recorded.
+
+    The earliest run of this question whose manifest holds exactly the current
+    set is the run that collected it (a later reuse or a resume holds the same
+    set; a refresh replaces it), so that run's reading of the question is what
+    was searched for. None when no such run is on record."""
+    ids = sorted(p.id for p in frozen)
+    runs = sorted((r for r in db.recent_runs(10_000) if r.question_id == question_id), key=lambda r: r.started)
+    for r in runs:
+        manifest = db.get_artifact(r.id, "papers_manifest")
+        spec_body = db.get_artifact(r.id, "spec")
+        if manifest is None or spec_body is None:
+            continue
+        if sorted(pid for pid, _ in json.loads(manifest)) == ids:
+            return terms_signature(QuestionSpec.model_validate_json(spec_body))
+    return None
 
 
 def code_version() -> str | None:
@@ -253,6 +283,7 @@ def answer_question(
     # run reads the exact paper versions it pinned, never the question's
     # current set: its gates, ranking and plan were built from those.
     acquisition = None
+    collection_note: str | None = None
     pinned = db.get_artifact(run.id, "papers_manifest") if resume_run_id else None
     if pinned is not None:
         collected = db.get_paper_versions(json.loads(pinned))
@@ -264,18 +295,40 @@ def answer_question(
             log.warning("run %s pinned no papers; resuming on the question's current set, "
                         "which may have changed since its later stages were built", run.id)
         frozen = db.get_papers(spec.id)
-        if papers is None and frozen and not refresh_papers:
+        recorded = db.collected_for(spec.id) if frozen else None
+        if frozen and recorded is None:
+            recorded = _inferred_collection(db, spec.id, frozen)
+        wanted = collection_signature(spec, searcher) if papers is None else None
+        # The set is frozen per question text, but the same text can be read
+        # two ways (with and without a model), and each reading searches for
+        # different terms. A search asked for now, for a reading the frozen
+        # set was not collected under, collects again rather than silently
+        # answering from papers nobody searched for its terms.
+        recollect = searcher is not None and wanted is not None and recorded != wanted
+        if papers is None and frozen and not refresh_papers and not recollect:
             collected = frozen
             manifest = db.save_paper_versions(frozen)
+            collection_note = " ".join(
+                n for n in (stale_collection(recorded, spec), db.collection_incomplete(spec.id)) if n) or None
             say(f"papers: reusing the frozen set of {len(collected)} for this question")
+            if collection_note:
+                log.warning("run %s: %s", run.id, collection_note)
+                say("papers: WARNING - this set was collected for a different reading of the question; "
+                    "the report says so. Search again with --search --refresh.")
         else:
+            if frozen and recollect and not refresh_papers and papers is None:
+                say("papers: the stored set was collected for a different reading of this question; "
+                    "collecting again")
             collected = collect(spec, searcher=searcher, papers=papers)
             if not collected:
                 # A report over no papers says nothing and looks like an answer.
                 raise NothingFound("no papers were found for this question: the search returned nothing, "
                                "or the corpus file is empty")
-            manifest = db.save_papers(spec.id, collected)
             report = getattr(searcher, "last_report", None) if papers is None else None
+            collection_note = incomplete_search(report)
+            if collection_note:
+                say(f"papers: WARNING - {collection_note}")
+            manifest = db.save_papers(spec.id, collected, collected_for=wanted, incomplete=collection_note)
             if report is not None:
                 acquisition = acquisition_summary(report, len(collected))
             corpus_path = getattr(searcher, "path", None) if papers is None else None
@@ -285,6 +338,10 @@ def answer_question(
                 )
             say(f"papers: collected {len(collected)}")
         manifest_body = json.dumps([[pid, sha] for pid, sha in manifest])
+    if pinned is not None:
+        collection_note = load(COLLECTION_NOTE) or None
+    elif collection_note:
+        db.put_artifact(run.id, COLLECTION_NOTE, collection_note)
     run.papers_sha256 = hashlib.sha256(manifest_body.encode("utf-8")).hexdigest()
     by_id = {p.id: p for p in collected}
     done(1, "papers_manifest", manifest_body)
@@ -439,6 +496,8 @@ def answer_question(
         integrity_check_stopped=(integrity.get("automatic_check") or {}).get("stopped")
         if isinstance(integrity.get("automatic_check"), dict) else None,
         added_back=added_back_in(integrity),
+        collection_note=collection_note,
+        designs=designs,
     )
     report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions)
     # The integrity check: everything the report shows as the paper's words is

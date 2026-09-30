@@ -30,6 +30,7 @@ import re
 
 from pydantic import ValidationError
 
+from bedrock.litreview.study_design import design_rank
 from bedrock.litreview.extract.verify import normalize as normalize_text
 from bedrock.litreview.extract.verify import locate_quote
 from bedrock.litreview.facets import agent_label, paper_facets, subject_label
@@ -394,7 +395,14 @@ def rank_papers(
         if r.gate == "pass" and r.study_kind == "review":
             gate_rank = 1
         graded = 0 if r.grade is not None else 1
-        return (gate_rank, graded, -(r.grade or 0), -len(r.facets), -r.lexical_score, r.paper_id)
+        # Among equally relevant papers, what kind of study it is (the
+        # paper's own publication type and wording, `study_design.design_rank`).
+        # Not for target identification: on the frozen searcher corpora it moved
+        # "reference targets named in papers read" by -1 (asthma) to +1
+        # (psoriasis, obesity) - no gain, and a loss where the client works most.
+        design = (design_rank((designs or {}).get(r.paper_id), by_id.get(r.paper_id))
+                  if r.grade and spec.question_type != "target_identification" else 0)
+        return (gate_rank, graded, -(r.grade or 0), design, -len(r.facets), -r.lexical_score, r.paper_id)
 
     ranked = sorted(rows.values(), key=order)
     for i, row in enumerate(ranked, 1):

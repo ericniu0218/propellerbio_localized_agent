@@ -116,3 +116,15 @@ def test_the_laptop_window_is_flagged_as_too_small_for_a_literature_review():
     # A machine that can already run one is not told to change anything.
     for name in ("workstation", "server"):
         assert "/review" not in server_settings_note(PROFILES[name])
+
+
+def test_a_live_review_check_replaces_the_static_review_advice(tmp_path, monkeypatch):
+    """Once the server answers, the review's own check - which knows the
+    window the server really gives - speaks for /review, once."""
+    monkeypatch.setattr(doctor, "DEFAULT_CONFIG_PATH", tmp_path / "does-not-exist.toml")
+    monkeypatch.setattr(doctor, "_reachable", _always_reachable)
+    monkeypatch.setattr(doctor, "review_notes",
+                        lambda settings: ["Literature reviews (/review) cannot run yet: the window is 4,096"])
+    issues = doctor.run_first_run_check(Settings(backend="openai"))
+    assert sum("/review" in issue for issue in issues) == 1
+    assert any("4,096" in issue for issue in issues)

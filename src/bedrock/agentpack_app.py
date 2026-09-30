@@ -50,6 +50,7 @@ from bedrock.ui.argparsing import CommandUsageError
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
 from bedrock.ui.digest_command import AUTO_CONTEXT_OFF_HINT
 from bedrock.ui.prompt_queue import PromptQueuePanel
+from bedrock.ui.review_mixin import ReviewCommandsMixin
 from bedrock.ui.fold_command import (
     parse_fold_request,
     parse_structure_argument,
@@ -78,14 +79,7 @@ PENDING_REVIEW_PREFIX = "_⏳ Drafting — not yet compliance-reviewed_\n\n---\n
 # still takes real time after that.
 REVIEWING_PREFIX = "_🔍 Reviewing before this is shown as final…_\n\n---\n\n"
 
-AGENTPACK_REVIEW_NOTICE = (
-    "Literature reviews are not available in agent-pack mode. Run one in the "
-    "default mode (start `bedrock` without `BEDROCK_BACKEND=agentpack`) or from "
-    "a shell with `bedrock-litreview ask`. `/reviews` works here either way: it "
-    "only reads what is already on this machine."
-)
-
-AGENTPACK_HELP_TEXT = """\
+AGENTPACK_HELP_TEXT = r"""\
 **Commands**
 
 | Command | What it does |
@@ -97,6 +91,8 @@ AGENTPACK_HELP_TEXT = """\
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
+| `/review <question> [--search \| --corpus FILE]` | Run a literature review; its model calls go to the AI system's inference API |
+| `/review stop` | Stop the running review (finished stages are kept; `--resume <run-id>` carries on) |
 | `/reviews` | Literature reviews recorded on this machine |
 | `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
 | `/audit` | What this client has done on this machine |
@@ -125,8 +121,9 @@ interactively in PyMOL.”
 
 `/runs`, `/confidence`, `/reviews` and `/audit` read local files only. They keep
 working when the AI system is unreachable, and nothing they show is sent to a
-model. Starting a literature review needs the default mode or a shell; see
-`/review` below.
+model. `/review` runs the review on this machine and sends each model call to
+the AI system's inference API (named models, temperature 0, JSON-schema
+output), never through the chat; `bedrock-litreview doctor` checks it is ready.
 """
 
 
@@ -137,7 +134,7 @@ TIERS = {"quick": "runner", "standard": "specialist", "deep": "director", "auto"
 TIER_LABELS = {"runner": "Quick Answer", "specialist": "Standard Task", "director": "Deep Analysis"}
 
 
-class AgentPackApp(LocalCommandsMixin, App[None]):
+class AgentPackApp(ReviewCommandsMixin, LocalCommandsMixin, App[None]):
     TITLE = "Bedrock Private AI"
     CSS_PATH = "ui/styles.tcss"
     BINDINGS = [
@@ -167,6 +164,7 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
         self._init_local_commands(sources=sources, services=services)
+        self._init_review_commands()
         self._scientific_job_running = False
         # Pending approvals by request fingerprint, so a re-delivered event
         # reuses its prompt instead of asking the same question twice. In
@@ -295,10 +293,9 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
                 else:
                     self.open_pymol(structure)
             case "review" | "litreview":
-                # The pipeline calls a model server directly and is not an
-                # agent; there is nothing for the agent system to run it on.
-                # `/reviews` still works here, because it reads local files.
-                await self.post_notice(AGENTPACK_REVIEW_NOTICE, kind="error")
+                # The pipeline runs here; its model calls go to the agent
+                # server's inference API, not its chat (ui/review_mixin.py).
+                await self.start_review(command.args)
             case _:
                 await self.post_notice(
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",
@@ -1016,6 +1013,7 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
             return
         if self._workspace_session is not None:
             self._workspace_session.close()
+        await self.close_review_commands()
         await self.client.close()
         self.exit()
 

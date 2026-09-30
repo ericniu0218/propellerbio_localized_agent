@@ -21,6 +21,11 @@ model_sets:
   laptop:      # Ollama on a 16 GB machine
     small:  {name: "qwen3:8b", thinking: false}
     medium: {name: "qwen3:8b", thinking: false}
+  agentpack:   # bedrock's agent server (BEDROCK_BACKEND=agentpack): its inference API names
+               # models by role, and each role's weights are whatever the server's own
+               # models.yaml deploys (reported back as `root` and recorded on the run).
+    small:  {name: runner, thinking: false}
+    medium: {name: specialist, thinking: false}
   medgemma:    # MedGemma 1.5 4B via Ollama; produced docs/litreview/BENCHMARK_RESULTS.md. No thinking mode.
     small:  {name: "medgemma1.5:4b"}
     medium: {name: "medgemma1.5:4b"}

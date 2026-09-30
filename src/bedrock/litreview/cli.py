@@ -110,7 +110,9 @@ def _ask(args) -> int:
         # machine allowed to search is usually not the machine with the GPU.
         if args.no_model:
             return await review(None)
-        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+        # The review's own endpoint: bedrock's `api_base`, or in agent-pack
+        # mode the agent server's inference API (`config.resolve_endpoint`).
+        async with standalone_scheduler(load_bedrock_settings(), review_settings=settings) as scheduler:
             return await review(scheduler)
 
     try:
@@ -341,6 +343,9 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("bundle", type=Path)
     imp.add_argument("--db", help="database file (default: the configured one)")
 
+    sub.add_parser("doctor", help="check this machine can run a review: server, models, window, structured "
+                                  "output (sends no prompt)")
+
     runs = sub.add_parser("runs", help="list the most recent runs")
     runs.add_argument("--limit", type=int, default=20)
 
@@ -366,9 +371,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _doctor() -> int:
+    """Print every readiness check; exit 0 only when a review can run."""
+    from bedrock.litreview.readiness import operational, review_readiness
+
+    checks = asyncio.run(review_readiness())
+    for check in checks:
+        print(check.line())
+    return 0 if operational(checks) else 1
+
+
 def _run(args) -> int:
     """Everything after the arguments are read. Split out so `main` has exactly
     one place that turns a `ConfigError` into a message."""
+    if args.command == "doctor":
+        return _doctor()
     if args.command == "search":
         from bedrock.litreview.knowledge import load_knowledge
         from bedrock.litreview.sources.corpus import write_papers

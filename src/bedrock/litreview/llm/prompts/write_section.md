@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 job: write
 model_tier: medium
 ---
@@ -31,6 +31,13 @@ finding. Sentences written from it carried numbers and subjects ("in human
 tissues") no quote contained, and the guard now checks against the paper's
 text only, so they were dropped anyway. Items carry the quote and, where the
 paper names the subjects in another sentence, that sentence as "Context".
+
+v5, from the first report a scientist ran (tirzepatide and liver fat, qwen3:8b):
+the Answer listed p-values ("FLI significantly decreased (p < 0.001)") while
+the quotes beside them gave the changes those p-values tested (baseline to
+3 months, with units). Rule 3 now asks for the change, its comparison and its
+time point together, and never a bare p-value when the quote gives the change.
+Everything it asks for is copied from a quote, so the guard can check it.
 -->
 
 # Task: write one section of a research report
@@ -56,7 +63,12 @@ the paper's own sentences.
    every sentence restates what a cited quote reports.
 2. Use no outside knowledge. Do not name any drug, target, disease, number or
    study that does not appear in the items you cite.
-3. Copy numbers exactly as they appear in the items.
+3. Copy numbers exactly as they appear in the items. When a quote gives the
+   size of an effect, keep it together with what it was compared with
+   (placebo, another drug, baseline) and when it was measured, in the
+   quote's own words - for example "fell from 97.7 kg at baseline to 85.7 kg
+   after 3 months". Never give a p-value on its own when the quote also
+   gives the change it refers to.
 4. Say who or what was studied — patients, mice, cells — only in the words
    the item's Quote or Context uses, so animal and cell results are never read
    as human ones. If an item says "who was studied: not stated", do not name

@@ -1,0 +1,84 @@
+# What a finding measured, as a kind of endpoint. Read by report/claims.py.
+#
+# A report groups findings by what was measured. Grouping by the finding's
+# target alone put mortality and "major adverse liver outcomes" under
+# "liver fat" (the target was the disease, MASLD), and an index estimated
+# from blood tests beside a fat fraction measured by MRI. These classes keep
+# different kinds of endpoint apart: a surrogate is not the clinical outcome
+# it predicts, and an estimate is not a measurement.
+#
+# Checked in order, first match wins, against the finding's quote and target
+# (case-insensitive regular expressions). `kind` is one of: clinical_event,
+# safety, histology, direct_measure, estimate, biomarker, anthropometric.
+# `subject` names the knowledge-table entity the class measures, so the
+# question's own endpoints are listed first.
+#
+# Add a class here through code review, like entities.yaml: a wrong pattern
+# silently files a result under the wrong endpoint.
+
+- id: clinical_events
+  label: Clinical events (death, major adverse outcomes, hospitalisation)
+  kind: clinical_event
+  patterns:
+    - '\bmortality\b|\bdeaths?\b|\bdied\b'
+    - '\bmajor adverse\b|\bMACEs?\b|\bMALOs?\b|\bMAKEs?\b'
+    - '\bhospitali[sz]\w*'
+    - '\bper 100 person-years\b|\bincidence rates?\b|\bincident\b'
+    - '\bcardiovascular events?\b|\bliver-related events?\b|\bcomposite (?:primary )?outcome\b'
+- id: adverse_events
+  label: Adverse events and tolerability
+  kind: safety
+  patterns:
+    - '\badverse events?\b|\bside effects?\b|\btolerab\w*\b|\bdiscontinu\w* (?:due|because)\b'
+    - '\bnausea\b|\bvomiting\b|\bdiarrh\w*\b|\bconstipation\b|\bpancreatitis\b|\bhepatotoxicity\b|\bhypoglyc\w*'
+- id: liver_histology
+  label: Liver histology (biopsy)
+  kind: histology
+  subject: hepatic steatosis
+  patterns:
+    - '\bhistolog\w*|\bbiops\w*|\bNAFLD activity score\b|\bNAS\b|\bMASH resolution\b|\bNASH resolution\b|\bOil Red O\b'
+- id: liver_stiffness
+  label: Liver stiffness and fibrosis scores
+  kind: estimate
+  patterns:
+    - '\bliver stiffness\b|\bLSM\b|\bFIB-4\b|\bAPRI\b|\bfibrosis\b|\belastograph\w*'
+- id: liver_fat_measured
+  label: Liver fat, measured (MRI-PDFF, liver fat content, tissue lipid)
+  kind: direct_measure
+  subject: hepatic steatosis
+  patterns:
+    - '\bPDFF\b|\bproton density fat fraction\b|\bliver fat content\b|\bLFC\b|\bliver fat fraction\b'
+    - '\bhepatic fat (?:content|fraction)\b|\bintrahepatic (?:lipid|fat|triglyceride)s?\b'
+    - '\bhepatic lipid accumulation\b|\blipid content\b|\bliver fat droplets?\b|\bhepatic triglyceride'
+- id: liver_fat_estimated
+  label: Liver fat, estimated (fatty liver index, steatosis index, CAP)
+  kind: estimate
+  subject: hepatic steatosis
+  patterns:
+    - '\bfatty liver index\b|\bFLI\b|\bhepatic steatosis index\b|\bHSI\b|\bcontrolled attenuation parameter\b|\bCAP\b'
+- id: liver_steatosis_unspecified
+  label: Liver fat or steatosis (method not stated in the quote)
+  kind: estimate
+  subject: hepatic steatosis
+  patterns:
+    - '\bsteatosis\b|\bliver fat\b|\bhepatic fat\b|\bfatty liver\b|\bhepatosteatosis\b'
+- id: liver_enzymes
+  label: Liver enzymes (ALT, AST, GGT)
+  kind: biomarker
+  patterns:
+    - '\bALT\b|\bAST\b|\bGGT\b|\baminotransferase\b|\btranspeptidase\b|\bliver enzymes?\b'
+- id: glucose
+  label: Glucose control (HbA1c, fasting glucose, insulin resistance)
+  kind: biomarker
+  patterns:
+    - '\bHbA1c\b|\bHbA 1c\b|\bglycated\b|\bfasting (?:plasma |serum )?glucose\b|\bFPG\b|\bHOMA-IR\b|\binsulin resistance\b'
+- id: lipids
+  label: Blood lipids
+  kind: biomarker
+  patterns:
+    - '\bcholesterol\b|\bLDL\b|\bHDL\b|\btriglycerides?\b|\blipid profile\b'
+- id: body_size
+  label: Body weight and size
+  kind: anthropometric
+  patterns:
+    - '\bbody weight\b|\bweight (?:loss|reduction)\b|\bBMI\b|\bbody mass index\b|\bwaist circumference\b'

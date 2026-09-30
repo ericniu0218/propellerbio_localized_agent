@@ -14,6 +14,7 @@ from bedrock.server.api import (
     routes_approval,
     routes_auth,
     routes_history,
+    routes_inference,
     routes_results,
     routes_session,
     sse,
@@ -28,7 +29,7 @@ from bedrock.server.workspace import routes as routes_workspace
 
 logger = logging.getLogger("agent_pack")
 
-FEATURES = ("context_blocks", "server_history", "force_tier", "cancel", "approval_result_ref")
+FEATURES = ("context_blocks", "server_history", "force_tier", "cancel", "approval_result_ref", "inference_api")
 
 
 @asynccontextmanager
@@ -81,6 +82,9 @@ def create_app() -> FastAPI:
     app.include_router(routes_agents.router)
     app.include_router(routes_agent_tiers.router)
     app.include_router(routes_results.router)
+    # Named-model calls for the terminal's literature review: never through
+    # the conversational /messages (see api/routes_inference.py).
+    app.include_router(routes_inference.router)
     app.include_router(sse.router)
     app.include_router(routes_workspace.router)
     # After the workspace router: this one reuses its `identity` dependency and

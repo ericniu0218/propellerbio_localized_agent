@@ -123,6 +123,8 @@ def test_a_review_runs_end_to_end_with_the_model_and_writes_a_checked_report(cli
     md = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=md&download=1")
     assert md.status_code == 200 and "attachment" in md.headers["content-disposition"]
     assert client.get(f"/workspace/api/research/runs/{review['id']}/report?format=json").json()["question"]
+    deck = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx&download=1")
+    assert deck.status_code == 200 and deck.content[:2] == b"PK" and ".pptx" in deck.headers["content-disposition"]
 
     listed = client.get("/workspace/api/research/runs").json()
     assert [r["id"] for r in listed] == [review["id"]]

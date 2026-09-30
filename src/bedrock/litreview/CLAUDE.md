@@ -146,6 +146,25 @@ as `improved`. Models skip these unless explicitly told not to.
   model add a term. A request may reach only `www.ebi.ac.uk` and
   `eutils.ncbi.nlm.nih.gov` (`SOURCE_HOSTS` in `sources/http.py`), redirects
   included: a search URL carries the scientist's terms in its query string
+- A question's frozen paper set records the search signature it was
+  collected under (`stages/s1_collect.py`, `question_collections`): the
+  required entities and their exact terms, or the corpus hash. A run whose
+  reading differs collects again when a search was asked for, and otherwise
+  says in the report that its papers were never searched for its terms.
+  Failed search queries are recorded with the set and shown in every report
+  built on it. Never reuse a set silently across readings
+- A disease named only in the question's population ("... in adults with
+  obesity") is not required when another disease is (`s0_question`
+  `population_span`): requiring it made the search drop the trials that
+  measured the outcome in a related population. Who each study was about is
+  shown instead
+- Among papers of equal relevance grade, efficacy, safety and mechanism
+  questions read randomised trials before observational studies before animal
+  and cell work (`study_design.design_rank`, from the paper's own publication
+  type and wording - a reading order, never a quality score). Target
+  identification keeps lexical order: measured on the frozen corpora it gained
+  nothing there. `rank.selection: evidence_aware` remains the separate, opt-in
+  policy
 - Retraction checks (`sources/integrity.py`) are the other way out, decided by
   the owner on 26 September 2026: automatic at the start of each *new* review
   unless the scientist chose manual (`/reviews settings`, `preferences.py`),
@@ -165,8 +184,14 @@ as `improved`. Models skip these unless explicitly told not to.
   from a config file, so nothing gets wired in by editing one
 - Model names live only in `defaults/models.yaml`, or in a whole-file
   replacement at `~/.config/bedrock/litreview/models.yaml`. Nothing else
-  hardcodes one. The *server* is not configured here at all: it is bedrock's
-  `api_base`, and the context window is bedrock's machine profile
+  hardcodes one. The *server* is bedrock's `api_base`, or in agent-pack mode
+  the agent server's inference API (`agent_pack_api_base` + `/v1`, the
+  `agentpack` model set, roles as model names), or `[litreview] api_base`
+  (`config.resolve_endpoint`). The context window is what someone configured,
+  else the machine profile's (local Ollama only), else what the server
+  reports per model - and the reported one wins when smaller
+  (`service.preflight`). Never let a local machine profile describe a remote
+  model, and never assume a remote window
 - **The only live model client is `SchedulerClient`** (`llm/scheduled.py`),
   which goes through bedrock's `Scheduler` at `Priority.USER_JOB`, so a review
   never gets in front of the employee's own chat. `tests/test_model_call_guard.py`
@@ -194,7 +219,8 @@ as `improved`. Models skip these unless explicitly told not to.
 | Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text, on a two-host allowlist. GROBID/PDF rung, alias lookup and drop folder not built |
 | Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
 | Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
-| Front ends | `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. All three call `service.run_review` |
+| Front ends | `/review` and `/reviews` in the terminal app - both modes, `ui/review_mixin.py` - `bedrock-litreview` in a shell, the server's Research tab, the FastAPI app as the optional `api` extra. All call `service.run_review`. `bedrock-litreview doctor` (`readiness.py`) checks a machine can run one |
+| Report | Reading view, then References, then an Appendix. The code-written parts - evidence at a glance, how the studies line up (independent studies, agreement, an evidence level by a written rule), key results in context, abbreviations - are `report/synthesis.py`, from verified fields and the papers' own sentences only |
 | Coverage ledger, study design, drift disclosure | Built and tested offline: `coverage.v1`, `study_design.v1`, `verification_context.v1` run artifacts, never in the report; `verify-run` compares environments (`--require-same-rules`). `rank.selection: evidence_aware` is opt-in and unmeasured on a real model |
 | Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |
 | Background from reviews | A code-written report section quoting reviews with links; never counted as evidence |
@@ -209,7 +235,10 @@ with a mock transport; nothing there needs a network.
 A model-using review needs a context window of at least 12,288 tokens
 (`min_context_window` in `defaults/models.yaml`): extraction sends about 4,300
 prompt tokens and allows a 4,096-token reply. `service.preflight` refuses to
-start otherwise and says what to change.
+start otherwise and says what to change, and `SchedulerClient` stops a run
+whose server reports reading fewer prompt tokens than the prompt can hold
+(`PromptTruncated`): the Ollama app's default window is 4,096 on a 16 GB Mac,
+and it truncates silently.
 
 Benchmark: `python -m bedrock.litreview.bench run evals/litreview/questions/*.yaml --models laptop`.
 Read `scorecard.md`'s "where the pipeline lost points" before changing a prompt,

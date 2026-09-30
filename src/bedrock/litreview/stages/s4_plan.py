@@ -76,7 +76,16 @@ def build_plan(
     pool = eligible_papers(ranked, min_grade=min_grade, graded=graded)
     # Relevance decides; among equally relevant papers, full text supplies
     # results and methods where an abstract supplies one sentence per finding.
-    pool.sort(key=lambda r: (-(r.grade or 0), not r.has_full_text, r.rank))
+    # Within a grade, `rank` already puts a randomised trial ahead of a mouse
+    # study (`study_design.design_rank`); full text is preferred only between
+    # papers of the same kind, so an abstract-only trial is not passed over
+    # for a full-text animal study.
+    from bedrock.litreview.study_design import design_rank
+
+    by_design = spec.question_type != "target_identification"  # see s3_rank's `order`
+    pool.sort(key=lambda r: (-(r.grade or 0),
+                             design_rank((designs or {}).get(r.paper_id), papers.get(r.paper_id)) if by_design else 0,
+                             not r.has_full_text, r.rank))
 
     # Which needs each paper can supply: assigned in Stage 3 by code, from the
     # abstract's study-design words and whether the paper changed something.

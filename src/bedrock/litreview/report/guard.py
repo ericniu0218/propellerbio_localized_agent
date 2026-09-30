@@ -132,8 +132,84 @@ def _norm_number(raw: str) -> str:
         return raw
 
 
+NUMERIC_VIEW_VERSION = 1
+"""The comparison view of numbers, shared by the guard and the invariants that
+re-run it. Version 1: a middle dot between two digits is a decimal point
+("0·57", the Lancet's house style), on top of `clean`'s Unicode minus and
+non-breaking spaces. It is a view for comparing only: quotes are stored and
+shown exactly as the paper prints them."""
+
+# Only between digits: "kg·m-2" is unit notation and keeps its dot.
+_DECIMAL_DOT = re.compile(r"(?<=\d)[\u00b7\u2027\u22c5](?=\d)")
+
+
+def numeric_view(text: str) -> str:
+    return _DECIMAL_DOT.sub(".", clean(text))
+
+
 def numbers_in(text: str) -> set[str]:
-    return {_norm_number(m.group(1)) for m in _NUMBER.finditer(clean(text))}
+    return {_norm_number(m.group(1)) for m in _NUMBER.finditer(numeric_view(text))}
+
+
+# A minus is a sign only where it cannot be a hyphen or a range: at the start,
+# or after a space, a bracket or punctuation - never after a letter ("IL-17")
+# or a digit ("10-20").
+_SIGNED = re.compile(r"(?:(?<=^)|(?<=[\s(\[,;:=]))-(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?![A-Za-z0-9])")
+_DECREASE = re.compile(r"\b(?:reduc\w*|decreas\w*|lower\w*|fell|fall\w*|drop\w*|declin\w*|loss|lost|less|"
+                       r"improv\w*|smaller|down)\b", re.I)
+_INCREASE = re.compile(r"\b(?:increas\w*|rose|rise|rising|higher|gain\w*|grew|elevat\w*|more)\b", re.I)
+
+
+_COMPARISON = re.compile(r"\b(?:compared\s+(?:with|to)|versus|vs\.?|than|relative\s+to|both|whereas|while|"
+                         r"in\s+contrast|over)\b", re.I)
+
+
+def _comparator(entity, matcher: TermMatcher, name: str, sentence: str, blob: str) -> bool:
+    """Is a near-miss drug named here as the comparator the paper itself used?
+
+    "Constipation was more frequent with liraglutide than with tirzepatide"
+    names the question's drug, compares, and cites a paper that names
+    liraglutide: that is tirzepatide's result, with its comparator. Before,
+    every such sentence was removed, and with them most safety comparisons.
+    Only drugs: a sentence about hMPV in an RSV report is still never an
+    answer. And never a sentence about the near-miss alone ("Semaglutide
+    reduced liver fat"), whatever it cites."""
+    return (entity.kind == "drug"
+            and TermMatcher([name]).exact_count(blob) > 0
+            and matcher.exact_count(sentence) > 0
+            and bool(_COMPARISON.search(sentence)))
+
+
+def signed_numbers(text: str) -> dict[str, set[str]]:
+    """Number -> the signs it appears with ("-" and/or "+")."""
+    view = numeric_view(text)
+    out: dict[str, set[str]] = {}
+    for m in _SIGNED.finditer(view):
+        out.setdefault(_norm_number(m.group(1)), set()).add("-")
+    for m in _NUMBER.finditer(view):
+        out.setdefault(_norm_number(m.group(1)), set()).add("+")
+    return out
+
+
+def sign_problem(sentence: str, blob: str) -> str | None:
+    """Why a sentence's signs contradict the evidence, or None.
+
+    Before this, a number after a minus was invisible to the guard: the
+    paper's "-3·38%" could not support a sentence's "3.38%", and a sentence's
+    own "-8.09" was never checked at all."""
+    ev = signed_numbers(blob)
+    view = numeric_view(sentence)
+    for m in _SIGNED.finditer(view):
+        value = _norm_number(m.group(1))
+        if value in ev and "-" not in ev[value]:
+            return f"number -{value} has a minus the cited evidence does not"
+    for m in _NUMBER.finditer(view):
+        value = _norm_number(m.group(1))
+        if ev.get(value) == {"-"} and not _DECREASE.search(sentence):
+            return f"number {value} is negative in the cited evidence (-{value}), and the sentence does not say it fell"
+        if ev.get(value) == {"-"} and _INCREASE.search(sentence) and not _DECREASE.search(sentence):
+            return f"number {value} is a decrease in the cited evidence, stated as an increase"
+    return None
 
 
 def _located(unit: EvidenceUnit, name: str) -> bool:
@@ -206,7 +282,15 @@ class CitationGuard:
         self.units = units
         self.paper_labels = paper_labels or {}
         self.findings = findings
-        self.allowed = {fold(t) for e in spec.entities for t in [e.canonical, e.text, *e.exact_terms]}
+        # What the question is about may be named freely; who it is about may
+        # not. A disease named only in the population ("in adults with
+        # obesity", `s0_question.population_span`) is a claim about who was
+        # studied when a sentence names it, and must be in the cited text: a
+        # trial of adults with BMI of at least 25 was written up as "adults
+        # with type 2 diabetes and obesity".
+        self.allowed = {fold(t) for e in spec.entities
+                        if e.required or e.kind not in ("disease", "pathogen")
+                        for t in [e.canonical, e.text, *e.exact_terms]}
         self.question_numbers = numbers_in(spec.text)
         vocab = sorted({v.strip() for v in (vocabulary or []) if v and len(v.strip()) >= 3})
         self._vocab = [(v, TermMatcher([v])) for v in vocab if fold(v) not in self.allowed]
@@ -215,7 +299,7 @@ class CitationGuard:
         # hMPV in an RSV report passes: the very thing the client asked us to
         # make impossible.
         self._near = [
-            TermMatcher(e.exact_terms, e.near_miss_terms, e.near_miss_patterns)
+            (e, TermMatcher(e.exact_terms, e.near_miss_terms, e.near_miss_patterns))
             for e in spec.entities if e.near_miss_terms or e.near_miss_patterns
         ]
 
@@ -237,9 +321,9 @@ class CitationGuard:
         # A near-miss of the question's subject is never an answer to it. The
         # gate excluded those papers and extraction dropped those findings;
         # a sentence naming one has no business in this report either.
-        for matcher in self._near:
+        for entity, matcher in self._near:
             for m in matcher.matches(sentence):
-                if m.kind == "near_miss":
+                if m.kind == "near_miss" and not _comparator(entity, matcher, m.text, sentence, blob):
                     return GuardResult(False, f"names {m.text!r}, which is not what the question asks about")
 
         # Names first: mask them out before looking for numbers, so the "2" in
@@ -259,10 +343,13 @@ class CitationGuard:
                     continue
                 return GuardResult(False, f"names {name!r}, which the cited evidence does not")
 
-        evidence_numbers = numbers_in(blob) | self.question_numbers
-        for number in sorted(numbers_in(masked)):
+        evidence_numbers = set(signed_numbers(blob)) | self.question_numbers
+        for number in sorted(set(signed_numbers(masked))):
             if number not in evidence_numbers:
                 return GuardResult(False, f"number {number} is not in the cited evidence")
+        why = sign_problem(masked, blob)
+        if why:
+            return GuardResult(False, why)
 
         # A bound keeps its direction. "280.2 (95% UR: 268.8-290.6)" makes
         # 268.8 the LOWER end, and a sentence calling it the upper range is

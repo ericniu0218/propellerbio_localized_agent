@@ -290,6 +290,12 @@ def entity_check(finding: ExtractedFinding, spec: QuestionSpec, kb: Knowledge) -
     the field is neutral ("skin inflammation") does the quote decide.
     """
     match = "paper_context"
+    # A disease the question itself names is never "another" disease: in
+    # "does tirzepatide reduce liver fat in adults with obesity?" a finding
+    # filed under "obesity with MASLD" is about the question's own population,
+    # and dropping it as off-topic threw away every result with numbers in it
+    # (the paper's Results; only its abstract's p-values survived).
+    asked = {e.canonical for e in spec.entities}
     for entity in spec.required_entities:
         matcher = TermMatcher(entity.exact_terms, entity.near_miss_terms, entity.near_miss_patterns)
         if entity.kind == "disease":
@@ -309,7 +315,7 @@ def entity_check(finding: ExtractedFinding, spec: QuestionSpec, kb: Knowledge) -
         if entity.kind in ("disease", "pathogen"):
             others = {
                 e.canonical for e, _ in kb.scan(finding.disease, ("disease", "pathogen"))
-                if e.canonical != entity.canonical
+                if e.canonical != entity.canonical and e.canonical not in asked
             }
             if others:
                 return f"other_disease:{sorted(others)[0]}", match
@@ -381,6 +387,30 @@ def reconcile(finding: ExtractedFinding) -> tuple[str, str, str, list[str]]:
         notes.append(f"setting: {setting} -> {said_setting}")
         setting = said_setting
     return direction, outcome, setting, notes
+
+
+_HUMAN_WORDS = re.compile(r"\b(?:patients?|participants?|people|persons?|adults?|children|women|men|subjects?|"
+                          r"volunteers?|humans?|individuals?|cohort)\b", re.I)
+
+
+def paper_design_check(evidence_type: str, species_raw: str, quote: str, paper: Paper) -> tuple[str, str | None]:
+    """A human label on a finding from a paper that reports only animal or cell
+    work, whose quote names no people, is the paper's design instead.
+
+    A mouse study's "TZP treatment was associated with reduced abundance of
+    ... proteins" was filed human_clinical (tirzepatide/liver-fat, E28): the
+    quote names no species, and nothing overruled the model's label. The
+    paper's own publication type and wording (`study_design`) decide, and
+    only ever weaken a human label, never create one."""
+    from bedrock.litreview.study_design import grounded_labels, design_signals
+
+    if not evidence_type.startswith("human") or species_raw or _HUMAN_WORDS.search(quote):
+        return evidence_type, None
+    labels = grounded_labels(design_signals(paper))
+    if not labels or labels - {"animal_interventional", "in_vitro"}:
+        return evidence_type, None
+    settled = "in_vivo" if "animal_interventional" in labels else "in_vitro"
+    return settled, f"evidence_type: {evidence_type} -> {settled} (the paper reports only animal or cell work)"
 
 
 def settle_evidence_type(
@@ -504,6 +534,9 @@ def _to_unit(
         finding.evidence_type, species=species, species_raw=v["species_raw"], model_species=finding.species,
         quote=finding.quote, context=context.text if context else "", unbacked=unbacked,
     )
+    if note:
+        corrected.append(note)
+    evidence_type, note = paper_design_check(evidence_type, v["species_raw"], finding.quote, paper)
     if note:
         corrected.append(note)
     facet = settle_facet(

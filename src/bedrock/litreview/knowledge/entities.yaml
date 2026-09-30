@@ -59,6 +59,26 @@ diseases:
   type 1 diabetes:
     terms: [type 1 diabetes, type 1 diabetes mellitus, T1D, T1DM, insulin-dependent diabetes]
     near_miss: [type 2 diabetes, T2D, T2DM, gestational diabetes]
+  # Liver fat, as questions ask about it ("does X reduce liver fat?"), and the
+  # names papers report it under: the disease it defines (MASLD, formerly
+  # NAFLD/MAFLD) and the measurements of it (MRI-PDFF, fatty liver index,
+  # intrahepatic lipid). Added after a tirzepatide question matched "liver fat"
+  # verbatim only, and 198 of 200 collected papers - including every paper
+  # that measured liver fat as MASLD or PDFF - were excluded. Steatohepatitis
+  # (MASH/NASH) is deliberately neither a term nor a near-miss: it is liver fat
+  # with inflammation, its papers usually report fat as well, and they should
+  # pass or fail on their own words. Bare "steatosis" and "FLI" are left out as
+  # ambiguous; a paper's own "fatty liver index (FLI)" definition is still read.
+  hepatic steatosis:
+    terms: [liver fat, liver fat content, liver fat fraction, hepatic fat, hepatic fat content, hepatic fat fraction,
+            intrahepatic lipid, intrahepatic lipids, intrahepatic fat, intrahepatic triglyceride, intrahepatic triglycerides,
+            hepatic triglyceride content, hepatic steatosis, liver steatosis, fatty liver, fatty liver disease, fatty liver index,
+            steatotic liver disease, steatotic liver, metabolic dysfunction-associated steatotic liver disease, MASLD,
+            metabolic dysfunction-associated fatty liver disease, metabolic associated fatty liver disease, MAFLD,
+            nonalcoholic fatty liver disease, non-alcoholic fatty liver disease, NAFLD, nonalcoholic fatty liver,
+            non-alcoholic fatty liver, proton density fat fraction, MRI-PDFF]
+    near_miss: [alcoholic fatty liver disease, alcohol-associated liver disease, alcohol-related liver disease,
+                alcoholic liver disease, hepatitis C, hepatitis B]
   metabolic dysfunction-associated steatohepatitis:
     terms: [metabolic dysfunction-associated steatohepatitis, MASH, nonalcoholic steatohepatitis, non-alcoholic steatohepatitis, NASH]
     near_miss: [alcoholic hepatitis, alcohol-associated hepatitis, hepatitis C]

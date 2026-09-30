@@ -1,7 +1,7 @@
 """Stage 8 — render the Report: JSON, Markdown and self-contained HTML.
 
 Because the report is structured data, every format is a renderer, not a
-rewrite — the future PPTX deck included. The exact format the client wants
+rewrite — report/slides.py makes the PowerPoint deck the same way. The exact format the client wants
 will arrive later; it changes config/report.yaml and this file, nothing else.
 
 The HTML carries no external assets (fonts, scripts, stylesheets): it has to
@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from bedrock.litreview.models import EvidenceUnit, Report, ReportSection, Sentence
+from bedrock.litreview.report.layout import APPENDIX
 
 
 def _ref_map(report: Report) -> tuple[dict[str, int], dict[str, str]]:
@@ -60,7 +61,8 @@ def _interpretation_md(report: Report) -> list[str]:
     for e in i.get("entities", []):
         terms = ", ".join(f'"{t}"' for t in e["exact_terms"][:10])
         near = e["near_misses_excluded"]
-        line = f"- **{e['canonical']}** ({e['kind']}{', required' if e['required'] else ''}) — counted as: {terms}"
+        role = ", required" if e["required"] else (", population - not required" if e["kind"] in ("disease", "pathogen") else "")
+        line = f"- **{e['canonical']}** ({e['kind']}{role}) — counted as: {terms}"
         if near:
             line += " · excluded as near-misses: " + ", ".join(f'"{t}"' for t in near[:10])
         lines.append(line)
@@ -81,21 +83,51 @@ def _integrity_md(report: Report) -> list[str]:
             *[f"> - {v}" for v in report.integrity], ""]
 
 
-def to_markdown(report: Report) -> str:
-    refs, quotes = _ref_map(report)
+_NO_EVIDENCE = "No evidence for this section in the papers read."
+
+
+def _shown(section: ReportSection) -> bool:
+    """Whether a section belongs in the reading view. A written section with
+    nothing kept and nothing to explain is an empty heading - the Gaps section
+    already says which needs no paper met - so it is left out of the reading
+    view (it stays in the JSON, and in the Appendix's evidence plan)."""
+    if section.kind != "written":
+        return True
+    if any(x.kept for x in section.sentences) or any(_shown(sub) for sub in section.subsections):
+        return True
+    return bool(section.note) and not section.note.startswith(_NO_EVIDENCE)
+
+
+def _main(report: Report) -> list[ReportSection]:
+    return [x for x in report.sections if x.id not in APPENDIX and _shown(x)]
+
+
+def _appendix(report: Report) -> list[ReportSection]:
+    return [x for x in report.sections if x.id in APPENDIX]
+
+
+def lede(report: Report) -> str:
     s = report.stats
     subject = report.interpretation.get("subject", "the subject")
+    full = s.get("papers_read", 0) - s.get("papers_abstract_only", 0)
+    return (
+        f"Based on {s.get('papers_read', 0)} papers read in detail ({full} in full text, "
+        f"{s.get('papers_abstract_only', 0)} from the abstract only), chosen from the {s.get('gate_pass', 0)} of "
+        f"{s.get('papers_collected', 0)} collected papers that concern {subject} exactly. Every sentence cites the "
+        "papers it rests on; every quote is the paper's own sentence; sentences whose numbers, names or subjects "
+        "were not in the text they cite were removed. The evidence levels and study profiles are this system's "
+        "reading of the papers by written rules, shown so you can check them. How the question was read, the "
+        "search and every excluded paper are in the Appendix."
+    )
+
+
+def to_markdown(report: Report) -> str:
+    refs, quotes = _ref_map(report)
     out = [
         f"# {report.question}",
         "",
         *_integrity_md(report),
-        f"> Compiled from {s.get('papers_read', 0)} papers read in detail, chosen from the "
-        f"{s.get('gate_pass', 0)} of {s.get('papers_collected', 0)} collected papers that concern "
-        f"{subject} exactly. Every sentence cites its sources, every quote shown is the paper's own "
-        "sentence, and sentences whose numbers, names or subjects were not in the paper text they cite "
-        "were removed.",
-        "",
-        *_interpretation_md(report),
+        f"> {lede(report)}",
         "",
     ]
 
@@ -112,14 +144,21 @@ def to_markdown(report: Report) -> str:
                 marker = f"[{', '.join(map(str, nums))}]" if nums else ""
                 parts.append(_attach(sentence.text, marker) if marker else sentence.text)
             out.extend([" ".join(parts), ""])
+            # Which quote each sentence rests on: the ids are the Evidence
+            # quotes in the Appendix, where each is the paper's own sentence.
+            trail = "; ".join(
+                f"sentence {i}: " + ", ".join(f"{c} [{refs[c]}]" for c in dict.fromkeys(x.citations) if c in refs)
+                for i, x in enumerate(kept, 1))
+            out.extend([f"<sub>Evidence — {trail} (quotes in Appendix → Evidence quotes).</sub>", ""])
         if section.body_markdown:
             out.extend([section.body_markdown, ""])
         for sub in section.subsections:
             emit(sub, level + 1)
 
-    for section in report.sections:
+    for section in _main(report):
         emit(section, 2)
 
+    cited_in = _cited_in(report, refs)
     out += ["## References", ""]
     for r in report.references:
         flags = []
@@ -129,11 +168,17 @@ def to_markdown(report: Report) -> str:
             flags.append("preprint")
         if r.signals.citation_count is not None:
             flags.append(f"cited by {r.signals.citation_count}")
-        flags.append("full text" if r.text_source not in ("abstract_only", "none") else "abstract only")
+        flags.append("full text acquired" if r.text_source not in ("abstract_only", "none") else "abstract only")
         link = f" <{r.url}>" if r.url else ""
         ev = f" · evidence {', '.join(r.evidence_ids)}" if r.evidence_ids else ""
-        out.append(f"{r.number}. {r.citation}{link} — {'; '.join(flags)}{ev}")
+        where = cited_in.get(r.number, [])
+        used = f" · cited in {', '.join(t for _, t in where)}" if where else ""
+        out.append(f"{r.number}. {r.citation}{link} — {'; '.join(flags)}{ev}{used}")
     out.append("")
+
+    out += ["---", "", "# Appendix", "", "## How the question was read", "", *_interpretation_md(report), ""]
+    for section in _appendix(report):
+        emit(section, 2)
 
     if report.evidence:
         out += ["## Evidence quotes", "", "The exact sentence each finding was taken from.", ""]
@@ -232,28 +277,75 @@ th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vert
 th { background: var(--line); }
 blockquote { margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--line); color: var(--muted); }
 ol.refs li { margin-bottom: 6px; font-size: .9rem; }
+h1.appendix { margin-top: 56px; padding-top: 16px; border-top: 3px double var(--line); font-size: 1.4rem; }
 .flag { color: var(--warn); font-weight: 600; }
 details { margin: 8px 0; } summary { cursor: pointer; color: var(--muted); }
 .quotes li { font-size: .88rem; margin-bottom: 4px; }
+.toc { position: sticky; top: 0; z-index: 3; background: var(--bg); border-bottom: 1px solid var(--line); padding: 8px 0;
+       margin: 8px 0 16px; font-size: .88rem; }
+.toc ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.toc ul ul { display: inline-flex; margin-left: 6px; font-size: .82rem; }
+.toc a { text-decoration: none; }
+.toc a:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h2, h3, h4, li[id], li[id^="ref-"] { scroll-margin-top: 88px; }
+:target { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+details.evidence { margin: 4px 0 18px; font-size: .9rem; }
+details.evidence ol { padding-left: 20px; } details.evidence li { margin: 6px 0; }
+@media print { .toc { display: none; } details.evidence { display: none; } a.cite { color: inherit; } }
 """
+
+
+def _anchor(section_id: str) -> str:
+    """A section id as a valid, stable HTML id ("targets:IL-23 axis" -> "targets-IL-23-axis")."""
+    return "s-" + re.sub(r"[^A-Za-z0-9_-]+", "-", section_id).strip("-")
+
+
+def _cited_in(report: Report, refs: dict[str, int]) -> dict[int, list[tuple[str, str]]]:
+    """Reference number -> the (anchor, title) of every section that cites it, in order."""
+    out: dict[int, list[tuple[str, str]]] = {}
+
+    def walk(section: ReportSection) -> None:
+        for sentence in section.sentences:
+            if not sentence.kept:
+                continue
+            for c in sentence.citations:
+                num = refs.get(c)
+                entry = (_anchor(section.id), section.title)
+                if num is not None and entry not in out.setdefault(num, []):
+                    out[num].append(entry)
+        for sub in section.subsections:
+            walk(sub)
+
+    for section in report.sections:
+        walk(section)
+    return out
+
+
+def _toc(report: Report) -> str:
+    """The report's own sections as a menu: generated from what is there, never a fixed list."""
+    items = [f'<li><a href="#{_anchor(sec.id)}">{html.escape(sec.title)}</a></li>' for sec in _main(report)]
+    items.append('<li><a href="#references">References</a></li>')
+    appendix = "".join(f'<li><a href="#{_anchor(sec.id)}">{html.escape(sec.title)}</a></li>' for sec in _appendix(report))
+    items.append('<li><a href="#appendix">Appendix</a>'
+                 f'<ul><li><a href="#how-read">How the question was read</a></li>{appendix}'
+                 '<li><a href="#evidence-quotes">Evidence quotes</a></li></ul></li>')
+    return '<nav class="toc" aria-label="Report sections"><strong>Sections</strong><ul>' + "".join(items) + "</ul></nav>"
 
 
 def to_html(report: Report) -> str:
     refs, quotes = _ref_map(report)
-    s = report.stats
-    subject = report.interpretation.get("subject", "the subject")
+    units = {u.id: u for u in report.evidence}
+    short_to_unit = {short: uid for uid, short in report.short_ids.items()}
+    ref_by_num = {r.number: r for r in report.references}
     body: list[str] = [f"<h1>{html.escape(report.question)}</h1>"]
     if report.integrity:
         body.append('<div class="integrity"><strong>Warning: this report failed its integrity check.</strong> '
                     + html.escape(_INTEGRITY_NOTE) + "<ul>"
                     + "".join(f"<li>{html.escape(v)}</li>" for v in report.integrity) + "</ul></div>")
-    body.append(
-        f"<p class=\"lede\">Compiled from {s.get('papers_read', 0)} papers read in detail, chosen from the "
-        f"{s.get('gate_pass', 0)} of {s.get('papers_collected', 0)} collected papers that concern "
-        f"{html.escape(str(subject))} exactly. Every sentence cites its sources — hover a citation to see "
-        "the exact sentence it rests on.</p>"
-    )
-    body.append(md_to_html("\n".join(_interpretation_md(report))))
+    body.append(f"<p class=\"lede\">{html.escape(lede(report))} Every citation opens its source; under each "
+                "section, <em>Evidence behind this section</em> shows the exact sentence each claim rests on and where "
+                "in the paper it is.</p>")
+    body.append(_toc(report))
 
     def cite(sentence: Sentence) -> str:
         links = []
@@ -267,14 +359,44 @@ def to_html(report: Report) -> str:
             links.append(f'<a class="cite" href="#ref-{num}" title="{title}">[{num}]</a>')
         return "".join(links)
 
+    def evidence_for(kept: list[Sentence]) -> str:
+        """Claim -> evidence -> source: for each sentence, the quotes it
+        cites, where they are in the paper, and the article. Which source
+        supports which sentence, never a bundle for the whole paragraph."""
+        rows = []
+        for i, sentence in enumerate(kept, 1):
+            items = []
+            for c in dict.fromkeys(sentence.citations):
+                unit = units.get(short_to_unit.get(c, ""))
+                if unit is None:
+                    continue
+                num = refs.get(c)
+                ref = ref_by_num.get(num)
+                where = f"{unit.section}, {unit.quote_status} match"
+                link = f' <a href="{html.escape(ref.url)}" rel="noopener">article</a>' if ref and ref.url else ""
+                notice = ' <span class="flag">publication notice</span>' if ref and "Publication notice" in ref.citation \
+                    else ""
+                items.append(f'<li><a href="#{c}">{c}</a> <a href="#ref-{num}">[{num}]</a> ({html.escape(where)}): '
+                             f'“{html.escape(unit.quote)}”{notice}{link}'
+                             + (f'<br><small>context: “{html.escape(unit.context_quote)}”</small>'
+                                if unit.context_quote else "")
+                             + (f'<br><small>qualified by the next sentence: “{html.escape(unit.qualifier_quote)}”</small>'
+                                if unit.qualifier_quote else "")
+                             + "</li>")
+            snippet = sentence.text if len(sentence.text) <= 90 else sentence.text[:87] + "…"
+            rows.append(f"<li><strong>Sentence {i}</strong> “{html.escape(snippet)}” rests on:<ul>{''.join(items)}</ul></li>")
+        return (f'<details class="evidence"><summary>Evidence behind this section — {len(kept)} sentence'
+                f'{"" if len(kept) == 1 else "s"}</summary><ol>{"".join(rows)}</ol></details>')
+
     def emit(section: ReportSection, level: int) -> None:
         tag = f"h{min(level, 4)}"
-        body.append(f'<{tag} id="{html.escape(section.id)}">{html.escape(section.title)}</{tag}>')
+        body.append(f'<{tag} id="{_anchor(section.id)}">{html.escape(section.title)}</{tag}>')
         if section.note and section.kind == "written":
             body.append(f'<p class="note">{_inline(section.note)}</p>')
         kept = [x for x in section.sentences if x.kept]
         if kept:
             body.append("<p>" + " ".join(f"{html.escape(x.text)}{cite(x)}" for x in kept) + "</p>")
+            body.append(evidence_for(kept))
         if section.body_markdown:
             content = md_to_html(section.body_markdown)
             if section.id in ("excluded", "evidence_table", "ranking"):
@@ -283,9 +405,10 @@ def to_html(report: Report) -> str:
         for sub in section.subsections:
             emit(sub, level + 1)
 
-    for section in report.sections:
+    for section in _main(report):
         emit(section, 2)
 
+    cited_in = _cited_in(report, refs)
     body.append("<h2 id=\"references\">References</h2><ol class=\"refs\">")
     for r in report.references:
         flags = []
@@ -295,16 +418,23 @@ def to_html(report: Report) -> str:
             flags.append('<span class="flag">preprint</span>')
         if r.signals.citation_count is not None:
             flags.append(f"cited by {r.signals.citation_count}")
-        flags.append("full text" if r.text_source not in ("abstract_only", "none") else "abstract only")
+        flags.append("full text acquired" if r.text_source not in ("abstract_only", "none") else "abstract only")
         link = f' <a href="{html.escape(r.url)}">{html.escape(r.url)}</a>' if r.url else ""
-        ev = f" · evidence {', '.join(r.evidence_ids)}" if r.evidence_ids else ""
-        body.append(f'<li id="ref-{r.number}">{_inline(r.citation)}{link} — {"; ".join(flags)}{ev}</li>')
+        ev = (" · findings " + ", ".join(f'<a href="#{e}">{e}</a>' for e in r.evidence_ids)) if r.evidence_ids else ""
+        where = cited_in.get(r.number, [])
+        used = (" · cited in " + ", ".join(f'<a href="#{a}">{html.escape(t)}</a>' for a, t in where)) if where else ""
+        body.append(f'<li id="ref-{r.number}">{_inline(r.citation)}{link} — {"; ".join(flags)}{ev}{used}</li>')
     body.append("</ol>")
+
+    body.append('<h1 id="appendix" class="appendix">Appendix</h1><h2 id="how-read">How the question was read</h2>')
+    body.append(md_to_html("\n".join(_interpretation_md(report))))
+    for section in _appendix(report):
+        emit(section, 2)
 
     if report.evidence:
         by_uid = {u.id: u for u in report.evidence}
-        body.append("<h2>Evidence quotes</h2><details open><summary>The exact sentence each finding was taken from"
-                    "</summary><ul class=\"quotes\">")
+        body.append("<h2 id=\"evidence-quotes\">Evidence quotes</h2><details open><summary>The exact sentence each "
+                    "finding was taken from</summary><ul class=\"quotes\">")
         for uid, short in sorted(report.short_ids.items(), key=lambda kv: int(kv[1][1:])):
             u = by_uid[uid]
             num = refs.get(short, "?")

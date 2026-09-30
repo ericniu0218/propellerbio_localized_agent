@@ -142,16 +142,47 @@ class OpenAICompatibleBackend:
         if not entries:
             return []
         tags = await self._ollama_tags()
+        loaded = await self._ollama_loaded_windows() if tags else {}
         return [
             ModelInfo(
                 id=str(item["id"]),
                 size_bytes=_positive_int(item.get("size")) or tags.get(str(item["id"]), _Tag()).size,
-                # vLLM reports the window it was started with as ``max_model_len``.
-                context_length=_positive_int(item.get("max_model_len")),
+                # vLLM (and bedrock's agent server) report the window a model
+                # was started with as ``max_model_len``. Ollama reports none,
+                # except for a model that is loaded right now: ``/api/ps``
+                # gives the window it was loaded with, which is what a prompt
+                # really gets - not the model's own maximum.
+                context_length=_positive_int(item.get("max_model_len")) or loaded.get(str(item["id"])),
                 digest=tags.get(str(item["id"]), _Tag()).digest,
+                root=item["root"] if isinstance(item.get("root"), str) and item["root"] != item["id"] else None,
+                capabilities=_capabilities(item.get("capabilities")),
             )
             for item in entries
         ]
+
+    async def _ollama_loaded_windows(self) -> dict[str, int]:
+        """Model -> the context window Ollama loaded it with (``/api/ps``).
+
+        Only models in memory right now are listed, so a missing entry means
+        "not known", never "small". Any failure means the same."""
+        root = self._base_url[: -len("/v1")] if self._base_url.endswith("/v1") else self._base_url
+        try:
+            response = await self._client.get(f"{root}/api/ps", timeout=5.0)
+            if response.status_code != 200:
+                return {}
+            models = response.json().get("models") or []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return {}
+        windows: dict[str, int] = {}
+        for entry in models if isinstance(models, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            window = _positive_int(entry.get("context_length"))
+            for key in ("model", "name"):
+                name = entry.get(key)
+                if window and isinstance(name, str):
+                    windows[name] = window
+        return windows
 
     async def _ollama_tags(self) -> dict[str, _Tag]:
         """Model size and weight digest from Ollama's ``/api/tags``.
@@ -324,6 +355,13 @@ def _parse_sse_chunk(line: str) -> tuple[str | None, Usage | None]:
         return "", None
     if not isinstance(chunk, dict):
         return "", None
+    error = chunk.get("error")
+    if error:
+        # A server that fails after the reply has started can only say so in
+        # the stream. Keeping the text so far would pass off half a reply
+        # (half a JSON object) as the whole of one.
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise InferenceError(f"The server failed partway through its reply: {str(message)[:300]}")
     usage = _usage(chunk.get("usage"))
     choices = chunk.get("choices") or []
     if not choices or not isinstance(choices[0], dict):
@@ -350,6 +388,13 @@ def _usage(value: object) -> Usage | None:
 def _count(value: object) -> int | None:
     """A token count as the server sent it; 0 is a real count, so only >= 0 is kept."""
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _capabilities(value: object) -> frozenset[str] | None:
+    """``{"json_schema": true, "seed": false}`` -> ``{"json_schema"}``; None if not stated."""
+    if not isinstance(value, dict):
+        return None
+    return frozenset(str(k) for k, v in value.items() if v is True)
 
 
 def _positive_int(value: object) -> int | None:

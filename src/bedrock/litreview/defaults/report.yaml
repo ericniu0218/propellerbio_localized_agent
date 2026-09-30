@@ -13,9 +13,15 @@
 #   negative      no-effect / worse / mixed results, and conflicts
 #   all           the strongest evidence overall
 #
-# generated sections: best_source, background, gaps, plan, ranking,
-# evidence_table, method, excluded. `background` quotes review articles for
-# context; they are never counted as evidence.
+# generated sections: glance, synthesis, numbers, glossary, best_source,
+# background, gaps, plan, ranking, evidence_table, method, excluded.
+# `background` quotes review articles for context; they are never counted as
+# evidence. glance/synthesis/numbers/glossary are report/synthesis.py: study
+# designs, independent-study counts, agreement and an evidence level by a
+# written rule, the papers' quantitative sentences with their study context,
+# and the abbreviations the main text uses. best_source, plan, evidence_table,
+# ranking, method and excluded are rendered in the Appendix
+# (report/layout.py APPENDIX).
 #
 # findings (written sections only, default true): every sentence must cite at
 # least one quote that reports a result, not just mention the subject - a
@@ -36,9 +42,8 @@ target_identification:
       Answer the question directly. Name the targets with the strongest evidence
       for the goal in the question, and for each say what kind of evidence
       supports it (human trial, human genetics, animal model, cells).
-  - id: best_source
-    title: Most relevant source
-    kind: generated
+  - {id: glance, title: Evidence at a glance, kind: generated}
+  - {id: synthesis, title: How the studies line up, kind: generated}
   - id: targets
     title: Candidate targets
     kind: written
@@ -80,8 +85,11 @@ target_identification:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise the adverse effects and risks reported for acting on these targets.
-  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
-  - {id: gaps, title: Gaps and caveats, kind: generated}
+  - {id: numbers, title: Key results in context, kind: generated}
+  - {id: gaps, title: "Limitations, gaps and open questions", kind: generated}
+  - {id: background, title: Context from review articles (not primary evidence), kind: generated}
+  - {id: glossary, title: Abbreviations, kind: generated}
+  - {id: best_source, title: Most relevant source, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}
   - {id: evidence_table, title: Evidence table, kind: generated}
@@ -95,16 +103,24 @@ intervention_efficacy:
     source: all
     sentences: "3 to 5"
     instructions: >-
-      Answer the question directly: does the evidence show the intervention
-      works for this condition, in whom, and how strongly? Say what kind of
-      evidence supports the answer.
-  - {id: best_source, title: Most relevant source, kind: generated}
+      Answer the question directly in your first sentence: does the evidence
+      show the intervention changes this outcome, in whom, and by how much?
+      Give each effect as its quote states it - the change with its units,
+      what it was compared with, and when it was measured - never a p-value
+      without the change it refers to. Then say what kind of study each
+      result comes from, as its quote or context says.
+  - {id: glance, title: Evidence at a glance, kind: generated}
+  - {id: synthesis, title: How the studies line up, kind: generated}
   - id: clinical
     title: Clinical efficacy
     kind: written
     source: facet:clinical
     sentences: "2 to 6"
-    instructions: Summarise the human results, with effect sizes and numbers of subjects.
+    instructions: >-
+      Summarise the human results: for each, what was measured, the size of
+      the change with its units, the comparison (placebo, another drug,
+      baseline) and the time point, and how many people - as the quotes and
+      contexts state them.
   - id: preclinical
     title: Preclinical efficacy
     kind: written
@@ -135,8 +151,11 @@ intervention_efficacy:
     source: facet:safety
     sentences: "1 to 4"
     instructions: Summarise adverse events and risks reported.
-  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
-  - {id: gaps, title: Gaps and caveats, kind: generated}
+  - {id: numbers, title: Key results in context, kind: generated}
+  - {id: gaps, title: "Limitations, gaps and open questions", kind: generated}
+  - {id: background, title: Context from review articles (not primary evidence), kind: generated}
+  - {id: glossary, title: Abbreviations, kind: generated}
+  - {id: best_source, title: Most relevant source, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}
   - {id: evidence_table, title: Evidence table, kind: generated}
@@ -149,8 +168,12 @@ default:
     kind: written
     source: all
     sentences: "3 to 5"
-    instructions: Answer the question directly from the evidence, saying what kind of evidence supports each point.
-  - {id: best_source, title: Most relevant source, kind: generated}
+    instructions: >-
+      Answer the question directly from the evidence in your first sentence,
+      then say what kind of evidence supports each point. Give each number
+      with the comparison and time point its quote states.
+  - {id: glance, title: Evidence at a glance, kind: generated}
+  - {id: synthesis, title: How the studies line up, kind: generated}
   - id: evidence
     title: Evidence
     kind: written
@@ -163,8 +186,11 @@ default:
     source: negative
     sentences: "1 to 4"
     instructions: Report results that disagree with the others or show no effect.
-  - {id: background, title: Background from reviews (not primary evidence), kind: generated}
-  - {id: gaps, title: Gaps and caveats, kind: generated}
+  - {id: numbers, title: Key results in context, kind: generated}
+  - {id: gaps, title: "Limitations, gaps and open questions", kind: generated}
+  - {id: background, title: Context from review articles (not primary evidence), kind: generated}
+  - {id: glossary, title: Abbreviations, kind: generated}
+  - {id: best_source, title: Most relevant source, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}
   - {id: ranking, title: Papers ranked by relevance, kind: generated}
   - {id: evidence_table, title: Evidence table, kind: generated}

@@ -207,6 +207,18 @@ def no_automatic_retraction_checks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_review_check(monkeypatch):
+    """The first-run banner asks a reachable server whether a literature review
+    can run (`bedrock.doctor.review_notes`). Tests stub `_reachable`, and must
+    not then reach a real model server on the developer's machine; the check
+    itself is tested against the in-process agent server
+    (tests/server/test_agentpack_review.py)."""
+    from bedrock import doctor
+
+    monkeypatch.setattr(doctor, "review_notes", lambda settings: [])
+
+
+@pytest.fixture(autouse=True)
 def fresh_token_estimate():
     """Forget any characters-per-token ratio a previous test taught ``tokens``."""
     tokens.reset()

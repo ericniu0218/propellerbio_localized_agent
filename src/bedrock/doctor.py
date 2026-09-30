@@ -9,6 +9,11 @@ checks when there is no config file yet (see ``settings.py``): once
 someone has configured this once, repeating a multi-second reachability
 check on every single launch would be a real, ongoing cost for no benefit.
 
+In both modes, once the server answers, it also runs the literature review's
+own readiness check (`bedrock.litreview.readiness`: models, window, structured
+output, key) and says what stops `/review` - "reachable" is not the same as
+"a review can run".
+
 In plain-model mode it also prints the Ollama server settings that match the
 machine profile (``bedrock.config.profile``). The client cannot change how the
 server was started, and the one setting that decides a laptop's memory - the
@@ -60,13 +65,20 @@ def run_first_run_check(settings: Settings) -> list[str]:
             f"({DEFAULT_AGENT_PACK_API_BASE}) for the company AI system — almost "
             f"certainly not the real one."
         )
-        if not asyncio.run(_reachable(f"{settings.agent_pack_api_base}/health")):
+        reachable = asyncio.run(_reachable(f"{settings.agent_pack_api_base}/health"))
+        if not reachable:
             issues.append(
                 f"Could not reach an AI system at {settings.agent_pack_api_base}. "
                 f"Ask your team for the correct address, then add it to "
                 f"{DEFAULT_CONFIG_PATH} as:\n"
                 f'      agent_pack_api_base = "https://<the real address>"'
             )
+        else:
+            # Reachable is not the same as able to run a literature review:
+            # that needs the server's inference API, a key it accepts, the
+            # models the review's model set names, and a window large enough.
+            # The local machine profile says nothing about any of it here.
+            issues.extend(review_notes(settings))
         issues.extend(_biotech_tool_notes(settings))
     else:
         issues.append(
@@ -74,7 +86,8 @@ def run_first_run_check(settings: Settings) -> list[str]:
             f"({DEFAULT_API_BASE}, a local Ollama install) — almost certainly "
             f"not the right one for a company deployment."
         )
-        if not asyncio.run(_reachable(f"{settings.api_base}/models")):
+        reachable = asyncio.run(_reachable(f"{settings.api_base}/models"))
+        if not reachable:
             issues.append(
                 f"Could not reach a model server at {settings.api_base}. "
                 f"Ask your team for the correct address, then add it to "
@@ -82,9 +95,34 @@ def run_first_run_check(settings: Settings) -> list[str]:
                 f'      api_base = "https://<the real address>"\n'
                 f'      api_key = "<if your team gave you one>"'
             )
-        issues.append(server_settings_note(settings.profile))
+        # With a server to ask, the live review check replaces the profile's
+        # static /review advice: it knows the window the server really gives.
+        review = review_notes(settings) if reachable else None
+        issues.append(server_settings_note(settings.profile, review_advice=review is None))
+        issues.extend(review or [])
 
     return issues
+
+
+def review_notes(settings: Settings) -> list[str]:  # tests: see tests/conftest.py no_live_review_check
+    """What stops `/review` on this machine, from the same checks a review runs
+    first (`bedrock.litreview.readiness`). Empty when a review can run.
+
+    Imported here, not at the top: the review package is only loaded on a
+    first run, and only once a server has answered."""
+    try:
+        from bedrock.litreview.readiness import operational, review_readiness
+    except ImportError:  # pragma: no cover - an install without the review
+        return []
+    try:
+        checks = asyncio.run(review_readiness(settings))
+    except Exception as exc:  # noqa: BLE001 - the banner must never stop the app
+        return [f"Could not check literature-review readiness: {exc}"]
+    if operational(checks):
+        return []
+    failed = [c for c in checks if c.ok is False]
+    return ["Literature reviews (/review) cannot run yet:\n" + "\n".join(f"      - {c.name}: {c.detail}" for c in failed)
+            + "\n      Run `bedrock-litreview doctor` for the full check."]
 
 
 def ollama_settings(profile: MachineProfile) -> list[str]:
@@ -104,7 +142,7 @@ def ollama_settings(profile: MachineProfile) -> list[str]:
     ]
 
 
-def server_settings_note(profile: MachineProfile) -> str:
+def server_settings_note(profile: MachineProfile, *, review_advice: bool = True) -> str:
     """What to set on the model server so it matches the ``profile`` in use."""
     lines = "\n".join(f"      {line}" for line in ollama_settings(profile))
     advice = (
@@ -118,7 +156,7 @@ def server_settings_note(profile: MachineProfile) -> str:
         f"\n    For vLLM, start it with --max-model-len {profile.context_window}. "
         'Choose another profile with profile = "laptop" | "workstation" | "server" in the config file.'
     )
-    if profile.context_window < LITREVIEW_MIN_CONTEXT_WINDOW:
+    if review_advice and profile.context_window < LITREVIEW_MIN_CONTEXT_WINDOW:
         # Worth saying here rather than only when a review is started: the
         # window is a server setting, so changing it means restarting Ollama,
         # and finding that out mid-review is the expensive way to learn it.
@@ -160,3 +198,7 @@ def print_first_run_banner(issues: list[str]) -> None:
     print("Continuing anyway — fix this and restart anytime, or ask your team for help.")
     print("=" * 72)
     print()
+
+
+_review_notes = review_notes
+"""The real check, for tests that replace ``review_notes`` and want it back."""

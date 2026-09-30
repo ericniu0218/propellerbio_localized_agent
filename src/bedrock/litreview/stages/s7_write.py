@@ -52,9 +52,12 @@ from bedrock.litreview.models import (
     Sentence,
 )
 from bedrock.litreview.report.entailment import report_stats
+from bedrock.litreview.report import claims, synthesis
 from bedrock.litreview.report.guard import CitationGuard, GuardResult
-from bedrock.litreview.report.layout import SectionSpec, load_layout
-from bedrock.litreview.stages.s6_score import TARGET_ORDER_RULE, best_units
+from bedrock.litreview.report.layout import APPENDIX, SectionSpec, load_layout
+from bedrock.litreview.stages.s6_score import TARGET_ORDER_RULE
+from bedrock.litreview.stages.s6_score import best_units
+from bedrock.litreview.stages.s6_score import best_units as _best_units
 
 log = logging.getLogger(__name__)
 
@@ -151,6 +154,16 @@ class WriteContext:
     section_inputs: dict[str, list[str]] = field(default_factory=dict)
     """Section id (`targets:IL23A` for a subsection) -> the unit ids it was
     given to write from. For the coverage ledger; never in the report."""
+    designs: dict[str, dict] = field(default_factory=dict)
+    """Paper id -> its study-design record (`study_design.design_signals`):
+    what the paper says it is, for `report/synthesis.py`."""
+    studies: dict = field(default_factory=dict)
+    """Paper id -> `report.synthesis.Study`, filled by `write_report`."""
+    refs: dict = field(default_factory=dict)
+    """Paper id -> reference number, filled by `write_report`."""
+    collection_note: str | None = None
+    """Set when the papers were collected for a different reading of the
+    question (`stages/s1_collect.stale_collection`): the first gap shown."""
 
     def __post_init__(self) -> None:
         self.rank_of = {r.paper_id: r.rank for r in self.ranked}
@@ -288,6 +301,17 @@ def write_section_text(
             # `repeated`, not surfaced as a citation-guard drop reason.
             ctx.sentence_stats["garbled"] += 1
             continue
+        expansion = _invented_expansion(text, [short[c] for c in citations if c in short], ctx)
+        if expansion:
+            # The writer spelled out an abbreviation its evidence never
+            # does: "compared to best medical standard (BMS)", where the
+            # paper's BMS is bariatric metabolic surgery (tirzepatide/liver-fat
+            # run, 29 September 2026). The citation guard checks numbers, names
+            # and subjects, not expansions, so it is checked here, and the
+            # sentence is shown as removed with the reason.
+            ctx.sentence_stats["dropped"] += 1
+            sentences.append(Sentence(text=text, citations=citations, kept=False, drop_reason=expansion))
+            continue
         words = _content_words(text)
         if any(_overlap(words, earlier) >= REPEAT_OVERLAP for earlier in said):
             # Small models loop: the MedGemma run wrote one sentence four times
@@ -355,6 +379,45 @@ def write_section_text(
         # was already said. Say which one this is.
         note = "Everything drafted here is already stated in an earlier section."
     return sentences, note
+
+
+def _invented_expansion(text: str, cited: list[EvidenceUnit], ctx: WriteContext) -> str | None:
+    """Why a drafted sentence's "long form (ABBR)" is not the paper's, or None.
+
+    Accepted when the long form is in the cited text itself, or is how a
+    cited paper defines the abbreviation, or is its standard expansion
+    (`knowledge/glossary.yaml`). A different expansion of an abbreviation the
+    paper defines is refused outright: it changes what was compared."""
+    from bedrock.litreview.knowledge.abbreviations import find_abbreviations, paper_abbreviations
+
+    found = find_abbreviations(text)
+    if not found:
+        return None
+    evidence = " ".join(" ".join(x for x in (u.quote, u.context_quote, u.qualifier_quote, u.naming_quote) if x)
+                        for u in cited).lower()
+    defined: dict[str, str] = {}
+    for pid in dict.fromkeys(u.paper_id for u in cited):
+        if pid in ctx.papers:
+            for short_form, long_form in paper_abbreviations(ctx.papers[pid]).items():
+                defined.setdefault(short_form, long_form)
+    standard = synthesis._load_glossary()
+
+    def same(a: str, b: str) -> bool:
+        wa, wb = set(_WORD.findall(a.lower())), set(_WORD.findall(b.lower()))
+        return bool(wa) and (wa <= wb or wb <= wa)
+
+    for short_form, long_form in found.items():
+        if long_form.lower() in evidence:
+            continue
+        if short_form in defined:
+            if same(long_form, defined[short_form]):
+                continue
+            return (f"expands {short_form} as “{long_form}”; the cited paper defines it as "
+                    f"“{defined[short_form]}”")
+        if short_form in standard and same(long_form, standard[short_form].split(" (")[0]):
+            continue
+        return f"expands {short_form} as “{long_form}”, which neither the cited text nor the paper says"
+    return None
 
 
 REPEAT_OVERLAP = 0.8
@@ -440,11 +503,26 @@ def _overlap(a: set[str], b: set[str]) -> float:
 def _slice(ctx: WriteContext, source: str) -> list[EvidenceUnit]:
     units = ctx.summary.units
     limit = ctx.max_units_per_section
+    if ctx.spec.question_type != "target_identification":
+        # Lead with findings that measure what the question asks about.
+        prefer = synthesis.section_preference(ctx)
+
+        def best_units(chosen, rank_of, n, demoted=frozenset()):  # noqa: F811 - the same rule, subject first
+            return _best_units(chosen, rank_of, n, demoted, prefer=prefer)
+    else:
+        best_units = _best_units
     if source == "all":
         return best_units(units, ctx.rank_of, limit, ctx.demoted)
     if source == "negative":
         conflict_ids = {uid for c in ctx.summary.conflicts for uid in c.unit_ids}
         chosen = [u for u in units if u.outcome in ("no_effect", "worsened", "mixed") or u.id in conflict_ids]
+        if ctx.spec.question_type != "target_identification":
+            # Not the diet that induced the disease, not a comparison of
+            # genotype subgroups, not two arms that both got the drug: none of
+            # those is the requested treatment failing or doing harm.
+            chosen = [u for u in chosen if synthesis.substantive(u)
+                      and claims.attributable(u, ctx.spec, ctx.papers.get(u.paper_id))
+                      and claims.contrast_of(u, ctx.spec, ctx.papers.get(u.paper_id)) not in ("subgroup", "co_intervention")]
         return best_units(chosen, ctx.rank_of, limit, ctx.demoted)
     if source == "prevention":
         # By setting, not by facet: a prophylaxis finding is prevention
@@ -504,7 +582,10 @@ def _realized(ctx: WriteContext) -> dict[str, set[str]]:
     says papers whose abstracts looked right were chosen to be read."""
     out: dict[str, set[str]] = {}
     for u in ctx.summary.units:
-        out.setdefault(u.facet or "other", set()).add(u.paper_id)
+        # A quote that reports no result (an enrolment count, a baseline
+        # table, an aim) does not cover a need, however verified it is.
+        if synthesis.substantive(u):
+            out.setdefault(u.facet or "other", set()).add(u.paper_id)
     return out
 
 
@@ -518,7 +599,7 @@ def _realized_status(ctx: WriteContext, facet: Facet, got: int) -> str:
 
 def _gaps(ctx: WriteContext) -> str:
     subject = subject_label(ctx.spec)
-    bullets = []
+    bullets = [f"**Incomplete search.** {ctx.collection_note}"] if ctx.collection_note else []
     realized = _realized(ctx)
     extracted = ctx.client is not None or bool(ctx.summary.units)
     for fp in ctx.plan.facets:
@@ -557,7 +638,12 @@ def _gaps(ctx: WriteContext) -> str:
         bullets.append(
             f"{dropped} drafted sentence(s) were removed because they stated something their cited evidence does not."
         )
-    if ctx.spec.population:
+    for note in synthesis.statistics_notes(ctx, getattr(ctx, "refs", {}) or {}):
+        bullets.append(note)
+    population = synthesis.population_note(ctx, ctx.studies)
+    if population:
+        bullets.append(population)
+    elif ctx.spec.population:
         bullets.append(
             f"The question concerns {ctx.spec.population}. Findings were not filtered by population; "
             "check who was studied in the evidence table."
@@ -651,7 +737,7 @@ def _ranking(ctx: WriteContext, refs: dict[str, int], limit: int = 20) -> str:
         )
     total_usable = sum(1 for r in ctx.ranked if r.usable)
     if total_usable > limit:
-        rows.append(f"\n{total_usable - limit} further papers passed the gate; see the JSON report for all.")
+        rows.append(f"\n{total_usable - limit} further papers passed the gate; all are listed in report.json, saved beside this report (in the Research tab: Download JSON).")
     return "\n".join(rows)
 
 
@@ -812,7 +898,7 @@ def _excluded(ctx: WriteContext, limit: int = 80) -> str:
     for r in low:
         rows.append(f"| {cell(ctx.papers[r.paper_id].title[:120])} | review (per relevance check) |")
     if len(excluded) > limit:
-        rows.append(f"| … | {len(excluded) - limit} more in the JSON report |")
+        rows.append(f"| … | {len(excluded) - limit} more, listed in report.json saved beside this report |")
     if len(rows) == 2:
         return "No collected paper was excluded."
     return "\n".join(rows)
@@ -863,6 +949,11 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     already_kept: list[set[str]] = []
 
     for spec in layout:
+        if spec.id == "prevention" and ctx.spec.goal != "prevent":
+            # A treatment question does not get a prevention section: a
+            # disease induced in an animal model and then treated is not
+            # prevention, and the section filled with exactly that.
+            continue
         if spec.kind != "written":
             sections.append(ReportSection(id=spec.id, title=spec.title, kind="generated"))
             continue
@@ -897,7 +988,15 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     refs = build_references(ctx, sections)
     if ctx.integrity_notes:
         _flag_notices(ctx, sections, refs)
+    studies = synthesis.profiles(ctx)
+    _basis_notes(ctx, sections, refs, studies)
+    ctx.studies = studies
+    ctx.refs = refs
+    _decisive_fallback(ctx, sections, refs, studies)
     generators = {
+        "glance": lambda: synthesis.glance(ctx, refs, studies),
+        "synthesis": lambda: synthesis.synthesis(ctx, refs, studies),
+        "numbers": lambda: synthesis.key_results(ctx, refs, studies),
         "best_source": lambda: _best_source(ctx, refs),
         "background": lambda: _background(ctx),
         "gaps": lambda: _gaps(ctx),
@@ -908,8 +1007,16 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "excluded": lambda: _excluded(ctx),
     }
     for section in sections:
-        if section.kind == "generated":
+        if section.kind == "generated" and section.id != "glossary":
             section.body_markdown = generators[section.id]()
+    # Last: it expands the abbreviations the main text actually uses.
+    main_text = "\n".join(
+        [s.text for sec in sections if sec.id not in APPENDIX for _, s in _kept(sec)]
+        + [sec.body_markdown or "" for sec in sections if sec.id in ("glance", "synthesis", "numbers")]
+    )
+    for section in sections:
+        if section.id == "glossary":
+            section.body_markdown = synthesis.glossary(ctx, main_text, refs)
 
     references = []
     for pid, number in sorted(refs.items(), key=lambda kv: kv[1]):
@@ -991,6 +1098,79 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         model_versions=model_versions,
         prompt_versions=prompt_versions,
     )
+
+
+def _decisive_fallback(ctx: WriteContext, sections: list[ReportSection], refs: dict[str, int], studies) -> None:
+    """When the strongest direct evidence for the question did not survive
+    into the Answer, say so, and give it in the paper's own words.
+
+    The guard can refuse the sentence written from the decisive finding (it
+    did: a trial's "-8·09%" once read as a number missing from its own
+    quote), and the Answer was then written from whatever else survived - two
+    mouse studies, in one report. Decisive: a result the requested treatment
+    is responsible for, about the question's subject, from a randomised trial,
+    else from any human study. Nothing is generated: the fallback is the
+    finding's verified quote, with its citation."""
+    if ctx.spec.question_type == "target_identification":
+        return
+    answer = next((sec for sec in sections if sec.id == "answer"), None)
+    if answer is None or not ctx.summary.units:
+        return
+    about = synthesis.subject_test(ctx)
+
+    def decisive(u, tiers):
+        s = studies.get(u.paper_id)
+        paper = ctx.papers.get(u.paper_id)
+        return (s is not None and s.tier in tiers and synthesis.substantive(u) and about(u)
+                and claims.attributable(u, ctx.spec, paper)
+                and claims.contrast_of(u, ctx.spec, paper) in ("between_arm", "within_arm", "unclear")
+                and not claims.statistical_anomalies(u.quote))
+
+    for tiers in (("rct",), synthesis.HUMAN_TIERS):
+        best = [u for u in ctx.summary.units if decisive(u, tiers)]
+        if best:
+            break
+    else:
+        return
+    by_short = {short: uid for uid, short in ctx.summary.short_ids.items()}
+    cited_papers = {ctx.by_unit_id[by_short[c]].paper_id for s in answer.sentences if s.kept for c in s.citations
+                    if c in by_short and by_short[c] in ctx.by_unit_id}
+    if any(u.paper_id in cited_papers for u in best):
+        return
+    top = sorted(best, key=lambda u: (u.section != "results", ctx.rank_of.get(u.paper_id, 10**6), u.id))[0]
+    line = (f"The most direct evidence could not be stated in a checked sentence; in the paper's own words: "
+            f"“{top.quote}” {synthesis.study_label(studies[top.paper_id], refs)}.")
+    answer.note = f"{answer.note} {line}" if answer.note else line
+
+
+def _kept(section: ReportSection):
+    for s in section.sentences:
+        if s.kept:
+            yield section.id, s
+    for sub in section.subsections:
+        yield from _kept(sub)
+
+
+def _basis_notes(ctx: WriteContext, sections: list[ReportSection], refs: dict[str, int], studies) -> None:
+    """Under every written section with kept sentences: which studies its
+    sentences rest on - design, who and how many, full text or abstract -
+    computed from the cited findings, never written by the model. The
+    sentence text itself is untouched, so `report/invariants.py` re-checks
+    exactly what the guard judged."""
+    by_short = {short: uid for uid, short in ctx.summary.short_ids.items()}
+
+    def walk(section: ReportSection) -> None:
+        cited = [ctx.by_unit_id[by_short[c]] for s in section.sentences if s.kept for c in s.citations
+                 if c in by_short and by_short[c] in ctx.by_unit_id]
+        line = synthesis.basis_note(cited, studies, refs)
+        if line:
+            section.note = f"{section.note} {line}" if section.note else line
+        for sub in section.subsections:
+            walk(sub)
+
+    for section in sections:
+        if section.kind == "written":
+            walk(section)
 
 
 def _withheld_note(ctx: WriteContext) -> str | None:

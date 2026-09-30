@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # The transcription engine is bedrock's own (bedrock.meetings), shipped in the
 # same package, so it is always importable. Only its optional speaker and
 # screen-reading extras are guarded, where they are used.
-from bedrock.meetings.summarize import suggest_title, MeetingSummary, summarize_meeting
+from bedrock.meetings.summarize import suggest_title, translate_cues, MeetingSummary, summarize_meeting
 from bedrock.meetings.transcribe import (
     WhisperConfig,
     WhisperTranscriber,
@@ -75,6 +75,8 @@ class TranscriptionOutcome:
     """Share of sampled speech per detected language, when detection ran."""
     suggested_title: str | None = None
     """A name taken from the content, for a meeting that was not given one."""
+    translations: dict[int, str] = field(default_factory=dict)
+    """English for cues spoken in a CJK language, by cue index."""
 
     @property
     def is_empty(self) -> bool:
@@ -151,6 +153,21 @@ def tidy_speakers(cues: list["Cue"], gap_ms: int = NEIGHBOUR_GAP_MS) -> tuple[li
     return filled, len({c.speaker for c in filled if c.speaker})
 
 
+def _speakers(n: int) -> str:
+    return "1 speaker was" if n == 1 else f"{n} speakers were"
+
+
+def english_vtt(outcome: "TranscriptionOutcome") -> str | None:
+    """The transcript with translated lines in English, same timing and
+    speakers, or None when nothing was translated."""
+    if not outcome.translations:
+        return None
+    from dataclasses import replace
+
+    cues = [replace(c, text=outcome.translations.get(i, c.text)) for i, c in enumerate(outcome.cues)]
+    return to_vtt(cues)[:100_000]
+
+
 def describe_language(decision) -> str:
     """One line for the meeting page on what was heard and how it was run."""
     names = {"en": "English", "zh": "Mandarin", "es": "Spanish", "ja": "Japanese", "ko": "Korean",
@@ -162,10 +179,37 @@ def describe_language(decision) -> str:
     return f"Transcribed as {names.get(decision.language, decision.language)} (detected: {heard})."
 
 
+# whisper reads at most n_text_ctx/2 = 224 tokens of prompt and, past that,
+# drops the rest. The transcriber may prepend the Mandarin script hint (about
+# a dozen tokens), so the vocabulary gets a little less than the whole budget.
+# Terms are kept from the front, which is why packs and configured terms put
+# the most-misheard names first; everything past the cut still repairs
+# near-misses, it just does not steer the decoder.
+HINT_TOKEN_BUDGET = 200
+
+
+def hint_within_budget(vocabulary: str | None, budget: int = HINT_TOKEN_BUDGET) -> str | None:
+    if not vocabulary:
+        return None
+    from bedrock.inference import estimate_tokens
+
+    kept, used = [], 0
+    for term in (t.strip() for t in re.split(r"[,;\n]", vocabulary)):
+        if not term:
+            continue
+        cost = estimate_tokens(term + ", ")
+        if used + cost > budget:
+            break
+        kept.append(term)
+        used += cost
+    return ", ".join(kept) or None
+
+
 def _initial_prompt(config: RecordingConfig) -> str | None:
-    """The vocabulary. The transcriber adds the Mandarin script hint itself
-    once it knows the recording is Mandarin, whether chosen or detected."""
-    return config.vocabulary or None
+    """The vocabulary, cut to whisper's prompt budget. The transcriber adds
+    the Mandarin script hint itself once it knows the recording is Mandarin,
+    whether chosen or detected."""
+    return hint_within_budget(config.vocabulary)
 
 
 def _whisper_config(config: RecordingConfig) -> "WhisperConfig":
@@ -178,6 +222,7 @@ def _whisper_config(config: RecordingConfig) -> "WhisperConfig":
         normalize_audio=config.normalize_audio,
         vad_threshold=config.vad_threshold,
         vad_speech_pad_ms=config.vad_speech_pad_ms,
+        models_by_language={"zh": config.speech_model_zh} if config.speech_model_zh else {},
     )
 
 
@@ -461,7 +506,7 @@ def _apply_speakers(cues, result, names=None, from_screen=False):
     found = len(counts)
     if result.estimated:
         note = (
-            f"{found} speakers were identified from the audio. Where people talk "
+            f"{_speakers(found)} identified from the audio. Where people talk "
             "over each other this can split one person across two labels — if "
             "two of these are the same person, rename them to the same name and "
             "they merge."
@@ -470,12 +515,12 @@ def _apply_speakers(cues, result, names=None, from_screen=False):
         recognised = sum(1 for speaker in counts if speaker in names)
         source = "read from the meeting window" if from_screen else "matched to a saved voice"
         note = (
-            f"{found} speakers were identified, {recognised} of them {source}. "
+            f"{_speakers(found)} identified, {recognised} of them {source}. "
             "Any still labelled 'Speaker N' can be renamed here."
         )
     else:
         note = (
-            f"{found} speakers were identified. Labels are provisional — rename "
+            f"{_speakers(found)} identified. Labels are provisional — rename "
             "them on this page, or save a voice sample so they are named "
             "automatically next time."
         )
@@ -528,6 +573,13 @@ async def summarise(
             meeting_date=meeting_date,
             notes=notes,
         )
+        if outcome.summary is not None and outcome.summary.degraded_reason is None:
+            try:
+                outcome.translations = await translate_cues(
+                    get_model_hub().scheduler_for("notes"), notes_model.model_name, outcome.cues
+                )
+            except Exception as exc:  # the original transcript is the record; English is a courtesy
+                logger.info("No translation for %r: %s", title, exc)
         if name_it and outcome.summary is not None and outcome.summary.degraded_reason is None:
             try:
                 outcome.suggested_title = await suggest_title(
@@ -629,6 +681,8 @@ def to_record_fields(outcome: TranscriptionOutcome) -> dict:
         "questions": [],
         "language": outcome.language,
         "languagesHeard": outcome.languages_heard,
+        "transcriptEnglish": english_vtt(outcome),
+        "translatedLines": len(outcome.translations),
         "people": list(summary.facts.speakers),
         "enhancedNotes": summary.enhanced_notes,
         "durationMinutes": summary.facts.duration_minutes,

@@ -660,3 +660,161 @@ def test_phantoms_are_not_folded_when_everyone_would_be_one():
     cues = [_cue(0, 1000, "a", "Speaker 3"), _cue(2000, 3000, "b", "Speaker 8")]
     tidied, count = tidy_speakers(cues)
     assert [c.speaker for c in tidied] == ["Speaker 1", "Speaker 2"] and count == 2
+
+
+# --- Vocabulary packs and the decoder's prompt budget --------------------------
+
+
+def test_the_biotech_pack_loads_and_goes_after_configured_terms(monkeypatch):
+    from bedrock.server.meetings.vocabulary_source import from_packs, suggest
+
+    monkeypatch.setenv("MEETING_VOCABULARY_PACK", "biotech")
+    monkeypatch.setenv("MEETING_VOCABULARY", "Priya, Ravi")
+    monkeypatch.delenv("MEETING_VOCABULARY_CORPUS", raising=False)
+    pack = from_packs()
+    assert len(pack) > 400 and "dupilumab" in pack and "GLP-1" in pack and "TSLP" in pack
+    assert not any(t.startswith("#") for t in pack)
+    terms = suggest([])
+    assert terms[:2] == ["Priya", "Ravi"] and terms[2] == pack[0]
+
+
+def test_an_unknown_pack_is_skipped_not_fatal(monkeypatch, tmp_path):
+    from bedrock.server.meetings.vocabulary_source import from_packs
+
+    own = tmp_path / "mine.txt"
+    own.write_text("# mine\nKRAS\n\nG12D # comment\n")
+    assert from_packs(f"no-such-pack, {own}") == ["KRAS", "G12D"]
+
+
+def test_the_decoder_hint_is_cut_to_whispers_budget_from_the_front():
+    from bedrock.inference import estimate_tokens
+    from bedrock.server.meetings.pipeline import HINT_TOKEN_BUDGET, hint_within_budget
+
+    assert hint_within_budget(None) is None
+    assert hint_within_budget("KRAS, Priya") == "KRAS, Priya"
+    long = ", ".join(f"term{i}" for i in range(600))
+    hint = hint_within_budget(long)
+    assert hint.startswith("term0, term1, term2")
+    assert estimate_tokens(hint) <= HINT_TOKEN_BUDGET
+    assert "term599" not in hint
+
+
+def test_documents_folder_comes_from_the_environment(monkeypatch, tmp_path):
+    from bedrock.server.meetings.vocabulary_source import suggest
+
+    (tmp_path / "paper.txt").write_text("Bimagrumab and Bimagrumab again. Bimagrumab.")
+    monkeypatch.setenv("MEETING_VOCABULARY_CORPUS", str(tmp_path))
+    monkeypatch.delenv("MEETING_VOCABULARY_PACK", raising=False)
+    monkeypatch.delenv("MEETING_VOCABULARY", raising=False)
+    assert "Bimagrumab" in suggest([])
+
+
+# --- Export, translation and the Mandarin model --------------------------------
+
+
+MEETING = {
+    "id": "m1", "title": "KRAS weekly: dose response go-ahead", "recordedAt": "2026-09-29T20:18:26+00:00",
+    "durationMs": 125_000, "speakerCount": 2,
+    "caveats": ["Transcribed as Mandarin (detected: Mandarin 93%, English 7%)."],
+    "summary": "The team agreed to start the dose response study on Monday.",
+    "decisions": ["Start the dose response study Monday — Speaker 1 [00:00:22]"],
+    "actions": ["Order the EGFR antibody before Thursday — Ravi [00:00:27]"],
+    "findings": [],
+    "transcript": "WEBVTT\n\n1\n00:00:00.000 --> 00:00:04.000\nSpeaker 1: 大家早上好，我们开始今天的周会。\n\n2\n00:00:05.000 --> 00:00:09.000\nSpeaker 2: The controls came back clean.\n",
+    "transcriptEnglish": "WEBVTT\n\n1\n00:00:00.000 --> 00:00:04.000\nSpeaker 1: Good morning everyone, let's start today's weekly meeting.\n\n2\n00:00:05.000 --> 00:00:09.000\nSpeaker 2: The controls came back clean.\n",
+    "translatedLines": 1,
+}
+
+
+def test_the_text_export_has_notes_then_every_line_and_english_only_when_asked():
+    from bedrock.server.meetings import export
+
+    plain = export.as_text(MEETING)
+    assert plain.startswith("KRAS weekly: dose response go-ahead\n")
+    assert "2 min · 2 speakers" in plain
+    assert "SUMMARY\nThe team agreed" in plain and "- Order the EGFR antibody" in plain
+    assert "[00:00:00] Speaker 1: 大家早上好，我们开始今天的周会。" in plain
+    assert "EN:" not in plain
+    bilingual = export.as_text(MEETING, english=True)
+    assert "    EN: Good morning everyone, let's start today's weekly meeting." in bilingual
+    assert bilingual.count("EN:") == 1  # the English line is not repeated under itself
+
+
+def test_every_format_renders_and_names_its_file():
+    from bedrock.server.meetings import export
+
+    for fmt in export.FORMATS:
+        body, media = export.render(MEETING, fmt, english=True)
+        assert body and media == export.FORMATS[fmt]
+    assert export.filename(MEETING, "docx") == "KRAS-weekly-dose-response-go-ahead.docx"
+    assert export.as_vtt(MEETING, english=True) == MEETING["transcriptEnglish"]
+    assert export.as_vtt(MEETING) == MEETING["transcript"]
+    assert "## Transcript" in export.as_markdown(MEETING)
+
+
+def test_the_word_export_carries_the_transcript_and_the_english():
+    from docx import Document
+    import io
+
+    from bedrock.server.meetings import export
+
+    doc = Document(io.BytesIO(export.as_docx(MEETING, english=True)))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "KRAS weekly: dose response go-ahead" in text
+    assert "Speaker 1: 大家早上好，我们开始今天的周会。" in text
+    assert "Good morning everyone" in text
+    assert "Order the EGFR antibody before Thursday" in text
+
+
+def test_the_export_route_refuses_an_unknown_format(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from bedrock.server.meetings import routes
+
+    with pytest.raises(HTTPException) as refused:
+        routes.download_transcript("m1", format="pdf", user={"id": "u"})
+    assert refused.value.status_code == 422
+
+
+def test_translations_become_a_parallel_english_transcript(tmp_path):
+    from bedrock.meetings.transcript import Cue
+    from bedrock.server.meetings.pipeline import TranscriptionOutcome, english_vtt
+
+    cues = [Cue(0, 1000, "Speaker 1", "大家早上好"), Cue(1000, 2000, "Speaker 2", "Hello")]
+    outcome = TranscriptionOutcome(vtt="", cues=cues, duration_ms=2000)
+    assert english_vtt(outcome) is None
+    outcome.translations = {0: "Good morning everyone"}
+    vtt = english_vtt(outcome)
+    assert "Speaker 1: Good morning everyone" in vtt and "Speaker 2: Hello" in vtt
+    assert "大家早上好" not in vtt
+
+
+def test_mandarin_gets_its_own_model_when_one_is_installed(tmp_path, monkeypatch):
+    from bedrock.server.meetings.pipeline import _whisper_config
+
+    monkeypatch.setenv("MEETING_MODEL_DIR", str(tmp_path))
+    monkeypatch.delenv("MEETING_SPEECH_MODEL_ZH", raising=False)
+    assert RecordingConfig.from_env().speech_model_zh is None
+    assert _whisper_config(RecordingConfig.from_env()).models_by_language == {}
+
+    (tmp_path / "ggml-large-v3.bin").write_bytes(b"x")
+    cfg = RecordingConfig.from_env()
+    assert cfg.speech_model_zh == tmp_path / "ggml-large-v3.bin"
+    assert _whisper_config(cfg).models_by_language == {"zh": tmp_path / "ggml-large-v3.bin"}
+
+    monkeypatch.setenv("MEETING_SPEECH_MODEL_ZH", str(tmp_path / "other.bin"))
+    assert RecordingConfig.from_env().speech_model_zh == tmp_path / "other.bin"
+
+
+def test_the_export_header_reads_naturally_for_short_and_single_speaker_meetings():
+    from bedrock.server.meetings import export
+
+    short = {**MEETING, "durationMs": 27_000, "speakerCount": 1}
+    assert "27 s · 1 speaker" in export.as_text(short).splitlines()[1]
+    assert "2 min · 2 speakers" in export.as_text(MEETING).splitlines()[1]
+
+
+def test_one_speaker_is_reported_in_the_singular():
+    from bedrock.server.meetings.pipeline import _speakers
+
+    assert _speakers(1) == "1 speaker was" and _speakers(3) == "3 speakers were"

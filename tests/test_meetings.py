@@ -1291,3 +1291,51 @@ def test_a_bullet_that_describes_the_recording_goes_and_so_does_an_empty_one():
     assert clean_overview("Weekly sync.\n\n- This assay needs a repeat.\n- Site four needs a coordinator.") == (
         "Weekly sync.\n\n- This assay needs a repeat.\n- Site four needs a coordinator."
     )
+
+
+async def test_chinese_lines_get_english_beside_them_by_index():
+    from bedrock.meetings.summarize import needs_translation, translate_cues
+    from bedrock.meetings.transcript import Cue
+
+    cues = [
+        Cue(0, 1000, "Speaker 1", "大家早上好，我们开始今天的周会。"),
+        Cue(1000, 2000, "Speaker 2", "The controls came back clean."),
+        Cue(2000, 3000, "Speaker 1", "Ravi负责在周四之前订购EGFR抗体。"),
+        Cue(3000, 4000, "Speaker 2", "IL-17 arm"),
+    ]
+    assert [needs_translation(c.text) for c in cues] == [True, False, True, False]
+
+    class Scheduler:
+        def __init__(self): self.prompts = []
+        async def complete(self, model, messages, priority=None, options=None):
+            self.prompts.append(messages[0]["content"])
+            return "1. Good morning everyone, let's start today's weekly meeting.\n2) Ravi will order the EGFR antibody before Thursday.\n"
+    sched = Scheduler()
+    out = await translate_cues(sched, "m", cues)
+    assert out == {0: "Good morning everyone, let's start today's weekly meeting.",
+                   2: "Ravi will order the EGFR antibody before Thursday."}
+    assert "1. 大家早上好" in sched.prompts[0] and "2. Ravi负责" in sched.prompts[0]
+    assert "controls came back" not in sched.prompts[0]
+
+    # Nothing Chinese: the model is never called.
+    sched = Scheduler()
+    assert await translate_cues(sched, "m", cues[1:2]) == {} and sched.prompts == []
+
+
+async def test_a_half_translated_line_gets_one_more_try_alone():
+    from bedrock.meetings.summarize import translate_cues
+    from bedrock.meetings.transcript import Cue
+
+    cues = [Cue(0, 1000, "Speaker 1", "第一项是对照实验的结果。"), Cue(1000, 2000, "Speaker 1", "我周五会跟进。")]
+
+    class Scheduler:
+        def __init__(self): self.prompts = []
+        async def complete(self, model, messages, priority=None, options=None):
+            self.prompts.append(messages[0]["content"])
+            if len(self.prompts) == 1:
+                return "1. The first item is the result of the 对照实验 experiment.\n2. I will follow up on Friday."
+            return "1. The first item is the result of the control experiment."
+    sched = Scheduler()
+    out = await translate_cues(sched, "m", cues)
+    assert out == {0: "The first item is the result of the control experiment.", 1: "I will follow up on Friday."}
+    assert len(sched.prompts) == 2 and "1. 第一项是对照实验的结果。" in sched.prompts[1]

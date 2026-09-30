@@ -97,6 +97,8 @@ env DEMO_MODE=true AGENT_PACK_MODE=mock AIRGAP_CHECK=false \
   MEETING_SUMMARY_ENDPOINT="$OLLAMA_URL" \
   MEETING_SUMMARY_MODEL="$SUMMARY_MODEL" \
   MEETING_VOCABULARY="${MEETING_VOCABULARY-}" \
+  MEETING_VOCABULARY_PACK="${MEETING_VOCABULARY_PACK-}" \
+  MEETING_VOCABULARY_CORPUS="${MEETING_VOCABULARY_CORPUS-}" \
   DATACENTER_BASE_URL="http://127.0.0.1:$CONNECTOR_PORT" \
   DATACENTER_SIGNING_SECRET="$SECRET" \
   PYTHONPATH="$PWD" "$PYTHON" -m bedrock.server --port "$PORT" &
@@ -129,6 +131,12 @@ Ready. Sign in as the demo user, open Meetings, and press Record.
   that had never mentioned one. A wrong vocabulary is worse than none.
 
     MEETING_VOCABULARY="Priya, Ravi, KRAS, G12C, sotorasib" ./scripts/demo-recorder.sh
+
+  For a biotech customer there is a bundled pack of several hundred targets,
+  drugs, assays and companies (antibodies, peptides, siRNA; immunology &
+  inflammation, obesity, CNS). Turn it on with:
+
+    MEETING_VOCABULARY_PACK=biotech ./scripts/demo-recorder.sh
 
 Press Ctrl+C to stop both services.
 NOTE

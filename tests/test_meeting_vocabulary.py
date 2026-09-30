@@ -201,3 +201,32 @@ def test_the_harvester_leaves_calendar_words_alone():
     terms = [term for term, _ in harvest(texts, minimum=2)]
     assert "KRAS" in terms
     assert "Weekly" not in terms
+
+
+def test_a_tiny_acronym_steers_the_decoder_but_is_never_a_repair_target():
+    """With a domain pack loaded, half the names in a meeting are one edit
+    from some three-letter acronym: "Sam" from "SAD", "Pam" from "PAD"."""
+    from bedrock.meetings.vocabulary import _match, correct_texts
+
+    terms = ["SAD", "MAD", "PAD", "IL-6", "IL-17", "dupilumab"]
+    assert _match("Sam", terms, sentence_initial=False) is None
+    assert _match("Pam", terms, sentence_initial=False) is None
+    assert _match("IL6", terms, sentence_initial=False) == "IL-6"  # digits: a real term shape
+    assert _match("dupilumob", terms, sentence_initial=False) == "dupilumab"
+    lines, _ = correct_texts(["Sam and Pam saw the IL17 data on dupilumob"], ", ".join(terms))
+    assert lines == ["Sam and Pam saw the IL-17 data on dupilumab"]
+
+
+def test_an_ordinary_word_gets_one_edit_however_long_the_term():
+    """"Action item" became "activin item" with a domain pack loaded: two
+    edits of latitude on a seven-letter term reached an everyday word."""
+    from bedrock.meetings.vocabulary import _match, correct_texts
+
+    terms = ["activin", "dupilumab", "semaglutide", "myostatin"]
+    assert _match("action", terms, sentence_initial=False) is None
+    assert _match("Action", terms, sentence_initial=True) is None
+    assert _match("dupilumob", terms, sentence_initial=False) == "dupilumab"
+    assert _match("semaglutyde", terms, sentence_initial=False) == "semaglutide"
+    assert _match("MYOSTATEN", terms, sentence_initial=False) == "myostatin"  # name-shaped keeps its latitude
+    lines, report = correct_texts(["Action item for Ravi.", "the action items"], ", ".join(terms))
+    assert lines == ["Action item for Ravi.", "the action items"] and report.corrections == []

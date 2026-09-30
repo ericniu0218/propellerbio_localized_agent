@@ -338,6 +338,13 @@ class WhisperConfig:
     """Extra audio kept either side of each detected region. VAD cuts tight
     and quiet speech starts below its threshold, so a bigger pad keeps the
     first syllable of a soft opening."""
+    models_by_language: dict[str, Path] = field(default_factory=dict)
+    """A different checkpoint for particular languages, keyed by whisper code
+    and looked up once the language is decided. On the same Mandarin clips
+    the full large-v3 got EGFR and 剂量反应 (dose response) right where the
+    turbo model wrote BGFR and 计量, while on noisy English it read worse and
+    hallucinated — so a deployment can hand Mandarin to large-v3 and keep
+    turbo for everything else. Detection always runs on ``model``."""
     window_ms: int = 24_000
     """How much consecutive speech whisper is handed at once.
 
@@ -627,9 +634,12 @@ class WhisperTranscriber:
         if decision.language == "zh" and (not prompt or MANDARIN_PROMPT not in prompt):
             prompt = f"{MANDARIN_PROMPT} {prompt}" if prompt else MANDARIN_PROMPT
 
+        model = self.config.models_by_language.get(decision.language) or self.config.model
+        if model != self.config.model and not model.exists():
+            model = self.config.model
         args = [
             self.config.binary,
-            "-m", str(self.config.model),
+            "-m", str(model),
             "-l", decision.language,
             "-t", str(self.config.threads),
             "-ovtt", "--no-prints",

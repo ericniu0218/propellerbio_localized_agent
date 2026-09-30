@@ -43,7 +43,33 @@ _CAPITALISED = re.compile(r"^[A-Z][a-z]{4,}$")
 _TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 
 MIN_OCCURRENCES = 2
-MAX_TERMS = 120
+# The full list is what the spelling repair reads; the decoder hint is cut to
+# whisper's prompt budget separately (pipeline._initial_prompt), so this can
+# be generous. A domain pack alone is several hundred terms.
+MAX_TERMS = 800
+
+# Bundled vocabulary packs, by name: MEETING_VOCABULARY_PACK=biotech, or a
+# comma-separated list of names and file paths. One term per line, "#" for
+# comments, most-misheard first.
+PACK_DIR = Path(__file__).resolve().parent.parent / "defaults" / "vocabulary"
+
+
+def from_packs(spec: str | None = None) -> list[str]:
+    """Terms from the packs named in ``MEETING_VOCABULARY_PACK``, in order."""
+    spec = os.environ.get("MEETING_VOCABULARY_PACK", "") if spec is None else spec
+    terms: list[str] = []
+    for name in (n.strip() for n in spec.split(",") if n.strip()):
+        path = Path(name).expanduser()
+        if not path.suffix and not path.exists():
+            path = PACK_DIR / f"{name}.txt"
+        if not path.exists():
+            logger.warning("Vocabulary pack %r not found (looked at %s)", name, path)
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                terms.append(line)
+    return terms
 
 # Capitalised words that are just sentences starting, or calendar noise. A
 # vocabulary containing "Monday" steers the decoder for no benefit.
@@ -145,7 +171,11 @@ def suggest(meetings: list[dict], corpus_dir: Path | None = None) -> list[str]:
     seen = {term.casefold() for term in configured}
     suggested = list(configured)
 
-    for term in from_meetings(meetings) + (from_documents(corpus_dir) if corpus_dir else []):
+    if corpus_dir is None and os.environ.get("MEETING_VOCABULARY_CORPUS"):
+        corpus_dir = Path(os.environ["MEETING_VOCABULARY_CORPUS"]).expanduser()
+    # Packs before harvested terms: curated beats counted. Documents last,
+    # since a folder of papers yields the most and the least certain terms.
+    for term in from_packs() + from_meetings(meetings) + (from_documents(corpus_dir) if corpus_dir else []):
         if term.casefold() not in seen:
             seen.add(term.casefold())
             suggested.append(term)

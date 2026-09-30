@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from bedrock.server.meetings.config import (
@@ -39,6 +39,7 @@ from bedrock.server.meetings.config import (
     readiness_issues,
 )
 from bedrock.server.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
+from bedrock.server.meetings import export
 from bedrock.meetings.enrollment import (
     ENROLLMENT_AVAILABLE,
     ENROLLMENT_MISSING,
@@ -110,6 +111,7 @@ def readiness(user=Depends(identity)):
         "issues": issues,
         "consentRequired": consent_required(),
         "speechModel": cfg.speech_model.name,
+        "mandarinModel": cfg.speech_model_zh.name if cfg.speech_model_zh and cfg.speech_model_zh.exists() else None,
         "multilingual": multilingual,
         "recommendedModel": DEFAULT_SPEECH_MODEL,
         "defaultLanguage": cfg.language,
@@ -259,6 +261,23 @@ async def create_recording(
 
 def voice_store() -> VoicePrintStore:
     return VoicePrintStore(config().storage_dir / "voice-prints.sqlite")
+
+
+@router.get("/{meeting_id}/transcript")
+def download_transcript(meeting_id: str, format: str = "txt", english: bool = False, user=Depends(identity)):
+    """The meeting as a file: notes, then every line with timestamp and
+    speaker. ``format`` is txt, md, vtt or docx; ``english`` adds the English
+    under lines that were spoken in Chinese, where the notes model wrote one."""
+    if format not in export.FORMATS:
+        raise HTTPException(422, f"format must be one of {', '.join(export.FORMATS)}")
+    meeting = require_object(store(), user["id"], meeting_id, "meetings")
+    try:
+        body, media_type = export.render(meeting, format, english)
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    store().audit(user["id"], f"downloaded transcript ({format})", meeting_id)
+    return Response(body, media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{export.filename(meeting, format)}"'})
 
 
 @router.get("/voices")

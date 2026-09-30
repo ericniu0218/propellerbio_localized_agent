@@ -1,4 +1,11 @@
-"""python -m bedrock.litreview.bench build-corpus|run|determinism-payloads|determinism|replay-control ..."""
+"""python -m bedrock.litreview.bench build-corpus|run|compare|history|determinism-payloads|determinism|replay-control ...
+
+Every command that reaches a model runs `service.preflight` first, exactly as
+a review does: a context window too small for an extraction prompt does not
+fail, the server silently drops the start of each prompt, and every number
+measured that way is wrong without saying so. A command that reaches no model
+opens no server at all.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +16,7 @@ import sys
 from pathlib import Path
 
 from bedrock.litreview.bench.models import BenchQuestion
-from bedrock.litreview.config import load_settings
+from bedrock.litreview.config import ConfigError, load_settings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--skip-perturb", action="store_true")
     run.add_argument("--from-run", help="score the stored report of this run id instead of running the pipeline")
     run.add_argument("--corpora", type=Path, help="corpora root to read (default: evals/litreview/corpora)")
+    run.add_argument("--results", type=Path,
+                     help="where scorecards and history.jsonl go (default: evals/litreview/results)")
     run.add_argument(
         "--legacy-cache-read", action="store_true",
         help="also replay call-cache entries written before generation contexts were part of the key "
@@ -41,6 +50,16 @@ def main(argv: list[str] | None = None) -> int:
         help="judge with answers from this JSONL file instead of the local model; questions with no "
         "answer are written to <file>.pending.jsonl",
     )
+
+    cmp = sub.add_parser("compare", help="B minus A for two scored runs, or a refusal saying why they differ (no model)")
+    cmp.add_argument("a", type=Path, help="scorecard.json, or the run directory holding it")
+    cmp.add_argument("b", type=Path, help="scorecard.json, or the run directory holding it")
+    cmp.add_argument("--force", action="store_true",
+                     help="print the comparison even when the runs are not comparable, with the reasons on top")
+
+    hist = sub.add_parser("history", help="list past runs from results/history.jsonl (no model)")
+    hist.add_argument("--question", help="only this question id")
+    hist.add_argument("--results", type=Path, help="results root (default: evals/litreview/results)")
 
     pay = sub.add_parser("determinism-payloads",
                          help="render pinned stage requests from frozen corpora for the determinism experiment (no model)")
@@ -102,17 +121,73 @@ def main(argv: list[str] | None = None) -> int:
         print(args.out)
         return 0
 
-    from bedrock.config import load_settings as load_bedrock_settings
-    from bedrock.litreview.bench.run import evaluate
-    from bedrock.litreview.llm import make_client
-    from bedrock.litreview.service import standalone_scheduler
+    if args.command == "compare":
+        from bedrock.litreview.bench.compare import compare
 
-    settings = load_settings(model_set=args.models)
+        try:
+            return compare(args.a, args.b, force=args.force, err=say)
+        except FileNotFoundError as exc:
+            say(f"compare: {exc}")
+            return 1
+
+    if args.command == "history":
+        from bedrock.litreview.bench.history import read_history, render_history
+        from bedrock.litreview.bench.run import RESULTS
+
+        rows = read_history((args.results or RESULTS) / "history.jsonl")
+        print(render_history([r for r in rows if args.question in (None, r.question_id)]), end="")
+        return 0
+
+    try:
+        settings = load_settings(model_set=args.models)
+    except ConfigError as exc:
+        say(str(exc))
+        return 1
 
     if args.command == "determinism":
         return _determinism(args, settings, say)
     if args.command == "replay-control":
         return _replay_control(args, settings, say)
+    return _run(args, settings, say)
+
+
+def run_reaches_model(args) -> bool:
+    """Whether `bench run` with these arguments sends anything to a model.
+
+    A fresh pipeline run does (and its distractor test and determinism
+    re-run with it); so do the two chatbot baselines, which the model under
+    test writes; and so does the judge unless its answers come from a file -
+    claims, review facts and perturbations are all judged by it. What is left
+    is a stored report (`--from-run`) judged from a file with no baselines:
+    that reads files only, and must keep working with no server.
+    """
+    return not args.from_run or not args.skip_baselines or args.judge_file is None
+
+
+class NoModelClient:
+    """The model client of a `bench run` that `run_reaches_model` said needs
+    no model. It never calls one: a call means that rule is out of date, and
+    failing loudly beats quietly needing a server that was never checked."""
+
+    model_version = "none"
+
+    def version_of(self, model: str) -> str:
+        return "none"
+
+    def complete(self, prompt: str, *, model: str, schema=None, temperature: float = 0.0,
+                 max_tokens: int = 2048) -> str:
+        raise RuntimeError(
+            "this benchmark run was started without a model server (stored report, file judge, no "
+            "baselines), but something asked the model; update `run_reaches_model` in bench/__main__.py"
+        )
+
+
+def _run(args, settings, say) -> int:
+    from bedrock.config import load_settings as load_bedrock_settings
+    from bedrock.litreview.bench.run import evaluate
+    from bedrock.litreview.llm import make_client
+    from bedrock.litreview.service import preflight, standalone_scheduler
+
     judge_client = None
     if args.judge_file:
         from bedrock.litreview.bench.filejudge import FileClient
@@ -120,41 +195,60 @@ def main(argv: list[str] | None = None) -> int:
         judge_client = FileClient(args.judge_file, version=f"file:{args.judge_file.name}")
         say(f"judging from {args.judge_file} ({len(judge_client.answers)} answer(s) on file)")
 
+    def evaluate_all(client, windows) -> list[Path]:
+        cards = []
+        for path in args.questions:
+            bq = BenchQuestion.load(path)
+            _, out_dir = evaluate(
+                bq, settings=settings, client=client, skip_baselines=args.skip_baselines,
+                corpus_dir=(args.corpora / bq.id) if args.corpora else None, results_root=args.results,
+                skip_distractors=args.skip_distractors, skip_perturb=args.skip_perturb,
+                from_run=args.from_run, judge_client=judge_client, context_windows=windows, progress=say,
+            )
+            cards.append(out_dir / "scorecard.md")
+        return cards
+
     async def go() -> list[Path]:
+        if not run_reaches_model(args):
+            say("no model is called in this run (stored report, file judge, no baselines): no server is opened")
+            return await asyncio.to_thread(evaluate_all, NoModelClient(), None)
         # The benchmark is a long job on its own machine, so it opens a backend
         # and a scheduler of its own - the same ones the app would give it, just
-        # with no chat to wait behind. `evaluate` is blocking, so it runs on a
+        # with no chat to wait behind - on the review's own endpoint, as
+        # `bedrock-litreview ask` does. `evaluate` is blocking, so it runs on a
         # worker thread and its model calls come back to this loop.
-        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+        async with standalone_scheduler(load_bedrock_settings(), review_settings=settings) as scheduler:
+            capacity = await preflight(settings, scheduler.backend)
+            for note in capacity.notes:
+                say(note)
             client = make_client(settings, scheduler=scheduler, loop=asyncio.get_running_loop(),
-                                 legacy_cache=args.legacy_cache_read)
-            cards = []
-            for path in args.questions:
-                bq = BenchQuestion.load(path)
-                _, out_dir = await asyncio.to_thread(
-                    evaluate,
-                    bq, settings=settings, client=client, skip_baselines=args.skip_baselines,
-                    corpus_dir=(args.corpora / bq.id) if args.corpora else None,
-                    skip_distractors=args.skip_distractors, skip_perturb=args.skip_perturb,
-                    from_run=args.from_run, judge_client=judge_client, progress=say,
-                )
-                cards.append(out_dir / "scorecard.md")
-            return cards
+                                 legacy_cache=args.legacy_cache_read, context_windows=capacity.windows)
+            return await asyncio.to_thread(evaluate_all, client, capacity.windows)
 
-    for card in asyncio.run(go()):
+    try:
+        cards = asyncio.run(go())
+    except ConfigError as exc:
+        # Preflight's message names the numbers and the fix; it is printed as it is.
+        say(str(exc))
+        return 1
+    for card in cards:
         print(card)
     return 0
 
 
 def _determinism(args, settings, say) -> int:
-    """One experiment cell, through the same scheduler every review uses."""
+    """One experiment cell, through the same scheduler every review uses.
+
+    Preflight runs in both modes: fresh mode sends every payload to the
+    server, and replay mode asks it for the weight digests the call-cache
+    key is made of, and sends any payload the cache does not hold."""
     import copy
     import json
 
     from bedrock.config import load_settings as load_bedrock_settings
     from bedrock.litreview.bench.determinism import FreshModeUnavailable, load_payloads, run_cell
     from bedrock.litreview.llm import make_client
-    from bedrock.litreview.service import standalone_scheduler
+    from bedrock.litreview.service import preflight, standalone_scheduler
 
     payloads = load_payloads(args.payloads)
     manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else None
@@ -164,16 +258,18 @@ def _determinism(args, settings, say) -> int:
     models = {"relevance": settings.model_for("relevance"), "extract": settings.model_for("extract")}
 
     async def go():
-        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+        async with standalone_scheduler(load_bedrock_settings(), review_settings=settings) as scheduler:
+            windows = (await preflight(settings, scheduler.backend)).windows
             loop = asyncio.get_running_loop()
 
             def client_for(rep: int):
                 if args.mode == "fresh":
                     # A new client with no cache at all, every repetition.
-                    return make_client(settings, scheduler=scheduler, loop=loop, cache=False)
+                    return make_client(settings, scheduler=scheduler, loop=loop, cache=False,
+                                       context_windows=windows)
                 replay = copy.copy(settings)
                 replay.cache_dir = args.cache
-                return make_client(replay, scheduler=scheduler, loop=loop)
+                return make_client(replay, scheduler=scheduler, loop=loop, context_windows=windows)
 
             return await asyncio.to_thread(
                 run_cell, payloads, client_for, models=models, repeats=args.repeats, mode=args.mode,
@@ -182,6 +278,9 @@ def _determinism(args, settings, say) -> int:
 
     try:
         result = asyncio.run(go())
+    except ConfigError as exc:
+        say(str(exc))
+        return 1
     except (FreshModeUnavailable, FileExistsError) as exc:
         say(f"determinism: {exc}")
         return 1
@@ -190,7 +289,8 @@ def _determinism(args, settings, say) -> int:
 
 
 def _replay_control(args, settings, say) -> int:
-    """Record one run's replies from the model, then render twice from them."""
+    """Record one run's replies from the model, then render twice from them.
+    Recording is a fresh pipeline run, so it is preflighted like one."""
     import copy
     import json
 
@@ -200,7 +300,7 @@ def _replay_control(args, settings, say) -> int:
     from bedrock.litreview.db import Database
     from bedrock.litreview.llm import make_client
     from bedrock.litreview.runner import answer_question
-    from bedrock.litreview.service import standalone_scheduler
+    from bedrock.litreview.service import preflight, standalone_scheduler
     from bedrock.litreview.sources.corpus import read_papers
 
     bq = BenchQuestion.load(args.question)
@@ -212,15 +312,21 @@ def _replay_control(args, settings, say) -> int:
         return s
 
     async def record():
-        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
-            live = make_client(settings, scheduler=scheduler, loop=asyncio.get_running_loop(), cache=False)
+        async with standalone_scheduler(load_bedrock_settings(), review_settings=settings) as scheduler:
+            windows = (await preflight(settings, scheduler.backend)).windows
+            live = make_client(settings, scheduler=scheduler, loop=asyncio.get_running_loop(), cache=False,
+                               context_windows=windows)
             recorder = RecordingClient(live)
             d = args.work / "recorded"
             await asyncio.to_thread(answer_question, bq.question, settings=settings_for(d), client=recorder,
                                     papers=papers, db=Database(d / "db.sqlite3"), out_dir=d / "out")
             return recorder.replies, recorder.model_version
 
-    replies, version = asyncio.run(record())
+    try:
+        replies, version = asyncio.run(record())
+    except ConfigError as exc:
+        say(str(exc))
+        return 1
     result = replay_control(bq.question, papers, replies, settings_for=settings_for, version=version,
                             work_dir=args.work)
     print(json.dumps(result, indent=2, sort_keys=True))

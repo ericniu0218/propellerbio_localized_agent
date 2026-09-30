@@ -46,6 +46,15 @@ runs: the benchmark never checks its context window, a gate can pass on absent
 input, and the file judge is keyed by claim text so rewording sentences leaves
 claims unjudged. See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
 
+**30 September 2026, the measurement batch** (branch `litreview/measurement`,
+task A of [FRONTIER_LITREVIEW.md](FRONTIER_LITREVIEW.md)). Items 26, 27 and 28
+are done, 25 is recorded and enforced, and the tools for 21 and 23 are built;
+both now wait only for a scientist. A scorecard now names the context window
+it ran at, what each score rests on and who judged it, a check with no input
+says "not measured", and `bench compare` refuses two runs that differ in any
+of those. Every number in this document predates all of it, and compare
+refuses every pair of them.
+
 Each item says what goes wrong, the evidence, where in the code, and a
 suggested fix. "Size" is a rough guide: small is a day or less, medium is a
 few days, big is a week or more, or needs a decision first.
@@ -573,14 +582,54 @@ offline with fake models; nothing here has been measured on a real model yet.
 
 ## E. Measurement
 
-21. **No scientist has checked any accuracy number.** The judge and the hand
-    audit were both AI models. A scientist should re-judge at least 40 claims
-    blind (old step 23).
+21. **No scientist has checked any accuracy number.** *The tool is built; the
+    grading is not.* The judge and the hand audit were both AI models. A
+    scientist should re-judge at least 40 claims blind (old step 23).
+    - *Now built:* `python -m evals.litreview.rejudge_sheet draw <run id> ...`
+      draws 40 kept claims (seeded, shared evenly across the runs, shuffled)
+      onto a blind sheet: each claim and exactly the evidence the judge is
+      shown, through `bench/run._unit_evidence` imported rather than copied,
+      so item 24's guard covers the sheet too. No system, question, run,
+      paper or verdict appears on it; a separate key maps rows back. `agree`
+      prints raw agreement and Cohen's kappa against the file judge, per run
+      and overall, with both vocabularies collapsed to supported / not
+      supported and the mapping printed beside the numbers.
+    - *Now enforced:* `tests/litreview/test_bench_rejudge.py` asserts that no
+      identifying field reaches the sheet and checks the agreement against
+      hand calculations.
+    - *Left:* a scientist grades the 40 claims (roughly half a day) from
+      stored runs; none is stored on the machine this was built on. Until
+      then every accuracy number here is an AI's.
 22. **The office model is unmeasured.**
     - Qwen3-30B-A3B sits between qwen3:8b and Claude.
     - *Fix:* run the five benchmark questions on it, cold and timed, and
       hand-audit 15 sentences per report as done here (old step 37).
-23. **No gold set for extraction** (old step 22).
+23. **No gold set for extraction** (old step 22). *The tools are built; the
+    labels are not.*
+    - *Now built:* `python -m evals.litreview.goldset_sheet <corpus>` picks
+      20 papers from a frozen corpus by the README's quotas (seeded, scarcest
+      category first), holds 5 back one per kind, and writes an index, one
+      sheet per paper and an empty JSONL template. Design and review
+      categories come from `study_design` labels and roles; the negative-result
+      and "mentions but not about" categories are only proposed (null-result
+      cues from `negation.py`, the gate's own reason) and marked
+      `kind_confirmed: false`. A sheet shows the paper as Stage 5 reads it and
+      nothing the pipeline produced. `run_extract` skips `_comment` lines and
+      refuses to score while a placeholder, an unconfirmed kind, an empty
+      entry without `none_expected`, a review with findings, a quote not in
+      the paper or an out-of-schema field remains, naming the line, paper and
+      field. It now runs each paper through `extract_paper` behind preflight,
+      and pairs findings by the sentence they quote: the old five-field match
+      key made five of the seven per-field accuracies 1.00 by construction.
+      The labelling guide is in `evals/litreview/README.md`.
+    - *Now enforced:* `tests/litreview/test_bench_goldset.py` - selection on a
+      fixture corpus, the sheet's blindness, its chunks checked against the
+      real `extract_paper`, every refusal, and `run_extract` end to end with
+      the fake model.
+    - *Left:* a scientist labels 20 papers (about two days). The corpora are
+      short of human trials: obesity's searcher corpus gives 3 of the 5 at
+      seed 0, so the rest come from another corpus. `run_extract` has not
+      been run against a real model.
 24. **The judge must be shown exactly what the reader is shown.** *Fixed, and
     worth guarding.* The report grew two new displayed sentences (the
     qualifier, the naming sentence) before `bench/run.py` `_unit_evidence`
@@ -596,15 +645,15 @@ offline with fake models; nothing here has been measured on a real model yet.
       second copy cannot drift; asserting that `_shown` returns exactly four
       is the other half of the tripwire, so adding a fifth displayed field
       forces a deliberate decision about whether the judge sees it.
-25. **Judge answers on file come from more than one judge.** The scores above
+    - The scientist's re-judging sheet (item 21) imports `_unit_evidence`
+      too, so the same guard keeps it showing what the reader is shown.
+25. **Judge answers on file come from more than one judge.** *Recorded and
+    enforced; the answers already on file are not re-judged.* The scores above
     mix answers written by an earlier strong judge (the 25–26 September runs)
     with answers written later for the claims this branch changed. Both were
     Claude models, but they are not the same rater, and the earlier ones were
     not re-checked. Before-and-after accuracy numbers are therefore
     indicative, not a controlled comparison.
-    - *Fix:* re-judge a fixed sample of both runs with one rater in one
-      sitting, or store the judge's identity beside each answer and report
-      per-rater agreement.
     - *Measured on 27 September, and it is worse than "indicative".* The same
       asthma report `3367ba2e60f434df` scored 69.4, 69.2, 69.2 across three
       passes, with 9, 8 and 9 of 9 gates. Same report id, so the pipeline
@@ -612,10 +661,28 @@ offline with fake models; nothing here has been measured on a real model yet.
       flipped effects` also went FAIL then PASS across two runs of identical
       pre-batch code. The variation is larger than the before/after
       differences anyone has been reading off these tables.
-    - *Size:* small to medium.
+    - *Now recorded:* each answer in `evals/litreview/judge/answers.jsonl`
+      names its `judge` (a model id or `scientist:<name>`); rows written
+      before load as `"unknown"`. The file judge counts the answers it used
+      per judge, a model judge is its own version, verdicts settled in code
+      are listed as `code`, and the scorecard and history row list them all.
+    - *Now enforced:* `python -m bedrock.litreview.bench compare A B` refuses
+      two runs whose raters differ, whose shared raters judged in shares more
+      than 5 points apart, or either of which used `"unknown"` answers
+      (`tests/litreview/test_bench_compare.py`).
+    - *One way the validity gate flipped, now closed:* a perturbation the file
+      judge had no answer for counted as *not caught*, so "judge catches
+      flipped effects" could fail on missing answers and pass once they were
+      written. It is now left out, and `perturbations_judged` says how many
+      counted. Whether that explains the 27 September flip is not known.
+    - *Left:* the 1,790 answers on file are all `"unknown"`, so compare
+      refuses every comparison built on them until the claims a comparison
+      rests on are re-judged by one named judge in one sitting. Nothing here
+      removes one rater's own noise: the 69.4 / 69.2 / 69.2 spread stands as
+      the floor on any difference worth reading.
 
 26. **`bench/run.py` never calls `preflight`, so a run can be silently
-    undersized.** `service.run_review` refuses to start below
+    undersized.** *Done.* `service.run_review` refuses to start below
     `defaults/models.yaml`'s `min_context_window` of 12,288, but the benchmark
     builds its own `Settings` and calls `runner.answer_question` directly with
     no such check. The default `laptop` profile is 8,192, and
@@ -624,31 +691,74 @@ offline with fake models; nothing here has been measured on a real model yet.
     `OLLAMA_CONTEXT_LENGTH` was unset before the 27 September run, which means
     every benchmark number written before it was produced at an unverified
     context window.
-    - *Fix:* call `service.preflight` from `bench/run.py`, and have the
-      scorecard record the context window it actually ran at.
-    - *Size:* small, and it invalidates measurements until it is done.
+    - *Now enforced:* `bench run`, `bench determinism` and `bench
+      replay-control` call `service.preflight` before their first model call,
+      print its message unchanged and exit non-zero; they open the review's
+      own endpoint and size calls to the windows preflight found. A stored
+      report judged from a file with no baselines calls no model and opens no
+      server (`run_reaches_model`; `NoModelClient` fails loudly if that rule
+      goes out of date). `tests/litreview/test_bench_preflight.py`: a server
+      reporting 4,096 tokens stops `bench run` before any model call, and the
+      offline re-score passes with no backend at all.
+    - *Now recorded:* the scorecard, its header and the history row carry the
+      window of this run's calls and the window the report was written at -
+      for `--from-run`, read back from the history row of the run that wrote
+      it. `run_extract` preflights too.
+    - *Left:* nothing in code. Every report scored before 30 September reads
+      "not recorded", and stays that way.
 
-27. **A gate can pass because its input was never built.** Obesity's "no
+27. **A gate can pass because its input was never built.** *Done for the
+    gates; the obesity leak is open.* Obesity's "no
     distractor leaked" PASSed on 26 September with `distractors.json` equal to
     `{}` - no distractor papers were made, so there was nothing to leak. The
     27 September run made 5 and 2 leaked (rate 0.40, both graded 3 and about
     the exact entity), so the gate now FAILs on a real, pre-existing weakness
     that the earlier "every gate passes on all three" had never measured.
     Migraine made 5 and leaked 0, so the machinery itself works.
-    - *Fix:* a gate with no input must report "not measured", never PASS. Then
-      look at the obesity leak on its own merits.
-    - *Size:* small for the gate; the leak itself is unknown until read.
+    - *Why `{}`:* `distractors.json` is `{}` only when the distractor test was
+      skipped, which scoring a stored report (`--from-run`) forces. The leak
+      rate was then absent, and the gate's `in (None, 0.0)` read absent as no
+      leak. A test that makes no distractor returns `None` too, never `0.0`.
+    - *What else passed on nothing:* five gates treated `None` as a pass
+      (quotes verified, every sentence cited, numbers in evidence, no
+      distractor leaked, judge catches flips); "no near-miss claims" passed a
+      report with no claims; "claims supported >= 0.85" read `None` as 0 and
+      failed; and "same report twice" vanished from a stored report's table.
+    - *Now enforced:* every gate is pass, fail or not measured with the
+      missing input named ("no distractor papers were built: skipped with
+      --skip-distractors", "... a stored report was scored ...", "... no
+      paper was graded relevant enough (2 or more) to copy").
+      `gates_passed` counts passes, `gates_total` measured gates, and
+      `gates_not_measured` lists the rest; the scorecard prints PASS only for
+      a gate that measured something, and a `Gate` refuses `bool()`. Old
+      scorecards and history rows still load, the rows marked as written
+      when a gate with no input counted as passed.
+      `tests/litreview/test_bench_gates.py` covers every gate in every state
+      it can reach.
+    - *Left:* the obesity leak itself (2 of 5 on 27 September, both graded 3
+      and about the exact entity) is a relevance-grading question in the
+      pipeline, not a benchmark one, and has not been read.
 
 28. **The file judge is keyed by claim text, so changing the writer
-    invalidates the comparison.** Any change that rewords or replaces
+    invalidates the comparison.** *Done: the fraction is shown and a
+    mismatch refused; the misses themselves remain.* Any change that rewords or replaces
     sentences leaves claims with no answer on file: the 27 September migraine
     run logged 8 cache misses and judged 30, then 40, of 42 pipeline claims,
     and its 70.0 against the earlier 80.0 is substantially unjudged claims
     rather than measured regression.
-    - *Fix:* report the judged fraction beside every score and refuse to
-      compare two runs whose judged fractions differ materially.
-    - *Size:* small.
-    - *Size:* small to medium.
+    - *Now recorded:* every judged score (accuracy, groundedness, review-fact
+      recall) carries judged/total on the scorecard as "(j/n)" and in the
+      history row; the overall carries its least-judged part's percentage. A
+      review fact whose reachability got no verdict now counts as unjudged
+      instead of silently leaving the denominator.
+    - *Now enforced:* `bench compare` refuses a pair whose judged fractions
+      differ by more than `COMPARABLE_WITHIN` (5 points, a starting value in
+      `bench/compare.py`), prints the reasons, and prints anyway only with
+      `--force` (`tests/litreview/test_bench_compare.py`).
+    - *Left:* answers are still keyed by prompt text, so a reworded claim
+      still has no answer until someone writes one (`answers.pending.jsonl`
+      lists them). This makes the gap visible and stops the comparison; it
+      does not close the gap.
 
 ## Long-term
 

@@ -16,6 +16,14 @@ those questions. The second pass finds them and scores in full. Answers
 already on file are reused, so after a change only the genuinely new questions
 come back — the same incremental behaviour as the model call cache.
 
+Each answer names who wrote it: `{"key": ..., "answer": {...}, "judge":
+"claude-opus-4-5"}`, or `"judge": "scientist:<name>"`. Two raters are not
+one instrument - the same report scored 69.4, then 69.2, from answers written
+at different times (OPEN_ISSUES #25) - so the client counts the answers it
+used per judge, the scorecard lists them, and `bench compare` refuses two
+runs whose raters differ. Rows written before the field existed load as
+"unknown".
+
 What is *not* delegated: the checks in `judge.verdict_from` and
 `judge.coverage_from` still run over these answers exactly as they run over a
 model's. A judge that claims a sentence is in the evidence is still checked
@@ -26,12 +34,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from bedrock.litreview.llm.client import LLMError
 
 SCHEMA_TITLE = "title"
+UNKNOWN_JUDGE = "unknown"
 
 
 def task_key(prompt: str) -> str:
@@ -53,6 +63,10 @@ class FileClient:
         self.pending_path = self.path.with_suffix(".pending.jsonl")
         self._version = version
         self.answers: dict[str, str] = {}
+        self.judges: dict[str, str] = {}
+        """Task key -> who wrote its answer."""
+        self.used: Counter[str] = Counter()
+        """Judge -> answers used in this run."""
         self.pending: dict[str, dict[str, Any]] = {}
         self.hits = 0
         self.misses = 0
@@ -63,11 +77,13 @@ class FileClient:
                     continue
                 row = json.loads(line)
                 self.answers[row["key"]] = json.dumps(row["answer"])
+                self.judges[row["key"]] = row.get("judge") or UNKNOWN_JUDGE
 
     def complete(self, prompt: str, *, model: str, schema=None, temperature: float = 0.0, max_tokens: int = 2048) -> str:
         key = task_key(prompt)
         if key in self.answers:
             self.hits += 1
+            self.used[self.judges[key]] += 1
             return self.answers[key]
         self.misses += 1
         self.pending.setdefault(key, {

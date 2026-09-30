@@ -91,7 +91,7 @@ def test_the_benchmark_scores_all_three_systems(bench_setup, tmp_path):
     # The fake grades relevance by keyword ("IL-23" in the title), which is
     # exactly the grader distractors exist to expose: they leak, and the gate fails.
     assert card.pipeline["distractor_leak_rate"] > 0
-    assert not card.gates["no distractor leaked"]
+    assert card.gates["no distractor leaked"].status == "fail"
     assert systems["naive_rag"].near_miss_claims >= 1, "the naive baseline cited an atopic dermatitis paper"
     assert systems["closed_book"].cited_support is None, "a closed-book answer has nothing to cite"
     assert (out_dir / "scorecard.md").exists() and (out_dir / "pipeline").exists()

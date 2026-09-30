@@ -5,6 +5,44 @@
 > and `evals/` is `evals/litreview/`; the numbers are unaffected. The to-do
 > list in § Next steps is still the to-do list.
 
+# The measurement batch (30 September 2026): no new numbers
+
+No benchmark was run for this entry, and no number in it is new. Branch
+`litreview/measurement` changed what a scorecard says about itself (OPEN_ISSUES
+#21, #23, #25–#28), and the offline re-score meant to show a new scorecard
+could not be made: the machine this was built on holds no stored benchmark
+run (no `bench.sqlite3`, and `evals/litreview/results/` holds only
+`history.jsonl`). Re-score one where the runs are kept:
+
+```
+python -m bedrock.litreview.bench run evals/litreview/questions/<q>.yaml --corpora evals/litreview/corpora-searcher \
+    --from-run <run id> --judge-file evals/litreview/judge/answers.jsonl --skip-baselines --skip-perturb
+```
+
+**What a scorecard now says, and every result below does not:**
+
+- **The context window.** `bench run` calls `service.preflight` before its
+  first model call and records the window per model. Every number below was
+  produced at an unrecorded window; `bench history` shows those rows as "not
+  recorded", and the 27 September entry says `OLLAMA_CONTEXT_LENGTH` was unset
+  before that run.
+- **What each score rests on.** Every judged score carries (judged/total).
+  Below, only the 27 September migraine run says it (30/42, then 40/42).
+- **Who judged.** Each answer on file now names its judge; the 1,790 answers
+  written before load as `unknown`, and they came from more than one judge.
+- **Which checks measured anything.** A gate with no input is "not measured",
+  and is not counted as passed. Below, "9 of 9" counts any gate whose input was
+  missing as a pass - obesity's distractor gate on 26 September, for one.
+- **One more way the validity gate could flip.** A perturbation the file judge
+  had no answer for counted as *not caught*, so "judge catches flipped effects"
+  could fail on missing answers alone and pass once they were written. It is
+  now left out, and the gate reports how many perturbations were judged.
+
+`python -m bedrock.litreview.bench compare` refuses every pair of runs in this
+file: none records its judged fractions or raters. That refusal is the
+finding. Before-and-after numbers below are indicative, and item 25's spread
+(69.4, 69.2, 69.2 on one report) is the floor on what any of them can show.
+
 # Benchmark results — the mechanical fix batch (27 September 2026)
 
 Run after the eight-item fix batch `5373d99..de1915b` (see

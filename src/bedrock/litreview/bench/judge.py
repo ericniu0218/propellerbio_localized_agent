@@ -309,7 +309,11 @@ class Judge:
         self.client = client
         self.model = model
         self.calls = 0
+        self.answered = 0
+        """Calls whose answer came back and parsed: the verdicts the judge supplied."""
         self.verbatim = 0
+        self.settled_in_code = 0
+        """Verdicts no judge supplied: a claim verbatim in its evidence, or with no evidence."""
         self.struck = 0
         self.located_by_code = 0
         self.kb = load_knowledge()
@@ -319,9 +323,11 @@ class Judge:
         is a verbatim passage of the evidence — for every system alike — and by
         the judge model otherwise."""
         if not evidence:
+            self.settled_in_code += 1
             return SupportVerdict(reasoning="no evidence", verdict="unsupported")
         if verbatim_in(claim, evidence):
             self.verbatim += 1
+            self.settled_in_code += 1
             return SupportVerdict(reasoning="verbatim passage of the evidence (checked in code)", verdict="supported")
         prompt = load_prompt("judge_support").render(claim=claim, evidence=_numbered(evidence))
         try:
@@ -332,6 +338,7 @@ class Judge:
         except (LLMError, ValidationError) as exc:
             log.warning("judge failed on claim %r: %s", claim[:60], exc)
             return None
+        self.answered += 1
         verdict, struck, by_code = verdict_from(answers, claim, evidence, self.kb)
         self.struck += struck
         self.located_by_code += int(by_code)
@@ -350,6 +357,7 @@ class Judge:
         except (LLMError, ValidationError) as exc:
             log.warning("nugget extraction failed for %s: %s", label, exc)
             return []
+        self.answered += 1
         out = []
         for n in found[:max_nuggets]:
             # The reference cannot be hallucinated either: a nugget whose
@@ -374,4 +382,5 @@ class Judge:
         except (LLMError, ValidationError) as exc:
             log.warning("coverage judge failed: %s", exc)
             return None
+        self.answered += 1
         return coverage_from(answers, fact, answer, self.kb)

@@ -1003,9 +1003,12 @@ def _competitors(ctx: WriteContext, limit: int = 60) -> str:
     lines += [row for _, row in rows[:limit]]
     if len(rows) > limit:
         lines.append(f"| … | | {len(rows) - limit} more assignees | | |")
-    lines += ["", f"Source: EPO Open Patent Services. Claim 1 (never the full claim set or description) "
-                   f"is recorded for {sum(1 for p in ctx.patents if p.claim_1)} of {len(ctx.patents)} families "
-                   f"in the JSON report, for a human to read — not summarised by any model here."]
+    with_claim = sum(1 for p in ctx.patents if p.claim_1)
+    searched = sorted({t for p in ctx.patents for t in p.matched_targets})
+    lines += ["", "Source: EPO Open Patent Services." + (f" Searched for: {', '.join(searched)}." if searched else "")
+              + f" Claim 1 (never the rest of the claims or the description) was available for {with_claim} of "
+                f"{len(ctx.patents)} filings: EPO returns claim text for some offices (WO, EP, CA in practice) and "
+                "not for others, so the rest are known from title and abstract only."]
     return "\n".join(lines)
 
 

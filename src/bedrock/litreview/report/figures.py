@@ -329,9 +329,6 @@ def choose_figures(report: Report, papers: Mapping[str, Paper]) -> list[FigureAs
             unit = unit_by_short.get(short)
             if unit is None:
                 continue
-            status = report.evidence_status.get(unit.id)
-            if status is not None and status.status == "excluded":
-                continue  # a finding the report does not use never puts its figure on a slide
             if unit.paper_id not in parsed and (len(chosen) >= MAX_FIGURES or len(per_paper) >= MAX_PAPERS):
                 continue  # the caps are full: a paper not seen yet cannot add a figure, so do not even ask for it
             doc = usable(unit.paper_id)

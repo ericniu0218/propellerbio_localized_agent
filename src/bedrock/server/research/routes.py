@@ -19,7 +19,7 @@ lists them too.
     GET    /workspace/api/research/runs/{id}         one review, with its progress
     POST   /workspace/api/research/runs/{id}/cancel  stop it (finished stages are kept)
     POST   /workspace/api/research/runs/{id}/resume  carry on from the last finished stage
-    GET    /workspace/api/research/runs/{id}/report  ?format=html|md|json|pptx
+    GET    /workspace/api/research/runs/{id}/report  ?format=html|md|json|pdf|pptx|slides-pdf
     POST   /workspace/api/research/runs/{id}/save    report -> a workspace file (project / chat context)
     DELETE /workspace/api/research/runs/{id}         remove it from this person's list
 
@@ -334,6 +334,9 @@ async def status(user=Depends(identity)):
         return body
     body["model"].update(baseUrl=settings.base_url, modelSet=settings.model_set)
     body["integrityChecks"] = settings.integrity_checks
+    from bedrock.litreview.report.convert import soffice
+
+    body["slidesPdf"] = soffice() is not None
     try:
         body["model"]["models"] = sorted({settings.model_for(j) for j in settings.jobs})
         scheduler = await review_scheduler()
@@ -462,7 +465,18 @@ async def report(review_id: str, format: str = "html", download: bool = False, u
         return PlainTextResponse(to_markdown(rep), media_type="text/markdown", headers=headers)
     if format == "json":
         return Response(to_json(rep), media_type="application/json", headers=headers)
-    if format == "pptx":
+    if format == "pdf":
+        # The whole report as a PDF, laid out by code from the same Markdown
+        # (report/pdf.py), with the font it needs shipped in the package.
+        try:
+            from bedrock.litreview.report.pdf import to_pdf
+
+            pdf = await asyncio.to_thread(to_pdf, rep)
+        except ImportError:
+            raise HTTPException(501, "PDF export needs reportlab on the server: pip install -e \".[server]\".")
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'{"attachment" if download else "inline"}; filename="{name}.pdf"'})
+    if format in ("pptx", "slides-pdf"):
         # The target-proposal deck, made by code from the stored report
         # (report/slides.py): no model, and the report itself is unchanged.
         # A review started with the option off never prepared figures and was
@@ -476,9 +490,22 @@ async def report(review_id: str, format: str = "html", download: bool = False, u
             deck = await asyncio.to_thread(_deck, rep, review, user)
         except ImportError:
             raise HTTPException(501, "PowerPoint export needs python-pptx on the server: pip install -e \".[server]\".")
+        if format == "slides-pdf":
+            # The same slides converted by LibreOffice (report/convert.py), so
+            # the PDF and the PowerPoint cannot differ.
+            from bedrock.litreview.report.convert import ConversionFailed, ConversionUnavailable, pptx_to_pdf
+
+            try:
+                slides_pdf = await asyncio.to_thread(pptx_to_pdf, deck)
+            except ConversionUnavailable as exc:
+                raise HTTPException(501, str(exc))
+            except ConversionFailed as exc:
+                raise HTTPException(502, str(exc))
+            return Response(slides_pdf, media_type="application/pdf",
+                            headers={"Content-Disposition": f'attachment; filename="{name}-slides.pdf"'})
         return Response(deck, headers={"Content-Disposition": f'attachment; filename="{name}.pptx"'},
                         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-    raise HTTPException(400, "format is html, md, json or pptx.")
+    raise HTTPException(400, "format is html, md, json, pdf, pptx or slides-pdf.")
 
 
 @router.post("/runs/{review_id}/save")

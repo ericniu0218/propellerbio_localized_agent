@@ -60,6 +60,7 @@ server = [
     "python-jose[cryptography]>=3.3",  # verifies Keycloak tokens when SSO is configured
     "pydantic>=2.8",
     "python-pptx>=1.0,<2",       # Research tab: PowerPoint export of a finished review
+    "reportlab>=4.0,<5",         # Research tab: the report as a PDF (report/pdf.py)
 ]
 # When DATABASE_URL points at Postgres.
 postgres = ["psycopg2-binary>=2.9"]
@@ -98,6 +99,7 @@ bedrock = [
     "litreview/llm/prompts/*.md",
     "litreview/knowledge/*.yaml",
     "litreview/defaults/*.yaml",
+    "litreview/report/fonts/*",
     "server/static/*.html",
     "server/static/workspace/*",
     "server/defaults/*.yaml",

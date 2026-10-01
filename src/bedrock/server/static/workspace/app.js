@@ -71,6 +71,8 @@
     upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
     download: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    shrink: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
   };
   const icon = (name, cls = "") => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1878,17 +1880,51 @@
         el("button", { class: "btn primary small", onclick: () => askInChat(d) }, [icon("chat"), "Ask about it in a chat"]),
         el("button", { class: "btn small", onclick: () => saveReport(d) }, [icon("folder"), saved ? "Save again" : "Save to a project"]),
         el("a", { class: "btn small", href: base + "?format=html&download=1" }, [icon("download"), "HTML"]),
-        el("a", { class: "btn small", href: base + "?format=md&download=1" }, [icon("download"), "Markdown"]),
+        el("a", { class: "btn small", href: base + "?format=pdf&download=1", title: "The whole report as a PDF" }, [icon("download"), "PDF"]),
         el("a", { class: "btn small", href: base + "?format=json&download=1" }, [icon("download"), "JSON"]),
         d.deck !== false ? el("a", { class: "btn small", href: base + "?format=pptx&download=1", title: "A target-proposal slide deck made from this report; the report is the full record" }, [icon("download"), "PowerPoint"]) : null,
+        d.deck !== false && R.status && R.status.slidesPdf ? el("a", { class: "btn small", href: base + "?format=slides-pdf&download=1", title: "The same slides as a PDF: opens anywhere, no PowerPoint needed" }, [icon("download"), "Slides (PDF)"]) : null,
         deleteReviewButton(d),
       ]));
       if (saved) card.appendChild(el("p", { class: "small muted" }, `Saved to the workspace ${saved === 1 ? "once" : saved + " times"} — chats in that project (or your own chats, if no project) can use it.`));
       host.appendChild(card);
-      host.appendChild(el("iframe", { class: "report-frame", src: base + "?format=html", title: "Report", sandbox: "allow-popups allow-popups-to-escape-sandbox" }));
+      host.appendChild(reportViewer(base));
       return;
     }
     host.appendChild(card);
+  }
+
+  // The report in a frame, with a way to read it at full size: the browser's
+  // full screen on the frame's container (the frame itself runs no scripts),
+  // or the same page in a tab of its own.
+  function reportViewer(base) {
+    const frame = el("iframe", { class: "report-frame", src: base + "?format=html", title: "Report", sandbox: "allow-popups allow-popups-to-escape-sandbox" });
+    const label = el("span", {}, "Full screen");
+    const glyph = el("span", { class: "fs-glyph" }, icon("expand"));
+    const wrap = el("div", { class: "report-wrap" });
+    const canFull = !!(wrap.requestFullscreen || wrap.webkitRequestFullscreen);
+    const toggle = el("button", { class: "btn small", type: "button", title: "Read the report full screen (Esc to leave)", onclick: () => {
+      const inFull = document.fullscreenElement || document.webkitFullscreenElement;
+      if (inFull) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      else {
+        const asked = (wrap.requestFullscreen || wrap.webkitRequestFullscreen).call(wrap);
+        if (asked && asked.catch) asked.catch(() => {});
+      }
+    } }, [glyph, label]);
+    const sync = () => {
+      const on = (document.fullscreenElement || document.webkitFullscreenElement) === wrap;
+      label.textContent = on ? "Exit full screen" : "Full screen";
+      glyph.replaceChildren(icon(on ? "shrink" : "expand"));
+      wrap.classList.toggle("is-full", on);
+    };
+    document.addEventListener("fullscreenchange", sync);
+    document.addEventListener("webkitfullscreenchange", sync);
+    const bar = el("div", { class: "report-toolbar" }, [
+      canFull ? toggle : null,
+      el("a", { class: "btn small ghost", href: base + "?format=html", target: "_blank", rel: "noopener", title: "Open the report in its own browser tab" }, [icon("popout"), "Open in new tab"]),
+    ]);
+    wrap.append(bar, frame);
+    return wrap;
   }
 
   function deleteReviewButton(d) {

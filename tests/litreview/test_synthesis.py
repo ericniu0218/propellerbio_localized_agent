@@ -165,6 +165,8 @@ def test_the_html_report_is_navigable_without_scripts(tmp_path):
     html = to_html(report)
     assert "<script" not in html
     toc = html.split('<nav class="toc"', 1)[1].split("</nav>", 1)[0]
+    # collapsed until asked for: a closed <details>, which needs no script
+    assert "<details><summary>Contents" in toc and "<details open" not in toc
     for sec in report.sections:
         if sec.id in ("glance", "synthesis", "numbers", "gaps", "evidence_table", "excluded"):
             assert f'href="#s-{sec.id}"' in toc and f'id="s-{sec.id}"' in html

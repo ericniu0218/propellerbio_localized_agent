@@ -153,6 +153,10 @@ def test_a_review_runs_end_to_end_with_the_model_and_writes_a_checked_report(cli
     deck = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx&download=1")
     assert deck.status_code == 200 and deck.content[:2] == b"PK" and ".pptx" in deck.headers["content-disposition"]
     assert deck.headers["content-type"] == PPTX
+    report_pdf = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pdf&download=1")
+    assert report_pdf.status_code == 200 and report_pdf.content[:5] == b"%PDF-"
+    assert report_pdf.headers["content-type"] == "application/pdf"
+    assert "attachment" in report_pdf.headers["content-disposition"] and ".pdf" in report_pdf.headers["content-disposition"]
 
     listed = client.get("/workspace/api/research/runs").json()
     assert [r["id"] for r in listed] == [review["id"]]
@@ -327,3 +331,42 @@ def test_the_research_form_offers_the_powerpoint_and_hides_the_button_when_it_wa
     js = (STATIC / "app.js").read_text()
     assert "Also make a target-proposal PowerPoint" in js and "deck: deckIn.checked" in js
     assert "d.deck !== false ? el(" in js and "format=pptx" in js
+
+
+def test_slides_as_pdf_are_the_deck_converted_or_a_clear_refusal(client, review_env, monkeypatch, tmp_path):
+    """No LibreOffice: 501 saying what to install, and the status tells the page
+    not to offer the button. With it: the converted deck."""
+    from bedrock.litreview.report import convert
+
+    login(client)
+    review = wait_for(client, client.post("/workspace/api/research/runs",
+                                          json={"question": QUESTION, "deck": True}).json()["id"])
+    url = f"/workspace/api/research/runs/{review['id']}/report?format=slides-pdf&download=1"
+
+    monkeypatch.setattr(convert, "soffice", lambda: None)
+    refused = client.get(url)
+    assert refused.status_code == 501 and "LibreOffice" in refused.json()["detail"]
+
+    seen = {}
+
+    def fake_convert(deck: bytes, **_):
+        seen["deck"] = deck
+        return b"%PDF-slides"
+
+    monkeypatch.setattr(convert, "pptx_to_pdf", fake_convert)
+    slides = client.get(url)
+    assert slides.status_code == 200 and slides.content == b"%PDF-slides"
+    assert seen["deck"][:2] == b"PK", "the PDF is made from the real PowerPoint deck"
+    assert "-slides.pdf" in slides.headers["content-disposition"]
+
+
+def test_the_status_says_whether_slides_can_be_converted(client, review_env, monkeypatch):
+    from bedrock.server.research import routes
+
+    login(client)
+    routes._status_cache.update(at=0.0, body=None)
+    monkeypatch.setattr("bedrock.litreview.report.convert.soffice", lambda: None)
+    assert client.get("/workspace/api/research/status").json()["slidesPdf"] is False
+    routes._status_cache.update(at=0.0, body=None)
+    monkeypatch.setattr("bedrock.litreview.report.convert.soffice", lambda: "/usr/bin/soffice")
+    assert client.get("/workspace/api/research/status").json()["slidesPdf"] is True

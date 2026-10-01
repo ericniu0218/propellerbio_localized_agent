@@ -188,13 +188,18 @@ def to_markdown(report: Report) -> str:
         by_uid = {u.id: u for u in report.evidence}
         for uid, short in sorted(report.short_ids.items(), key=lambda kv: int(kv[1][1:])):
             unit = by_uid[uid]
-            out.append(f"- **{short}** [{refs.get(short, '?')}] ({unit.section}, {unit.quote_status} match) \"{unit.quote}\"")
+            # Whitespace collapsed for display only (a quote can begin with the
+            # paper's paragraph break, which would end the list item); the
+            # stored quote, which the integrity check re-proves, is untouched.
+            flat = lambda text: " ".join(text.split())  # noqa: E731
+            out.append(f"- **{short}** [{refs.get(short, '?')}] ({unit.section}, {unit.quote_status} match) "
+                       f"\"{flat(unit.quote)}\"")
             if unit.context_quote:
-                out.append(f"  - context ({unit.context_section}): \"{unit.context_quote}\"")
+                out.append(f"  - context ({unit.context_section}): \"{flat(unit.context_quote)}\"")
             if unit.qualifier_quote:
-                out.append(f"  - qualifier (next sentence): \"{unit.qualifier_quote}\"")
+                out.append(f"  - qualifier (next sentence): \"{flat(unit.qualifier_quote)}\"")
             if unit.naming_quote:
-                out.append(f"  - names {_named(unit)} ({unit.naming_section}): \"{unit.naming_quote}\"")
+                out.append(f"  - names {_named(unit)} ({unit.naming_section}): \"{flat(unit.naming_quote)}\"")
             if unit.methods_subjects:
                 out.append(f"  - subjects: the quote is the authors' conclusion; the paper's methods studied only "
                            f"{unit.methods_subjects}")
@@ -284,8 +289,11 @@ h1.appendix { margin-top: 56px; padding-top: 16px; border-top: 3px double var(--
 .flag { color: var(--warn); font-weight: 600; }
 details { margin: 8px 0; } summary { cursor: pointer; color: var(--muted); }
 .quotes li { font-size: .88rem; margin-bottom: 4px; }
-.toc { position: sticky; top: 0; z-index: 3; background: var(--bg); border-bottom: 1px solid var(--line); padding: 8px 0;
+.toc { position: sticky; top: 0; z-index: 3; background: var(--bg); border-bottom: 1px solid var(--line); padding: 4px 0;
        margin: 8px 0 16px; font-size: .88rem; }
+.toc details { margin: 0; } .toc summary { font-weight: 600; color: var(--fg); padding: 2px 0; }
+.toc .toc-count { font-weight: 400; color: var(--muted); }
+.toc details[open] { max-height: 45vh; overflow: auto; }
 .toc ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .toc ul ul { display: inline-flex; margin-left: 6px; font-size: .82rem; }
 .toc a { text-decoration: none; }
@@ -332,7 +340,12 @@ def _toc(report: Report) -> str:
     items.append('<li><a href="#appendix">Appendix</a>'
                  f'<ul><li><a href="#how-read">How the question was read</a></li>{appendix}'
                  '<li><a href="#evidence-quotes">Evidence quotes</a></li></ul></li>')
-    return '<nav class="toc" aria-label="Report sections"><strong>Sections</strong><ul>' + "".join(items) + "</ul></nav>"
+    # Collapsed until asked for: open, the full list of sections took a third
+    # of the screen at the top of the frame. A <details> needs no script, so it
+    # works in the Research tab's sandboxed frame and in a downloaded copy.
+    return ('<nav class="toc" aria-label="Report sections"><details><summary>Contents '
+            f'<span class="toc-count">({len(items)} sections)</span></summary><ul>' + "".join(items)
+            + "</ul></details></nav>")
 
 
 def to_html(report: Report) -> str:

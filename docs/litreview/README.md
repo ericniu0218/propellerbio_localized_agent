@@ -777,6 +777,32 @@ and could not be answered. On an air-gapped machine there is still
 `bedrock-litreview patents "..." --out patents.jsonl` on a machine that is
 allowed out, carried across and passed with `--patents FILE`.
 
+**What the section says.** Not just a table of filers. After the literature is
+read, the leading targets are searched together with the disease (`IL-23 AND
+psoriasis` finds 26 filings and all 26 name IL-23; the disease alone finds 10,787
+and 5 of the first 100 do). A model then reads each filing's title, abstract and
+claim 1 - never the description or the other claims - and copies one verbatim
+quote, the target, the kind of thing claimed and a few words for what it covers.
+Code does the rest, as for papers: it finds the quote in the filing's own text,
+destroys the finding if the target is not there, decides whether the filing is
+*about* the target or only lists it, reads the kind of claim off claim 1's first
+words, and blanks any field whose words are not in the text. A model then writes a
+few sentences per target from those, and `report/patent_guard.py` drops any that
+adds a number, a target or a company the cited filings do not name, that does not
+say whose claim it is, or that states an outcome as fact. Every sentence cites
+filings (`P1`, `P2`, ...) and each cited filing is listed beneath with its own
+words, which `check_patents` re-proves against the stored filing on every run and
+every `verify-run`.
+
+What it is **not**: evidence (nothing here reaches the Answer, the targets or any
+count), a legal view (nothing says a filing is valid, infringed or can be worked
+around), or freedom to operate ("no filing found" means this search found none).
+A patent says what its filer claims; whether it works is not the patent's to say,
+so a sentence that says it does is dropped. Filings whose text is not English are
+listed and not read (claim 1 is read only when it is English too); a filing that
+names a target only among a list of others is a *mention* and is counted, not
+summarised.
+
 ---
 
 ## Repository layout
@@ -844,7 +870,7 @@ scripts/litreview/judge_answers.py  the file-judge helper
 | Local audit trail | **Built.** `/review`, `bedrock-litreview ask` and the HTTP API record a `litreview.review` intent/outcome in bedrock's local history, plus one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) - metadata only, never the question. `/audit` reads it back. See `bedrock.litreview.journal` |
 | Alias import, citation snowballing | **Built and tested offline.** Aliases wait for a person's approval; snowballing is off until measured |
 | Target-proposal deck (PPTX) | **Built.** Code-rendered from the report; Research tab checkbox and `ask --deck` toggle it. Layouts in `defaults/deck.yaml`, figures from www.ebi.ac.uk only during search runs |
-| Patents | **Built**, and the search confirmed live against EPO OPS. Research-tab checkbox, `--patent-search`, or `--patents FILE`; one account per machine, never per person; the code-written competitor-landscape section only, never evidence. See [Patents](#patents) |
+| Patents | **Built**, searched per target and read by the model under a patent guard, confirmed live against EPO OPS and a real model (about 8 s a filing on a laptop). Research-tab checkbox, `--patent-search`, or `--patents FILE`; one account per machine, never per person; the code-written competitor-landscape section only, never evidence. See [Patents](#patents) |
 | Stage 9 (chat), drop folder, GROBID PDF rung | Not started |
 
 `pytest tests/litreview` runs the pipeline's own tests with no GPU and no

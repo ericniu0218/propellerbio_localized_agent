@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING
 from bedrock.litreview.extract.provenance import n_in, name_in, species_in, text_supported
 from bedrock.litreview.extract.verify import normalize
 from bedrock.litreview.knowledge import Knowledge
-from bedrock.litreview.models import EvidenceUnit, Paper, QuestionSpec, Report
+from bedrock.litreview.models import EvidenceUnit, Paper, PatentRecord, QuestionSpec, Report
 from bedrock.litreview.report.guard import CitationGuard
 
 if TYPE_CHECKING:
@@ -193,7 +193,7 @@ def check_best_source(report: Report, papers: dict[str, Paper], kb: Knowledge) -
         for line in (section.body_markdown or "").splitlines():
             # These sections quote their own papers. Their dedicated checks
             # below bind those quotes to the sources they cite.
-            if section.id not in ("background", "disagreements") and line.startswith("> ") \
+            if section.id not in ("background", "disagreements", "competitors") and line.startswith("> ") \
                     and normalize(line[2:]) not in normalize(head):
                 out.append(f"quote: [{section.id}] the most relevant source's quote is not in its title or abstract")
             if line.startswith("Why it ranks first: ") and not text_supported(line[20:], head, kb):
@@ -212,6 +212,45 @@ def check_background(report: Report, papers: dict[str, Paper]) -> list[str]:
         for line in (section.body_markdown or "").splitlines():
             if line.startswith("> ") and not any(normalize(line[2:]) in h for h in heads):
                 out.append(f"quote: [background] {line[2:][:80]!r} is not in any collected paper's title or abstract")
+    return out
+
+
+def check_patents(report: Report, patents: list[PatentRecord] | None) -> list[str]:
+    """Every quote in the competitor landscape is a filing's own words, and every
+    filing a sentence cites is listed.
+
+    A filing's block starts `[P3] WO2026188143A1 · ...` and its words follow as
+    `> quote` lines; each must be in that filing's stored title, abstract or claim
+    1. A sentence's `[P3]` markers must each have such a block. `patents=None` (a
+    caller that was not given the run's filings) checks nothing, which is not the
+    same as passing: `verify_run` always supplies them.
+    """
+    if patents is None:
+        return []
+    by_id = {p.id: p for p in patents}
+    out = []
+    for section in report.sections:
+        if section.id != "competitors":
+            continue
+        lines = (section.body_markdown or "").splitlines()
+        listed = {m[1] for line in lines if (m := re.match(r"^\[(P\d+)\] \S+ ", line))}
+        patent = None
+        for line in lines:
+            if match := re.match(r"^\[(P\d+)\] (\S+) ", line):
+                patent = by_id.get(match[2])
+                if patent is None:
+                    out.append(f"patents: [{match[1]}] {match[2]} is not among the run's saved patents")
+            elif line.startswith("> "):
+                text = " ".join((patent.title, patent.abstract or "", patent.claim_1 or "")) if patent else ""
+                if patent is None or normalize(line[2:]) not in normalize(text):
+                    out.append(f"quote: [competitors] {line[2:][:80]!r} is not in the cited filing's title, "
+                               "abstract or claim 1")
+            elif line.startswith("- "):
+                for cited in re.findall(r"\[(P\d+)\]", line):
+                    if cited not in listed:
+                        out.append(f"patents: a sentence cites {cited}, which has no filing listed beneath")
+            elif line.strip():
+                patent = None
     return out
 
 
@@ -253,7 +292,8 @@ def check_disagreements(report: Report) -> list[str]:
 
 
 def check_report(
-    report: Report, papers: list[Paper], spec: QuestionSpec, kb: Knowledge, added_back: frozenset[str] = frozenset()
+    report: Report, papers: list[Paper], spec: QuestionSpec, kb: Knowledge, added_back: frozenset[str] = frozenset(),
+    patents: list[PatentRecord] | None = None,
 ) -> list[str]:
     """Every violation in a report built from `papers`. Empty on a sound report.
     `added_back`: the run's reinstated papers a person added back (from its
@@ -261,7 +301,7 @@ def check_report(
     by_id = {p.id: p for p in papers}
     return [*check_units(report.evidence, by_id, kb, added_back), *check_sentences(report, spec, kb, by_id),
             *check_best_source(report, by_id, kb), *check_background(report, by_id),
-            *check_disagreements(report), *check_flags(papers)]
+            *check_disagreements(report), *check_patents(report, patents), *check_flags(papers)]
 
 
 def check_pinned(db, run_id: str) -> list[str]:
@@ -300,7 +340,7 @@ def verify_run(db, run_id: str, kb: Knowledge | None = None) -> list[str]:
     kb = kb or load_knowledge()
     result = load_result(db, run_id)
     report = result.report.model_copy(update={"integrity": []})
-    return [*check_pinned(db, run_id), *check_report(report, result.papers, result.spec, kb, _added_back(db, run_id))]
+    return [*check_pinned(db, run_id), *check_report(report, result.papers, result.spec, kb, _added_back(db, run_id), patents=result.patents)]
 
 
 def _added_back(db, run_id: str) -> frozenset[str]:
@@ -407,7 +447,8 @@ def assess_run(db, run_id: str, kb: Knowledge | None = None, *, env=None, now=No
     try:
         result = load_result(db, run_id)
         report = result.report.model_copy(update={"integrity": []})
-        rules = check_report(report, result.papers, result.spec, kb_used, _added_back(db, run_id))
+        rules = check_report(report, result.papers, result.spec, kb_used, _added_back(db, run_id),
+                             patents=result.patents)
         rule_state = "fail" if rules else "pass"
     except Exception as exc:  # noqa: BLE001 - a missing pinned paper is exactly what this reports
         rules = [f"cannot be verified: {type(exc).__name__}: {exc}"]

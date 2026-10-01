@@ -129,6 +129,18 @@ answer is the drop folder (`dropfolder.py`, to be built on bedrock's `share`
 connector) — Propeller already pays
 for journal access, and we ingest what their scientists legally download.
 
+**A patent says what its filer claims, never that it works.** A model may copy
+what a filing says it covers - from its title, abstract and claim 1, nothing else -
+and may never judge it. Everything stated about a filing is attributed ("claims",
+"describes", "is directed to"); the patent guard drops a sentence that says
+otherwise, adds a number, name or company the cited filings do not, or calls an
+application granted. Patents are never counted as evidence and never reach the
+Answer, the targets or a count; "none found" is never freedom to operate, and the
+section is not a legal view. `check_patents` re-proves every quote against the
+stored filing. Do not widen the text a model reads (the description, the other
+claims) without the owner's approval: the client said patents are much harder for
+AI than papers.
+
 **Reviews are not evidence.** A review article citing a trial is not a trial.
 Counting one would inflate the apparent weight of evidence.
 
@@ -286,7 +298,7 @@ as `improved`. Models skip these unless explicitly told not to.
 | Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |
 | Background from reviews | A code-written report section quoting reviews with links; never counted as evidence |
 | Fresh-inference determinism | Harness built (`bench determinism`, runbook in `docs/litreview/DETERMINISM_RUNBOOK.md`); not run on vLLM |
-| Patents | Built and tested offline; search confirmed live against EPO OPS. Asked for by the Research tab's checkbox, `/review --patent-search`, `ask --patent-search` (searched during the run, right after Stage 0) or `--patents FILE` from `bedrock-litreview patents` (air-gapped). The account is the machine's (`epo_ops_key`/`epo_ops_secret`, `service.patent_searcher`), never the scientist's: a missing one refuses before the run, a refused one costs the landscape and never the review. Searched per target after Stage 6 (`stages/s6b_patents.py`: the leading targets with the question's other entities - the disease alone finds 5 IL-23 filings in 100, "IL-23 AND psoriasis" finds 26 in 26), saved with the run as the `patents.v1` artifact. The code-written "Competitor landscape" section only, never evidence. Claim 1 is cut out of the whole claim set EPO returns (`split_claim_1`, tested on 14 real claim sets) and exists for WO/EP/CA filings only; offices without claim text are learned from the first refusal. Its element shape is tolerated, not confirmed against the guide — see `sources/epo_ops.py`. Model extraction and summary of patents: not built yet |
+| Patents | Built and tested offline; search confirmed live against EPO OPS. Asked for by the Research tab's checkbox, `/review --patent-search`, `ask --patent-search` (searched during the run, right after Stage 0) or `--patents FILE` from `bedrock-litreview patents` (air-gapped). The account is the machine's (`epo_ops_key`/`epo_ops_secret`, `service.patent_searcher`), never the scientist's: a missing one refuses before the run, a refused one costs the landscape and never the review. Searched per target after Stage 6 (`stages/s6b_patents.py`: the leading targets with the question's other entities - the disease alone finds 5 IL-23 filings in 100, "IL-23 AND psoriasis" finds 26 in 26), saved with the run as the `patents.v1` artifact. The code-written "Competitor landscape" section only, never evidence. Claim 1 is cut out of the whole claim set EPO returns (`split_claim_1`, tested on 14 real claim sets) and exists for WO/EP/CA filings only; offices without claim text are learned from the first refusal. Its element shape is tolerated, not confirmed against the guide — see `sources/epo_ops.py`. Read by the model and summarised, never as evidence (`stages/s6c_patent_extract.py`, `s7b_patent_write.py`, `report/patent_guard.py`, `check_patents`): the model copies what a filing says it covers from its title, abstract and (English) claim 1; code verifies the quote, the target and every other field, and decides subject vs mention; each sentence cites `P` ids and is guarded; every cited filing is listed beneath with its own words |
 | Target-proposal deck (PPTX) | Built: code-rendered slides from the stored report following Propeller's template (single target, bispecific, or disease-level). Drawn by `report/slides.py` (content), `report/deck_model.py` (data), `report/deck_render.py` (rendering), with configurable layout in `defaults/deck.yaml`. Paper figures fetched only during a search-enabled run from open-access papers; stored in `deck_figures.v1` artifact. Never in Report or Paper data; always code-only |
 | Stage 9 (chat), drop folder | Not started |
 

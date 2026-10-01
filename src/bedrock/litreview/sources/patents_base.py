@@ -4,12 +4,18 @@
 
 Patents are a separate, lower-confidence lane — see `sources/literature.py`'s
 own docstring for the line this draws. A `PatentSearcher` never enters Stage 1,
-never produces an `EvidenceUnit`, and nothing it returns is ever read by a
-model for a biological claim or cited as evidence. What it feeds is one
-generated (code-written, not model-written) report section: who else has
-filed or been granted a patent naming the same entities. `report/guard.py`
-never touches this data because nothing here is asserted as fact requiring a
-citation check — a list of filings is simply what the office record says.
+never produces an `EvidenceUnit`, and nothing it returns is ever cited as
+evidence or read by a model for a biological claim. What it feeds is one report
+section, the competitor landscape: who else has filed a patent naming the same
+targets, and what each filing says it covers.
+
+A model may now *copy* what a filing says it covers - from its title, abstract and
+claim 1 only (`stages/s6c_patent_extract.py`) - and a model may write sentences
+about those copies (`stages/s7b_patent_write.py`). It may not judge a filing: every
+sentence is attributed to the filer ("claims", "describes") and checked by
+`report/patent_guard.py`, and each quote is re-proved against the stored filing by
+`report/invariants.py` `check_patents`. `report/guard.py`, the paper guard, still
+never touches this data: its checks are about results, and a patent reports none.
 
 Same discipline as `SearchRequest`: `exact_terms` carries the pipeline's own
 exact names, never a model's; searching with anything broader than these is

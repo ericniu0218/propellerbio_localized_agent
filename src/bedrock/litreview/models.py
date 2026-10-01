@@ -342,7 +342,9 @@ class Paper(BaseModel):
 class PatentRecord(BaseModel):
     """Patents are a separate, lower-confidence class. They feed the competitor
     landscape section only, never the biological evidence sections. No model
-    ever reads one for a biological claim, and none is ever cited as evidence.
+    ever reads one for a biological claim, and none is ever cited as evidence. A
+    model may copy what one says it covers (`stages/s6c_patent_extract.py`); it
+    never judges one.
 
     We deliberately store claim 1 and nothing else from the body — patents are
     long, legally worded, and hard for a small model to read correctly.

@@ -141,6 +141,14 @@ class WriteContext:
     generated (code, no model call) for exactly the reason no other generated
     section takes one: nothing here is a biological claim, so there is nothing
     for the citation guard to check."""
+    patent_reading: object = None
+    """A `stages/s6c_patent_extract.PatentReading`: what the filings were read to
+    say. None when none were read (no model, no patents). Written up by
+    `stages/s7b_patent_write.render_patent_text`; never counted as evidence."""
+    patent_text: str = ""
+    patent_stats: Counter = field(default_factory=Counter)
+    """Patent sentences dropped by `report/patent_guard.py` or left out for length.
+    Apart from `sentence_stats`, which is the papers'."""
     patent_search_failed: bool = False
     """A patent search was asked for and the patent office could not answer it.
     Without this, an empty `patents` reads as "nobody asked", which would be a
@@ -976,9 +984,13 @@ def _competitors(ctx: WriteContext, limit: int = 60) -> str:
             "and pass `--patents patents.jsonl`."
         )
 
+    from bedrock.litreview.stages.s6c_patent_extract import assignee_key, assignee_name
+
+    # One row per filer: "JANSSEN PHARMACEUTICA NV [BE]" and "Janssen
+    # Pharmaceutica N.V." are the same company, and two rows would split its count.
     by_assignee: dict[str, list[PatentRecord]] = {}
     for record in ctx.patents:
-        by_assignee.setdefault(record.assignee or "Unknown / unassigned", []).append(record)
+        by_assignee.setdefault(assignee_key(record.assignee) or "unknown", []).append(record)
 
     # Distinct families, not raw records: three filings of one EP/US/CN
     # family must read as one family, or the count contradicts the very
@@ -988,7 +1000,8 @@ def _competitors(ctx: WriteContext, limit: int = 60) -> str:
              f"({len(ctx.patents)} filing{'' if len(ctx.patents) == 1 else 's'}), grouped by assignee.", ""]
     lines += ["| Assignee | Earliest priority | Filings | Lead publication | Status |", "|---|---|---|---|---|"]
     rows = []
-    for assignee, records in by_assignee.items():
+    for records in by_assignee.values():
+        assignee = assignee_name(records[0].assignee)
         records = sorted(records, key=lambda r: r.priority_date or date.max)
         earliest = records[0].priority_date
         lead = min(records, key=lambda r: r.priority_date or date.max)
@@ -1009,7 +1022,9 @@ def _competitors(ctx: WriteContext, limit: int = 60) -> str:
               + f" Claim 1 (never the rest of the claims or the description) was available for {with_claim} of "
                 f"{len(ctx.patents)} filings: EPO returns claim text for some offices (WO, EP, CA in practice) and "
                 "not for others, so the rest are known from title and abstract only."]
-    return "\n".join(lines)
+    table = "\n".join(lines)
+    written = getattr(ctx, "patent_text", "")
+    return f"{written}\n\n{table}" if written else table
 
 
 BACKGROUND_QUOTED = 12
@@ -1237,6 +1252,10 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "excluded": lambda: _excluded(ctx),
         "competitors": lambda: _competitors(ctx),
     }
+    if ctx.patent_reading is not None:
+        from bedrock.litreview.stages.s7b_patent_write import render_patent_text
+
+        ctx.patent_text = render_patent_text(ctx)
     for section in sections:
         if section.kind == "generated" and section.id != "glossary":
             section.body_markdown = generators[section.id]()

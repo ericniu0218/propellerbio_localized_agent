@@ -529,6 +529,20 @@ def answer_question(
         say(f"patents: {len(families)} competitor famil{'y' if len(families) == 1 else 'ies'} "
             f"({len(patents)} filing{'' if len(patents) == 1 else 's'})")
 
+    # 6c — read the filings (a model copies what each says it covers; code
+    # verifies). Competitor landscape only: nothing here is evidence.
+    patent_reading = None
+    if patents and client is not None:
+        from bedrock.litreview.stages.s6c_patent_extract import extract_patents
+
+        patent_reading = extract_patents(
+            patents, db=db, run_id=run.id, spec=spec, kb=kb, client=client, model=m("extract"),
+            target_order=[t.target for t in summary.targets],
+            limit=int(settings.knob("patents.extract_max", 40)), say=say, tick=tick)
+        if patent_reading.units:
+            run.prompt_versions["patent_extract"] = load_prompt("patent_extract").version
+            run.prompt_versions["patent_write"] = load_prompt("patent_write").version
+
     # 7 — write
     ctx = WriteContext(
         spec=spec, facets=facets, plan=plan, summary=summary, ranked=ranked, papers=by_id, gates=gates,
@@ -537,6 +551,7 @@ def answer_question(
         units_per_target=int(settings.knob("write.units_per_target", 5)),
         max_units_per_section=int(settings.knob("write.max_units_per_section", 14)),
         patents=patents,
+        patent_reading=patent_reading,
         patent_search_failed=patent_search_failed,
         entailment=entailment,
         integrity_notes={**notices_in(integrity), **notice_texts(integrity)},
@@ -553,7 +568,8 @@ def answer_question(
     # The integrity check: everything the report shows as the paper's words is
     # the paper's words, on the papers this run pinned. A violation is a bug;
     # it is written on the report, which then opens with a warning.
-    report.integrity = check_report(report, collected, spec, kb, frozenset(added_back_in(integrity)))
+    report.integrity = check_report(report, collected, spec, kb, frozenset(added_back_in(integrity)),
+                                    patents=patents)
     if report.integrity:
         log.error("integrity check failed with %d violation(s): %s", len(report.integrity), report.integrity[:3])
         say(f"INTEGRITY CHECK FAILED: {len(report.integrity)} violation(s); see the top of the report")

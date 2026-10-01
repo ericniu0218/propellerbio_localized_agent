@@ -128,9 +128,15 @@ def test_the_options_are_read_into_the_request():
     assert request.full_text is False
 
 
+def test_deck_is_read_into_the_request_and_is_off_by_default():
+    assert parse_review_command("prevent psoriasis --search --deck").request.deck is True
+    assert parse_review_command("prevent psoriasis --search").request.deck is False
+
+
 def test_the_commands_are_known_and_documented():
     assert {"review", "litreview", "reviews"} <= KNOWN_COMMANDS
     assert "/review" in HELP_TEXT and "/reviews" in HELP_TEXT
+    assert "--deck" in HELP_TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +288,66 @@ async def test_a_review_with_patents_shows_the_competitor_landscape(
         assert "Genentech, Inc." in body
         assert "1 patent famil" in body  # the two filings merged into one family, exactly as `--corpus` alone could not prove
         assert "2 filing" in body
+
+
+async def test_a_finished_review_with_deck_writes_the_powerpoint_and_says_where(
+    corpus_file, review_dir, models_yaml
+):
+    """`--deck` adds a second notice naming `report.pptx`, written beside the
+    report by the shared `service.write_deck`; without it there is no file."""
+    app = make_app(ReviewBackend(), user_id="alice")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+        assert not list(review_dir.glob("reports/*/*/report.pptx")), "no deck unless asked for"
+        assert "PowerPoint written" not in "\n".join(notices(app))
+
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file} --deck")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        text = "\n".join(notices(app))
+        assert "PowerPoint written" in text and "report.pptx" in text, text
+        assert "--search" in text, "a deck from a corpus run says why it has no paper figures"
+        decks = list(review_dir.glob("reports/*/*/report.pptx"))
+        assert len(decks) == 1 and decks[0].read_bytes()[:2] == b"PK"
+        assert decks[0].parent.joinpath("report.html").exists(), "the deck sits beside the report"
+        from pptx import Presentation
+
+        deck_text = " ".join(
+            shape.text_frame.text
+            for slide in Presentation(str(decks[0])).slides
+            for shape in slide.shapes
+            if shape.has_text_frame
+        )
+        assert "alice" in deck_text, "the deck's author is the app's user id"
+
+
+async def test_a_missing_python_pptx_is_one_install_notice_and_the_review_still_finished(
+    corpus_file, review_dir, models_yaml, monkeypatch
+):
+    from bedrock.litreview import service
+
+    def no_pptx(*args, **kwargs):
+        raise ImportError("No module named 'pptx'")
+
+    monkeypatch.setattr(service, "write_deck", no_pptx)
+    app = make_app(ReviewBackend())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file} --deck")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        found = notices(app)
+        assert any("Literature review finished" in n for n in found)
+        needs = [n for n in found if "python-pptx" in n]
+        assert len(needs) == 1 and "pip install" in needs[0], found
+        assert not any("PowerPoint written" in n for n in found)
+        assert not list(review_dir.glob("reports/*/*/report.pptx"))
+        assert app._review_running is False
 
 
 async def test_the_app_hands_its_history_and_actor_to_the_review_job(corpus_file, review_dir, models_yaml):

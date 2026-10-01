@@ -50,8 +50,14 @@ if TYPE_CHECKING:  # pragma: no cover - types only
 Notify = Callable[[str, str], Awaitable[None]]
 
 REVIEW_QUESTION_MISSING = (
-    "Tell me what to review: `/review <question> [--corpus FILE | --search]`. "
+    "Tell me what to review: `/review <question> [--corpus FILE | --search] [--deck]`. "
     "`/review stop` stops a running one, and `/reviews` lists what has run."
+)
+
+DECK_NEEDS_PPTX = (
+    "The review is finished, but its PowerPoint could not be drawn: python-pptx is "
+    'not installed. Install it with `pip install "python-pptx>=1.0,<2"` (or reinstall '
+    "Bedrock, see INSTALL.md) and run the review again with `--deck`."
 )
 
 SEARCH_NOTICE = (
@@ -178,6 +184,7 @@ def parse_review_command(args: str) -> ReviewCommand:
     parser.add_argument("--sources")
     parser.add_argument("--no-full-text", action="store_true", dest="no_full_text")
     parser.add_argument("--patents")
+    parser.add_argument("--deck", action="store_true")
     options = parser.parse_args(split_arguments(option_text))
 
     if options.corpus and options.search:
@@ -202,6 +209,7 @@ def parse_review_command(args: str) -> ReviewCommand:
             sources=_sources(options.sources),
             full_text=not options.no_full_text,
             patents=_patents(options.patents),
+            deck=options.deck,
         )
     )
 
@@ -480,6 +488,8 @@ async def run_review_job(
 
     text, kind = finish_notice(result, settings)
     await notify(text, kind)
+    if request.deck:
+        await _write_deck_notice(result, settings, request, notify, author=actor_id)
     return True
 
 
@@ -499,6 +509,31 @@ def _setup_warnings(settings: ReviewSettings, *, timeout_floor_applied: bool = F
                 if not f.ok]
     except Exception:  # noqa: BLE001 - an advisory must never stop a review
         return []
+
+
+async def _write_deck_notice(result, settings: ReviewSettings, request: ReviewRequest, notify: Notify, *, author: str) -> None:
+    """Draw the PowerPoint after a finished review and say where it is.
+
+    Drawing reads the run's manifest and writes a file, so it runs in a worker
+    thread and the screen stays alive. It never reaches the network (the
+    figures were fetched during the run, and only with `--search`). Nothing
+    here can undo the review: a missing python-pptx or a failed write is one
+    notice, and the report stays finished.
+    """
+    from bedrock.litreview.service import write_deck
+
+    try:
+        path = await asyncio.to_thread(write_deck, result, settings, author=author)
+    except ImportError:
+        await notify(DECK_NEEDS_PPTX, "error")
+        return
+    except Exception as exc:  # noqa: BLE001 - a deck that fails to draw must not look like a failed review
+        await notify(f"The review is finished, but its PowerPoint could not be written: {safe_line(exc, limit=400)}", "error")
+        return
+    lines = [f"**PowerPoint written** — {as_code_path(path)}"]
+    if not request.search:
+        lines += ["", "No paper figures are in it: they are fetched only with `--search`."]
+    await notify("\n".join(lines), "info")
 
 
 def _unfinished_run_id(settings: ReviewSettings) -> str | None:

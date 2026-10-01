@@ -475,28 +475,32 @@ def _gap_if_empty(slide: Slide) -> Slide:
 # --- the deck ------------------------------------------------------------------------------------------------------
 
 
-def _background_paras(md: str | None) -> list[Para]:
-    """The review articles the report quotes for context: each review's line
-    (with its link), then its own sentences, exactly as the report has them."""
+def _background_reviews(md: str | None) -> list[list[Para]]:
+    """The review articles the report quotes for context, one group per review:
+    its line (with its link), then its own sentences, exactly as the report has
+    them. Reviews it only lists ("Also collected") are a group each. Grouped so
+    the introduction can show the first few whole and move the rest to an
+    appendix: a report can list thirty reviews, which made six slides."""
     link = re.compile(r"<(https?://[^>\s]+)>")
-    paras: list[Para] = []
+    reviews: list[list[Para]] = []
     for block in (md or "").split("\n\n"):
         block = block.strip()
         lines = block.splitlines()
         if block.startswith("**"):
             m = link.search(lines[0])
-            paras.append(Para(plain(link.sub("", lines[0])).rstrip(" ·"), link=m.group(1) if m else None))
-            paras += [Para(f"“{' '.join(x[2:].split())}”", level=1, muted=True) for x in lines[1:] if x.startswith("> ")]
+            reviews.append([Para(plain(link.sub("", lines[0])).rstrip(" ·"), link=m.group(1) if m else None),
+                            *[Para(f"“{' '.join(x[2:].split())}”", level=1, muted=True)
+                              for x in lines[1:] if x.startswith("> ")]])
         elif block.startswith("Also collected:"):
             for x in lines[1:]:
                 if x.startswith("- "):
                     m = link.search(x)
-                    paras.append(Para(plain(link.sub("", x[2:])).rstrip(" ·"), link=m.group(1) if m else None))
+                    reviews.append([Para(plain(link.sub("", x[2:])).rstrip(" ·"), link=m.group(1) if m else None)])
         elif block.startswith("…"):
-            paras.append(Para(plain(block), muted=True))
-    if not paras and (md or "").strip():
-        paras = [Para(plain(md or ""))]  # the report's own "no review article was collected"
-    return paras
+            reviews.append([Para(plain(block), muted=True)])
+    if not reviews and (md or "").strip():
+        reviews = [[Para(plain(md or ""))]]  # the report's own "no review article was collected"
+    return reviews
 
 
 def outline(report: Report, source: str = "", *, figures: Sequence[FigureAsset] = (), author: str = "",
@@ -636,8 +640,12 @@ def outline(report: Report, source: str = "", *, figures: Sequence[FigureAsset] 
     background = _pick(entry.get("background"), qtype)
     kicker = str(entry.get("kicker") or "") if background else ""
     paras: list[Para] = []
+    more_reviews: list[Para] = []
     if background:
-        paras = _background_paras("\n\n".join(s.body_markdown or "" for s in report.sections if s.id in background))
+        reviews = _background_reviews("\n\n".join(s.body_markdown or "" for s in report.sections if s.id in background))
+        shown_reviews = int(entry.get("max_reviews") or 3)
+        paras = [p for review in reviews[:shown_reviews] for p in review]
+        more_reviews = [p for review in reviews[shown_reviews:] for p in review]
         cards, seen = [], set()
         for e in _entities(report):
             name = str(e.get("canonical") or "")
@@ -817,6 +825,9 @@ def outline(report: Report, source: str = "", *, figures: Sequence[FigureAsset] 
             notes += [f"{title} - {line}" for line in _notes(ks, refs)]
             cited += [c for k in ks for c in k.cites]
         slides.append(finish(Slide(title="Appendix: further candidate targets", paras=paras, notes=notes)))
+    if more_reviews:
+        slides.append(finish(Slide(title="Appendix: further review articles", paras=more_reviews,
+                                   kicker=str(entries["introduction"].get("kicker") or ""))))
     for title, kicker, rest, shown_count in further:
         cited += [c for k in rest for c in k.cites]
         slides.append(finish(Slide(title=f"Appendix: further findings - {title}", paras=[k.para() for k in rest],

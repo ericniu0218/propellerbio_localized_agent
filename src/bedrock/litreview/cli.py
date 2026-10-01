@@ -286,29 +286,20 @@ def _forget(args) -> int:
 
 
 def _write_deck(result, settings) -> None:
-    """Write report.pptx beside the other report files.
+    """Write report.pptx beside the other report files (`service.write_deck`).
 
-    The deck is drawn by code from the saved report and the figures the run
-    prepared, so this never reaches the network. A missing python-pptx is said
-    plainly and does not change the exit code: the report itself is finished.
+    A missing python-pptx is said plainly and does not change the exit code:
+    the report itself is finished.
     """
     import os
-    from datetime import datetime
 
-    from bedrock.litreview.report.slides import to_pptx
-    from bedrock.litreview.service import deck_figures
+    from bedrock.litreview.service import write_deck
 
-    now = datetime.now()
     try:
-        deck = to_pptx(
-            result.report, f"review-{result.report_id}", figures=deck_figures(settings, result.run.id),
-            author=os.environ.get("BEDROCK_USER", ""), date=f"{now.day} {now:%B %Y}",
-        )
+        path = write_deck(result, settings, author=os.environ.get("BEDROCK_USER", ""))
     except ImportError:
-        _say('ask: the PowerPoint needs python-pptx: pip install -e ".[server]"')
+        _say('ask: the PowerPoint needs python-pptx: pip install "python-pptx>=1.0,<2"')
         return
-    path = result.paths["html"].with_name("report.pptx")
-    path.write_bytes(deck)
     _say(f"ask: wrote {path}")
 
 

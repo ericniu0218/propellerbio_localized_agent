@@ -707,3 +707,22 @@ def test_the_layout_file_can_be_replaced_whole(tmp_path):
     bad.write_text("version: deck.v1\nslides: {moa: {title: x}}\n")
     with pytest.raises(ValueError, match="no entry for slide"):
         slides.load_deck_layout(bad)
+
+
+def test_the_introduction_shows_three_review_articles_and_the_rest_go_to_an_appendix():
+    """A real report listed thirty review articles, which made six introduction
+    slides. The first three stay, whole; the rest are kept in an appendix."""
+    report = _report()
+    background = next(s for s in report.sections if s.id == "background")
+    background.body_markdown = "\n\n".join(
+        ["Review articles found for this question, for context. **They are not evidence in this report**."]
+        + [f"**Author{i} 2020 J** — *Review {i}* · review · <https://example.org/r{i}>\n> Quote {i}." for i in range(1, 6)]
+        + ["Also collected:\n- Roe 2019 — Other review <https://example.org/roe>"])
+    deck = slides.outline(report)
+    intro = _by(deck, "Introduction of the target")
+    assert [p.text for p in intro.paras if p.link] == [f"Author{i} 2020 J — Review {i} · review" for i in (1, 2, 3)]
+    rest = _by(deck, "Appendix: further review articles")
+    assert [p.link for p in rest.paras if p.link] == [*(f"https://example.org/r{i}" for i in (4, 5)), "https://example.org/roe"]
+    assert "“Quote 5.”" in [p.text for p in rest.paras]
+    titles = [s.title for s in deck]
+    assert titles.index("Appendix: further review articles") > titles.index("Target SWOT analysis")

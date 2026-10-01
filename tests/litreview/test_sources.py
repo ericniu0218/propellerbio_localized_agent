@@ -456,7 +456,7 @@ def test_cli_ask_deck_says_how_to_install_python_pptx_and_keeps_the_exit_code(tm
 
     assert cli.main(["ask", QUESTION, "--corpus", str(corpus), "--no-model", "--models", "laptop", "--deck"]) == 0
     captured = capsys.readouterr()
-    assert 'pip install -e ".[server]"' in captured.err
+    assert 'pip install "python-pptx>=1.0,<2"' in captured.err
     assert not (Path(captured.out.strip().splitlines()[-1]).parent / "report.pptx").exists()
 
 

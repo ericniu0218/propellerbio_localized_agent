@@ -25,17 +25,16 @@ CONFIRMED from the primary document, with page references:
   - Claims endpoint URL: /published-data/publication/{type}/{number}/claims,
     returns Accept: application/fulltext+xml (p.66)
 
-NOT independently confirmed — recalled from the shape EPO's public fulltext
-XSD and other OPS client libraries use, because the guide's own claims
-example (Figure 25) is an image the text extraction could not read:
-  - The claims response containing one <claim>/<claim-text> element per
-    claim, claim 1 first in document order.
-  `claim_1()` below is written defensively because of this: it does not
-  assume the exact tag, it searches by local name so a namespace or a minor
-  shape difference does not break it, and it logs a warning and returns None
-  rather than raising if nothing recognisable is found. Run
-  `scripts/litreview/epo_ops_selftest.py` once against a real account before
-  trusting this in a report — see that script's docstring.
+CONFIRMED LIVE (a real account, a search for "interleukin-23"): the claims
+endpoint returns real claim text, and `claim_1()` below finds it. It was NOT
+confirmed against the primary document, because the guide's own claims example
+(its Figure 25) is an image the text extraction could not read, so the exact
+element shape is still only what this parser tolerates: it matches by local
+name ("claim" or "claim-text"), logs a warning and returns None rather than
+raising if nothing recognisable is found. The one thing the live run showed it
+getting wrong - a leading "CLAIMS" heading, which is in the register's own text
+for WO filings - is removed by `_without_claims_heading`.
+`scripts/litreview/epo_ops_selftest.py` repeats the live check.
 """
 
 from __future__ import annotations
@@ -201,6 +200,21 @@ def parse_search_response(xml_bytes: bytes, *, found_by: str) -> tuple[list[Pate
     return records, total
 
 
+# A WO filing's claims often open with the word CLAIMS as a heading, and the
+# register's text keeps it: a live search for "interleukin-23" returned
+# '1. CLAIMS 1. A method for treating ulcerative colitis ...' for claim 1. The
+# heading is in the patent's own text, not something this parser added, so it
+# is removed here - and only in the exact shape seen: an optional leading
+# number, the word CLAIM(S), then the claim's own number. A claim that merely
+# begins with the word ("1. Claims processing ...") has no number after it and
+# is left alone.
+_CLAIMS_HEADING = re.compile(r"^\s*(?:\d+\s*[.)]\s*)?claims?\s*:?\s*(?=\d+\s*[.)]\s)", re.I)
+
+
+def _without_claims_heading(text: str) -> str:
+    return _CLAIMS_HEADING.sub("", text, count=1).strip() or text
+
+
 def parse_claim_1(xml_bytes: bytes) -> str | None:
     """First claim's text, or None if nothing recognisable is found.
 
@@ -217,7 +231,7 @@ def parse_claim_1(xml_bytes: bytes) -> str | None:
         if _local(el.tag) in ("claim", "claim-text"):
             text = re.sub(r"\s+", " ", "".join(el.itertext())).strip()
             if text:
-                return text
+                return _without_claims_heading(text)
     log.warning("epo_ops: no <claim>/<claim-text> element recognised in the claims "
                 "response — this shape was not confirmed against the primary doc; "
                 "see the module docstring and run scripts/litreview/epo_ops_selftest.py")

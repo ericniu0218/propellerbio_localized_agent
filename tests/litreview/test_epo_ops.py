@@ -283,6 +283,39 @@ def test_claim_1_is_the_first_claim_in_document_order():
     assert parse_claim_1(CLAIMS_XML.encode()) == "1. An isolated antibody that binds human IL-23."
 
 
+def _claims_xml(text: str) -> bytes:
+    return (f'<?xml version="1.0"?><ops:world-patent-data xmlns:ops="http://ops.epo.org" '
+            f'xmlns="http://www.epo.org/fulltext"><claims><claim><claim-text>{text}</claim-text>'
+            f'</claim></claims></ops:world-patent-data>').encode()
+
+
+def test_a_claims_heading_in_the_registers_text_is_not_part_of_claim_1():
+    """Seen live against a real WO patent: claim 1 came back as
+    '1. CLAIMS 1. A method for ...'. The heading is in the register's own text."""
+    text = parse_claim_1(_claims_xml("1. CLAIMS 1. A method for treating ulcerative colitis (UC)"))
+    assert text == "1. A method for treating ulcerative colitis (UC)"
+
+
+@pytest.mark.parametrize("raw", [
+    "CLAIMS 1. A method for treating UC",
+    "CLAIMS: 1. A method for treating UC",
+    "1) Claims 1. A method for treating UC",
+    "1. claims 1. A method for treating UC",
+])
+def test_the_heading_is_removed_in_each_shape_it_comes_in(raw):
+    assert parse_claim_1(_claims_xml(raw)) == "1. A method for treating UC"
+
+
+@pytest.mark.parametrize("raw", [
+    "1. A method for treating UC",                      # nothing to remove
+    "1. Claims processing apparatus comprising a CPU",  # the word, but no claim number after it
+    "A claim for a composition comprising an antibody",
+    "CLAIMS",                                           # a bare heading must not become an empty claim
+])
+def test_a_claim_that_merely_uses_the_word_is_left_alone(raw):
+    assert parse_claim_1(_claims_xml(raw)) == raw
+
+
 def test_an_unrecognised_claims_shape_returns_none_not_a_crash(caplog):
     assert parse_claim_1(b"<root><surprise>text</surprise></root>") is None
 

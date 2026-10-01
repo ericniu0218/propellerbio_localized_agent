@@ -430,7 +430,8 @@ async def run_reviews_command(args: str, *, settings_for, notify: Notify) -> Non
     if not rows:
         await notify(
             "No literature reviews on this machine yet. Start one with "
-            "`/review <question> --corpus <file.jsonl>`.",
+            "`/review <question> --corpus <file.jsonl>` (papers from a file), or "
+            "`/review <question> --search` (a live search of Europe PMC and PubMed).",
             "info",
         )
         return

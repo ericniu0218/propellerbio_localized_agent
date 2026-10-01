@@ -37,7 +37,14 @@ events(*, after: int = 0, limit: int = 50) -> list[dict]
 export(destination: Path) -> int  # JSONL, returns event count
 ```
 
-- `action`: `fold`, `digest.ingest`, `digest.forget`, `approval`, `run.tag`.
+- `action`: `fold`, `digest.ingest`, `digest.forget`, `approval`, `run.tag`,
+  `litreview.review`, `litreview.search`. The literature review journals one
+  `litreview.review` per run (never the question text - `run_id` is the join
+  back to litreview's own database) and one `litreview.search` per external
+  host a run is authorised to contact (the literature search, the automatic
+  retraction check) - never one event per HTTP request, and never at all for
+  a corpus-only run with manual retraction checks. See
+  `bedrock/litreview/journal.py`.
 - `state`: `intent`, `succeeded`, `failed`, `cancelled`, `unknown`.
 - Allocate one UUID per actual invocation. For fold, use `run_id` as the operation
   ID as well. An event ID/sequence is separate from an artifact ID.

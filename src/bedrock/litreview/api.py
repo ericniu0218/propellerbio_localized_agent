@@ -149,7 +149,8 @@ def create_app(settings: Settings | None = None, *, bedrock_settings=None, backe
     from bedrock.litreview.config import ConfigError
     from bedrock.litreview.llm import ReviewInterrupted
     from bedrock.litreview.models import Report
-    from bedrock.litreview.service import ReviewRequest, run_review, standalone_scheduler
+    from bedrock.litreview.journal import ReviewNotRecorded
+    from bedrock.litreview.service import ReviewRequest, local_history, run_review, standalone_scheduler
     from bedrock.litreview.sources.literature import SearchFailed
     from bedrock.litreview.stages.s0_question import QuestionError
     from bedrock.litreview.stages.s1_collect import NoPapers
@@ -160,7 +161,9 @@ def create_app(settings: Settings | None = None, *, bedrock_settings=None, backe
 
     @asynccontextmanager
     async def lifespan(app):
-        async with standalone_scheduler(bedrock_settings, backend=backend) as scheduler:
+        # The review's own endpoint (`settings.base_url`): in agent-pack mode the
+        # agent server's inference API, never bedrock's `api_base`.
+        async with standalone_scheduler(bedrock_settings, backend=backend, review_settings=settings) as scheduler:
             app.state.scheduler = scheduler
             yield
 
@@ -176,13 +179,19 @@ def create_app(settings: Settings | None = None, *, bedrock_settings=None, backe
             approved_terms=body.approved_terms,
         )
         try:
+            history, actor_id = local_history(bedrock_settings)
             result = await run_review(
                 request,
                 settings=settings,
                 scheduler=app.state.scheduler,
                 progress=lambda msg: None,
                 cancel=threading.Event(),
+                history=history,
+                actor_id=actor_id,
             )
+        except ReviewNotRecorded as exc:
+            # Nothing ran: the same "did not start" meaning as a ConfigError.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except QuestionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except NoPapers as exc:

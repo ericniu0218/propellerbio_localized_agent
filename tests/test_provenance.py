@@ -121,6 +121,41 @@ def test_history_accepts_only_bounded_allowlisted_metadata(tmp_path: Path, detai
         )
 
 
+@pytest.mark.parametrize("action", ["litreview.review", "litreview.search"])
+def test_history_accepts_the_literature_review_actions(tmp_path: Path, action: str):
+    """Finding 14: reviews and the literature search send something off this
+    machine, and `/audit` must be able to record both."""
+    history = HistoryStore(tmp_path / "history")
+
+    history.append("op", actor_id="alice", action=action, state="intent")
+    history.append("op", actor_id="alice", action=action, state="succeeded")
+
+    events = history.events()
+    assert [item["state"] for item in events] == ["intent", "succeeded"]
+    assert all(item["action"] == action for item in events)
+
+
+def test_history_still_rejects_an_unknown_action(tmp_path: Path):
+    history = HistoryStore(tmp_path / "history")
+
+    with pytest.raises(HistoryError, match="Unsupported history action"):
+        history.append("op", actor_id="alice", action="litreview.summarize", state="intent")
+
+
+def test_history_actions_states_and_detail_fields_match_the_reference_copy():
+    """`docs/compliance_mvp/reference.py` is a second, hand-maintained copy of
+    these three sets, kept around on purpose as the frozen contract the two
+    original agents built against (see COMPLIANCE_MVP.md). Nothing enforced
+    the two staying equal - this is that enforcement, so adding an action
+    here without updating the reference (or vice versa) fails the suite
+    instead of silently drifting apart."""
+    from docs.compliance_mvp import reference
+
+    assert HistoryStore.ACTIONS == reference.Journal.ACTIONS
+    assert HistoryStore.STATES == reference.Journal.STATES
+    assert HistoryStore.DETAIL_FIELDS == reference.Journal.FIELDS
+
+
 def _legacy_run(
     work_dir: Path,
     run_id: str,

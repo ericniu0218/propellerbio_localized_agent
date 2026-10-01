@@ -506,6 +506,23 @@ def test_http_ask_says_503_when_the_machine_cannot_run_a_review(settings):
     assert "12,288" in resp.json()["detail"]
 
 
+def test_http_api_calls_the_reviews_own_endpoint_not_bedrocks(settings, monkeypatch):
+    """In agent-pack mode a review's endpoint is the agent server's inference
+    API, not bedrock's `api_base`; the HTTP API must open its client there."""
+    testclient = pytest.importorskip("fastapi.testclient")
+    from bedrock.litreview import service
+    from bedrock.litreview.api import create_app
+
+    opened = []
+    monkeypatch.setattr(service, "review_backend",
+                        lambda s, **kw: opened.append(s.base_url) or _ScriptedBackend())
+    settings.base_url = "http://agent-server.internal:8000/v1"
+    app = create_app(settings, bedrock_settings=_bedrock_settings())
+    with testclient.TestClient(app):
+        pass
+    assert opened == ["http://agent-server.internal:8000/v1"]
+
+
 def test_a_benchmark_corpus_can_come_from_the_searcher(tmp_path):
     from bedrock.litreview.bench.corpus import build_corpus
     from bedrock.litreview.bench.models import BenchQuestion, CorpusSpec

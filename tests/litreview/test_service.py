@@ -11,6 +11,7 @@ bridge added in this change is transport and nothing else.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from typing import AsyncIterator, Callable
 
@@ -21,9 +22,13 @@ from bedrock.inference import InferenceError, ModelInfo, RequestOptions, Schedul
 from bedrock.litreview import service
 from bedrock.litreview.config import ConfigError, load_settings
 from bedrock.litreview.db import Database
+from bedrock.litreview.journal import ReviewNotRecorded
 from bedrock.litreview.llm.scheduled import ModelServerUnavailable
 from bedrock.litreview.runner import answer_question
 from bedrock.litreview.service import ReviewRequest, preflight, run_review
+from bedrock.litreview.sources.literature import LiteratureSearcher, SearchFailed
+from bedrock.litreview.stages.s1_collect import NoPapers
+from tests.conftest import FakeHistoryStore
 from tests.litreview.fixtures import QUESTION, corpus, fake_client, responder
 
 MODEL = "one-model"
@@ -100,7 +105,7 @@ def review(question=QUESTION, **kwargs) -> ReviewRequest:
     return ReviewRequest(question=question, **kwargs)
 
 
-async def go(request, settings, backend, cancel=None, progress=None):
+async def go(request, settings, backend, cancel=None, progress=None, history=None, actor_id=""):
     scheduler = Scheduler(backend, PROFILES["workstation"])
     return await run_review(
         request,
@@ -108,6 +113,8 @@ async def go(request, settings, backend, cancel=None, progress=None):
         scheduler=scheduler,
         progress=progress or (lambda msg: None),
         cancel=cancel or threading.Event(),
+        history=history,
+        actor_id=actor_id,
     )
 
 
@@ -323,3 +330,180 @@ def _corpus_file(tmp_path):
 def _last_run_id(db) -> str | None:
     rows = db.conn.execute("SELECT id FROM runs ORDER BY rowid DESC LIMIT 1").fetchall()
     return rows[0][0] if rows else None
+
+
+# ---------------------------------------------------------------------------
+# run_review: recording the run in local history (finding 14)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_successful_run_writes_intent_then_succeeded_with_the_run_id(settings, tmp_path):
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "journalled.sqlite3"
+
+    result = await go(review(papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert {r["operation_id"] for r in rows} == {rows[0]["operation_id"]}  # one operation
+    assert all(r["actor_id"] == "alice" for r in rows)
+    assert rows[-1]["details"]["run_id"] == result.run.id
+    assert rows[0]["subject_id"] is None  # not a resume
+
+
+async def test_a_resumed_runs_intent_names_the_run_it_is_resuming(settings, tmp_path):
+    settings.db_path = tmp_path / "resume-journal.sqlite3"
+    with pytest.raises(ModelServerUnavailable):
+        await go(review(papers=corpus()), settings, ScriptedBackend(fail_after=2))
+    run_id = _last_run_id(Database(settings.db_path))
+
+    history = FakeHistoryStore()
+    await go(review(resume=run_id, papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert rows[0]["subject_id"] == run_id
+
+
+async def test_a_failing_run_writes_failed_with_a_bounded_error_code(settings):
+    """No corpus, no search, no resume, no posted papers: `NoPapers`, cheaply
+    and deterministically, without needing a model call at all."""
+    history = FakeHistoryStore()
+
+    with pytest.raises(NoPapers):
+        await go(review(use_model=False), settings, ScriptedBackend(models=[]), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "failed"]
+    assert rows[-1]["details"]["error_code"] == "no_papers"
+
+
+async def test_an_interrupted_run_writes_cancelled(settings, tmp_path):
+    settings.db_path = tmp_path / "cancelled-journal.sqlite3"
+    history = FakeHistoryStore()
+
+    with pytest.raises(ModelServerUnavailable):
+        await go(review(papers=corpus()), settings, ScriptedBackend(fail_after=2), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "cancelled"]
+
+
+async def test_history_none_runs_exactly_as_before(settings, tmp_path):
+    """The default, and what every caller that predates this change gets."""
+    settings.db_path = tmp_path / "unjournalled.sqlite3"
+    result = await go(review(papers=corpus()), settings, ScriptedBackend())  # history=None
+    assert result.report_id
+
+
+async def test_an_intent_write_failure_stops_the_run_before_the_pipeline_runs(settings, tmp_path):
+    """The one case local history is allowed to stop the employee: if the
+    intent will not commit, the review must not run at all."""
+    history = FakeHistoryStore(fail_states={"intent"})
+    backend = ScriptedBackend()
+
+    with pytest.raises(ReviewNotRecorded):
+        await go(review(corpus=_corpus_file(tmp_path)), settings, backend, history=history, actor_id="alice")
+
+    assert backend.calls == [], "the pipeline must never have made a model call"
+    assert history.rows == [], "a failed intent write must leave nothing recorded"
+
+
+async def test_an_outcome_write_failure_keeps_the_result_and_reports_the_gap(settings, tmp_path):
+    """The report is written to disk either way. Re-running the pipeline to
+    tidy the journal would trade a correct result for a neat record."""
+    history = FakeHistoryStore(fail_states={"succeeded"})
+    seen: list[str] = []
+    settings.db_path = tmp_path / "gap.sqlite3"
+
+    result = await go(
+        review(papers=corpus()), settings, ScriptedBackend(),
+        history=history, actor_id="alice", progress=seen.append,
+    )
+
+    assert result.report_id  # the review is not re-run
+    assert history.states("litreview.review") == ["intent"]  # the outcome write failed
+    assert any("Local history has a gap" in m for m in seen)
+    assert any("result itself stands" in m for m in seen)
+
+
+async def test_a_failed_runs_search_declarations_are_failed_too(settings, tmp_path, monkeypatch):
+    """A `litreview.search` event says "authorised and began to contact this
+    host" - so when the run that authorisation belonged to fails, the search
+    event's own outcome must say so too, with the same error code, not sit
+    forever as an unconfirmed intent for a run everyone already knows failed."""
+
+    def boom(self, req):
+        raise SearchFailed("every source failed")
+
+    monkeypatch.setattr(LiteratureSearcher, "search", boom)
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "failed-search.sqlite3"
+
+    with pytest.raises(SearchFailed):
+        await go(review(search=True), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    assert history.states("litreview.review") == ["intent", "failed"]
+    assert history.states("litreview.search") == ["intent", "failed"]
+    review_code = [r for r in history.rows if r["action"] == "litreview.review"][-1]["details"]["error_code"]
+    search_code = [r for r in history.rows if r["action"] == "litreview.search"][-1]["details"]["error_code"]
+    assert review_code == search_code == "search_failed"
+
+
+async def test_litreview_search_is_recorded_for_a_search_run(settings, tmp_path, monkeypatch):
+    monkeypatch.setattr(LiteratureSearcher, "search", lambda self, req: corpus())
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "search-journal.sqlite3"
+
+    result = await go(review(search=True), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    assert result.report_id
+    rows = [r for r in history.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"]["source_kind"] == "literature_search" for r in rows)
+
+
+async def test_litreview_search_is_recorded_for_an_automatic_retraction_check(settings, tmp_path, monkeypatch):
+    """`tests/conftest.py` turns the automatic check off for the whole suite
+    (see its `no_automatic_retraction_checks` fixture); this test turns it
+    back on deliberately, with a fake check that never touches the network."""
+    monkeypatch.setattr(service, "auto_integrity_check", lambda s: (lambda db, papers, *, now, ttl: {}))
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "integrity-journal.sqlite3"
+
+    result = await go(review(papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    assert result.report_id
+    rows = [r for r in history.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"]["source_kind"] == "retraction_check" for r in rows)
+
+
+async def test_no_litreview_search_for_a_corpus_only_run_with_manual_integrity(settings, tmp_path):
+    """The automatic check is already off for the whole suite (see the fixture
+    above), matching `integrity_checks = "manual"`: a corpus file contacts
+    nothing, so this run must write no `litreview.search` event at all."""
+    history = FakeHistoryStore()
+
+    result = await go(
+        review(corpus=_corpus_file(tmp_path)), settings, ScriptedBackend(),
+        history=history, actor_id="alice",
+    )
+
+    assert result.report_id
+    assert [r for r in history.rows if r["action"] == "litreview.search"] == []
+
+
+async def test_the_question_text_is_never_recorded(settings, tmp_path):
+    """The privacy promise `/audit` makes: metadata only. `run_id` is the join
+    back to litreview's own database, which already holds the question."""
+    history = FakeHistoryStore()
+    # Keeps "psoriasis" so the entity-extraction guard still accepts it, and
+    # adds a unique marker to search for in the recorded rows.
+    question = f"{QUESTION} xyzzy19260928"
+    settings.db_path = tmp_path / "no-question-text.sqlite3"
+
+    await go(review(question=question, papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    dumped = json.dumps(history.rows)
+    assert question not in dumped
+    assert "xyzzy19260928" not in dumped

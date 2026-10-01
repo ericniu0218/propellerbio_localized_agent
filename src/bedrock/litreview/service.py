@@ -32,11 +32,14 @@ from typing import Any, Callable
 
 from bedrock.inference import InferenceError, Scheduler
 from bedrock.litreview.config import ConfigError, Settings, private_dir
-from bedrock.litreview.llm import make_client
+from bedrock.litreview.journal import ReviewNotRecorded, commit_intent, commit_outcome, new_operation_id
+from bedrock.litreview.llm import ReviewInterrupted, make_client
 from bedrock.litreview.models import Paper
 from bedrock.litreview.runner import RunResult, answer_question
 from bedrock.litreview.sources.corpus import CorpusSearcher
-from bedrock.litreview.sources.literature import LiteratureSearcher
+from bedrock.litreview.sources.literature import LiteratureSearcher, SearchFailed
+from bedrock.litreview.stages.s0_question import QuestionError
+from bedrock.litreview.stages.s1_collect import NoPapers, NothingFound
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,8 @@ async def run_review(
     scheduler: Scheduler | None,
     progress: Callable[[str], None],
     cancel: threading.Event,
+    history: Any | None = None,
+    actor_id: str = "",
 ) -> RunResult:
     """Run one review and return its result.
 
@@ -202,8 +207,42 @@ async def run_review(
     progress line that throws would take the run down with it.
 
     `ConfigError`, `QuestionError`, `NoPapers`, `SearchFailed`,
-    `ReviewInterrupted`, `OSError` and `ValueError` all reach the caller, which
-    is the piece that knows how to show them.
+    `ReviewInterrupted`, `OSError`, `ValueError` and `ReviewNotRecorded` all
+    reach the caller, which is the piece that knows how to show them.
+    `ReviewNotRecorded` (`bedrock.litreview.journal`) means local history
+    could not record that this review was starting, so nothing ran at all -
+    the same "did not start" meaning as `ConfigError`, not a run that failed.
+
+    `history` and `actor_id` are optional and duck-typed - see
+    `bedrock.litreview.journal` for the shape and the rules. `history=None`
+    (the default, and what every caller that predates this had) journals
+    nothing and runs exactly as before. When a journal is supplied, this
+    function commits a `litreview.review` intent - and, for a run that is
+    about to contact a source outside this machine, one `litreview.search`
+    intent per host - before any pipeline work; if any of those cannot be
+    written, `ReviewNotRecorded` is raised and the pipeline never runs.
+
+    After the pipeline finishes (or raises), one outcome is committed for the
+    review *and one for every search intent already committed*, all with the
+    same final state, because a search event says "this run was authorised
+    and began to contact this host", and what became of that run is exactly
+    what became of the authorisation: `succeeded` with the finished run's id
+    (on the review's own outcome only - a search event's outcome is
+    `succeeded` with nothing more than its own `source_kind`, never a copy of
+    the run id or the question), `failed` with a bounded error code, or
+    `cancelled` for a run `ReviewInterrupted` stopped (every stage's work up
+    to that point is saved, and it can be resumed). A cancellation that
+    reaches this function from *outside* the pipeline - a real
+    `asyncio.CancelledError`, which `asyncio.to_thread` cannot use to stop a
+    worker thread that is already running - commits `unknown` instead,
+    because nothing here can prove whether that thread has actually stopped.
+    If the pipeline itself never starts (the intents above failed to commit),
+    no outcome is written for anything: an intent with no outcome is not a
+    bug to paper over, it is this journal's honest way of saying the
+    authorisation was recorded but nothing after it is confirmed. A failure
+    to write any of these outcomes never re-runs the review to tidy the
+    journal; it is reported through `progress` instead, exactly as
+    `bedrock.ui.journal` does for `/digest`.
     """
     private_dir(settings.data_dir)
 
@@ -226,21 +265,152 @@ async def run_review(
     # A resumed run keeps what it knew when it started; only a new one checks.
     integrity_check = None if request.resume else auto_integrity_check(settings)
 
-    return await asyncio.to_thread(
-        answer_question,
-        request.question,
-        settings=settings,
-        client=client,
-        use_model=request.use_model,
-        searcher=searcher,
-        papers=request.papers,
-        refresh_papers=request.refresh,
-        approved_terms=request.approved_terms,
-        out_dir=request.out_dir,
-        resume_run_id=request.resume,
-        progress=progress,
-        integrity_check=integrity_check,
+    review_operation_id = new_operation_id()
+    # Search declarations first: if any of them - or the review's own intent
+    # right after - cannot be written, nothing below has happened yet, and
+    # raising here (rather than after) means no half-authorised run is ever
+    # started. Each intent is kept with its source_kind so the matching
+    # outcome, once the pipeline is done, can be written for exactly the
+    # hosts this run actually declared. See the module docstring on why this
+    # is metadata about authorisation, not a log of individual HTTP requests.
+    search_operations: list[tuple[str, str]] = []
+    for source_kind in _search_kinds(request, searcher, integrity_check):
+        search_operation_id = new_operation_id()
+        await commit_intent(
+            history, search_operation_id, actor_id=actor_id, action="litreview.search",
+            details={"source_kind": source_kind},
+        )
+        search_operations.append((search_operation_id, source_kind))
+    await commit_intent(
+        history, review_operation_id, actor_id=actor_id, action="litreview.review",
+        subject_id=request.resume,
     )
+
+    async def _finish_searches(state: str, *, error_code: str | None = None) -> None:
+        """Every search intent committed above gets the run's own final
+        state - see the docstring on why an authorisation's outcome mirrors
+        what became of the run it authorised, not a separate verdict."""
+        for search_operation_id, source_kind in search_operations:
+            details = {"source_kind": source_kind}
+            if error_code is not None:
+                details["error_code"] = error_code
+            await commit_outcome(
+                history, search_operation_id, actor_id=actor_id, action="litreview.search",
+                state=state, details=details, progress=progress,
+            )
+
+    try:
+        result = await asyncio.to_thread(
+            answer_question,
+            request.question,
+            settings=settings,
+            client=client,
+            use_model=request.use_model,
+            searcher=searcher,
+            papers=request.papers,
+            refresh_papers=request.refresh,
+            approved_terms=request.approved_terms,
+            out_dir=request.out_dir,
+            resume_run_id=request.resume,
+            progress=progress,
+            integrity_check=integrity_check,
+        )
+    except asyncio.CancelledError:
+        # `asyncio.to_thread` cannot stop a thread that is already running the
+        # pipeline, so whether it is still going is genuinely unknown - the
+        # same reason `ui/digest_command.py` records an interrupted ingest
+        # this way rather than claiming it stopped.
+        await commit_outcome(
+            history, review_operation_id, actor_id=actor_id, action="litreview.review",
+            state="unknown", subject_id=request.resume,
+            details={"error_code": "review_cancelled_outcome_unknown"}, progress=progress,
+        )
+        await _finish_searches("unknown", error_code="review_cancelled_outcome_unknown")
+        raise
+    except ReviewInterrupted:
+        # The pipeline thread has already finished (by raising), and every
+        # stage's work up to that point is saved - an unreachable server and
+        # an explicit `/review stop` both land here. Resumable, not failed.
+        await commit_outcome(
+            history, review_operation_id, actor_id=actor_id, action="litreview.review",
+            state="cancelled", subject_id=request.resume, progress=progress,
+        )
+        await _finish_searches("cancelled")
+        raise
+    except (ConfigError, QuestionError, NoPapers, SearchFailed, OSError, ValueError) as exc:
+        code = _error_code(exc)
+        await commit_outcome(
+            history, review_operation_id, actor_id=actor_id, action="litreview.review",
+            state="failed", subject_id=request.resume,
+            details={"error_code": code}, progress=progress,
+        )
+        await _finish_searches("failed", error_code=code)
+        raise
+    else:
+        await commit_outcome(
+            history, review_operation_id, actor_id=actor_id, action="litreview.review",
+            state="succeeded", subject_id=request.resume,
+            details={"run_id": result.run.id}, progress=progress,
+        )
+        await _finish_searches("succeeded")
+        return result
+
+
+def _search_kinds(request: ReviewRequest, searcher, integrity_check) -> list[str]:
+    """Which external hosts this run is about to be authorised to contact.
+
+    Matches `stages.s1_collect.collect` exactly, rather than re-deriving the
+    condition: a `LiteratureSearcher` is only actually called when no frozen
+    `papers` were also handed in (`request.papers is None`), so recording a
+    search here for a request that also posted papers directly would claim
+    a contact that never happens. The retraction check is a run's own
+    decision (`integrity_check is not None`), already computed by the caller.
+    """
+    kinds = []
+    if isinstance(searcher, LiteratureSearcher) and request.papers is None:
+        kinds.append("literature_search")
+    if integrity_check is not None:
+        kinds.append("retraction_check")
+    return kinds
+
+
+def _error_code(exc: Exception) -> str:
+    """A bounded, code-chosen identifier for a failed review's outcome -
+    never `str(exc)`, which could carry a file path or other detail this
+    journal must not store. Order matters: `NothingFound` is a `NoPapers`."""
+    if isinstance(exc, ConfigError):
+        return "config_error"
+    if isinstance(exc, QuestionError):
+        return "question_error"
+    if isinstance(exc, NothingFound):
+        return "nothing_found"
+    if isinstance(exc, NoPapers):
+        return "no_papers"
+    if isinstance(exc, SearchFailed):
+        return "search_failed"
+    if isinstance(exc, OSError):
+        return "os_error"
+    return "value_error"
+
+
+def local_history(bedrock_settings) -> tuple[Any | None, str]:
+    """(the local action journal, who to credit) for a review run outside the app.
+
+    The CLI and the HTTP API record their runs in the same journal the app
+    does (`action_history_dir`, from BEDROCK_ACTION_HISTORY_DIR, the config
+    file, then the default). A build without `bedrock.provenance` runs
+    unrecorded, as `/digest` does. A journal that exists but cannot be opened
+    raises `ReviewNotRecorded`: the review must not start unrecorded.
+    `user_id` is BEDROCK_USER - configuration, not authentication.
+    """
+    try:
+        from bedrock.provenance import HistoryStore
+    except ImportError:  # pragma: no cover - depends on the installed build
+        return None, bedrock_settings.user_id
+    try:
+        return HistoryStore(Path(bedrock_settings.action_history_dir).expanduser()), bedrock_settings.user_id
+    except Exception as exc:  # noqa: BLE001 - any failure here stops the run
+        raise ReviewNotRecorded(f"local history could not be opened ({exc}); nothing was run.") from exc
 
 
 def auto_integrity_check(settings: Settings):

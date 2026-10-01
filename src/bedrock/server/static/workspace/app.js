@@ -193,9 +193,12 @@
   $("#sidebar-scrim").addEventListener("click", () => appEl.classList.remove("sidebar-open"));
 
   // ---------------- activity drawer ----------------
-  function openActivity() { appEl.classList.add("activity-open"); }
+  // Opening the agent panel re-fits both panels, so the page between them
+  // keeps its minimum width (setPanelWidth, below).
+  const refitPanels = () => { setPanelWidth("activity", panelWidth("activity"), false); setPanelWidth("sidebar", panelWidth("sidebar"), false); };
+  function openActivity() { appEl.classList.add("activity-open"); refitPanels(); }
   function closeActivity() { appEl.classList.remove("activity-open"); }
-  $("#activity-toggle").addEventListener("click", () => appEl.classList.toggle("activity-open"));
+  $("#activity-toggle").addEventListener("click", () => { appEl.classList.toggle("activity-open"); refitPanels(); });
   $("#activity-collapse").addEventListener("click", closeActivity);
   $("#activity-popout").addEventListener("click", () => {
     const w = window.open("about:blank", "bedrock-agent-activity", "width=420,height=720");
@@ -221,20 +224,85 @@
     const iv = setInterval(() => { if (w.closed) { clearInterval(iv); return; } paint(); }, 1500);
   });
 
-  // resizable drawer
-  (() => {
-    const handle = $("#activity-resizer");
+  // Resizable side panels: the navigation on the left and the agent panel on
+  // the right, each by mouse or keyboard (arrows, Home to reset), each
+  // remembered, and never so wide that the page between them drops below
+  // MIN_CENTER - both can be open at once, so each clamp reads the other.
+  const MIN_CENTER = 460;
+  const PANELS = {
+    sidebar: { varName: "--sidebar-w", key: "bedrock_sidebar_w", def: 250, min: 180, max: 420, handle: "#sidebar-resizer",
+               widthAt: (x) => x },
+    activity: { varName: "--activity-w", key: "bedrock_activity_w", def: 380, min: 300, max: 720, handle: "#activity-resizer",
+                widthAt: (x) => window.innerWidth - x },
+  };
+  const panelWidth = (name) => {
+    const p = PANELS[name];
+    const v = parseInt(document.documentElement.style.getPropertyValue(p.varName), 10);
+    return Number.isFinite(v) ? v : p.def;
+  };
+  function setPanelWidth(name, width, save = true) {
+    const p = PANELS[name];
+    const app = $("#app");
+    const other = name === "sidebar" ? (app.classList.contains("activity-open") ? panelWidth("activity") : 0)
+      : (app.classList.contains("sidebar-collapsed") ? 56 : panelWidth("sidebar"));
+    const room = window.innerWidth - other - MIN_CENTER;
+    const w = Math.round(Math.max(p.min, Math.min(p.max, room, width)));
+    document.documentElement.style.setProperty(p.varName, w + "px");
+    const handle = $(p.handle);
+    if (handle) {
+      handle.setAttribute("aria-valuenow", String(w));
+      handle.setAttribute("aria-valuemin", String(p.min));
+      handle.setAttribute("aria-valuemax", String(p.max));
+    }
+    if (save) { try { localStorage.setItem(p.key, String(w)); } catch {} }
+  }
+  Object.keys(PANELS).forEach((name) => {
+    const p = PANELS[name];
+    let saved = NaN;
+    try { saved = parseInt(localStorage.getItem(p.key), 10); } catch {}
+    setPanelWidth(name, Number.isFinite(saved) ? saved : p.def, false);
+    const handle = $(p.handle);
+    if (!handle) return;
     let dragging = false;
-    handle.addEventListener("mousedown", (e) => {
-      dragging = true; handle.classList.add("dragging");
+    handle.addEventListener("mousedown", (e) => { dragging = true; handle.classList.add("dragging"); e.preventDefault(); });
+    window.addEventListener("mousemove", (e) => { if (dragging) setPanelWidth(name, p.widthAt(e.clientX)); });
+    window.addEventListener("mouseup", () => { if (dragging) { dragging = false; handle.classList.remove("dragging"); } });
+    handle.addEventListener("dblclick", () => setPanelWidth(name, p.def));
+    handle.addEventListener("keydown", (e) => {
+      const step = e.shiftKey ? 64 : 16;
+      const grow = name === "sidebar" ? 1 : -1;  // the right panel grows leftwards
+      if (e.key === "ArrowRight") setPanelWidth(name, panelWidth(name) + step * grow);
+      else if (e.key === "ArrowLeft") setPanelWidth(name, panelWidth(name) - step * grow);
+      else if (e.key === "Home") setPanelWidth(name, p.def);
+      else return;
       e.preventDefault();
     });
-    window.addEventListener("mousemove", (e) => {
-      if (!dragging) return;
-      const w = Math.min(720, Math.max(300, window.innerWidth - e.clientX));
-      document.documentElement.style.setProperty("--activity-w", w + "px");
+  });
+  window.addEventListener("resize", () => Object.keys(PANELS).forEach((n) => setPanelWidth(n, panelWidth(n), false)));
+
+  // Collapsible navigation: icons only, labels as tooltips; remembered.
+  function setSidebarCollapsed(collapsed, save = true) {
+    $("#app").classList.toggle("sidebar-collapsed", collapsed);
+    const btn = $("#sidebar-collapse");
+    if (btn) {
+      btn.setAttribute("aria-expanded", String(!collapsed));
+      btn.setAttribute("aria-label", collapsed ? "Expand navigation" : "Collapse navigation");
+      btn.title = collapsed ? "Expand navigation" : "Collapse navigation";
+    }
+    $$(".nav-item").forEach((b) => {
+      const label = b.textContent.trim();
+      if (collapsed) { b.setAttribute("aria-label", label); b.setAttribute("title", label); }
+      else if (!b.classList.contains("disabled")) { b.removeAttribute("title"); }
     });
-    window.addEventListener("mouseup", () => { dragging = false; handle.classList.remove("dragging"); });
+    if (save) { try { localStorage.setItem("bedrock_sidebar_collapsed", collapsed ? "1" : "0"); } catch {} }
+    setPanelWidth("activity", panelWidth("activity"), false);
+  }
+  (() => {
+    let collapsed = false;
+    try { collapsed = localStorage.getItem("bedrock_sidebar_collapsed") === "1"; } catch {}
+    setSidebarCollapsed(collapsed, false);
+    const btn = $("#sidebar-collapse");
+    if (btn) btn.addEventListener("click", () => setSidebarCollapsed(!$("#app").classList.contains("sidebar-collapsed")));
   })();
 
   // ---------------- modal ----------------
@@ -318,8 +386,15 @@
     const isPending = (r) => ["queued", "running", "waiting"].includes(r.status);
     const activeAskRun = chat && state.runs.find((r) => r.chatId === chat.id && ["ask", "auto"].includes(r.mode) && isPending(r));
     const activeAgentRun = chat && state.runs.find((r) => r.chatId === chat.id && !["ask", "auto"].includes(r.mode) && isPending(r));
+    // The chat's most recent quick-reply request, when it ended without an
+    // answer: it gets a visible reason and a Retry, never silence.
+    const askRuns = chat ? state.runs.filter((r) => r.chatId === chat.id && ["ask", "auto"].includes(r.mode))
+      .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || "")) : [];
+    const lastAsk = askRuns[askRuns.length - 1];
+    const endedRun = lastAsk && ["failed", "cancelled", "stopped"].includes(lastAsk.status) && !lastAsk.retriedBy ? lastAsk : null;
+    const runSig = (r) => r ? [r.id, r.status, r.currentStep, r.lastProgressAt, r.error, (r.draft || "").length].join("|") : "";
     const sig = "chat:" + (chat ? chat.id + (chat.messages || []).length + JSON.stringify(chat.artifactIds || [])
-      + (activeAskRun ? activeAskRun.id + activeAskRun.status : "") + (activeAgentRun ? activeAgentRun.id + activeAgentRun.status : "") : "none");
+      + runSig(activeAskRun) + runSig(activeAgentRun) + runSig(endedRun) + ":" + Math.floor(Date.now() / 15000) : "none");
     if (sig === lastRenderSig.center && !force) return;
     lastRenderSig.center = sig;
     body.innerHTML = "";
@@ -340,9 +415,10 @@
         const meta = [];
         if (m.citations && m.citations.length) meta.push(m.citations.length + " source(s) cited");
         const { body: answerText, sources } = splitSources(m.text || "");
-        thread.appendChild(el("div", { class: "msg assistant" }, [
+        thread.appendChild(el("div", { class: "msg assistant" + (m.incomplete ? " incomplete" : "") }, [
           el("span", { class: "avatar" }, "AI"),
           el("div", { class: "bubble" }, [
+            m.incomplete ? el("div", { class: "run-note warn", role: "note" }, "Incomplete — the model stopped partway through this answer. It was not reviewed and may be missing qualifications.") : null,
             el("div", {}, answerText),
             sources.length ? renderSourceList(sources, chat) : null,
             meta.length && !sources.length ? el("div", { class: "msg-meta" }, meta.join(" · ")) : null,
@@ -350,12 +426,8 @@
         ]));
       }
     });
-    if (activeAskRun) {
-      thread.appendChild(el("div", { class: "thinking-row" }, [
-        el("span", { class: "avatar" }, "AI"),
-        el("div", { class: "thinking-dots" }, [el("span"), el("span"), el("span")]),
-      ]));
-    }
+    if (activeAskRun) thread.appendChild(renderRunStatus(activeAskRun));
+    else if (endedRun) thread.appendChild(renderRunEnded(endedRun));
     if (!(chat.messages || []).length && !activeAskRun) {
       thread.appendChild(el("div", { class: "empty-state" }, "Attach a file or ask a question to begin."));
     }
@@ -363,6 +435,56 @@
     body.scrollTop = body.scrollHeight;
     renderComposer(chat, activeAskRun, activeAgentRun);
   }
+
+  // What a request in progress is doing, in words - never just dots. A request
+  // held for review shows its draft and the decision it is waiting for.
+  const STALE_SECONDS = 45;
+  function renderRunStatus(run) {
+    const secs = run.lastProgressAt ? (Date.now() - new Date(run.lastProgressAt).getTime()) / 1000 : 0;
+    if (run.status === "waiting") {
+      const draft = run.draft || run.preview || "";
+      return el("div", { class: "msg assistant review-card", role: "region", "aria-label": "Answer waiting for your review" }, [
+        el("span", { class: "avatar" }, "AI"),
+        el("div", { class: "bubble" }, [
+          el("div", { class: "run-note warn" }, [el("strong", {}, "Waiting for your review. "),
+            "Answers about clinical or safety matters are held until a person approves them. Read the draft, then approve it to post it here, or send it back."]),
+          draft ? el("div", { class: "review-draft" }, draft) : null,
+          el("div", { class: "run-actions" }, [
+            el("button", { class: "btn primary small", onclick: () => decide(run.id, "approve") }, "Approve and post"),
+            el("button", { class: "btn small", onclick: () => decide(run.id, "reject") }, "Send back"),
+            el("button", { class: "btn ghost small", onclick: () => cancelRun(run.id) }, "Stop"),
+          ]),
+        ]),
+      ]);
+    }
+    const slow = secs > STALE_SECONDS;
+    const label = run.status === "queued" ? "Waiting for the model" : (run.currentStep || "Working");
+    return el("div", { class: "thinking-row", role: "status", "aria-live": "polite" }, [
+      el("span", { class: "avatar" }, "AI"),
+      el("div", { class: "run-status" }, [
+        el("div", { class: "run-status-line" }, [el("div", { class: "thinking-dots small" }, [el("span"), el("span"), el("span")]),
+          el("span", {}, label + "…")]),
+        slow ? el("div", { class: "small muted" }, `No word from the model for ${since(run.lastProgressAt).replace(" ago", "")} — it may be busy with another request (a literature review, say) or generating slowly. It stops by itself if nothing arrives for 10 minutes.`) : null,
+        run.contextNote ? el("div", { class: "small muted" }, run.contextNote) : null,
+        el("button", { class: "link-btn small", onclick: () => cancelRun(run.id) }, "Stop"),
+      ]),
+    ]);
+  }
+
+  function renderRunEnded(run) {
+    return el("div", { class: "msg assistant run-ended", role: "alert" }, [
+      el("span", { class: "avatar" }, "AI"),
+      el("div", { class: "bubble" }, [
+        el("div", { class: "run-note " + (run.status === "failed" ? "bad" : "warn") }, run.error || "This request did not finish."),
+        run.contextNote ? el("div", { class: "small muted" }, run.contextNote) : null,
+        el("div", { class: "run-actions" }, [el("button", { class: "btn small", onclick: () => retryRun(run.id) }, "Retry")]),
+      ]),
+    ]);
+  }
+
+  // What someone was typing survives the chat re-drawing itself while a reply
+  // is on its way (the composer is rebuilt on every status change).
+  const composerDrafts = {};
 
   function renderComposer(chat, activeAskRun, activeAgentRun) {
     let dock = document.getElementById("composer-wrap");
@@ -380,6 +502,8 @@
     const attachBtn = el("button", { type: "button", class: "icon-btn", title: "Attach a file", onclick: () => fileInput.click() }, icon("paperclip"));
     const textarea = el("textarea", { placeholder: activeAskRun ? "Waiting for a reply…" : "Ask a question…", rows: "1" });
     textarea.disabled = !!activeAskRun;
+    textarea.value = composerDrafts[chat.id] || "";
+    textarea.addEventListener("input", () => { composerDrafts[chat.id] = textarea.value; });
     textarea.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.shiftKey) return;
       const enterSends = getEnterToSend();
@@ -399,11 +523,16 @@
       e.preventDefault();
       const text = textarea.value.trim();
       if (!text) return;
-      textarea.value = ""; textarea.disabled = true; sendBtn.disabled = true;
+      textarea.disabled = true; sendBtn.disabled = true;
       try {
         await api("/runs", { method: "POST", body: { chatId: chat.id, prompt: text, mode: "ask" } });
+        textarea.value = ""; delete composerDrafts[chat.id];
         await refresh();
-      } catch (err) { alert(err.message); await refresh(); }
+      } catch (err) {
+        // Not sent: the text stays in the box to send again.
+        composerDrafts[chat.id] = text;
+        alert(err.message); await refresh();
+      }
     });
     dock.appendChild(form);
 
@@ -772,8 +901,32 @@
       else card.appendChild(el("p", { class: "muted small", style: "margin-top:14px" },
         "Nothing was extracted from this meeting. The transcript below is still complete."));
       if (meeting.transcript) {
-        card.appendChild(el("div", { class: "section-title" }, "Transcript"));
-        card.appendChild(el("div", { class: "transcript-box" }, meeting.transcript));
+        // Downloads for whoever missed it. Plain links: the API is cookie
+        // authenticated, so the browser fetches them like any file.
+        let showEnglish = false;
+        const link = (fmt, label) => el("a", { class: "btn small", download: "", title: label,
+          href: `${API}/meetings/${encodeURIComponent(meeting.id)}/transcript?format=${fmt}` + (showEnglish ? "&english=true" : "") }, label);
+        const box = el("div", { class: "transcript-box" }, meeting.transcript);
+        const links = el("div", { class: "row-actions", style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" });
+        const paintLinks = () => {
+          links.innerHTML = "";
+          links.appendChild(el("span", { class: "muted small" }, "Download:"));
+          links.appendChild(link("txt", "Text"));
+          links.appendChild(link("docx", "Word"));
+          links.appendChild(link("vtt", "Subtitles"));
+          links.appendChild(link("md", "Markdown"));
+          if (meeting.transcriptEnglish) {
+            links.appendChild(el("button", { class: "btn small", onclick: () => {
+              showEnglish = !showEnglish;
+              box.textContent = showEnglish ? meeting.transcriptEnglish : meeting.transcript;
+              paintLinks();
+            } }, showEnglish ? "Show original" : `Show English (${meeting.translatedLines || ""} lines translated)`));
+          }
+        };
+        paintLinks();
+        card.appendChild(el("div", { class: "section-title", style: "display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap" },
+          [el("span", {}, "Transcript"), links]));
+        card.appendChild(box);
       }
       // How this meeting was produced, in the meeting's own words rather than
       // one fixed sentence: a recording transcribed locally and a transcript
@@ -989,7 +1142,7 @@
     } }, recording.paused ? "Resume" : "Pause");
     bar.appendChild(el("span", { class: recording.paused ? "record-dot-idle" : "record-dot-live" }));
     bar.appendChild(el("div", { class: "record-live-info" }, [
-      el("div", { class: "record-live-title" }, recording.meetingTitle),
+      el("div", { class: "record-live-title" }, recording.meetingTitle || "Recording — named from the notes afterwards"),
       el("div", { class: "record-live-sub" }, [
         clock, el("span", {}, " · "),
         el("span", {}, recording.paused ? "paused — nothing is being recorded" : recording.sourceLabel),
@@ -1165,15 +1318,29 @@
       return;
     }
 
-    const titleInput = el("input", { placeholder: "e.g. KRAS research weekly" });
-    const micSelect = el("select", {});
-    const useMic = el("input", { type: "checkbox", checked: true });
-    const useSystem = el("input", { type: "checkbox" });
+    // As little to fill in as possible. The server works out the speakers,
+    // the language and the vocabulary from the audio, and names the meeting
+    // from its notes if the name is left blank. The one thing it cannot know
+    // is where the meeting is — a room, or a call in a browser tab — so that
+    // is the one question asked up front. Everything else is under "More
+    // options" for the times it matters.
+    const titleInput = el("input", { placeholder: "Optional — named from what was said if left blank" });
     const notesInput = el("textarea", { rows: "3", placeholder: "Optional. Anything you jot here is rewritten into the notes using the transcript as the source of fact." });
 
     const projSelect = el("select", {}, [el("option", { value: "" }, "Personal — no project")]);
     (state.projects || []).forEach((p) => projSelect.appendChild(el("option", { value: p.id }, p.name)));
 
+    const sourceChoice = (value, label, hint, checked) => {
+      const input = el("input", { type: "radio", name: "rec-source", value });
+      if (checked) input.checked = true;
+      return { input, row: check(input, label, hint) };
+    };
+    const inRoom = sourceChoice("mic", "In this room", "This device's microphone. Voices at the far end of the table are lifted to match the near ones.", true);
+    const online = sourceChoice("tab", "An online meeting in a browser tab", "Chrome will ask which tab to share — pick the meeting tab and tick \u201cAlso share tab audio\u201d. On macOS whole-screen audio is not available, so join the call in a browser tab.");
+    const both = sourceChoice("both", "Both", "A call in a browser tab with other people in the room with you.");
+    const sourceOf = () => (both.input.checked ? "both" : online.input.checked ? "tab" : "mic");
+
+    const micSelect = el("select", {});
     micSelect.appendChild(el("option", { value: "" }, "Default microphone"));
     try {
       // Labels are blank until the page has been granted microphone access
@@ -1185,26 +1352,45 @@
       });
     } catch (_) {}
 
+    // Which language is spoken. The list comes from the server because it
+    // depends on which speech model is installed: an English-only model gets
+    // one entry and a line saying why. The default listens and decides.
+    const langSelect = el("select", {});
+    (ready.languages || [{ code: "en", label: "English" }]).forEach((l) => {
+      langSelect.appendChild(el("option", { value: l.code, selected: l.code === (ready.defaultLanguage || "detect") }, l.label));
+    });
+    const langHelp = ready.multilingual
+      ? "Detection listens to a sample first: one dominant language is used for the whole recording, and a meeting that genuinely switches languages gets each speaker turn in its own. Pick a language only to override that."
+      : `This server's speech model (${ready.speechModel || "unknown"}) is English-only. Ask whoever runs it to install ${ready.recommendedModel || "a multilingual model"} for other languages and for heavily accented English.`;
 
-    const speakerInput = el("input", { type: "number", min: "1", max: "40", placeholder: "Leave blank if you don't know" });
-    body.appendChild(field("Meeting name", titleInput));
-    body.appendChild(field("Project", projSelect));
-    body.appendChild(field("At least how many people? (optional)", speakerInput,
-      "Only if you happen to know, and a rough floor is fine — “at least 5” for a club meeting nobody counted. Speakers are worked out from the audio either way; this just stops the count being merged below what you know is there."));
+    const speakerInput = el("input", { type: "number", min: "1", max: "40", placeholder: "Leave blank — worked out from the audio" });
     const roomMode = el("input", { type: "checkbox", checked: true });
-    body.appendChild(check(useMic, "This device's microphone", "For a meeting in a room, and for your own voice on a call."));
-    body.appendChild(check(roomMode, "Several people in the room",
-      "Turns off the noise suppression and echo cancellation a laptop applies by default. Both are tuned for one person close to the microphone and treat a voice across the room as noise to remove — which is the voice you want. Turn this off if you are recording only yourself."));
-    body.appendChild(check(useSystem, "Audio from an online meeting",
-      "Captures a browser tab. Chrome will ask which to share — pick the meeting tab and tick “Also share tab audio”. On macOS whole-screen audio is not available, so join the call in a browser tab, or select a loopback device above."));
-    body.appendChild(field("Microphone", micSelect));
-    body.appendChild(field("Your notes during the meeting", notesInput));
     const consent = el("input", { type: "checkbox" });
     const whoElse = el("input", { placeholder: "e.g. Luke, Priya, Ravi" });
-    body.appendChild(check(consent, "Everyone present knows they are being recorded",
-      "In several US states every party has to agree. This records that you said so, with your name and the time — it is your statement, not proof."));
-    body.appendChild(field("Who else is here (optional)", whoElse,
-      "As many or as few as you know. Stored with the meeting as a record of who was in the room; it does not affect the transcript."));
+
+    body.appendChild(field("Meeting name", titleInput));
+    body.appendChild(el("div", { class: "field" }, [el("label", {}, "Where is the meeting?"), inRoom.row, online.row, both.row]));
+    if (ready.consentRequired) {
+      body.appendChild(check(consent, "Everyone present knows they are being recorded",
+        "This deployment requires it. It records that you said so, with your name and the time — it is your statement, not proof."));
+    }
+
+    const more = el("details", { class: "research-options" }, [el("summary", {}, "More options")]);
+    more.appendChild(field("Project", projSelect));
+    more.appendChild(field("Language spoken", langSelect, langHelp));
+    more.appendChild(field("Microphone", micSelect));
+    more.appendChild(check(roomMode, "Several people in the room",
+      "On by default. Turns off the noise suppression and echo cancellation a laptop applies for one person close to the microphone, and lifts quiet voices at the far end of the table. Turn it off only when recording yourself alone."));
+    more.appendChild(field("At least how many people? (optional)", speakerInput,
+      "Speakers are worked out from the audio. This only stops the count being merged below a number you know is there."));
+    more.appendChild(field("Your notes during the meeting", notesInput));
+    if (!ready.consentRequired) {
+      more.appendChild(check(consent, "Everyone present knows they are being recorded",
+        "In several US states every party has to agree. This records that you said so, with your name and the time — it is your statement, not proof."));
+    }
+    more.appendChild(field("Who else is here (optional)", whoElse,
+      "Stored with the meeting as a record of who was in the room; it does not affect the transcript."));
+    body.appendChild(more);
 
     const startBtn = el("button", { class: "btn primary" }, "Start recording");
     const error = el("p", { class: "form-error", hidden: true });
@@ -1216,14 +1402,16 @@
       startBtn.disabled = true;
       startBtn.textContent = "Starting…";
       try {
+        const source = sourceOf();
         await beginRecording({
           title: titleInput.value.trim(),
           projectId: projSelect.value || null,
           notes: notesInput.value.trim() || null,
-          useMic: useMic.checked,
-          useSystem: useSystem.checked,
+          useMic: source !== "tab",
+          useSystem: source !== "mic",
           roomMode: roomMode.checked,
           deviceId: micSelect.value || null,
+          language: langSelect.value || null,
           minimumSpeakers: parseInt(speakerInput.value, 10) || null,
           consentConfirmed: consent.checked,
           participants: whoElse.value.trim() || null,
@@ -1295,7 +1483,9 @@
       });
     } catch (_) { liveSessionId = null; }
 
-    session.meetingTitle = opts.title || "Untitled meeting";
+    // Blank is sent as blank: the server names an unnamed meeting from its
+    // notes, and a placeholder typed in here would be taken as the name.
+    session.meetingTitle = opts.title || "";
     session.sourceLabel = opts.useMic && opts.useSystem ? "microphone + meeting audio"
       : opts.useSystem ? "meeting audio" : "microphone";
     session.options = opts;
@@ -1332,7 +1522,7 @@
     const durationSeconds = (Date.now() - result.startedAt.getTime()) / 1000;
     const pending = {
       id: "upload-" + Date.now(),
-      title: session.meetingTitle,
+      title: session.meetingTitle || "New recording — being named from its notes",
       status: "running",
       stage: "Uploading",
       notes: [],
@@ -1351,6 +1541,7 @@
         minimumSpeakers: session.options.minimumSpeakers,
         consentConfirmed: session.options.consentConfirmed,
         participants: session.options.participants,
+        language: session.options.language,
         liveSessionId: finishedLiveSession,
         durationSeconds,
         onProgress: (fraction) => {
@@ -1551,6 +1742,7 @@
     if (st.searchAvailable === false) searchIn.disabled = true;
     const modelIn = el("input", { type: "checkbox" });
     modelIn.checked = !!model.ready;
+    const deckIn = el("input", { type: "checkbox" });
     const fullIn = el("input", { type: "checkbox", checked: "checked" });
     const sourceIns = (st.sources || []).map((s) => {
       const box = el("input", { type: "checkbox", checked: "checked", value: s.name });
@@ -1565,6 +1757,7 @@
       el("div", { class: "research-checks" }, [
         el("label", { class: "check-row" }, [searchIn, "Search the literature for papers (needs internet)"]),
         el("label", { class: "check-row" }, [modelIn, "Use the model to read the papers and write the report" + (model.ready ? "" : " (not ready)")]),
+        el("label", { class: "check-row" }, [deckIn, "Also make a target-proposal PowerPoint ", el("span", { class: "small muted" }, "(paper figures are added when searching)")]),
       ]),
       el("details", { class: "research-options" }, [
         el("summary", {}, "More options"),
@@ -1582,7 +1775,7 @@
       submit.disabled = true;
       try {
         const review = await researchApi("/runs", { method: "POST", body: {
-          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked,
+          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked, deck: deckIn.checked,
           sources: sourceIns.filter((s) => s.box.checked).map((s) => s.box.value), projectId: projectSel.value || null } });
         R.draft = null;
         R.reviews = [review, ...R.reviews.filter((r) => r.id !== review.id)];
@@ -1687,6 +1880,7 @@
         el("a", { class: "btn small", href: base + "?format=html&download=1" }, [icon("download"), "HTML"]),
         el("a", { class: "btn small", href: base + "?format=md&download=1" }, [icon("download"), "Markdown"]),
         el("a", { class: "btn small", href: base + "?format=json&download=1" }, [icon("download"), "JSON"]),
+        d.deck !== false ? el("a", { class: "btn small", href: base + "?format=pptx&download=1", title: "A target-proposal slide deck made from this report; the report is the full record" }, [icon("download"), "PowerPoint"]) : null,
         deleteReviewButton(d),
       ]));
       if (saved) card.appendChild(el("p", { class: "small muted" }, `Saved to the workspace ${saved === 1 ? "once" : saved + " times"} — chats in that project (or your own chats, if no project) can use it.`));
@@ -1837,6 +2031,10 @@
   async function decide(runId, decision) {
     try { await api(`/runs/${runId}/decision`, { method: "POST", body: { decision } }); await refresh(); }
     catch (err) { alert(err.message); }
+  }
+  async function retryRun(runId) {
+    try { await api(`/runs/${runId}/retry`, { method: "POST" }); await refresh(); }
+    catch (err) { alert(err.message); await refresh(); }
   }
   async function cancelRun(runId) {
     try { await api(`/runs/${runId}/cancel`, { method: "POST" }); await refresh(); }

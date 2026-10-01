@@ -32,15 +32,54 @@ from bedrock.ui.widgets import StatusBar
 from bedrock.workspaces import WorkspaceStore
 
 
+def _readiness_for(app):
+    """A zero-argument async callable running the literature review's readiness
+    check, for `/reviews check`.
+
+    Where the review would share this app's connection to its model server, the
+    check asks that same connection: it is the one a review would really use,
+    and in a test or a locked-down site it may be the only one that exists. A
+    review that opens its own (agent-pack mode, or `[litreview] api_base`
+    pointed elsewhere) is checked through its own, which is what
+    `review_readiness` builds when it is given none.
+    """
+
+    async def run():
+        import asyncio
+
+        from bedrock.litreview.config import ConfigError, load_settings as load_review_settings
+        from bedrock.litreview.readiness import review_readiness
+
+        backend = None
+        try:
+            review_settings = await asyncio.to_thread(
+                load_review_settings, app.settings, check_endpoint=False, require_models=False
+            )
+            shared = app.shared_review_scheduler(review_settings)
+            backend = shared.backend if shared is not None else None
+        except (ConfigError, AttributeError):
+            pass  # a broken [litreview] table is a finding `review_readiness` reports itself
+        return await review_readiness(app.settings, backend=backend)
+
+    return run
+
+
 class LocalCommandsMixin:
     """Own the commands whose behavior is identical in both app modes."""
 
     LOCAL_DIGEST_USES_MODEL = False
-
-    CAN_START_REVIEWS = True
-    """False in agent-pack mode, which refuses `/review`. Only changes what
-    `/reviews` suggests to someone with no reviews yet: every verb itself
-    works in both modes."""
+    """Whether `/digest` adds its optional model summary. The default mode sets
+    it (its chat model is on the same server as the chat). Agent-pack mode
+    leaves it off on purpose, even though the agent server's inference API
+    (`bedrock.server.api.routes_inference`) now gives this client a route to
+    a model: the summary would send a whole file's text to the server's model,
+    which is a separate decision from chatting there; it would have to choose
+    a role; and `context.digest.summarize` sizes its sample from the local
+    machine profile's window, which says nothing about a remote model (the
+    same mistake `/review` made before its window came from the server).
+    Nothing depends on it: the digest itself - the searchable, extractive
+    store - is built without a model in both modes. `/review` does not use
+    this flag; see `bedrock.ui.review_mixin`."""
 
     settings: Settings
     services: ComplianceServices
@@ -146,16 +185,11 @@ class LocalCommandsMixin:
             args,
             # Listing, verifying and forgetting need the database, not a model set.
             settings_for=lambda: load_review_settings(self.settings, check_endpoint=False, require_models=False),
-            # `check` is the one verb that does need the model set and the
-            # endpoint rule, because what it reports is whether a review could
-            # actually start.
-            full_settings_for=lambda: load_review_settings(self.settings),
+            # `check` is the same implementation `bedrock-litreview doctor`
+            # prints, so the two cannot disagree. Imported on use: it pulls in
+            # the review pipeline, which neither app pays for at launch.
+            readiness_for=_readiness_for(self),
             notify=self.post_notice,
-            # The agent-pack app has no scheduler, and neither app has one before
-            # it finishes starting; `check` then reports the configuration half
-            # and says the server was not asked.
-            backend=getattr(getattr(self, "scheduler", None), "backend", None),
-            can_start_reviews=self.CAN_START_REVIEWS,
         )
 
     @work(group="history")

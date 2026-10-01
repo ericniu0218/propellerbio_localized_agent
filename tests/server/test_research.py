@@ -9,6 +9,7 @@ so nothing here touches the network.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from tests.litreview.fixtures import QUESTION
 from tests.litreview.test_service import ScriptedBackend, _corpus_file, models_yaml, settings  # noqa: F401 - fixtures
 
 COOKIE = "bedrock_workspace"
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 STATIC = Path(research.__file__).resolve().parent.parent / "static" / "workspace"
 
 
@@ -53,6 +55,31 @@ def review_env(settings, tmp_path, monkeypatch):  # noqa: F811 - the fixture abo
     monkeypatch.setattr(literature.LiteratureSearcher, "from_settings",
                         classmethod(lambda cls, s, **kw: CorpusSearcher(corpus)))
     return backend
+
+
+@pytest.fixture
+def no_figure_downloads(monkeypatch):
+    """A deck review may fetch figure images; these tests never reach the network."""
+    from bedrock.litreview import service
+
+    def keep_as_chosen(figures, *args, **kwargs):
+        return figures
+
+    monkeypatch.setattr(service.figure_files, "download_figures", keep_as_chosen)
+
+
+@pytest.fixture
+def requests_seen(monkeypatch):
+    """The ReviewRequest each started or resumed review was given."""
+    seen = []
+    original = research._start
+
+    def spy(owner, review, request):
+        seen.append(request)
+        return original(owner, review, request)
+
+    monkeypatch.setattr(research, "_start", spy)
+    return seen
 
 
 @pytest.fixture
@@ -108,7 +135,7 @@ def test_status_explains_a_model_server_that_lacks_the_models(client, review_env
 
 def test_a_review_runs_end_to_end_with_the_model_and_writes_a_checked_report(client, review_env):
     login(client)
-    started = client.post("/workspace/api/research/runs", json={"question": QUESTION})
+    started = client.post("/workspace/api/research/runs", json={"question": QUESTION, "deck": True})
     assert started.status_code == 200, started.text
     review = wait_for(client, started.json()["id"])
 
@@ -123,6 +150,9 @@ def test_a_review_runs_end_to_end_with_the_model_and_writes_a_checked_report(cli
     md = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=md&download=1")
     assert md.status_code == 200 and "attachment" in md.headers["content-disposition"]
     assert client.get(f"/workspace/api/research/runs/{review['id']}/report?format=json").json()["question"]
+    deck = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx&download=1")
+    assert deck.status_code == 200 and deck.content[:2] == b"PK" and ".pptx" in deck.headers["content-disposition"]
+    assert deck.headers["content-type"] == PPTX
 
     listed = client.get("/workspace/api/research/runs").json()
     assert [r["id"] for r in listed] == [review["id"]]
@@ -213,3 +243,87 @@ def test_removing_a_review_only_removes_it_from_the_list(client, review_env):
     review = wait_for(client, client.post("/workspace/api/research/runs", json={"question": QUESTION}).json()["id"])
     assert client.delete(f"/workspace/api/research/runs/{review['id']}").json() == {"ok": True}
     assert client.get("/workspace/api/research/runs").json() == []
+
+
+def test_the_powerpoint_option_reaches_the_review_and_is_remembered(client, review_env, no_figure_downloads, requests_seen):
+    login(client)
+    started = client.post("/workspace/api/research/runs", json={"question": QUESTION, "deck": True})
+    assert started.status_code == 200, started.text
+    assert requests_seen[-1].deck is True and started.json()["deck"] is True
+    review = wait_for(client, started.json()["id"])
+    assert review["status"] == "completed" and review["deck"] is True
+
+    plain = client.post("/workspace/api/research/runs", json={"question": QUESTION}).json()
+    assert requests_seen[-1].deck is False and plain["deck"] is False
+    wait_for(client, plain["id"])  # a review left running would stop the next test starting one
+
+
+def test_a_review_started_without_the_powerpoint_option_has_no_deck_to_download(client, review_env):
+    login(client)
+    review = wait_for(client, client.post("/workspace/api/research/runs", json={"question": QUESTION}).json()["id"])
+    assert review["status"] == "completed" and review["deck"] is False
+
+    refused = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx&download=1")
+    assert refused.status_code == 404
+    assert refused.json()["detail"] == "This review was started without the PowerPoint option."
+    assert client.get(f"/workspace/api/research/runs/{review['id']}/report?format=html").status_code == 200
+
+
+def test_the_deck_is_drawn_from_the_run_figures_and_the_signed_in_name(client, review_env, no_figure_downloads, monkeypatch):
+    from bedrock.litreview.report import slides
+
+    login(client, "Alice")
+    review = wait_for(client, client.post("/workspace/api/research/runs", json={"question": QUESTION, "deck": True}).json()["id"])
+    assert review["status"] == "completed", review
+
+    drawn = {}
+    original = slides.to_pptx
+
+    def spy(report, source="", **kwargs):
+        drawn.update(kwargs)
+        return original(report, source, **kwargs)
+
+    monkeypatch.setattr(slides, "to_pptx", spy)
+    deck = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx")
+    assert deck.status_code == 200 and deck.content[:2] == b"PK"
+    assert deck.headers["content-type"] == PPTX
+    assert drawn["author"] == "Alice"
+    assert re.fullmatch(r"\d{1,2} [A-Z][a-z]+ \d{4}", drawn["date"])
+    assert isinstance(drawn["figures"], list)
+
+
+def test_a_review_saved_before_the_option_existed_still_has_its_deck(client, review_env):
+    from bedrock.server.workspace.routes import store
+
+    login(client)
+    review = wait_for(client, client.post("/workspace/api/research/runs", json={"question": QUESTION}).json()["id"])
+    owner = client.get("/workspace/api/state").json()["user"]["id"]
+    record = store().get(owner, review["id"], research.KIND)
+    del record["deck"]
+    store().put(owner, research.KIND, record)
+
+    old = client.get(f"/workspace/api/research/runs/{review['id']}")
+    assert old.status_code == 200 and "deck" not in old.json()
+    deck = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx&download=1")
+    assert deck.status_code == 200 and deck.content[:2] == b"PK" and deck.headers["content-type"] == PPTX
+
+
+def test_resuming_a_review_keeps_the_powerpoint_option(client, review_env, no_figure_downloads, requests_seen):
+    review_env.fail_after = 3
+    login(client)
+    review = wait_for(client, client.post("/workspace/api/research/runs", json={"question": QUESTION, "deck": True}).json()["id"])
+    assert review["status"] == "stopped" and review["deck"] is True
+
+    review_env.fail_after = None
+    resumed = client.post(f"/workspace/api/research/runs/{review['id']}/resume")
+    assert resumed.status_code == 200, resumed.text
+    assert requests_seen[-1].deck is True and resumed.json()["deck"] is True
+    finished = wait_for(client, review["id"])
+    assert finished["status"] == "completed" and finished["deck"] is True
+    assert client.get(f"/workspace/api/research/runs/{review['id']}/report?format=pptx").status_code == 200
+
+
+def test_the_research_form_offers_the_powerpoint_and_hides_the_button_when_it_was_not_asked_for():
+    js = (STATIC / "app.js").read_text()
+    assert "Also make a target-proposal PowerPoint" in js and "deck: deckIn.checked" in js
+    assert "d.deck !== false ? el(" in js and "format=pptx" in js

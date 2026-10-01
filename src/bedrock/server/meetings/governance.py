@@ -41,7 +41,10 @@ from bedrock.server.compliance.phi_redaction import redact_phi
 # Fields on a stored meeting that hold words somebody said, or a model's
 # rendering of them. Everything here is redacted together, because a patient
 # name removed from the transcript but left in an action item is not removed.
-REDACTABLE_TEXT = ("transcript", "summary", "enhancedNotes")
+# `transcriptEnglish` is the same speech translated: an identifier scrubbed
+# from the original and left in the English has not been scrubbed. `title`
+# is written by the model from the notes when nobody named the meeting.
+REDACTABLE_TEXT = ("transcript", "transcriptEnglish", "summary", "enhancedNotes", "title")
 REDACTABLE_LISTS = ("decisions", "actions", "findings", "deadlines", "questions")
 
 # The group every meeting gets when a deployment has not configured any. Named

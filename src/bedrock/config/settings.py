@@ -12,6 +12,14 @@ Why this design: employees must never have an inference endpoint hard-coded into
 the client. In development the endpoint is a local Ollama instance; in production
 IT sets ``BEDROCK_API_BASE`` (or ships a config file) pointing at the company's
 private inference server. The rest of the app never needs to change.
+
+``backend`` picks which of the two client shapes this process runs at all -
+``"openai"`` (a single OpenAI-compatible model server, talked to through
+``bedrock.inference.create_backend``) or ``"agentpack"`` (the agent-pack REST
+API, talked to through ``AgentPackClient``). It is validated here, the same
+way ``profile`` is: an unknown value is a ``ValueError`` from ``load_settings``
+with the valid choices named, so a typo is a clear startup error rather than a
+confusing connection failure to the wrong kind of server.
 """
 
 from __future__ import annotations
@@ -27,6 +35,12 @@ from bedrock.config.profile import DEFAULT_PROFILE, PROFILES, MachineProfile
 
 DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_AGENT_PACK_API_BASE = "http://localhost:8000"
+
+KNOWN_BACKENDS = ("openai", "agentpack")
+"""Backend modes `load_settings` accepts. Anything else is a configuration
+error raised from `load_settings` itself - a typo here should be a clear
+startup error, not a confusing connection failure to the wrong kind of
+server."""
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "bedrock" / "config.toml"
 DEFAULT_CONTEXT_DIR = Path.home() / ".local" / "share" / "bedrock" / "context"
 DEFAULT_WORKSPACE_DIR = Path.home() / ".local" / "share" / "bedrock" / "workspaces"
@@ -152,6 +166,17 @@ class Settings:
     ``BEDROCK_PROFILE``; ``context_window = N`` or ``BEDROCK_CONTEXT_WINDOW``
     overrides just the window."""
 
+    context_window_configured: int | None = None
+    """The window someone actually wrote down (``context_window`` or
+    ``BEDROCK_CONTEXT_WINDOW``), or None when ``profile.context_window`` is only
+    the profile's default. The literature review needs to know the difference:
+    a default describes a laptop's own Ollama, and says nothing about a model
+    served somewhere else (``bedrock.litreview.config``)."""
+
+    profile_configured: bool = False
+    """Whether ``profile`` was chosen (config file or ``BEDROCK_PROFILE``)
+    rather than defaulted."""
+
     agent_pack_api_base: str = DEFAULT_AGENT_PACK_API_BASE
     user_id: str = field(default_factory=getpass.getuser)
     display_name: str | None = None
@@ -236,6 +261,19 @@ MIN_CONTEXT_WINDOW = 1024
 is almost certainly a typo (``8`` for ``8192``) and is refused."""
 
 
+def _backend(env: dict[str, str], file_values: dict) -> str:
+    """The configured backend mode: ``BEDROCK_BACKEND`` env, then the config
+    file, then ``"openai"``. Validated the same way ``_profile`` validates a
+    profile name, so a typo becomes a clear startup error (``app.py::main``
+    catches this ``ValueError`` and exits 2) rather than a confusing
+    connection failure to the wrong kind of server."""
+    name = env.get("BEDROCK_BACKEND") or file_values.get("backend") or "openai"
+    if not isinstance(name, str) or name.strip().lower() not in KNOWN_BACKENDS:
+        choices = ", ".join(sorted(KNOWN_BACKENDS))
+        raise ValueError(f"backend must be one of {choices}, not {name!r}")
+    return name.strip().lower()
+
+
 def _profile(env: dict[str, str], file_values: dict) -> MachineProfile:
     """The configured machine profile, with any ``context_window`` override applied."""
     name = env.get("BEDROCK_PROFILE") or file_values.get("profile") or DEFAULT_PROFILE
@@ -291,7 +329,7 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     }
     extra = {k: v for k, v in file_values.items() if k not in known}
 
-    backend = env.get("BEDROCK_BACKEND") or file_values.get("backend") or "openai"
+    backend = _backend(env, file_values)
     api_base = env.get("BEDROCK_API_BASE") or file_values.get("api_base") or DEFAULT_API_BASE
     model = env.get("BEDROCK_MODEL") or file_values.get("model") or None
     api_key = env.get("BEDROCK_API_KEY") or file_values.get("api_key") or None
@@ -340,6 +378,9 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
     server = file_values.get("server") or {}
     agents = _agent_settings(file_values.get("agents"))
     profile = _profile(env, file_values)
+    window_value = env.get("BEDROCK_CONTEXT_WINDOW") or file_values.get("context_window")
+    context_window_configured = profile.context_window if window_value not in (None, "") else None
+    profile_configured = bool(env.get("BEDROCK_PROFILE") or file_values.get("profile"))
 
     return Settings(
         backend=backend,
@@ -352,6 +393,8 @@ def load_settings(config_path: Path | None = None, env: dict[str, str] | None = 
         save_history=save_history,
         auto_context=auto_context,
         profile=profile,
+        context_window_configured=context_window_configured,
+        profile_configured=profile_configured,
         action_history_dir=action_history_dir,
         agent_pack_api_base=agent_pack_api_base.rstrip("/"),
         user_id=user_id,

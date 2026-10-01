@@ -59,11 +59,6 @@ SEARCH_NOTICE = (
     "question, papers and report stay on this machine"
 )
 
-AGENTPACK_NOTICE = (
-    "Literature reviews run in the default mode (start `bedrock` without "
-    "`BEDROCK_BACKEND=agentpack`) or from a shell with `bedrock-litreview ask`."
-)
-
 REVIEW_STALE_INSTALL = (
     "**The literature review is not installed in this environment.** "
     "It needs four packages the rest of the app does not (`pydantic`, `lxml`, "
@@ -77,6 +72,7 @@ REVIEW_STALE_INSTALL = (
     "bedrock-private-ai` instead. Everything else in the app keeps working.\n\n"
     "The missing piece was: {detail}"
 )
+
 
 @dataclass(frozen=True)
 class ReviewsVerb:
@@ -402,18 +398,26 @@ async def run_review_job(
     cancel: threading.Event,
     notify: Notify,
     progress: Callable[[str], None],
+    history: object | None = None,
+    actor_id: str = "",
     tick: Callable[[str, int, int, str], None] | None = None,
+    timeout_floor_applied: bool = False,
 ) -> bool:
     """Run one review and report it. Never raises; True means a finished report.
 
     Every failure the pipeline can produce is turned into a notice here, so the
     app's own bookkeeping - the one-review-at-a-time flag - always gets to run.
 
+    `history` and `actor_id` go straight to `service.run_review`, which records
+    the run in local history when a journal is supplied. `history=None` runs
+    unrecorded, which is what a build without `bedrock.provenance` gets.
+
     `tick` is the per-item signal from inside the stages, which the app puts in
     the status bar rather than in a notice; `progress` stays the milestone
     lines. See `litreview/progress.py`.
     """
     from bedrock.litreview.config import ConfigError
+    from bedrock.litreview.journal import ReviewNotRecorded
     from bedrock.litreview.llm import ReviewInterrupted
     from bedrock.litreview.service import run_review
     from bedrock.litreview.sources.literature import SearchFailed
@@ -431,7 +435,8 @@ async def run_review_job(
     # knowing is now - a review takes hours, and `/review` in the app is the one
     # front end that really uses the configured timeout. A notice, not a toast,
     # for the same reason: a toast disappears.
-    for advisory in await asyncio.to_thread(_setup_warnings, settings):
+    for advisory in await asyncio.to_thread(
+            lambda: _setup_warnings(settings, timeout_floor_applied=timeout_floor_applied)):
         await notify(advisory, "info")
 
     handler = _NoticeHandler(progress)
@@ -445,7 +450,14 @@ async def run_review_job(
             progress=progress_to_toasts(progress),
             cancel=cancel,
             tick=tick,
+            history=history,
+            actor_id=actor_id,
         )
+    except ReviewNotRecorded as exc:
+        # Nothing ran: local history could not record that this review was
+        # starting - the same "did not start" meaning as a ConfigError.
+        await notify(safe_line(exc, limit=600), "error")
+        return False
     except ReviewInterrupted as exc:
         run_id = await asyncio.to_thread(_unfinished_run_id, settings)
         await notify(interrupted_notice(exc, run_id), "error")
@@ -471,18 +483,20 @@ async def run_review_job(
     return True
 
 
-def _setup_warnings(settings: ReviewSettings) -> list[str]:
-    """The non-blocking half of the same checks `/reviews check` runs.
+def _setup_warnings(settings: ReviewSettings, *, timeout_floor_applied: bool = False) -> list[str]:
+    """What is worth knowing before a review starts, and does not stop it.
 
-    Only the configuration half, which needs no server and no event loop, so it
-    is safe on a worker thread. The blocking half still runs inside
-    `run_review`'s preflight, where it belongs: this says what is worth knowing,
-    not what is allowed.
+    Only configuration and the disk, which need no server and no event loop, so
+    it is safe on a worker thread. What *stops* a review runs inside
+    `run_review`'s `preflight`, where it belongs: this says what is worth
+    knowing, not what is allowed. `timeout_floor_applied` is True when the review
+    opens its own connection and so already has its timeout raised.
     """
     from bedrock.litreview.service import config_findings
 
     try:
-        return [f.detail for f in config_findings(settings) if not f.ok and not f.blocking]
+        return [f.detail for f in config_findings(settings, timeout_floor_applied=timeout_floor_applied)
+                if not f.ok]
     except Exception:  # noqa: BLE001 - an advisory must never stop a review
         return []
 
@@ -514,9 +528,7 @@ async def run_reviews_command(
     *,
     settings_for,
     notify: Notify,
-    full_settings_for=None,
-    backend=None,
-    can_start_reviews: bool = True,
+    readiness_for=None,
 ) -> None:
     """`/reviews`, and every verb in `REVIEWS_VERBS`.
 
@@ -525,17 +537,13 @@ async def run_reviews_command(
     All the reading happens in a worker thread, with the database opened and
     closed there - SQLite connections belong to the thread that made them.
 
-    `full_settings_for` is the same thing with the model set required, which
-    only `check` needs: listing, verifying and forgetting want `db_path` and
-    nothing about models, and a site whose `models.yaml` names only its own set
-    must still be able to manage its past runs. `backend` lets `check` ask the
-    server which models it has; without one it checks the configuration alone
-    and says so.
-
-    `can_start_reviews` is False in agent-pack mode, where `/review` is
-    refused. Every verb here still works there - they act on reviews already on
-    this machine - but telling someone with no reviews yet to "start one with
-    `/review`" would send them to the one command that mode will not run.
+    `readiness_for` is an async zero-argument callable returning
+    `bedrock.litreview.readiness.review_readiness`'s checks, which only `check`
+    needs. Listing, verifying and forgetting want `db_path` and nothing about
+    models, and a site whose `models.yaml` names only its own set must still be
+    able to manage its past runs - so `check` loads its own settings, and a
+    broken configuration is something it reports rather than something that
+    stops the other verbs.
     """
     from bedrock.litreview.config import ConfigError
 
@@ -545,7 +553,7 @@ async def run_reviews_command(
         return
 
     if text.casefold() in {"check", "doctor"}:
-        await _check(full_settings_for or settings_for, backend, notify)
+        await _check(readiness_for, notify)
         return
 
     try:
@@ -576,14 +584,12 @@ async def run_reviews_command(
         await notify(safe_line(exc, limit=400), "error")
         return
     if not rows:
-        start = (
-            "Start one with `/review <question> --corpus <file.jsonl>`."
-            if can_start_reviews
-            else "Starting one needs the default mode (`bedrock` without "
-                 "`BEDROCK_BACKEND=agentpack`) or a shell: "
-                 "`bedrock-litreview ask \"<question>\" --corpus <file.jsonl>`."
+        await notify(
+            "No literature reviews on this machine yet. Start one with "
+            "`/review <question> --corpus <file.jsonl>` (papers from a file), or "
+            "`/review <question> --search` (a live search of Europe PMC and PubMed).",
+            "info",
         )
-        await notify(f"No literature reviews on this machine yet. {start}", "info")
         return
 
     lines = [
@@ -780,45 +786,35 @@ def _verify_runs(
 # ---------------------------------------------------------------------------
 
 
-async def _check(settings_for, backend, notify: Notify) -> None:
-    """`/reviews check`: the same checks `/review` runs before starting, all of
-    them, without starting anything.
+async def _check(readiness_for, notify: Notify) -> None:
+    """`/reviews check`: whether a review could start, without starting one.
 
-    Worth having in the app as well as the shell, because the person who hits
-    "a review needs a context window of at least 12,288 tokens" is in the app
-    when they hit it, and the rest of what is wrong with the machine is usually
-    worth knowing at the same time.
+    The same implementation `bedrock-litreview doctor` prints
+    (`litreview/readiness.py`), so the two cannot disagree. Worth having in the
+    app as well as the shell, because the person who hits "a review needs a
+    context window of at least 12,288 tokens" is in the app when they hit it,
+    and the rest of what is wrong with the machine is worth knowing at the same
+    time.
     """
-    from bedrock.litreview.config import ConfigError
-    from bedrock.litreview.service import findings
+    from bedrock.litreview.readiness import operational
 
+    if readiness_for is None:
+        await notify("/reviews check: not available here. `bedrock-litreview doctor` runs the same check "
+                     "from a shell.", "error")
+        return
     try:
-        settings = await asyncio.to_thread(settings_for)
-    except ConfigError as exc:
-        # An unknown model set, a typo in [litreview], or a model server that is
-        # not on the local network: each stops every review, and each is exactly
-        # what this was run to find.
-        await notify(f"**Literature review setup**\n\n- FAIL {safe_line(exc, limit=600)}", "error")
+        checks = await readiness_for()
+    except Exception as exc:  # noqa: BLE001 - a check that crashes is a finding, not a crash of the app
+        await notify(f"**Literature review setup**\n\n- **FAIL** — the check itself failed: "
+                     f"{safe_line(exc, limit=400)}", "error")
         return
 
-    try:
-        found = await findings(settings, backend)
-    except (ConfigError, OSError) as exc:
-        await notify(safe_line(exc, limit=600), "error")
-        return
-
-    marks = {True: "ok", False: "**warn**"}
+    marks = {True: "ok", False: "**FAIL**", None: "note"}
     lines = ["**Literature review setup**", ""]
-    for finding in found:
-        mark = "**FAIL**" if finding.blocking else marks[finding.ok]
-        lines.append(f"- {mark} — {markdown_text(finding.title)}: {safe_line(finding.detail, limit=500)}")
-    if backend is None:
-        lines += ["", "The model server was not checked: this app has no connection to one. "
-                      "`bedrock-litreview doctor` checks it from a shell."]
-
-    blocking = [f for f in found if f.blocking]
-    lines += ["", f"{len(blocking)} thing(s) would stop a review." if blocking else "A review can run."]
-    await notify("\n".join(lines), "error" if blocking else "info")
+    lines += [f"- {marks[c.ok]} — {markdown_text(c.name)}: {safe_line(c.detail, limit=500)}" for c in checks]
+    ready = operational(checks)
+    lines += ["", "A review can run." if ready else "A review cannot run yet; fix the FAIL lines above."]
+    await notify("\n".join(lines), "info" if ready else "error")
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -72,7 +71,7 @@ from bedrock.ui.fold_command import (
 )
 from bedrock.ui.local_commands import LocalCommandsMixin
 from bedrock.ui.prompt_queue import PromptQueuePanel
-from bedrock.ui.review_command import REVIEW_STALE_INSTALL, parse_review_command, run_review_job
+from bedrock.ui.review_mixin import ReviewCommandsMixin
 from bedrock.ui.rendering import markdown_text
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.widgets import (
@@ -105,7 +104,7 @@ def format_when(when: datetime) -> str:
     return f"{local:%Y-%m-%d %H:%M}"
 
 
-class BedrockApp(LocalCommandsMixin, App[None]):
+class BedrockApp(ReviewCommandsMixin, LocalCommandsMixin, App[None]):
     TITLE = "Bedrock Private AI"
     CSS_PATH = "ui/styles.tcss"
     LOCAL_DIGEST_USES_MODEL = True
@@ -144,16 +143,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # on scientific tool settings; tests pass a fake.
         self._biotech_workflow = biotech_workflow
         self._scientific_job_running = False
-        # One literature review at a time, independent of a running fold: they
-        # use different machines. The event is how `/review stop` and quitting
-        # reach a run that is already inside the pipeline's worker thread.
-        self._review_running = False
-        self._review_cancel = threading.Event()
-        # The status bar's live position for a running review, and the timer
-        # that redraws it once a second. See `_review_tick`.
-        self._review_started: float | None = None
-        self._review_position: tuple[str, int, int, str] | None = None
-        self._review_clock = None
+        self._init_review_commands()
         self._title_worker_running = False
         self._titles_pending = False
         self._title_failures: set[str] = set()
@@ -377,128 +367,16 @@ class BedrockApp(LocalCommandsMixin, App[None]):
 
     # ---- Literature review -------------------------------------------------
     #
-    # A review is hundreds of model calls to the same server the employee is
-    # chatting with, so every one of them goes in at ``USER_JOB``: behind the
-    # chat, ahead of background work. One review at a time, independent of a
-    # fold, and Esc leaves it alone - it stops a streaming reply, not a job.
-    # Its notices are not saved into any conversation; the run is recorded in
-    # litreview's own database, and ``/reviews`` finds it.
+    # `/review` itself is `bedrock.ui.review_mixin`, shared with agent-pack
+    # mode. Here the review's endpoint is usually the chat's own, and then it
+    # shares the chat's scheduler: its calls queue behind the employee's.
 
-    async def start_review(self, args: str) -> None:
-        """Validate the arguments here, so a typo never starts a long job."""
-        try:
-            command = parse_review_command(args)
-        except CommandUsageError as exc:
-            await self.post_notice(str(exc), kind="error")
-            return
-        except ImportError as exc:
-            # The review pipeline is imported lazily (see below), so a virtual
-            # environment left behind by an older checkout - one without
-            # pydantic, lxml, PyYAML or rapidfuzz - fails here, on the first
-            # `/review` rather than at start-up. Raw, that is a traceback over
-            # the whole screen for something a reinstall fixes.
-            await self.post_notice(REVIEW_STALE_INSTALL.format(detail=markdown_text(str(exc))), kind="error")
-            return
-        if command.stop:
-            await self.stop_review()
-            return
-        if self._review_running:
-            await self.post_notice(
-                "A literature review is already running. `/review stop` stops it.", kind="error"
-            )
-            return
-        # Imported here, not at the top: the pipeline pulls in pydantic and the
-        # whole of sources/ and stages/, which is 115 ms of start-up for a
-        # feature most sessions never use. See ui/review_command.py.
-        try:
-            from bedrock.litreview.config import ConfigError as LitReviewConfigError
-        except ImportError as exc:  # as above
-            await self.post_notice(REVIEW_STALE_INSTALL.format(detail=markdown_text(str(exc))), kind="error")
-            return
-
-        try:
-            settings = await asyncio.to_thread(self._review_settings, command.request.model_set)
-        except LitReviewConfigError as exc:
-            await self.post_notice(markdown_text(str(exc)), kind="error")
-            return
-        self._review_running = True
-        self._review_cancel = threading.Event()
-        self.literature_review(command.request, settings)
-
-    async def stop_review(self) -> None:
-        if not self._review_running:
-            await self.post_notice("No literature review is running.", kind="error")
-            return
-        self._review_cancel.set()
-        await self.post_notice(
-            "Stopping the literature review before its next model call. "
-            "It can be resumed with `/review --resume <run-id>`."
+    def shared_review_scheduler(self, review_settings):
+        same_server = (
+            review_settings.base_url.rstrip("/") == self.settings.api_base.rstrip("/")
+            and (review_settings.api_key or None) == (self.settings.api_key or None)
         )
-
-    def _review_settings(self, model_set: str | None):
-        """litreview's settings, read off the UI thread (they touch disk)."""
-        from bedrock.litreview.config import load_settings as load_review_settings
-
-        return load_review_settings(self.settings, model_set=model_set)
-
-    def _review_tick(self, stage: str, done: int, total: int, detail: str = "") -> None:
-        """Called (on the UI thread) as each item of a stage finishes.
-
-        Draws straight away so a new count is never up to a second stale, and
-        `_tick_review_clock` keeps redrawing on a timer so the elapsed time
-        goes on moving *between* ticks. Both halves matter: a single extraction
-        call can take minutes, and a counter frozen for minutes looks exactly
-        like a hung process, which is what this exists to rule out.
-        """
-        self._review_position = (stage, done, total, detail)
-        self._tick_review_clock()
-
-    def _tick_review_clock(self) -> None:
-        from bedrock.litreview.progress import format_tick
-
-        if self._review_started is None or self._review_position is None:
-            return
-        stage, done, total, detail = self._review_position
-        elapsed = time.monotonic() - self._review_started
-        self.query_one(StatusBar).review_progress = format_tick(stage, done, total, detail, elapsed)
-
-    def _clear_review_progress(self) -> None:
-        self._review_started = None
-        self._review_position = None
-        if self._review_clock is not None:
-            self._review_clock.stop()
-            self._review_clock = None
-        try:
-            self.query_one(StatusBar).review_progress = None
-        except Exception:  # noqa: BLE001 - the app may be shutting down
-            pass
-
-    # Not exclusive: the flag above is what keeps it to one review, and an
-    # exclusive worker would cancel a long run if that ever failed.
-    @work(group="litreview")
-    async def literature_review(self, request, settings) -> None:
-        self._review_started = time.monotonic()
-        self._review_position = ("starting", 0, 0, "")
-        self._review_clock = self.set_interval(1.0, self._tick_review_clock)
-        # Drawn once here as well: the first stage that ticks may be minutes
-        # away (papers are collected and gated first), and the bar should say
-        # a review is running from the moment one is.
-        self._tick_review_clock()
-        try:
-            await run_review_job(
-                request,
-                settings=settings,
-                scheduler=self.scheduler,
-                cancel=self._review_cancel,
-                notify=self.post_notice,
-                tick=lambda *a: self.call_from_thread(self._review_tick, *a),
-                progress=lambda message: self.call_from_thread(self.notify, message),
-            )
-        finally:
-            self._review_running = False
-            # However the run ended - finished, stopped, or failed - the bar
-            # must not keep showing a position that is no longer moving.
-            self._clear_review_progress()
+        return self.scheduler if same_server else None
 
     @property
     def biotech_workflow(self) -> ProteinWorkflow:
@@ -1524,7 +1402,7 @@ class BedrockApp(LocalCommandsMixin, App[None]):
         # Before the backend closes: a review waiting on a model call should
         # read the event and stop where it is, so the run stays resumable,
         # rather than seeing the connection disappear underneath it.
-        self._review_cancel.set()
+        await self.close_review_commands()
         await self.backend.close()
         self.exit()
 

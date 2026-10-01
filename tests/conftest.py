@@ -25,6 +25,7 @@ from bedrock.biotech import ProteinWorkflowResult, ToolStatus
 from bedrock.biotech.confidence import ConfidenceReport, PaeOverview
 from bedrock.config import PROFILES, Settings
 from bedrock.inference import InferenceError, ModelInfo, RequestOptions, Usage, tokens
+from bedrock.config import settings as bedrock_config_settings
 from bedrock.litreview import config as litreview_config
 from bedrock.provenance import HistoryStore, RunCatalog, RunError
 from bedrock.storage import ConversationStore
@@ -207,6 +208,18 @@ def no_automatic_retraction_checks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_live_review_check(monkeypatch):
+    """The first-run banner asks a reachable server whether a literature review
+    can run (`bedrock.doctor.review_notes`). Tests stub `_reachable`, and must
+    not then reach a real model server on the developer's machine; the check
+    itself is tested against the in-process agent server
+    (tests/server/test_agentpack_review.py)."""
+    from bedrock import doctor
+
+    monkeypatch.setattr(doctor, "review_notes", lambda settings: [])
+
+
+@pytest.fixture(autouse=True)
 def fresh_token_estimate():
     """Forget any characters-per-token ratio a previous test taught ``tokens``."""
     tokens.reset()
@@ -262,6 +275,10 @@ def private_bedrock_directories(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Settings, "__init__", redirected_init)
     monkeypatch.setenv("BEDROCK_ACTION_HISTORY_DIR", defaults["action_history_dir"])
+    # Also the default `load_settings` falls back to, for a test that clears
+    # every BEDROCK_* variable (several do) and then runs a review, which
+    # records itself in local history.
+    monkeypatch.setattr(bedrock_config_settings, "DEFAULT_ACTION_HISTORY_DIR", Path(defaults["action_history_dir"]))
 
     monkeypatch.setattr(litreview_config, "DEFAULT_DATA_DIR", root / "litreview")
     monkeypatch.setattr(litreview_config, "DEFAULT_CONFIG_DIR", root / "litreview-config")

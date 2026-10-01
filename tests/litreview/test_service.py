@@ -11,6 +11,7 @@ bridge added in this change is transport and nothing else.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from typing import AsyncIterator, Callable
 
@@ -21,9 +22,13 @@ from bedrock.inference import InferenceError, ModelInfo, RequestOptions, Schedul
 from bedrock.litreview import service
 from bedrock.litreview.config import ConfigError, load_settings
 from bedrock.litreview.db import Database
+from bedrock.litreview.journal import ReviewNotRecorded
 from bedrock.litreview.llm.scheduled import ModelServerUnavailable
 from bedrock.litreview.runner import answer_question
 from bedrock.litreview.service import ReviewRequest, preflight, run_review
+from bedrock.litreview.sources.literature import LiteratureSearcher, SearchFailed
+from bedrock.litreview.stages.s1_collect import NoPapers
+from tests.conftest import FakeHistoryStore
 from tests.litreview.fixtures import QUESTION, corpus, fake_client, responder
 
 MODEL = "one-model"
@@ -100,7 +105,7 @@ def review(question=QUESTION, **kwargs) -> ReviewRequest:
     return ReviewRequest(question=question, **kwargs)
 
 
-async def go(request, settings, backend, cancel=None, progress=None):
+async def go(request, settings, backend, cancel=None, progress=None, history=None, actor_id=""):
     scheduler = Scheduler(backend, PROFILES["workstation"])
     return await run_review(
         request,
@@ -108,6 +113,8 @@ async def go(request, settings, backend, cancel=None, progress=None):
         scheduler=scheduler,
         progress=progress or (lambda msg: None),
         cancel=cancel or threading.Event(),
+        history=history,
+        actor_id=actor_id,
     )
 
 
@@ -146,57 +153,60 @@ async def test_preflight_passes_when_the_machine_can_run_a_review(settings):
     await preflight(settings, ScriptedBackend())
 
 
-async def test_preflight_returns_advisories_rather_than_refusing_over_them(settings):
-    """A short timeout is worth saying and must not stop a run: the review
-    survives it by stopping between calls and resuming."""
+async def test_a_short_timeout_is_a_warning_and_never_a_refusal(settings):
+    """A review that hits it stops between calls and resumes with `--resume`,
+    so a short `request_timeout` costs time, not the run: `preflight` still
+    passes, and the advice is a separate, non-blocking finding."""
     settings.request_timeout = 120.0
-    advisories = await preflight(settings, ScriptedBackend())
-    assert [f.title for f in advisories] == ["request timeout"]
-    assert not any(f.blocking for f in advisories)
-    assert "request_timeout = 600" in advisories[0].detail
+    await preflight(settings, ScriptedBackend())  # must not raise
+
+    by_title = {f.title: f for f in service.config_findings(settings)}
+    assert not by_title["request timeout"].ok
+    assert "request_timeout = 600" in by_title["request timeout"].detail
 
 
-async def test_a_front_end_that_raised_its_own_timeout_is_not_warned_about_it(settings):
-    """`bedrock-litreview` and the HTTP API build their own backend through
-    `standalone_scheduler`, which floors the timeout at 600. Warning them about
-    the configured 120 would be telling them to fix something already fixed —
-    while `/review` in the app, which shares the chat's backend, does need it."""
+async def test_a_review_that_raised_its_own_timeout_is_not_warned_about_it(settings):
+    """The shell, the HTTP API and agent-pack mode open their own connection,
+    which `review_backend` raises to 600. Warning them about the configured 120
+    would be telling them to fix something already fixed - while a default-mode
+    review that shares the chat's connection genuinely needs it."""
     settings.request_timeout = 120.0
-    assert await preflight(settings, ScriptedBackend(), timeout_floor_applied=True) == []
+    timeout = {f.title: f for f in service.config_findings(settings, timeout_floor_applied=True)}["request timeout"]
+    assert timeout.ok
+    assert "raised to 600s" in timeout.detail
+    # ...and it still says the shared connection needs the config change, because that is true.
+    assert "request_timeout = 600" in timeout.detail
 
-    floored = [f for f in service.config_findings(settings, timeout_floor_applied=True)
-               if f.title == "request timeout"]
-    assert floored[0].ok
-    assert "raised to 600s for this process" in floored[0].detail
-    # ...and it still says the app needs the config change, because that is true.
-    assert "request_timeout = 600" in floored[0].detail
+
+async def test_run_review_passes_the_advice_to_warn_and_never_to_progress(settings, tmp_path):
+    """The advice reaches the caller's `warn`, not its progress lines (which
+    become toasts in the app), and a review that is warned still runs."""
+    settings.request_timeout = 120.0
+    warned: list[str] = []
+    said: list[str] = []
+    scheduler = Scheduler(ScriptedBackend(), PROFILES["workstation"])
+    result = await run_review(
+        review(papers=corpus()), settings=settings, scheduler=scheduler,
+        progress=said.append, cancel=threading.Event(), warn=warned.append,
+    )
+    assert result.report_id, "a warning must not stop the run"
+    assert any("request_timeout = 600" in w for w in warned), warned
+    assert not any("request_timeout" in m for m in said)
+
+
+async def test_no_warn_callback_means_the_advice_is_simply_skipped(settings, tmp_path):
+    settings.request_timeout = 120.0
+    scheduler = Scheduler(ScriptedBackend(), PROFILES["workstation"])
+    result = await run_review(
+        review(papers=corpus()), settings=settings, scheduler=scheduler,
+        progress=lambda m: None, cancel=threading.Event(),
+    )
+    assert result.report_id
 
 
 # ---------------------------------------------------------------------------
-# findings: what `doctor` and `/reviews check` report
+# advice that sits beside preflight: what `doctor` and `/reviews check` add
 # ---------------------------------------------------------------------------
-
-
-async def test_findings_report_everything_not_just_the_first_problem(settings):
-    """`preflight` stops a run at the first blocker; a person fixing a machine
-    wants the whole list, or setting it up is one error per attempt."""
-    settings.context_window = 8192
-    settings.request_timeout = 120.0
-    found = await service.findings(settings, ScriptedBackend(models=["something-else"]))
-
-    by_title = {f.title: f for f in found}
-    assert by_title["context window"].blocking
-    assert by_title["models"].blocking
-    assert not by_title["request timeout"].ok and not by_title["request timeout"].blocking
-    assert by_title["model server"].ok  # reachable, just without the right model
-    assert "free disk" in by_title
-
-
-async def test_findings_without_a_server_still_check_the_configuration(settings):
-    """The normal state of a machine on the day somebody installs this."""
-    found = await service.findings(settings, None)
-    assert [f.title for f in found] == ["context window", "request timeout", "free disk"]
-    assert all(not f.blocking for f in found)
 
 
 async def test_a_missing_model_names_the_override_file_and_what_the_server_has(settings):
@@ -211,18 +221,19 @@ async def test_a_missing_model_names_the_override_file_and_what_the_server_has(s
 
 
 async def test_a_nearly_full_disk_is_a_warning_not_a_refusal(settings, monkeypatch):
-    """Item 21: a review keeps a model resident for hours, and on a 16 GB
-    machine that has filled a disk through swap. Still a warning — the disk this
-    check looks at is not what a review itself fills."""
+    """A review keeps a model resident for hours, and on a 16 GB machine that
+    has filled a disk through swap (OPEN_ISSUES, "A 16 GB laptop is not a review
+    machine"). Still only a warning: the disk this check looks at is not what a
+    review itself fills, so `preflight` must not refuse over it."""
     import shutil
 
     monkeypatch.setattr(
         shutil, "disk_usage", lambda _p: type("U", (), {"free": 2 * 1024**3, "total": 0, "used": 0})
     )
     disk = [f for f in service.config_findings(settings) if f.title == "free disk"][0]
-    assert not disk.ok and not disk.blocking
+    assert not disk.ok
     assert "2.0 GB free" in disk.detail
-    assert await preflight(settings, ScriptedBackend()), "a warning, so the run still starts"
+    await preflight(settings, ScriptedBackend())  # a warning, so the run is still allowed to start
 
 
 def test_a_company_server_name_is_explained_rather_than_assumed_obvious(settings):
@@ -420,3 +431,315 @@ def _corpus_file(tmp_path):
 def _last_run_id(db) -> str | None:
     rows = db.conn.execute("SELECT id FROM runs ORDER BY rowid DESC LIMIT 1").fetchall()
     return rows[0][0] if rows else None
+
+
+# ---------------------------------------------------------------------------
+# run_review: recording the run in local history (finding 14)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_successful_run_writes_intent_then_succeeded_with_the_run_id(settings, tmp_path):
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "journalled.sqlite3"
+
+    result = await go(review(papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert {r["operation_id"] for r in rows} == {rows[0]["operation_id"]}  # one operation
+    assert all(r["actor_id"] == "alice" for r in rows)
+    assert rows[-1]["details"]["run_id"] == result.run.id
+    assert rows[0]["subject_id"] is None  # not a resume
+
+
+async def test_a_resumed_runs_intent_names_the_run_it_is_resuming(settings, tmp_path):
+    settings.db_path = tmp_path / "resume-journal.sqlite3"
+    with pytest.raises(ModelServerUnavailable):
+        await go(review(papers=corpus()), settings, ScriptedBackend(fail_after=2))
+    run_id = _last_run_id(Database(settings.db_path))
+
+    history = FakeHistoryStore()
+    await go(review(resume=run_id, papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert rows[0]["subject_id"] == run_id
+
+
+async def test_a_failing_run_writes_failed_with_a_bounded_error_code(settings):
+    """No corpus, no search, no resume, no posted papers: `NoPapers`, cheaply
+    and deterministically, without needing a model call at all."""
+    history = FakeHistoryStore()
+
+    with pytest.raises(NoPapers):
+        await go(review(use_model=False), settings, ScriptedBackend(models=[]), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "failed"]
+    assert rows[-1]["details"]["error_code"] == "no_papers"
+
+
+async def test_an_interrupted_run_writes_cancelled(settings, tmp_path):
+    settings.db_path = tmp_path / "cancelled-journal.sqlite3"
+    history = FakeHistoryStore()
+
+    with pytest.raises(ModelServerUnavailable):
+        await go(review(papers=corpus()), settings, ScriptedBackend(fail_after=2), history=history, actor_id="alice")
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "cancelled"]
+
+
+async def test_history_none_runs_exactly_as_before(settings, tmp_path):
+    """The default, and what every caller that predates this change gets."""
+    settings.db_path = tmp_path / "unjournalled.sqlite3"
+    result = await go(review(papers=corpus()), settings, ScriptedBackend())  # history=None
+    assert result.report_id
+
+
+async def test_an_intent_write_failure_stops_the_run_before_the_pipeline_runs(settings, tmp_path):
+    """The one case local history is allowed to stop the employee: if the
+    intent will not commit, the review must not run at all."""
+    history = FakeHistoryStore(fail_states={"intent"})
+    backend = ScriptedBackend()
+
+    with pytest.raises(ReviewNotRecorded):
+        await go(review(corpus=_corpus_file(tmp_path)), settings, backend, history=history, actor_id="alice")
+
+    assert backend.calls == [], "the pipeline must never have made a model call"
+    assert history.rows == [], "a failed intent write must leave nothing recorded"
+
+
+async def test_an_outcome_write_failure_keeps_the_result_and_reports_the_gap(settings, tmp_path):
+    """The report is written to disk either way. Re-running the pipeline to
+    tidy the journal would trade a correct result for a neat record."""
+    history = FakeHistoryStore(fail_states={"succeeded"})
+    seen: list[str] = []
+    settings.db_path = tmp_path / "gap.sqlite3"
+
+    result = await go(
+        review(papers=corpus()), settings, ScriptedBackend(),
+        history=history, actor_id="alice", progress=seen.append,
+    )
+
+    assert result.report_id  # the review is not re-run
+    assert history.states("litreview.review") == ["intent"]  # the outcome write failed
+    assert any("Local history has a gap" in m for m in seen)
+    assert any("result itself stands" in m for m in seen)
+
+
+async def test_a_failed_runs_search_declarations_are_failed_too(settings, tmp_path, monkeypatch):
+    """A `litreview.search` event says "authorised and began to contact this
+    host" - so when the run that authorisation belonged to fails, the search
+    event's own outcome must say so too, with the same error code, not sit
+    forever as an unconfirmed intent for a run everyone already knows failed."""
+
+    def boom(self, req):
+        raise SearchFailed("every source failed")
+
+    monkeypatch.setattr(LiteratureSearcher, "search", boom)
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "failed-search.sqlite3"
+
+    with pytest.raises(SearchFailed):
+        await go(review(search=True), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    assert history.states("litreview.review") == ["intent", "failed"]
+    assert history.states("litreview.search") == ["intent", "failed"]
+    review_code = [r for r in history.rows if r["action"] == "litreview.review"][-1]["details"]["error_code"]
+    search_code = [r for r in history.rows if r["action"] == "litreview.search"][-1]["details"]["error_code"]
+    assert review_code == search_code == "search_failed"
+
+
+async def test_litreview_search_is_recorded_for_a_search_run(settings, tmp_path, monkeypatch):
+    monkeypatch.setattr(LiteratureSearcher, "search", lambda self, req: corpus())
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "search-journal.sqlite3"
+
+    result = await go(review(search=True), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    assert result.report_id
+    rows = [r for r in history.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"]["source_kind"] == "literature_search" for r in rows)
+
+
+async def test_litreview_search_is_recorded_for_an_automatic_retraction_check(settings, tmp_path, monkeypatch):
+    """`tests/conftest.py` turns the automatic check off for the whole suite
+    (see its `no_automatic_retraction_checks` fixture); this test turns it
+    back on deliberately, with a fake check that never touches the network."""
+    monkeypatch.setattr(service, "auto_integrity_check", lambda s: (lambda db, papers, *, now, ttl: {}))
+    history = FakeHistoryStore()
+    settings.db_path = tmp_path / "integrity-journal.sqlite3"
+
+    result = await go(review(papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    assert result.report_id
+    rows = [r for r in history.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"]["source_kind"] == "retraction_check" for r in rows)
+
+
+async def test_no_litreview_search_for_a_corpus_only_run_with_manual_integrity(settings, tmp_path):
+    """The automatic check is already off for the whole suite (see the fixture
+    above), matching `integrity_checks = "manual"`: a corpus file contacts
+    nothing, so this run must write no `litreview.search` event at all."""
+    history = FakeHistoryStore()
+
+    result = await go(
+        review(corpus=_corpus_file(tmp_path)), settings, ScriptedBackend(),
+        history=history, actor_id="alice",
+    )
+
+    assert result.report_id
+    assert [r for r in history.rows if r["action"] == "litreview.search"] == []
+
+
+async def test_the_question_text_is_never_recorded(settings, tmp_path):
+    """The privacy promise `/audit` makes: metadata only. `run_id` is the join
+    back to litreview's own database, which already holds the question."""
+    history = FakeHistoryStore()
+    # Keeps "psoriasis" so the entity-extraction guard still accepts it, and
+    # adds a unique marker to search for in the recorded rows.
+    question = f"{QUESTION} xyzzy19260928"
+    settings.db_path = tmp_path / "no-question-text.sqlite3"
+
+    await go(review(question=question, papers=corpus()), settings, ScriptedBackend(), history=history, actor_id="alice")
+
+    dumped = json.dumps(history.rows)
+    assert question not in dumped
+    assert "xyzzy19260928" not in dumped
+
+
+# ---------------------------------------------------------------------------
+# run_review: the target-proposal deck's figures (`ReviewRequest.deck`)
+# ---------------------------------------------------------------------------
+
+
+def _asset(fig_id: str, *, path: str | None = None):
+    from bedrock.litreview.report.deck_model import FigureAsset
+
+    return FigureAsset(
+        paper_id="PMC100", pmcid="PMC100", fig_id=fig_id, label="Figure 2", caption="Food intake",
+        href=f"g{fig_id}", licence="CC BY 4.0", evidence_ids=["E1"], path=path,
+    )
+
+
+@pytest.fixture()
+def deck_steps(monkeypatch, tmp_path):
+    """Replaces the two things the deck step reaches for - which figures a
+    report may show, and their download - and records what each was asked."""
+    from bedrock.litreview.sources import figures as figure_files
+
+    seen = {"chosen": 0, "downloads": []}
+    image = tmp_path / "g1.jpg"
+    image.write_bytes(b"\xff\xd8\xff-picture")
+
+    def choose(report, papers):
+        seen["chosen"] += 1
+        return [_asset("F1"), _asset("F2")]
+
+    def download(figures, cache_dir, *, http=None, cancel=None):
+        seen["downloads"].append(cache_dir)
+        return [f if f.fig_id != "F1" else _asset("F1", path=str(image)) for f in figures]
+
+    monkeypatch.setattr(service, "choose_figures", choose)
+    monkeypatch.setattr(figure_files, "download_figures", download)
+    seen["image"] = image
+    return seen
+
+
+async def test_a_review_without_the_deck_writes_no_figure_manifest_and_chooses_nothing(settings, deck_steps):
+    result = await go(review(papers=corpus(), search=True, use_model=False), settings, ScriptedBackend())
+
+    assert service.deck_figures(settings, result.run.id) == []
+    db = Database(settings.db_path)
+    assert db.get_artifact(result.run.id, service.FIGURES_ARTIFACT) is None
+    assert deck_steps["chosen"] == 0 and deck_steps["downloads"] == []
+
+
+async def test_the_deck_without_a_search_writes_the_manifest_with_no_paths_and_asks_for_nothing(
+    settings, deck_steps, monkeypatch,
+):
+    import httpx
+
+    def no_network(self, *a, **k):
+        raise AssertionError("no request may be made without a search")
+
+    monkeypatch.setattr(httpx.Client, "send", no_network)
+
+    result = await go(review(papers=corpus(), deck=True, use_model=False), settings, ScriptedBackend())
+
+    figures = service.deck_figures(settings, result.run.id)
+    assert [f.fig_id for f in figures] == ["F1", "F2"]
+    assert [f.path for f in figures] == [None, None]
+    assert deck_steps["downloads"] == []
+
+
+async def test_the_deck_with_a_search_downloads_and_the_manifest_reads_back(settings, deck_steps):
+    messages: list[str] = []
+
+    result = await go(
+        review(papers=corpus(), search=True, deck=True, use_model=False), settings, ScriptedBackend(),
+        progress=messages.append,
+    )
+
+    assert "Fetching figures for the PowerPoint..." in messages
+    assert deck_steps["downloads"] == [settings.data_dir / "figures"]
+    figures = service.deck_figures(settings, result.run.id)
+    assert [(f.fig_id, f.path) for f in figures] == [("F1", str(deck_steps["image"])), ("F2", None)]
+    assert figures[0].licence == "CC BY 4.0" and figures[0].evidence_ids == ["E1"]
+
+    # The cache can be cleared between the review and the download of its deck:
+    # a path that is no longer a file is never handed to the renderer.
+    deck_steps["image"].unlink()
+    assert [f.path for f in service.deck_figures(settings, result.run.id)] == [None, None]
+
+
+async def test_a_resumed_run_with_the_deck_gets_its_manifest(settings, deck_steps):
+    first = await go(review(papers=corpus(), use_model=False), settings, ScriptedBackend())
+    assert service.deck_figures(settings, first.run.id) == []
+
+    resumed = await go(
+        review(papers=corpus(), resume=first.run.id, deck=True, use_model=False), settings, ScriptedBackend()
+    )
+
+    assert resumed.run.id == first.run.id
+    assert len(service.deck_figures(settings, first.run.id)) == 2
+
+
+async def test_a_figure_step_that_fails_never_fails_the_review(settings, monkeypatch):
+    messages: list[str] = []
+
+    def broken(report, papers):
+        raise RuntimeError("a paper nobody could parse")
+
+    monkeypatch.setattr(service, "choose_figures", broken)
+
+    result = await go(
+        review(papers=corpus(), deck=True, use_model=False), settings, ScriptedBackend(), progress=messages.append
+    )
+
+    assert result.report_id
+    assert service.deck_figures(settings, result.run.id) == []
+    assert any("figures could not be prepared" in m for m in messages)
+
+
+async def test_a_run_with_no_manifest_reads_back_as_no_figures(settings):
+    assert service.deck_figures(settings, "no-such-run") == []
+
+
+async def test_the_figure_download_is_recorded_only_when_the_deck_and_a_search_are_both_on(settings, deck_steps):
+    both, deck_only, search_only = FakeHistoryStore(), FakeHistoryStore(), FakeHistoryStore()
+
+    await go(review(papers=corpus(), search=True, deck=True, use_model=False), settings, ScriptedBackend(),
+             history=both, actor_id="alice")
+    await go(review(papers=corpus(), deck=True, use_model=False), settings, ScriptedBackend(),
+             history=deck_only, actor_id="alice")
+    await go(review(papers=corpus(), search=True, use_model=False), settings, ScriptedBackend(),
+             history=search_only, actor_id="alice")
+
+    rows = [r for r in both.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"] == {"source_kind": "figure_download", "actor_source": "config"} for r in rows)
+    assert [r for r in deck_only.rows if r["action"] == "litreview.search"] == []
+    assert [r for r in search_only.rows if r["action"] == "litreview.search"] == []

@@ -179,3 +179,67 @@ def test_other_common_short_words_near_names_are_safe():
     for word, term in [("well", "Will"), ("man", "Max"), ("name", "Dane"), ("class", "Clara")]:
         texts, _ = correct_texts([f"the {word} was there"], term)
         assert word in texts[0], f"{word} was corrupted into {term}"
+
+
+def test_a_word_is_not_replaced_by_a_term_that_is_merely_its_inflection():
+    """Harvested vocabulary is full of capitalised ordinary words — "Weekly"
+    from every meeting title — and "week" is not a mis-hearing of it."""
+    from bedrock.meetings.vocabulary import _match, correct_texts
+
+    assert _match("week", ["Weekly"], sentence_initial=False) is None
+    assert _match("cohorts", ["cohort"], sentence_initial=False) is None
+    assert _match("Kras", ["KRAS"], sentence_initial=False) is None
+    lines, report = correct_texts(["See you next week.", "the cohorts were enrolled"], "Weekly, cohort")
+    assert lines == ["See you next week.", "the cohorts were enrolled"]
+    assert report.corrections == []
+
+
+def test_the_harvester_leaves_calendar_words_alone():
+    from bedrock.server.meetings.vocabulary_source import harvest
+
+    texts = ["KRAS research Weekly", "KRAS Weekly notes", "the Weekly sync on KRAS G12D"]
+    terms = [term for term, _ in harvest(texts, minimum=2)]
+    assert "KRAS" in terms
+    assert "Weekly" not in terms
+
+
+def test_a_tiny_acronym_steers_the_decoder_but_is_never_a_repair_target():
+    """With a domain pack loaded, half the names in a meeting are one edit
+    from some three-letter acronym: "Sam" from "SAD", "Pam" from "PAD"."""
+    from bedrock.meetings.vocabulary import _match, correct_texts
+
+    terms = ["SAD", "MAD", "PAD", "IL-6", "IL-17", "dupilumab"]
+    assert _match("Sam", terms, sentence_initial=False) is None
+    assert _match("Pam", terms, sentence_initial=False) is None
+    assert _match("IL6", terms, sentence_initial=False) == "IL-6"  # digits: a real term shape
+    assert _match("dupilumob", terms, sentence_initial=False) == "dupilumab"
+    lines, _ = correct_texts(["Sam and Pam saw the IL17 data on dupilumob"], ", ".join(terms))
+    assert lines == ["Sam and Pam saw the IL-17 data on dupilumab"]
+
+
+def test_an_ordinary_word_gets_one_edit_however_long_the_term():
+    """"Action item" became "activin item" with a domain pack loaded: two
+    edits of latitude on a seven-letter term reached an everyday word."""
+    from bedrock.meetings.vocabulary import _match, correct_texts
+
+    terms = ["activin", "dupilumab", "semaglutide", "myostatin"]
+    assert _match("action", terms, sentence_initial=False) is None
+    assert _match("Action", terms, sentence_initial=True) is None
+    assert _match("dupilumob", terms, sentence_initial=False) == "dupilumab"
+    assert _match("semaglutyde", terms, sentence_initial=False) == "semaglutide"
+    assert _match("MYOSTATEN", terms, sentence_initial=False) == "myostatin"  # name-shaped keeps its latitude
+    lines, report = correct_texts(["Action item for Ravi.", "the action items"], ", ".join(terms))
+    assert lines == ["Action item for Ravi.", "the action items"] and report.corrections == []
+
+
+def test_a_short_configured_name_is_still_repaired_but_an_acronym_is_not():
+    """"Raj" and "Amy" are why people type names into MEETING_VOCABULARY."""
+    from bedrock.meetings.vocabulary import _is_tiny_acronym, _match
+
+    assert _is_tiny_acronym("SAD") and _is_tiny_acronym("tau") and _is_tiny_acronym("MS")
+    assert not _is_tiny_acronym("Raj") and not _is_tiny_acronym("IL-6") and not _is_tiny_acronym("KRAS")
+    terms = ["Raj", "Amy", "SAD", "KRAS"]
+    assert _match("Raja", terms, sentence_initial=False) == "Raj"   # one edit: repaired
+    assert _match("Rash", terms, sentence_initial=False) is None    # two edits on a short name: left alone
+    assert _match("Ami", terms, sentence_initial=False) == "Amy"
+    assert _match("Sam", terms, sentence_initial=False) is None

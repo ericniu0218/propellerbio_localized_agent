@@ -1,0 +1,639 @@
+# Vocabulary pack: biotech — antibodies, peptides and siRNA for immunology &
+# inflammation, obesity and CNS disease. One term per line; "#" is a comment.
+# Order matters: whisper reads about 200 tokens of this as a decoder hint and
+# weights the start most, so the names it is most likely to misspell come
+# first. Every term, however far down, is used to repair near-misses.
+# Enable with MEETING_VOCABULARY_PACK=biotech; add your own with MEETING_VOCABULARY.
+
+# --- Targets: immunology & inflammation
+IL-17A
+IL-17
+IL-23
+IL-23p19
+IL-12
+IL-13
+IL-4
+IL-4Rα
+IL-5
+IL-6
+IL-6R
+IL-31
+IL-33
+IL-36
+IL-1β
+IL-2
+IL-10
+TNF-α
+TNF
+TSLP
+TYK2
+JAK1
+JAK2
+JAK3
+BTK
+OX40
+OX40L
+CD20
+CD19
+CD40
+CD40L
+CD3
+CD28
+CD38
+BAFF
+APRIL
+BLyS
+FcRn
+C5
+C5a
+IgE
+IgG1
+IgG4
+IgA
+TL1A
+ST2
+CCR4
+CXCR4
+S1P
+S1P1
+α4β7
+integrin
+PD-1
+PD-L1
+CTLA-4
+LAG-3
+TIGIT
+IFN-γ
+type I interferon
+NLRP3
+MASP-2
+KIT
+MRGPRX2
+Siglec-8
+OSMR
+TREM1
+
+# --- Targets: obesity & metabolic
+GLP-1
+GLP-1R
+GLP-1 receptor
+GIP
+GIPR
+glucagon
+GCGR
+amylin
+calcitonin
+PYY
+FGF21
+FGF21R
+β-Klotho
+leptin
+ghrelin
+MC4R
+POMC
+AgRP
+NPY
+activin
+ActRII
+ActRIIA
+ActRIIB
+myostatin
+GDF15
+GFRAL
+INHBE
+PCSK9
+ANGPTL3
+ANGPTL4
+Lp(a)
+apoC-III
+APOC3
+CETP
+DGAT2
+ACC
+SCD1
+FXR
+THR-β
+NASH
+MASH
+MASLD
+HbA1c
+DIO mice
+ob/ob mice
+db/db mice
+OGTT
+ITT
+DEXA
+lean mass
+fat mass
+energy expenditure
+
+# --- Targets: CNS
+tau
+p-tau
+p-tau217
+amyloid
+amyloid-β
+Aβ42
+Aβ40
+APP
+BACE1
+α-synuclein
+alpha-synuclein
+TDP-43
+SOD1
+C9orf72
+huntingtin
+HTT
+LRRK2
+GBA
+GBA1
+APOE
+APOE4
+TREM2
+CD33
+MAPT
+GRN
+progranulin
+NfL
+neurofilament
+GFAP
+BDNF
+TrkB
+NMDA
+AMPA
+GABA
+GABA-A
+mGluR5
+CGRP
+PACAP
+orexin
+OX1R
+OX2R
+5-HT2A
+M1 receptor
+M4 receptor
+KCNQ
+Nav1.7
+Nav1.8
+TRPV1
+P2X7
+CSF1R
+blood-brain barrier
+BBB
+transferrin receptor
+TfR1
+TfR
+transcytosis
+intrathecal
+ASO
+antisense
+
+# --- Modalities & engineering
+monoclonal antibody
+mAb
+bispecific
+biparatopic
+trispecific
+nanobody
+VHH
+scFv
+Fab
+Fc
+Fc silencing
+Fc-fused
+half-life extension
+YTE
+LALA
+afucosylated
+ADCC
+CDC
+ADC
+antibody-drug conjugate
+peptide
+cyclic peptide
+stapled peptide
+lipidated
+PEGylated
+PEGylation
+albumin binding
+siRNA
+GalNAc
+GalNAc-siRNA
+RNAi
+antisense oligonucleotide
+LNP
+lipid nanoparticle
+mRNA
+AAV
+gene therapy
+CAR-T
+biosimilar
+subcutaneous
+sub-Q
+once-weekly
+once-monthly
+oral peptide
+small molecule
+PROTAC
+degrader
+
+# --- Assays & data
+ELISA
+MSD
+SPR
+Biacore
+BLI
+Octet
+KD
+Kd
+IC50
+EC50
+Ki
+affinity
+avidity
+epitope
+paratope
+epitope binning
+flow cytometry
+FACS
+Western blot
+qPCR
+RNA-seq
+scRNA-seq
+single-cell
+proteomics
+immunohistochemistry
+IHC
+PBMC
+whole blood assay
+reporter assay
+neutralization assay
+cytokine release
+in vitro
+in vivo
+ex vivo
+PK
+PD
+PK/PD
+pharmacokinetics
+pharmacodynamics
+bioavailability
+half-life
+Cmax
+AUC
+Tmax
+clearance
+immunogenicity
+ADA
+anti-drug antibodies
+GLP tox
+tox study
+NHP
+cynomolgus
+cyno
+non-human primate
+humanized mouse
+knock-in
+knockout
+CRISPR
+EAE model
+DSS colitis
+imiquimod
+collagen-induced arthritis
+CIA model
+house dust mite
+HDM model
+DIO
+STZ
+HFD
+high-fat diet
+5xFAD
+APP/PS1
+P301S
+MPTP
+6-OHDA
+
+# --- Clinical & regulatory
+IND
+IND-enabling
+FDA
+EMA
+NMPA
+CDE
+Phase 1
+Phase 1b
+Phase 2
+Phase 2a
+Phase 2b
+Phase 3
+first-in-human
+FIH
+dose escalation
+MAD
+SAD
+MTD
+RP2D
+placebo-controlled
+primary endpoint
+secondary endpoint
+interim analysis
+readout
+topline
+enrollment
+cohort
+biomarker
+PASI
+PASI 75
+PASI 90
+EASI
+EASI-75
+IGA
+ACR20
+ACR50
+DAS28
+CDAI
+SES-CD
+FEV1
+ADAS-Cog
+CDR-SB
+MMSE
+UPDRS
+ALSFRS-R
+weight loss
+percent body weight
+HbA1c reduction
+unmet need
+standard of care
+SoC
+mechanism of action
+MoA
+target validation
+target engagement
+proof of concept
+PoC
+competitive landscape
+freedom to operate
+FTO
+composition of matter
+patent
+CMC
+GMP
+cell line
+CHO
+titer
+developability
+viscosity
+aggregation
+stability
+formulation
+
+# --- Indications
+psoriasis
+psoriatic arthritis
+atopic dermatitis
+eczema
+asthma
+COPD
+eosinophilic
+EoE
+eosinophilic esophagitis
+chronic spontaneous urticaria
+CSU
+prurigo nodularis
+hidradenitis suppurativa
+HS
+alopecia areata
+vitiligo
+lupus
+SLE
+lupus nephritis
+rheumatoid arthritis
+RA
+ankylosing spondylitis
+axial spondyloarthritis
+ulcerative colitis
+Crohn's disease
+IBD
+celiac
+multiple sclerosis
+MS
+myasthenia gravis
+IgA nephropathy
+IgAN
+IgG4-related disease
+Sjögren's
+sarcoidosis
+uveitis
+obesity
+type 2 diabetes
+T2D
+NASH
+sleep apnea
+heart failure
+HFpEF
+CKD
+Alzheimer's disease
+Alzheimer's
+Parkinson's disease
+Parkinson's
+ALS
+Huntington's
+frontotemporal dementia
+FTD
+multiple system atrophy
+MSA
+migraine
+epilepsy
+schizophrenia
+major depressive disorder
+MDD
+treatment-resistant depression
+narcolepsy
+neuropathic pain
+essential tremor
+Rett syndrome
+spinal muscular atrophy
+SMA
+Duchenne
+
+# --- Approved and well-known drugs they will compare against
+semaglutide
+Wegovy
+Ozempic
+tirzepatide
+Zepbound
+Mounjaro
+retatrutide
+orforglipron
+cagrilintide
+CagriSema
+survodutide
+mazdutide
+liraglutide
+dulaglutide
+pemvidutide
+bimagrumab
+dupilumab
+Dupixent
+lebrikizumab
+tralokinumab
+nemolizumab
+tezepelumab
+Tezspire
+omalizumab
+Xolair
+mepolizumab
+benralizumab
+secukinumab
+Cosentyx
+ixekizumab
+bimekizumab
+Bimzelx
+guselkumab
+Tremfya
+risankizumab
+Skyrizi
+ustekinumab
+Stelara
+adalimumab
+Humira
+infliximab
+etanercept
+tocilizumab
+sarilumab
+abrocitinib
+upadacitinib
+Rinvoq
+baricitinib
+tofacitinib
+deucravacitinib
+Sotyktu
+vedolizumab
+Entyvio
+ocrelizumab
+Ocrevus
+ofatumumab
+rituximab
+efgartigimod
+Vyvgart
+rozanolixizumab
+nipocalimab
+lecanemab
+Leqembi
+donanemab
+Kisunla
+aducanumab
+tofersen
+Qalsody
+nusinersen
+Spinraza
+inclisiran
+Leqvio
+zilebesiran
+olezarsen
+plozasiran
+fitusiran
+vutrisiran
+patisiran
+givosiran
+lumasiran
+nedosiran
+erenumab
+fremanezumab
+galcanezumab
+eptinezumab
+ubrogepant
+rimegepant
+atogepant
+daridorexant
+lemborexant
+suvorexant
+xanomeline
+KarXT
+Cobenfy
+esketamine
+zuranolone
+brexpiprazole
+cariprazine
+
+# --- Companies and institutions said out loud
+Novo Nordisk
+Eli Lilly
+Lilly
+Amgen
+Regeneron
+Sanofi
+AbbVie
+Pfizer
+Merck
+MSD
+Roche
+Genentech
+Novartis
+AstraZeneca
+GSK
+Johnson & Johnson
+J&J
+Janssen
+Bristol Myers Squibb
+BMS
+Biogen
+Eisai
+Takeda
+Boehringer Ingelheim
+Boehringer
+Alnylam
+Arrowhead
+Ionis
+Dicerna
+Silence Therapeutics
+Arrowhead Pharmaceuticals
+Viking Therapeutics
+Structure Therapeutics
+Zealand Pharma
+Altimmune
+Carmot
+Metsera
+Denali
+Alector
+Prothena
+AC Immune
+Annexon
+Vertex
+argenx
+UCB
+Kyowa Kirin
+Innovent
+Hengrui
+Jiangsu Hengrui
+BeiGene
+Akeso
+Zai Lab
+Hansoh
+Sciwind
+Gan & Lee
+WuXi
+WuXi Biologics
+WuXi AppTec
+Samsung Biologics
+Lonza
+Charles River
+Genscript
+Adimab
+Twist
+AbCellera
+Absci
+FDA
+ClinicalTrials.gov
+PubMed
+Europe PMC
+Google Scholar
+bioRxiv
+medRxiv
+Espacenet
+Lens
+WIPO
+Google Patents
+Tabs Database
+GlobalData
+Sci-Hub

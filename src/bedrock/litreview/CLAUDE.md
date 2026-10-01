@@ -160,6 +160,25 @@ as `improved`. Models skip these unless explicitly told not to.
   model add a term. A request may reach only `www.ebi.ac.uk` and
   `eutils.ncbi.nlm.nih.gov` (`SOURCE_HOSTS` in `sources/http.py`), redirects
   included: a search URL carries the scientist's terms in its query string
+- A question's frozen paper set records the search signature it was
+  collected under (`stages/s1_collect.py`, `question_collections`): the
+  required entities and their exact terms, or the corpus hash. A run whose
+  reading differs collects again when a search was asked for, and otherwise
+  says in the report that its papers were never searched for its terms.
+  Failed search queries are recorded with the set and shown in every report
+  built on it. Never reuse a set silently across readings
+- A disease named only in the question's population ("... in adults with
+  obesity") is not required when another disease is (`s0_question`
+  `population_span`): requiring it made the search drop the trials that
+  measured the outcome in a related population. Who each study was about is
+  shown instead
+- Among papers of equal relevance grade, efficacy, safety and mechanism
+  questions read randomised trials before observational studies before animal
+  and cell work (`study_design.design_rank`, from the paper's own publication
+  type and wording - a reading order, never a quality score). Target
+  identification keeps lexical order: measured on the frozen corpora it gained
+  nothing there. `rank.selection: evidence_aware` remains the separate, opt-in
+  policy
 - Retraction checks (`sources/integrity.py`) are the other way out, decided by
   the owner on 26 September 2026: automatic at the start of each *new* review
   unless the scientist chose manual (`/reviews settings`, `preferences.py`),
@@ -177,27 +196,52 @@ as `improved`. Models skip these unless explicitly told not to.
   every stored body's bytes and breaks `check_pinned` for old runs
 - Sources are listed in code (`SOURCES` in `sources/literature.py`), not read
   from a config file, so nothing gets wired in by editing one
+- Citation snowballing (`sources/snowball.py`) runs only inside a search,
+  seeds are chosen by code from the searched order (never from a model's
+  grades), link requests carry identifiers only, and its policy is part of
+  the search signature only when it is on. Keep all four
+- New names reach `knowledge/entities.yaml` only through a person:
+  `knowledge/aliases.py` proposes from downloaded HGNC and MeSH files and
+  writes nothing until a name is marked `approve: true`. Never walk an
+  ontology tree or read MeSH's narrower concepts, and never approve in code
 - Model names live only in `defaults/models.yaml`, or in a whole-file
   replacement at `~/.config/bedrock/litreview/models.yaml`. Nothing else
-  hardcodes one. The *server* is not configured here at all: it is bedrock's
-  `api_base`, and the context window is bedrock's machine profile
+  hardcodes one. The *server* is bedrock's `api_base`, or in agent-pack mode
+  the agent server's inference API (`agent_pack_api_base` + `/v1`, the
+  `agentpack` model set, roles as model names), or `[litreview] api_base`
+  (`config.resolve_endpoint`). The context window is what someone configured,
+  else the machine profile's (local Ollama only), else what the server
+  reports per model - and the reported one wins when smaller
+  (`service.preflight`). Never let a local machine profile describe a remote
+  model, and never assume a remote window
 - **The only live model client is `SchedulerClient`** (`llm/scheduled.py`),
   which goes through bedrock's `Scheduler` at `Priority.USER_JOB`, so a review
   never gets in front of the employee's own chat. `tests/test_model_call_guard.py`
   fails if anything reaches the backend directly, and nothing here may talk
   HTTP to a model server
 - Nothing else in this package imports `bedrock.inference`: only
-  `llm/scheduled.py` and `service.py` do. Everything else depends on the
+  `llm/scheduled.py`, `service.py` and `readiness.py` (the doctor, which only
+  catches `InferenceError` and makes no model call) do. Everything else depends on the
   `LLMClient` protocol, so tests use `FakeLLMClient`.
   `tests/litreview/test_inference_boundary.py` fails on a new import
+- The same rule protects `bedrock.provenance`: `journal.py` takes a
+  duck-typed `history` (one `append(...)` method) and never imports it. The
+  real `HistoryStore` is built only by `service.local_history` (the CLI and
+  the HTTP API) and bedrock's `ComplianceServices` (`/review`), each guarded so
+  a build without `bedrock.provenance` still runs a review, just unrecorded. A
+  journal that exists but cannot record the start of a run stops the run
+  (`ReviewNotRecorded`). The server's Research tab records nothing locally
 - A model-using review starts through `service.run_review` and nothing else.
   It is what runs `preflight`, builds the client and puts the blocking pipeline
   on a worker thread
-- Every setup check lives once, in `service.config_findings` /
-  `service.server_findings`. `preflight` raises on the first blocking one for a
-  run; `findings` returns all of them for `bedrock-litreview doctor` and
-  `/reviews check`. Add a check there, never to one caller — a check that exists
-  in the doctor and not in preflight is a review that starts and should not have
+- What *stops* a review is `service.preflight`, which raises `ConfigError`; it is
+  also what `readiness.review_readiness` runs for `bedrock-litreview doctor` and
+  `/reviews check`, so the two cannot disagree. Advice that does not stop one -
+  a short `request_timeout`, a nearly full disk, a company host name - is
+  `service.config_findings`, shown by the doctor as information and passed to
+  `run_review`'s `warn`. Add a refusal to preflight and advice to
+  `config_findings`, never to one caller: a check that exists in the doctor and
+  not in preflight is a review that starts and should not have
 - Any file the package reads at run time and is not `.py` needs a glob in
   `[tool.setuptools.package-data]`. Editable installs hide a miss;
   `tests/test_package_data.py` catches it
@@ -205,6 +249,12 @@ as `improved`. Models skip these unless explicitly told not to.
   the run stops and can be resumed. `LLMError` still means "skip this one item"
 - Prompts live in `llm/prompts/*.md` with a `version` in front matter.
   Bump it on every change — it is recorded on each EvidenceUnit
+- The target-proposal deck is code only, drawn from the stored report: never ask a
+  model for slide text. Its paper figures are chosen by the paper's own `<xref>` in the
+  paragraph a verified quote came from - never by a model or by caption matching - and
+  are fetched only during a run with both `deck` and `search` on, only from
+  `www.ebi.ac.uk`, never at download, report viewing or `verify-run`. What a run chose
+  is the `deck_figures.v1` artifact, never a field on `Report` or `Paper`
 - Everything that can be tested without a GPU is. The whole pure-code layer runs
   offline, because in week one the office GPU does not exist yet. Run
   `pytest tests/litreview`, and `pytest` before you commit
@@ -214,19 +264,23 @@ as `improved`. Models skip these unless explicitly told not to.
 | Part | State |
 |---|---|
 | Stages 0-8 (question → report) | Built and tested; runs end to end with `FakeLLMClient` |
-| Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text, on a two-host allowlist. GROBID/PDF rung, alias lookup and drop folder not built |
+| Paper searcher | Built and tested offline; run live. Europe PMC + preprints + PubMed, open-access JATS full text, on a two-host allowlist. Citation snowballing built, off (`search.snowball.seeds: 0`) until measured. GROBID/PDF rung and drop folder not built |
+| Alias import | Built and tested offline: `bedrock-litreview aliases propose` (HGNC, MeSH preferred concepts; never a tree walk) and `approve` (a person's marks only, written into `entities.yaml` as text). No names approved yet |
 | Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
 | Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
-| Front ends | `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. All three call `service.run_review` |
+| Front ends | `/review` and `/reviews` in the terminal app - both modes, `ui/review_mixin.py` - `bedrock-litreview` in a shell, the server's Research tab (its deck checkbox, like `ask --deck`, also makes the target-proposal PowerPoint), the FastAPI app as the optional `api` extra. All call `service.run_review`. `bedrock-litreview doctor` (`readiness.py`) checks a machine can run one |
 | Setup check | Built. `bedrock-litreview doctor`, `/reviews check`; same checks as a run's preflight |
 | Deleting a run | Built. `bedrock-litreview forget`, `/reviews forget`; the run's own output only |
 | `office` model names | **Unconfirmed.** `defaults/models.yaml` names two guesses; a vLLM server answers to its `--served-model-name`. `doctor` reports what the server really offers. Needs IT, then ship the real names |
+| Local audit trail | Built and tested: `run_review` records a `litreview.review` intent/outcome and one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) in bedrock's local history, for `/review`, `bedrock-litreview ask` and the HTTP API. `/audit` reads it back. Metadata only, never the question. See `journal.py` |
+| Report | Reading view, then References, then an Appendix. `report/synthesis.py` computes study profiles, independent-study counts, evidence basis, disagreements with whole quotes and qualifiers, key results and abbreviations from verified fields and paper records. Synthesis, disagreements and the gaps bullet naming measures or targets without tested human effects share comparison rows. `check_disagreements` binds each quote to evidence from its cited paper; no new stored model fields |
 | Coverage ledger, study design, drift disclosure | Built and tested offline: `coverage.v1`, `study_design.v1`, `verification_context.v1` run artifacts, never in the report; `verify-run` compares environments (`--require-same-rules`). `rank.selection: evidence_aware` is opt-in and unmeasured on a real model |
 | Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |
 | Background from reviews | A code-written report section quoting reviews with links; never counted as evidence |
 | Fresh-inference determinism | Harness built (`bench determinism`, runbook in `docs/litreview/DETERMINISM_RUNBOOK.md`); not run on vLLM |
 | Patents | Built and tested offline; search confirmed live against EPO OPS. `bedrock-litreview patents`, `ask --patents`, `/review --patents`; the code-written "Competitor landscape" section only, never evidence. `claim_1`'s XML shape is unconfirmed — see `sources/epo_ops.py` |
-| Stage 9 (chat), PPTX, drop folder | Not started |
+| Target-proposal deck (PPTX) | Built: code-rendered slides from the stored report following Propeller's template (single target, bispecific, or disease-level). Drawn by `report/slides.py` (content), `report/deck_model.py` (data), `report/deck_render.py` (rendering), with configurable layout in `defaults/deck.yaml`. Paper figures fetched only during a search-enabled run from open-access papers; stored in `deck_figures.v1` artifact. Never in Report or Paper data; always code-only |
+| Stage 9 (chat), drop folder | Not started |
 
 Working and tested today, with no GPU and no network: everything above except
 real-model quality. Run `pytest tests/litreview` for this package, `pytest` for
@@ -236,7 +290,10 @@ with a mock transport; nothing there needs a network.
 A model-using review needs a context window of at least 12,288 tokens
 (`min_context_window` in `defaults/models.yaml`): extraction sends about 4,300
 prompt tokens and allows a 4,096-token reply. `service.preflight` refuses to
-start otherwise and says what to change.
+start otherwise and says what to change, and `SchedulerClient` stops a run
+whose server reports reading fewer prompt tokens than the prompt can hold
+(`PromptTruncated`): the Ollama app's default window is 4,096 on a 16 GB Mac,
+and it truncates silently.
 
 Benchmark: `python -m bedrock.litreview.bench run evals/litreview/questions/*.yaml --models laptop`.
 Read `scorecard.md`'s "where the pipeline lost points" before changing a prompt,

@@ -422,6 +422,44 @@ def test_cli_search_writes_the_handoff_file_and_ask_reads_it(tmp_path, monkeypat
     assert Path(capsys.readouterr().out.strip().splitlines()[-1]).exists()
 
 
+def test_cli_ask_deck_writes_the_powerpoint_beside_the_report(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("pptx")
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BEDROCK_USER", "Alice")
+    corpus = tmp_path / "papers.jsonl"
+    monkeypatch.setattr(cli, "LiteratureSearcher", _MockedSearcher)
+    assert cli.main(["search", QUESTION, "--out", str(corpus)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["ask", QUESTION, "--corpus", str(corpus), "--no-model", "--models", "laptop"]) == 0
+    html = Path(capsys.readouterr().out.strip().splitlines()[-1])
+    assert not (html.parent / "report.pptx").exists(), "no deck unless asked for"
+
+    assert cli.main(["ask", QUESTION, "--corpus", str(corpus), "--no-model", "--models", "laptop", "--deck"]) == 0
+    html = Path(capsys.readouterr().out.strip().splitlines()[-1])
+    deck = html.parent / "report.pptx"
+    assert deck.exists() and deck.read_bytes()[:2] == b"PK"
+
+
+def test_cli_ask_deck_says_how_to_install_python_pptx_and_keeps_the_exit_code(tmp_path, monkeypatch, capsys):
+    from bedrock.litreview.report import slides
+
+    def no_pptx(*args, **kwargs):
+        raise ImportError("No module named 'pptx'")
+
+    monkeypatch.setattr(slides, "to_pptx", no_pptx)
+    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "data"))
+    corpus = tmp_path / "papers.jsonl"
+    monkeypatch.setattr(cli, "LiteratureSearcher", _MockedSearcher)
+    assert cli.main(["search", QUESTION, "--out", str(corpus)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["ask", QUESTION, "--corpus", str(corpus), "--no-model", "--models", "laptop", "--deck"]) == 0
+    captured = capsys.readouterr()
+    assert 'pip install -e ".[server]"' in captured.err
+    assert not (Path(captured.out.strip().splitlines()[-1]).parent / "report.pptx").exists()
+
+
 def test_cli_reports_a_failed_search_and_a_missing_paper_set(tmp_path, monkeypatch, capsys):
     class Down(_MockedSearcher):
         servers = Servers(down=True)
@@ -504,6 +542,23 @@ def test_http_ask_says_503_when_the_machine_cannot_run_a_review(settings):
         resp = client.post("/ask", json={"question": QUESTION, "papers": []})
     assert resp.status_code == 503
     assert "12,288" in resp.json()["detail"]
+
+
+def test_http_api_calls_the_reviews_own_endpoint_not_bedrocks(settings, monkeypatch):
+    """In agent-pack mode a review's endpoint is the agent server's inference
+    API, not bedrock's `api_base`; the HTTP API must open its client there."""
+    testclient = pytest.importorskip("fastapi.testclient")
+    from bedrock.litreview import service
+    from bedrock.litreview.api import create_app
+
+    opened = []
+    monkeypatch.setattr(service, "review_backend",
+                        lambda s, **kw: opened.append(s.base_url) or _ScriptedBackend())
+    settings.base_url = "http://agent-server.internal:8000/v1"
+    app = create_app(settings, bedrock_settings=_bedrock_settings())
+    with testclient.TestClient(app):
+        pass
+    assert opened == ["http://agent-server.internal:8000/v1"]
 
 
 def test_a_benchmark_corpus_can_come_from_the_searcher(tmp_path):

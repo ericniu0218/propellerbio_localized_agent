@@ -19,7 +19,8 @@ from typing import Callable
 
 from bedrock.litreview.bench.baselines import closed_book, naive_rag
 from bedrock.litreview.bench.claims import pipeline_claims, text_claims
-from bedrock.litreview.bench.distractors import leak_test, make_distractors
+from bedrock.litreview.bench.distractors import leak_test, make_distractors, why_none
+from bedrock.litreview.bench.history import recorded_report_windows, window_text
 from bedrock.litreview.bench.judge import CorpusIndex, Judge
 from bedrock.litreview.bench.models import (
     COVERAGE_SCORE,
@@ -27,6 +28,7 @@ from bedrock.litreview.bench.models import (
     BenchQuestion,
     Claim,
     ClaimResult,
+    Gate,
     Nugget,
     Scorecard,
     SystemScore,
@@ -164,6 +166,11 @@ def summarise_system(system: str, results: list[ClaimResult], cited_applicable: 
         if r.numbers_ok and (r.cited_support == "supported" or (r.cited_support is None and r.corpus_support == "supported"))
     )
     sources = {c for r in results for c in r.claim.citations}
+    # What each judged score rests on: a claim with no verdict is left out
+    # of the mean, so the mean alone does not say how much it covers.
+    judged = {"corpus_grounded": (len(corpus), len(results))}
+    if cited_applicable:
+        judged["cited_support"] = (len(cited), len(results))
     return SystemScore(
         system=system,
         claims=len(results),
@@ -173,6 +180,7 @@ def summarise_system(system: str, results: list[ClaimResult], cited_applicable: 
         near_miss_claims=sum(1 for r in results if r.near_misses),
         quantitative_supported_claims=quantitative,
         distinct_sources_cited=len(sources),
+        judged=judged,
     )
 
 
@@ -198,6 +206,48 @@ def _same_report_gate(pipeline: dict) -> str:
     return "same report twice"
 
 
+def _gate(value, passes: Callable[[object], bool], missing: str) -> Gate:
+    """A gate from the measurement it rests on. `None` means the input was
+    never built, and that is "not measured" - never a pass."""
+    if value is None:
+        return Gate(status="not_measured", reason=missing)
+    return Gate(status="pass" if passes(value) else "fail")
+
+
+def pipeline_gates(pipeline: dict, score: SystemScore, *, integrity: list, distractors_missing: str,
+                   perturb_missing: str) -> dict[str, Gate]:
+    """The pipeline's checks, each pass, fail or not measured.
+
+    `pipeline` holds the measurements (`quote_validity`, `deterministic`, ...)
+    and `score` the pipeline's claim scores; the two `*_missing` strings say
+    why the distractor and perturbation measurements are absent when they are.
+    """
+    claims = score.claims
+    deterministic = pipeline.get("deterministic")
+    return {
+        "quotes all verified (1.00)": _gate(
+            pipeline.get("quote_validity"), lambda v: v == 1.0, "the report has no evidence units"),
+        "every sentence cited": _gate(
+            pipeline.get("citation_coverage"), lambda v: v == 1.0, "the report kept no sentences"),
+        "no near-miss claims": _gate(
+            score.near_miss_claims if claims else None, lambda v: v == 0, "the report has no claims"),
+        "numbers all in cited evidence": _gate(
+            score.numeric_fidelity, lambda v: v == 1.0,
+            "no claim states a number" if claims else "the report has no claims"),
+        "no distractor leaked": _gate(
+            pipeline.get("distractor_leak_rate"), lambda v: v == 0.0, distractors_missing),
+        _same_report_gate(pipeline): _gate(
+            deterministic if deterministic in ("yes", "no") else None, lambda v: v == "yes",
+            "a stored report was scored; the pipeline was not re-run"),
+        # The invariants run on every finished report, so this one always measures.
+        "integrity check passes": Gate(status="fail" if integrity else "pass"),
+        "claims supported by citations >= 0.85": _gate(
+            score.cited_support, lambda v: v >= 0.85, "no pipeline claim was judged"),
+        "judge catches flipped effects >= 0.7 (benchmark validity)": _gate(
+            pipeline.get("judge_catches_flip"), lambda v: v >= 0.7, perturb_missing),
+    }
+
+
 def evaluate(
     bq: BenchQuestion,
     *,
@@ -210,6 +260,7 @@ def evaluate(
     skip_perturb: bool = False,
     from_run: str | None = None,
     judge_client=None,
+    context_windows: dict[str, int] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Scorecard, Path]:
     """Run the pipeline and the baselines on a frozen corpus and score them.
@@ -223,12 +274,18 @@ def evaluate(
     pipeline always uses `client`; only the judging step changes, so a weak
     local model can be measured by a stronger judge without the report itself
     being touched by it.
+
+    `context_windows` is what `service.preflight` established for this run's
+    model calls (model -> tokens), recorded on the scorecard and in the
+    history row. None means the run called no model, or its caller did not
+    check - which the scorecard then says.
     """
     say = progress or (lambda msg: log.info(msg))
     corpus_dir = Path(corpus_dir or CORPORA / bq.id)
     created = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = Path(results_root or RESULTS) / bq.id / created
     out_dir.mkdir(parents=True, exist_ok=True)
+    history = Path(results_root or RESULTS) / "history.jsonl"
     kb = load_knowledge()
 
     papers = read_papers(corpus_dir / "papers.jsonl")
@@ -306,7 +363,9 @@ def evaluate(
         nuggets = nuggets[:MAX_NUGGETS]
         for n in nuggets:
             v = judge.support(n.fact, [t for _, t in index.top(n.fact)])
-            n.reachable = bool(v and v.verdict in ("supported", "partially_supported"))
+            # No verdict is not "unreachable": it stays None, and counts
+            # against the judged fraction instead of leaving the denominator.
+            n.reachable = None if v is None else v.verdict in ("supported", "partially_supported")
             if not n.reachable:
                 continue
             for name, text in answers.items():
@@ -314,12 +373,20 @@ def evaluate(
                 if c:
                     n.coverage[name] = c.verdict
         reachable = [n for n in nuggets if n.reachable]
+        # Facts whose reachability had no verdict may count too: they are in
+        # the judged fraction's denominator, never in a score.
+        may_count = [n for n in nuggets if n.reachable is not False]
+        may_count_vital = [n for n in may_count if n.importance == "vital"]
         for name, score in systems.items():
             covered = [COVERAGE_SCORE[n.coverage[name]] for n in reachable if name in n.coverage]
             vital = [COVERAGE_SCORE[n.coverage[name]] for n in reachable if name in n.coverage and n.importance == "vital"]
             score.nugget_recall = _mean(covered)
             score.vital_nugget_recall = _mean(vital)
-        notes.append(f"{len(nuggets)} reference facts from reviews; {len(reachable)} supported by the collected papers.")
+            score.judged["nugget_recall"] = (len(covered), len(may_count))
+            score.judged["vital_nugget_recall"] = (len(vital), len(may_count_vital))
+        unsure = len(may_count) - len(reachable)
+        notes.append(f"{len(nuggets)} reference facts from reviews; {len(reachable)} supported by the collected papers"
+                     + (f"; for {unsure} the judge gave no verdict." if unsure else "."))
     else:
         notes.append("No review references for this question; nugget recall not measured.")
 
@@ -375,17 +442,28 @@ def evaluate(
         [1.0 if result.gates[p].status == "pass" else 0.0 for p in cited_papers]
     ) if cited_papers else None
 
+    # A distractors.json of `{}` means none were built. That is what let
+    # obesity's gate pass on 26 September: an absent rate read as no leak.
     distractor_result = {}
-    if not skip_distractors:
+    distractors_missing = "no distractor papers were built"
+    if from_run:
+        distractors_missing += ": a stored report was scored, and distractors test today's ranking"
+    elif skip_distractors:
+        distractors_missing += ": skipped with --skip-distractors"
+    else:
         say(f"[{bq.id}] distractor papers")
         distractors = make_distractors(by_id, result.ranked, spec, k=5)
         distractor_result = leak_test(
             distractors, spec, facets_for(spec), client, model=settings.model_for("relevance"),
             min_grade=int(settings.knob("plan.min_grade", 2)),
         )
+        pipeline["distractors_made"] = distractor_result.get("made", 0)
         pipeline["distractor_leak_rate"] = distractor_result.get("leak_rate")
+        if not distractors:
+            distractors_missing += f": {why_none(result.ranked, spec)}"
 
     perturb_rows = []
+    perturb_missing = "skipped with --skip-perturb"
     if not skip_perturb:
         say(f"[{bq.id}] judge sensitivity")
         units = {report.short_ids[u.id]: u for u in report.evidence}
@@ -401,18 +479,24 @@ def evaluate(
                 perturb_rows.append({
                     "kind": kind, "original": r.claim.text, "perturbed": text,
                     "guard_caught": not guard.check(text, r.claim.citations).kept,
-                    # Caught means the judge would not pass the corrupted claim as supported.
-                    "judge_caught": bool(v and v.verdict != "supported"),
+                    # Caught means the judge would not pass the corrupted claim
+                    # as supported. No verdict is neither: it used to count as
+                    # missed, which failed the validity gate on absent answers.
+                    "judge_caught": (v.verdict != "supported") if v else None,
                     "judge_verdict": v.verdict if v else None,
                 })
         by_kind = Counter(row["kind"] for row in perturb_rows)
         for kind in ("number", "flip", "entity"):
-            rows = [row for row in perturb_rows if row["kind"] == kind]
+            rows = [row for row in perturb_rows if row["kind"] == kind and row["judge_caught"] is not None]
             if rows:
                 pipeline[f"judge_catches_{kind}"] = _mean([1.0 if x["judge_caught"] else 0.0 for x in rows])
                 pipeline[f"guard_or_judge_catches_{kind}"] = _mean(
                     [1.0 if (x["judge_caught"] or x["guard_caught"]) else 0.0 for x in rows])
         pipeline["perturbations"] = sum(by_kind.values())
+        pipeline["perturbations_judged"] = sum(1 for row in perturb_rows if row["judge_caught"] is not None)
+        perturb_missing = ("no pipeline claim was judged supported, so there was nothing to corrupt" if not supported
+                           else "no claim could be flipped" if not by_kind["flip"]
+                           else "no flipped claim was judged")
 
     if from_run:
         pipeline["deterministic"] = "not re-run"
@@ -436,21 +520,8 @@ def evaluate(
             notes.append("\"Same report twice\" re-ran the pipeline through the call cache: it shows cached "
                          "replay and rendering are deterministic, not that fresh inference repeats.")
 
-    gates = {
-        "quotes all verified (1.00)": pipeline.get("quote_validity") in (None, 1.0),
-        "every sentence cited": pipeline.get("citation_coverage") in (None, 1.0),
-        "no near-miss claims": systems["pipeline"].near_miss_claims == 0,
-        "numbers all in cited evidence": systems["pipeline"].numeric_fidelity in (None, 1.0),
-        "no distractor leaked": pipeline.get("distractor_leak_rate") in (None, 0.0),
-        _same_report_gate(pipeline): pipeline["deterministic"] == "yes",
-        "integrity check passes": not result.report.integrity,
-        "claims supported by citations >= 0.85": (systems["pipeline"].cited_support or 0) >= 0.85,
-        "judge catches flipped effects >= 0.7 (benchmark validity)": (
-            pipeline.get("judge_catches_flip") is None or (pipeline.get("judge_catches_flip") or 0) >= 0.7
-        ),
-    }
-    if from_run:
-        gates.pop(_same_report_gate(pipeline))
+    gates = pipeline_gates(pipeline, systems["pipeline"], integrity=result.report.integrity,
+                           distractors_missing=distractors_missing, perturb_missing=perturb_missing)
     if judge_client is None:
         notes.append(
             f"The judge is {settings.model_for('judge')}, the same model family that wrote the report; "
@@ -478,11 +549,30 @@ def evaluate(
         f"closest one; {judge.struck} detail(s) it called missing were in the evidence and struck off."
     )
 
+    # The window the report was written at. A stored report was written by
+    # an earlier run, whose history row recorded it if that run was preflighted.
+    if from_run:
+        recorded = recorded_report_windows(history, result.report_id)
+        report_windows, report_source = recorded if recorded else (None, None)
+    else:
+        report_windows, report_source = context_windows, ("this run" if context_windows else None)
+
     model_versions = dict(result.run.model_versions)
     model_versions["judge"] = version_of(judge_client or client, settings.model_for("judge"))
+    # Who supplied the verdicts. A judge file knows per answer; a model judge
+    # is one rater, its version. Code-settled verdicts have no rater's noise.
+    used = getattr(judge_client, "used", None)
+    if used is not None:
+        raters = dict(sorted(used.items()))
+    else:
+        raters = {model_versions["judge"]: judge.answered} if judge.answered else {}
+    if judge.settled_in_code:
+        raters["code"] = judge.settled_in_code
     card = Scorecard(
         question_id=bq.id, question=bq.question, report_id=result.report_id, created=created,
-        model_versions=model_versions, systems=list(systems.values()), pipeline=pipeline, gates=gates,
+        model_versions=model_versions, context_windows=context_windows,
+        report_context_windows=report_windows, report_context_source=report_source, raters=raters,
+        systems=list(systems.values()), pipeline=pipeline, gates=gates,
         notes=[n for n in notes if n],
     )
 
@@ -499,14 +589,20 @@ def evaluate(
     (out_dir / "scorecard.md").write_text(
         render_scorecard(card, claim_results, nuggets, target_detail, report), encoding="utf-8"
     )
-    history = Path(results_root or RESULTS) / "history.jsonl"
     history.parent.mkdir(parents=True, exist_ok=True)
     with history.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({
             "question_id": bq.id, "created": created, "report_id": result.report_id,
             "prompt_versions": result.run.prompt_versions, "model_versions": model_versions,
             "overall": {s.system: s.overall for s in card.systems},
-            "gates_passed": sum(gates.values()), "gates_total": len(gates),
+            "judged": {s.system: s.judged for s in card.systems},
+            "judged_fraction": {s.system: s.overall_judged_fraction() for s in card.systems},
+            "raters": raters,
+            # `gates_total` counts measured gates only; rows written before
+            # 30 September 2026 counted a gate with no input as passed.
+            "gates_passed": card.gates_passed, "gates_total": card.gates_measured,
+            "gates_not_measured": card.gates_not_measured,
+            "context_windows": context_windows, "report_context_windows": report_windows,
         }) + "\n")
     db.add_bench_result(result.report_id, spec.id, created, card.model_dump_json())
     say(f"[{bq.id}] judge calls: {judge.calls}; scorecard: {out_dir / 'scorecard.md'}")
@@ -521,6 +617,57 @@ def _fmt(x) -> str:
     return str(x)
 
 
+def _cell(score: SystemScore, attr: str) -> str:
+    """A score with what it rests on: "0.93 (40/42)", "67.9 (95% judged)"."""
+    value = _fmt(getattr(score, attr))
+    if attr == "overall":
+        fraction = score.overall_judged_fraction()
+        return value if fraction is None or score.overall is None else f"{value} ({fraction:.0%} judged)"
+    pair = score.judged.get(attr)
+    return value if pair is None or getattr(score, attr) is None else f"{value} ({pair[0]}/{pair[1]})"
+
+
+def raters_text(raters: dict[str, int]) -> str:
+    if not raters:
+        return "not recorded"
+    judges = [f"{name} {n}" for name, n in raters.items() if name != "code"]
+    code = [f"settled in code {raters['code']}"] if "code" in raters else []
+    return ", ".join(judges + code)
+
+
+def _raters_line(card: Scorecard) -> str:
+    return f"Verdicts by rater: {raters_text(card.raters)}"
+
+
+def _gate_cell(gate: Gate) -> str:
+    """PASS only for a gate that measured something."""
+    if gate.status == "pass":
+        return "PASS"
+    if gate.status == "fail":
+        return "**FAIL**"
+    return f"not measured: {gate.reason}"
+
+
+def _gate_summary(card: Scorecard) -> str:
+    unmeasured = len(card.gates_not_measured)
+    line = f"{card.gates_passed} of {card.gates_measured} measured checks pass"
+    return line + (f"; {unmeasured} not measured, and counted in neither." if unmeasured else ".")
+
+
+def _window_lines(card: Scorecard) -> list[str]:
+    """What context window the numbers below were produced at. Every number
+    written before preflight ran was produced at an unchecked window, and an
+    undersized window does not fail: the server drops the start of the prompt."""
+    calls = window_text(card.context_windows) if card.context_windows else "no model was called"
+    if card.report_context_source == "this run":
+        return [f"Context window: {calls} (checked by preflight before the first model call)  "]
+    written = window_text(card.report_context_windows)
+    if card.report_context_source:
+        written += f" (recorded by the run of {card.report_context_source})"
+    return [f"Context window the report was written at: {written}  ",
+            f"Context window of this run's model calls: {calls}  "]
+
+
 def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nuggets: list[Nugget],
                      targets: dict, report: Report) -> str:
     names = {"pipeline": "This pipeline", "naive_rag": "Chatbot + pasted abstracts", "closed_book": "Chatbot, no papers"}
@@ -528,6 +675,9 @@ def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nugg
         f"# Benchmark — {card.question}",
         "",
         f"Question id `{card.question_id}` · report `{card.report_id}` · {card.created}",
+        "",
+        *_window_lines(card),
+        _raters_line(card),
         "",
         "| Metric | " + " | ".join(names.get(s.system, s.system) for s in card.systems) + " |",
         "|---|" + "---|" * len(card.systems),
@@ -546,11 +696,14 @@ def render_scorecard(card: Scorecard, claims: dict[str, list[ClaimResult]], nugg
         ("Distinct sources cited", "distinct_sources_cited"),
     ]
     for label, attr in metrics:
-        rows.append(f"| {label} | " + " | ".join(_fmt(getattr(s, attr)) for s in card.systems) + " |")
+        rows.append(f"| {label} | " + " | ".join(_cell(s, attr) for s in card.systems) + " |")
+    rows += ["", "(j/n) after a score: it rests on j of the n claims or review facts it should, the rest having no "
+             "verdict (no answer on file, or a failed judge call). The overall's percentage is its least-judged "
+             "part's. Two runs compare only when these match: `python -m bedrock.litreview.bench compare`."]
 
-    rows += ["", "## Pipeline checks", "", "| Check | Result |", "|---|---|"]
-    for gate, ok in card.gates.items():
-        rows.append(f"| {gate} | {'PASS' if ok else '**FAIL**'} |")
+    rows += ["", "## Pipeline checks", "", _gate_summary(card), "", "| Check | Result |", "|---|---|"]
+    for name, gate in card.gates.items():
+        rows.append(f"| {name} | {_gate_cell(gate)} |")
     rows += ["", "| Measure | Value |", "|---|---|"]
     for k, v in card.pipeline.items():
         rows.append(f"| {k} | {_fmt(v)} |")

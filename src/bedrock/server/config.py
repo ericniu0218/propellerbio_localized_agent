@@ -67,6 +67,12 @@ class ModelConfig(BaseModel):
     # that share one server share one queue, which allows the largest of their
     # values; vLLM batches concurrent requests, so this is well above 1.
     max_parallel: int = 8
+    # What the serving engine can do for this model, as the inference API
+    # (api/routes_inference.py) reports it and enforces it. vLLM and Ollama do
+    # both; set false for an engine that silently ignores them, and the API
+    # refuses such a request instead of passing it on.
+    supports_json_schema: bool = True
+    supports_seed: bool = True
     fallback: ModelFallback | None = None
     alternatives: list[str] = []
 
@@ -202,6 +208,14 @@ class Settings(BaseModel):
     # [server.connectors.<name>] tables, the same shape as the terminal app's
     # [connectors.<name>] (bedrock.connectors): systems of record eln_lims reads.
     connectors: dict = {}
+    # The inference API (api/routes_inference.py): the roles it serves, and
+    # the bearer token a client must present. With no token, only callers on
+    # this machine (loopback) are served - a client elsewhere on the network
+    # would otherwise reach the models with no Director review, no redaction
+    # and no audit of who asked.
+    inference_api: bool = True
+    inference_roles: tuple[str, ...] = ("runner", "specialist", "director")
+    inference_token: str | None = None
 
     @property
     def sso_enabled(self) -> bool:
@@ -241,7 +255,23 @@ class Settings(BaseModel):
             knowledge_dir=_path(pick(("BEDROCK_SERVER_KNOWLEDGE_DIR",), "knowledge_dir")),
             literature_dir=_path(pick(("BEDROCK_SERVER_LITERATURE_DIR",), "literature_dir")),
             connectors=dict(table.get("connectors") or {}),
+            inference_api=_flag(pick(("BEDROCK_SERVER_INFERENCE_API",), "inference_api", "true")),
+            inference_roles=_roles(pick(("BEDROCK_SERVER_INFERENCE_ROLES",), "inference_roles")),
+            # A secret: environment only, never the config file.
+            inference_token=env.get("BEDROCK_SERVER_INFERENCE_TOKEN") or None,
         )
+
+
+def _roles(value) -> tuple[str, ...]:
+    """Roles the inference API serves: a list, or a comma-separated string."""
+    if value in (None, ""):
+        return ("runner", "specialist", "director")
+    items = value.split(",") if isinstance(value, str) else list(value)
+    roles = tuple(dict.fromkeys(str(r).strip() for r in items if str(r).strip()))
+    unknown = [r for r in roles if r not in ("runner", "specialist", "director", "notes")]
+    if unknown:
+        raise ValueError(f"inference_roles: unknown role(s) {', '.join(unknown)}")
+    return roles
 
 
 def _path(value) -> Path | None:

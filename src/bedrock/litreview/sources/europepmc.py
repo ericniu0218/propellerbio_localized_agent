@@ -21,7 +21,19 @@ from bedrock.litreview.sources.http import SourceError, SourceHTTP
 log = logging.getLogger(__name__)
 
 EPMC = "https://www.ebi.ac.uk/europepmc/webservices/rest"
-_TAG = re.compile(r"<[^>]+>")
+# A tag is "<" then a letter or "/": never "<0.05". The old pattern, "<[^>]+>",
+# ran from a literal less-than in "p<0·0001). <h4>Interpretation</h4>" to the
+# heading's ">", deleting the p-value and gluing the label to the next sentence
+# ("pInterpretationTirzepatide showed ...").
+_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9:_-]*(?:\s[^<>]*)?/?>")
+_HEADING = re.compile(r"<h[1-6][^<>]*>(.*?)</h[1-6]\s*>", re.I | re.S)
+_BLOCK = re.compile(r"</?(?:p|br|div|li|ul|ol|sec|title|abstract)\b[^<>]*/?>", re.I)
+
+
+#: The two citation lists, as (outer key, inner key) of Europe PMC's JSON.
+LINK_LISTS = {"citations": ("citationList", "citation"), "references": ("referenceList", "reference")}
+#: Records asked for per query when fetching by id.
+RECORD_BATCH = 25
 
 
 def clean(text: str | None) -> str:
@@ -29,7 +41,13 @@ def clean(text: str | None) -> str:
         return ""
     # Unescape first: Europe PMC sends "&lt;sup&gt;+&lt;/sup&gt;", which only
     # becomes a tag to strip once it is unescaped.
-    text = _TAG.sub("", html.unescape(html.unescape(text)))
+    text = html.unescape(html.unescape(text))
+    # A structured abstract's heading becomes "Label: ", which the extraction
+    # strips from a quote (`extract/verify.strip_leading_label`), and block
+    # tags become spaces, so no two sections run together.
+    text = _HEADING.sub(lambda m: f" {m.group(1).strip()}: ", text)
+    text = _BLOCK.sub(" ", text)
+    text = _TAG.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -121,6 +139,36 @@ class EuropePMC:
             if paper.title:
                 papers.append(paper)
         return papers
+
+    def linked(self, pmid: str, relation: str, limit: int) -> list[str]:
+        """PubMed ids of the papers that cite this one (`relation` "citations")
+        or that it cites ("references"), in Europe PMC's order. A reference
+        Europe PMC could not match to a PubMed record has no id and is left
+        out. Used only by citation snowballing (`sources/snowball.py`)."""
+        if relation not in LINK_LISTS:
+            raise ValueError(f"unknown relation {relation!r}")
+        resp = self.http.get(f"{EPMC}/MED/{pmid}/{relation}", params={
+            "format": "json", "page": 1, "pageSize": min(1000, max(1, limit)),
+        })
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        outer, inner = LINK_LISTS[relation]
+        entries = ((resp.json().get(outer) or {}).get(inner)) or []
+        ids = [str(e["id"]) for e in entries if e.get("source") == "MED" and str(e.get("id", "")).isdigit()]
+        return list(dict.fromkeys(ids))[:limit]
+
+    def records(self, pmids: list[str], *, found_by: str) -> list[Paper]:
+        """Full records for these PubMed ids, in the order given; an id
+        Europe PMC does not hold is missing from the result."""
+        papers: dict[str, Paper] = {}
+        for start in range(0, len(pmids), RECORD_BATCH):
+            batch = pmids[start:start + RECORD_BATCH]
+            query = "SRC:MED AND (" + " OR ".join(f"EXT_ID:{pmid}" for pmid in batch) + ")"
+            for paper in self.papers(query, len(batch), found_by=found_by):
+                if paper.pmid in batch:
+                    papers.setdefault(paper.pmid, paper)
+        return [papers[pmid] for pmid in pmids if pmid in papers]
 
     def full_text(self, pmcid: str) -> str | None:
         """Open-access JATS XML, or None when Europe PMC has no full text."""

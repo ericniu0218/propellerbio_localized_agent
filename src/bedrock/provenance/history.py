@@ -31,7 +31,17 @@ class HistoryStore:
     call from separate CLI processes and from ``asyncio.to_thread`` workers.
     """
 
-    ACTIONS = frozenset({"fold", "digest.ingest", "digest.forget", "approval", "run.tag"})
+    ACTIONS = frozenset(
+        {
+            "fold",
+            "digest.ingest",
+            "digest.forget",
+            "approval",
+            "run.tag",
+            "litreview.review",
+            "litreview.search",
+        }
+    )
     STATES = frozenset({"intent", "succeeded", "failed", "cancelled", "unknown"})
     DETAIL_FIELDS = frozenset(
         {

@@ -43,7 +43,38 @@ _CAPITALISED = re.compile(r"^[A-Z][a-z]{4,}$")
 _TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 
 MIN_OCCURRENCES = 2
-MAX_TERMS = 120
+# The full list is what the spelling repair reads; the decoder hint is cut to
+# whisper's prompt budget separately (pipeline._initial_prompt), so this can
+# be generous. A domain pack alone is several hundred terms.
+MAX_TERMS = 800
+
+# Bundled vocabulary packs, by name: MEETING_VOCABULARY_PACK=biotech, or a
+# comma-separated list of names and file paths. One term per line, "#" for
+# comments, most-misheard first.
+PACK_DIR = Path(__file__).resolve().parent.parent / "defaults" / "vocabulary"
+
+
+def from_packs(spec: str | None = None) -> list[str]:
+    """Terms from the packs named in ``MEETING_VOCABULARY_PACK``, in order."""
+    spec = os.environ.get("MEETING_VOCABULARY_PACK", "") if spec is None else spec
+    terms: list[str] = []
+    for name in (n.strip() for n in spec.split(",") if n.strip()):
+        path = Path(name).expanduser()
+        if not path.is_file():
+            path = PACK_DIR / f"{name}.txt"
+        if not path.is_file():
+            logger.warning("Vocabulary pack %r not found (looked at %s)", name, path)
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError as exc:  # a pack that cannot be read must not stop a recording
+            logger.warning("Vocabulary pack %s could not be read: %s", path, exc)
+            continue
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                terms.append(line)
+    return terms
 
 # Capitalised words that are just sentences starting, or calendar noise. A
 # vocabulary containing "Monday" steers the decoder for no benefit.
@@ -54,6 +85,8 @@ _NOT_JARGON = frozenset(
     morning afternoon evening tonight meeting meetings agenda minutes action
     actions decision decisions update updates project projects team teams
     google zoom slack email report reports review reviews number numbers
+    weekly daily monthly quarterly annual biweekly sync standup kickoff
+    week weeks month months year years quarter quarters
     because before after during while there their about would could should
     something anything everything nothing someone everyone another""".split()
 )
@@ -143,7 +176,11 @@ def suggest(meetings: list[dict], corpus_dir: Path | None = None) -> list[str]:
     seen = {term.casefold() for term in configured}
     suggested = list(configured)
 
-    for term in from_meetings(meetings) + (from_documents(corpus_dir) if corpus_dir else []):
+    if corpus_dir is None and os.environ.get("MEETING_VOCABULARY_CORPUS"):
+        corpus_dir = Path(os.environ["MEETING_VOCABULARY_CORPUS"]).expanduser()
+    # Packs before harvested terms: curated beats counted. Documents last,
+    # since a folder of papers yields the most and the least certain terms.
+    for term in from_packs() + from_meetings(meetings) + (from_documents(corpus_dir) if corpus_dir else []):
         if term.casefold() not in seen:
             seen.add(term.casefold())
             suggested.append(term)
@@ -151,5 +188,11 @@ def suggest(meetings: list[dict], corpus_dir: Path | None = None) -> list[str]:
 
 
 def auto_enabled() -> bool:
-    """Whether suggestions are fed to the decoder without anyone approving them."""
-    return os.environ.get("MEETING_VOCABULARY_AUTO", "false").lower() == "true"
+    """Whether suggestions are fed to the decoder without anyone approving them.
+
+    On by default since the recorder was asked to need as little typing as
+    possible: the terms come from this workspace's own earlier meetings, so
+    they are words these people actually say. `MEETING_VOCABULARY_AUTO=false`
+    turns it off for a deployment that wants every term approved.
+    """
+    return os.environ.get("MEETING_VOCABULARY_AUTO", "true").lower() not in ("false", "0", "no", "off")

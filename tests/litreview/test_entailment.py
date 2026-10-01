@@ -13,7 +13,10 @@ What this proves, with a fake model:
   still passes without a model
 - the call goes through `SchedulerClient` at `USER_JOB`, temperature 0, with
   a JSON schema
-- the agreement tool's confusion matrix, on a tiny report
+- the model is shown each quote apart from the sentences beside it, each
+  labelled with its role (prompt v2, OPEN_ISSUES #3)
+- the agreement tool's confusion matrix, on a tiny report, and the audit
+  tool's reading of the committed hand-audit sheets
 
 The sentences and quotes below are verbatim from the stored benchmark reports
 (asthma and migraine, 2026-09-26), where the strong judge called them
@@ -40,6 +43,7 @@ from bedrock.litreview.models import EvidenceUnit, Report, ReportSection, Senten
 from bedrock.litreview.report.entailment import DROP_REASON, EntailmentCheck, evidence_text
 from bedrock.litreview.runner import answer_question
 from evals.litreview.entailment_agreement import compare, confusion, format_table
+from evals.litreview import entailment_audit as audit
 from tests.litreview.fixtures import QUESTION, corpus, responder
 from tests.litreview.test_bedrock_settings import bedrock
 from tests.litreview.test_scheduler_client import ScriptedBackend, in_worker, make
@@ -151,7 +155,7 @@ def test_on_not_supported_drops_every_sentence_the_guard_kept(settings, tmp_path
     # The integrity check is pure code and still passes: the dropped
     # sentences are stored as not kept, so it never needs the model.
     assert report.integrity == []
-    assert "Entailment check (optional, not yet measured)" in result.paths["md"].read_text()
+    assert "Entailment check (optional, not yet checked by a scientist)" in result.paths["md"].read_text()
 
 
 def test_on_contradicted_drops_too(settings, tmp_path):
@@ -253,6 +257,58 @@ def test_the_qualifying_next_sentence_is_part_of_what_the_model_reads():
         qualifier_quote="This is a made-up next sentence that limits the quote.",
     )
     assert qualified.qualifier_quote in evidence_text({"E211": qualified})
+
+
+# obesity report after the 26 September fixes, S18 citing E190
+# (`evals/litreview/hand_audit/qwen_obesity_after.md`), graded weak_citation:
+# the sentence states the next sentence's result, and the quote it cites is a
+# different one. OPEN_ISSUES #3. Shown as one passage (prompt v1), every word
+# of the sentence is in the paper's text.
+TMEM135_SENTENCE = (
+    "High fat feeding in male mice did not elicit a significant body weight difference between TMEM135 "
+    "knockout and control genotypes, presumably due to the already rapid diet-induced weight gain in male "
+    "C57BL/6J mice."
+)
+TMEM135 = unit(
+    "E190", target="TMEM135", target_raw="TMEM135", intervention=None, disease="obesity", disease_raw="obesity",
+    evidence_type="in_vivo", species="mouse", species_raw="mice", outcome="worsened", section="results",
+    quote="Assessment of glucose homeostasis in these animals revealed that the TMEM135 knockout results in "
+          "glucose intolerance, hyperinsulinemia and insulin resistance (Fig. ).",
+    context_quote="Transgenic mice that overexpress TMEM135 ( Tmem135 TG ) under the control of CAG promoter "
+                  "have been previously described .",
+    qualifier_quote="In contrast to female mice, high fat feeding in male mice did not elicit a significant body "
+                    "weight difference between the genotypes, presumably because the already rapid diet-induced "
+                    "weight gain in male C57BL/6J mice could not be further increased by the TMEM135 "
+                    "inactivation (Supplementary Fig. ).",
+)
+
+
+def test_the_quote_is_shown_apart_from_the_sentences_beside_it():
+    lines = evidence_text({"E190": TMEM135}).splitlines()
+    assert lines[:2] == ["[E190] about: TMEM135", f'    Quote: "{TMEM135.quote}"']
+    assert f'    - context: "{TMEM135.context_quote}"' in lines[3:]
+    assert f'    - next sentence: "{TMEM135.qualifier_quote}"' in lines[3:]
+    # The result S18 states is only in the next sentence; the model is asked
+    # whether a quote states it, so the two must not run together.
+    assert "body weight" not in lines[1]
+
+
+def test_a_finding_with_only_a_quote_shows_nothing_beside_it():
+    assert evidence_text({"E92": RIMEGEPANT}) == f'[E92] about: rimegepant\n    Quote: "{RIMEGEPANT.quote}"'
+
+
+def test_every_cited_finding_is_shown_in_order():
+    text = evidence_text({"E233": MONTELUKAST, "E190": TMEM135})
+    assert text.index("[E233]") < text.index("[E190]")
+    assert text.count("Quote: ") == 2
+
+
+def test_the_prompt_says_the_claim_must_be_in_a_quote():
+    prompt = load_prompt("entail").render(sentence=TMEM135_SENTENCE, evidence=evidence_text({"E190": TMEM135}))
+    assert int(load_prompt("entail").version) >= 2
+    rules = " ".join(prompt.split())
+    assert 'main claim - its result or finding - must be stated in a "Quote"' in rules
+    assert "A result that appears only beside a quote, and not in any quote, is not supported." in rules
 
 
 def test_a_real_unsupported_sentence_is_dropped_with_the_models_reason():
@@ -405,3 +461,54 @@ def test_the_agreement_tool_builds_the_confusion_matrix(tiny):
     assert CLAIMS["judge_supported"] in table.split("read every one:")[1]
     # Reading the judge's file never writes the pending list beside it.
     assert not answers.with_suffix(".pending.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# The audit tool, on the committed hand-audit sheets
+# ---------------------------------------------------------------------------
+
+
+def test_the_audit_reads_every_graded_sentence_from_the_committed_sheets():
+    cases = audit.cases()
+    assert len(cases) == 105
+    assert sum(c.hand == audit.NOT_FAITHFUL for c in cases) == 12
+    s18 = next(c for c in cases if (c.report, c.sid) == ("qwen_obesity_after", "S18"))
+    assert s18.text == TMEM135_SENTENCE and s18.citations == ["E190"] and s18.grade == "weak_citation"
+    e190 = s18.units["E190"]
+    assert (e190.quote, e190.context_quote, e190.qualifier_quote) == (
+        TMEM135.quote, TMEM135.context_quote, TMEM135.qualifier_quote
+    )
+    assert e190.target_raw == "TMEM135"
+
+
+def test_check_10_drops_exactly_the_issue_3_sentences_built_from_beside_the_quote():
+    """The four of OPEN_ISSUES #3 that take their content from a sentence
+    beside the quote; asthma S25 (a dropped hedge) is the quote's own words,
+    so check 10 keeps it. No faithful sentence is dropped."""
+    from bedrock.litreview.knowledge import load_knowledge
+
+    kb = load_knowledge()
+    cases = audit.cases()
+    drops = {(c.report, c.sid) for c in cases if audit.check10(c, kb) == "drops"}
+    assert drops == set(audit.ISSUE_3) - {("qwen_asthma_after", "S25")}
+
+
+def test_the_audit_measures_and_writes_the_sheet_with_a_fake_model(tmp_path):
+    cases = [c for c in audit.cases() if c.report == "qwen_obesity_after"]
+    target = ("qwen_obesity_after", "S18")
+
+    def answer(prompt, schema):
+        assert is_entail(schema)
+        return entail_reply("not_supported" if f'"{TMEM135_SENTENCE}"' in prompt else "supported", "because")
+
+    rows = audit.measure(cases, EntailmentCheck(FakeLLMClient(responder=answer), "m"), answers=tmp_path / "none")
+    assert [(r.report, r.sid) for r in rows if r.check == "unsupported"] == [target]
+    table = audit.format_table(rows, title="obesity")
+    assert "| qwen_obesity_after S18 | weak_citation | drops | unjudged | unsupported |" in table
+    # The sheet shows the scientist the cited text by role, and not the hand grade.
+    sheet = audit.review_sheet(rows, cases)
+    assert "1 report sentences" in sheet and TMEM135_SENTENCE in sheet
+    assert f'  - next sentence: "{TMEM135.qualifier_quote}"' in sheet
+    assert "weak_citation" not in sheet
+    before = [{**r.__dict__, "check": "supported"} for r in rows]
+    assert audit.changes(before, rows).startswith(f"1 of {len(rows)} sentences changed class.")

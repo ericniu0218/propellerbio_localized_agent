@@ -54,7 +54,7 @@ from bedrock.meetings.citations import (
     resolve_timestamp,
     strip_citation_markup,
 )
-from bedrock.meetings.transcript import Cue, speakers, word_count
+from bedrock.meetings.transcript import count_words, Cue, speakers, word_count
 
 # A chunk is at most this many words (about 1,500 tokens), and in any case no
 # more than fits the window with the instructions and the reply.
@@ -210,7 +210,7 @@ def chunk_cues(
     current: list[Cue] = []
     words = tokens = 0
     for cue in cues:
-        length = len(cue.text.split())
+        length = count_words(cue.text)
         cost = _line_tokens(cue)
         too_long = words + length > words_per_chunk or (max_tokens is not None and tokens + cost > max_tokens)
         if current and too_long:
@@ -243,9 +243,25 @@ Rules:
 - A decision is something the group settled on. Phrases like "then we", "let's",
   "agreed", "we're not going to", "we take" usually mark one. A topic they only
   discussed is not a decision.
-- An action is something a specific person will do next.
+- An action is something a specific person will do next. Most are not
+  announced as "action item"; they are asked for or promised in passing, in
+  the ordinary language of work. Each of these is an action:
+    a request:     "Can you send me the numbers by Friday", "Please loop in
+                   legal", "Bob, put that on the calendar", "Make sure the
+                   deck goes out today", "Ping me when the run finishes"
+    a commitment:  "I'll follow up with the vendor", "I can take the ticket",
+                   "Will do", "Leave it with me", "I'll circle back Tuesday"
+    an assignment: "Priya owns the protocol update", "Ravi, that's yours",
+                   "Let's have QA re-run it"
+  Sending an email, scheduling a meeting, sharing a document, ordering
+  something, updating a ticket, following up with someone, and reviewing
+  something are all actions when a person will do them. Capture the
+  deliverable and any deadline in "text": "Send the enrollment numbers by
+  Friday", not "discuss numbers".
 - "owner" is the person who will DO the task, not the person who assigned it.
-  In "Bob, send me the numbers", the owner is Bob, not the speaker.
+  In "Bob, send me the numbers", the owner is Bob, not the speaker. For "I'll
+  send it", the owner is the speaker. "Will do" or "on it" straight after a
+  request makes the person who said it the owner of that request.
 - A fact is any concrete detail stated: a number, a count, a date, a deadline,
   a name, a status. Copy the actual value. "Enrollment is 148 of 200" is a
   fact; "they discussed enrollment" is not.
@@ -263,6 +279,9 @@ Rules:
   round of "yeah, okay" into a decision.
 - A decision or an action is a statement about something happening. A single
   word, a name, or a run of agreement is neither, however clearly it was said.
+- Write "text" in English whatever language the transcript is in, so the
+  notes read as one document. "quote" is never translated: it is copied from
+  the transcript exactly as written there, in its original language.
 
 Transcript part:
 {transcript}
@@ -307,6 +326,8 @@ what was said. If nothing was decided, do not imply that anything was.
 - If the transcript is too short or too garbled to brief anyone on, write \
 only the first sentence and no bullets. Never address the reader, never ask \
 for anything, never explain what you cannot do.
+- Write in English whatever language was spoken. Keep names, product names \
+and terms as they appear.
 
 Transcript:
 {transcript}
@@ -425,6 +446,144 @@ def _for_one_prompt(cues: list[Cue], limit: int = MAX_OVERVIEW_CUES, budget_toke
     """The text a single-prompt pass is given; see ``_excerpt``."""
     budget = budget_tokens if budget_tokens is not None else 10**9
     return _excerpt(cues, budget, limit).render()
+
+
+_TITLE_PROMPT = """\
+Name this meeting. Three to seven words, the way a colleague would label it \
+in a calendar: the topic, not a summary. No quotation marks, no full stop, \
+no "Meeting about". Reply with the title alone.
+
+Notes:
+{notes}
+"""
+
+MAX_TITLE_CHARS = 80
+
+
+async def suggest_title(scheduler: Scheduler, model: str, summary: "MeetingSummary") -> str | None:
+    """A name for a meeting nobody named, from what was said.
+
+    Returns None rather than a bad title: the dated default is always correct,
+    and a wrong name on a meeting is worse than no name."""
+    material = [summary.overview or ""]
+    material += [f"- {point.text}" for point in summary.decisions[:5]]
+    material += [f"- {point.text}" for point in summary.actions[:5]]
+    notes = "\n".join(line for line in material if line.strip())
+    if count_words(notes) < 8:
+        return None
+    reply = await _complete(scheduler, model, _TITLE_PROMPT.format(notes=notes), reply_tokens=32)
+    return clean_title(reply)
+
+
+def clean_title(reply: str) -> str | None:
+    """The first usable line of a title reply, or None."""
+    for line in reply.splitlines():
+        line = line.strip().strip('"\'`*#').strip()
+        line = re.sub(r"^(title|meeting title)\s*:\s*", "", line, flags=re.I)
+        line = line.rstrip(".:;,").strip()
+        if not line:
+            continue
+        if len(line) > MAX_TITLE_CHARS or count_words(line) > 12:
+            return None
+        lowered = line.lower()
+        if lowered.startswith(("meeting about", "this meeting", "the meeting", "a meeting")):
+            return None
+        return line
+    return None
+
+
+_TRANSLATE_PROMPT = """\
+Translate each numbered line below into natural English. These are lines of \
+a biotech meeting transcript. Keep gene symbols, drug names, company names, \
+people's names and every number exactly as written. Do not add, drop or \
+merge lines. Reply with the same numbers, one translated line per number, \
+and nothing else.
+
+{lines}
+"""
+
+_NUMBERED = re.compile(r"^\s*(\d+)\s*[.):\]]\s*(.+?)\s*$")
+_CJK_CHAR = re.compile("[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]")
+TRANSLATE_BATCH = 25
+
+
+def needs_translation(text: str) -> bool:
+    """A line written mostly in a CJK script."""
+    cjk = len(_CJK_CHAR.findall(text))
+    return cjk >= 2 and cjk >= count_words(text) / 2
+
+
+TRANSLATE_BATCH_TOKENS = 900
+
+
+def _translation_batches(cues: list[Cue], wanted: list[int]) -> list[list[int]]:
+    """Groups of cue indices small enough to translate in one reply: at most
+    ``TRANSLATE_BATCH`` lines and about ``TRANSLATE_BATCH_TOKENS`` of input.
+    Chinese is dense in tokens, so a 24-second window of it can be a hundred
+    tokens on its own."""
+    batches: list[list[int]] = []
+    current: list[int] = []
+    used = 0
+    for index in wanted:
+        # The general estimate is tuned for English; a CJK character is one
+        # or two tokens on its own, so they are counted on top.
+        text = cues[index].text
+        cost = estimate_tokens(text) + len(_CJK_CHAR.findall(text)) + 4
+        if current and (len(current) >= TRANSLATE_BATCH or used + cost > TRANSLATE_BATCH_TOKENS):
+            batches.append(current)
+            current, used = [], 0
+        current.append(index)
+        used += cost
+    if current:
+        batches.append(current)
+    return batches
+
+
+async def translate_cues(scheduler: Scheduler, model: str, cues: list[Cue]) -> dict[int, str]:
+    """English for every cue that was spoken in Chinese, Japanese or Korean.
+
+    Returned by cue index so the original transcript is untouched: quotes,
+    citations and retrieval all work on what was actually said, and the
+    English sits beside it for a reader who does not read the language. A
+    line whose translation cannot be matched back by number is left without
+    one rather than guessed.
+    """
+    import asyncio
+
+    wanted = [i for i, cue in enumerate(cues) if needs_translation(cue.text)]
+    out: dict[int, str] = {}
+
+    async def translate(batch: list[int]) -> None:
+        numbered = "\n".join(f"{n + 1}. {cues[i].text}" for n, i in enumerate(batch))
+        # English runs longer than Chinese in tokens; a fixed per-line budget
+        # cut off batches of long lines and those lines silently lost their
+        # English. Twice the input plus headroom is never the limit.
+        reply = await _complete(scheduler, model, _TRANSLATE_PROMPT.format(lines=numbered),
+                                reply_tokens=2 * (estimate_tokens(numbered) + len(_CJK_CHAR.findall(numbered))) + 200)
+        for line in reply.splitlines():
+            match = _NUMBERED.match(line)
+            if not match:
+                continue
+            n = int(match.group(1)) - 1
+            if 0 <= n < len(batch) and match.group(2):
+                out[batch[n]] = match.group(2)
+
+    # The batches are independent, so they go to the scheduler together and
+    # it decides the order; an hour of Mandarin is thirty of them, and one
+    # after another they kept a job at "Writing notes" for most of that.
+    await asyncio.gather(*(translate(batch) for batch in _translation_batches(cues, wanted)))
+    # A line the model half-translated — "the CRAS-G12-D对照实验 experiment" —
+    # gets one more try on its own, where there is nothing else to distract
+    # it. If it is still mixed, it is kept: half is more use than none.
+    for index in [i for i, text in out.items() if len(_CJK_CHAR.findall(text)) >= 2]:
+        reply = await _complete(scheduler, model, _TRANSLATE_PROMPT.format(lines=f"1. {cues[index].text}"),
+                                reply_tokens=256)
+        for line in reply.splitlines():
+            match = _NUMBERED.match(line)
+            if match and match.group(1) == "1" and match.group(2) and len(_CJK_CHAR.findall(match.group(2))) < 2:
+                out[index] = match.group(2)
+                break
+    return out
 
 
 async def _complete(scheduler: Scheduler, model: str, prompt: str, reply_tokens: int) -> str:
@@ -638,6 +797,30 @@ _SPECULATIVE_ASIDE = re.compile(
 )
 
 
+# A bullet with nothing after it. llama3.1:8b writes "-" on a line of its own
+# between a first bullet and the rest.
+_EMPTY_BULLET = re.compile(r"^\s*[-*•]\s*$")
+
+
+def _describes_the_recording(line: str) -> bool:
+    """Whether a bullet describes the recording rather than what was said.
+
+    The opener check runs on the first line of the brief; the model also puts
+    the same sentence *inside* the list — "- This is a conversation between
+    two students studying together" — where it is not an opener and has to
+    be caught as a bullet.
+    """
+    body = re.sub(r"^\s*[-*•]\s+", "", line).strip()
+    if not body:
+        return False
+    padded = body + ("" if body.endswith((".", "!", "?")) else ".")
+    match = _META_OPENER.match(padded)
+    # Only when the description is the whole line. A line that goes on to say
+    # something — "This appears to be a podcast. Site four has no
+    # coordinator." — keeps its content; the opener is trimmed elsewhere.
+    return bool(match) and match.end() >= len(padded)
+
+
 def _tidy_line(line: str) -> str:
     """Normalise one line of a brief: asterisk bullets, and the model's asides."""
     line = re.sub(r"^(\s*)[*•]\s+", r"\1- ", line)
@@ -665,6 +848,7 @@ def clean_overview(text: str) -> str:
         _tidy_line(line)
         for line in text.splitlines()
         if not _is_example_echo(line) and not _LIST_PREAMBLE.match(line)
+        and not _EMPTY_BULLET.match(line) and not _describes_the_recording(line)
     ]
     # Removing a preamble leaves the blank line that followed it.
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()

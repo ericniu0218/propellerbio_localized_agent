@@ -106,8 +106,10 @@ append-only SQLite action journal (`BEDROCK_HISTORY_DIR`) and a read-only
 catalogue over the per-run manifests; `bedrock/biotech/confidence.py`
 normalises AlphaFold 2 confidence. The employee-facing half is `/runs`,
 `/confidence` and `/audit` in both app modes and as `bedrock-biotech`
-subcommands, plus confidence-coloured interactive PyMOL. These read local
-files only, never consult a model, and work with every server switched off.
+subcommands, plus confidence-coloured interactive PyMOL. `/audit` also shows
+literature reviews and the outside hosts they were allowed to contact
+(`litreview.review`, `litreview.search`, never the question), recorded by
+`service.run_review` (`litreview/journal.py`). These read local files only, never consult a model, and work with every server switched off.
 Local history is *not* an authenticated ledger or tamper-proof storage, and a
 project label grants no access; read `docs/COMPLIANCE_MVP.md` and
 `docs/compliance_mvp/CONTRACT.md` before changing the journal, the run
@@ -132,7 +134,10 @@ Also built: the literature review (`src/bedrock/litreview/`), moved in from its
 own repository. A scientist asks a question and gets back a report in which
 every sentence cites a verified quote from a paper: `/review` beside the chat,
 `/reviews` to list and re-prove past ones, `bedrock-litreview` in a shell, and
-an optional FastAPI front door. **Read `src/bedrock/litreview/CLAUDE.md` before
+an optional FastAPI front door. A Research-tab checkbox (and
+`bedrock-litreview ask --deck`) also makes a target-proposal PowerPoint, drawn
+by code from the report, with paper figures fetched only when searching.
+**Read `src/bedrock/litreview/CLAUDE.md` before
 changing any of it** - it is a pipeline, not an agent, and its guarantees
 (verbatim quote verification, per-field provenance, the citation guard, the
 report invariants) depend on the model never deciding what happens next. Every

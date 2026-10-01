@@ -25,6 +25,16 @@ search:
     mechanism: [pathway, signaling, knockout, mechanism]
     safety: [adverse event, adverse events, safety, toxicity]
     prevent: [prevention, prevents, prophylaxis, prophylactic, relapse, recurrence, onset]
+  # Citation snowballing (sources/snowball.py): follow the references and
+  # citations of the first `seeds` searched papers that name every required
+  # entity, through Europe PMC and PubMed. Linked papers are added after the
+  # searched ones and pass the same gate. Off (0) until measured on the
+  # benchmark corpora. Turning it on changes the search signature, so a
+  # frozen set is collected again the next time a search is asked for.
+  snowball:
+    seeds: 0
+    per_seed: 50       # linked papers per seed and direction
+    max_added: 100     # papers added in all
 
 patents:
   # EPO OPS (src/bedrock/litreview/sources/epo_ops.py). A separate,
@@ -44,6 +54,10 @@ rank:
   # those that pass the exact-entity gate. The rest are ranked lexically only.
   # Each grade is one small model call, so this bounds the cost of a question.
   max_graded: 40
+  # Ordering among equally graded papers: for efficacy, safety and mechanism
+  # questions, study design from the paper's own publication type and wording
+  # (randomised trial first, cells last; study_design.design_rank), then
+  # lexical score. Target identification uses lexical score alone.
   # Which papers get those grades. `lexical`: the top max_graded by BM25.
   # `evidence_aware` (experimental, opt-in): the same budget, but lanes of it
   # are reserved first for papers whose own publication type or design

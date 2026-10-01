@@ -1,7 +1,8 @@
-"""Only two modules in the review package import ``bedrock.inference``.
+"""Only three modules in the review package import ``bedrock.inference``.
 
-The rule, from ``litreview/CLAUDE.md``: ``llm/scheduled.py`` and ``service.py``
-import it; everything else depends on the ``LLMClient`` protocol. That is what
+The rule, from ``litreview/CLAUDE.md``: ``llm/scheduled.py``, ``service.py`` and
+the doctor (``readiness.py``) import it; everything else depends on the
+``LLMClient`` protocol. That is what
 lets the whole pipeline - every stage, the guard, the report, the benchmark -
 be tested offline with ``FakeLLMClient``, on a machine with no GPU and no
 server, which is how this package was built before the client's GPU existed.
@@ -30,11 +31,15 @@ import bedrock.litreview
 
 PACKAGE = Path(bedrock.litreview.__file__).parent
 
-ALLOWED = {"llm/scheduled.py", "service.py"}
-"""The two modules that may. ``llm/scheduled.py`` is the only live model client
+ALLOWED = {"llm/scheduled.py", "service.py", "readiness.py"}
+"""The modules that may. ``llm/scheduled.py`` is the only live model client
 (`SchedulerClient`); ``service.py`` is the one door a model-using review comes
 through, and it needs `Scheduler` for its type and `InferenceError` in
-preflight."""
+preflight. ``readiness.py`` (`bedrock-litreview doctor`) asks the server which
+models it has and catches `InferenceError` when it cannot: it imports the
+exception type and builds a backend through `service.review_backend`, and it
+makes no model call and is no stage, so what this rule protects - a stage that
+could reach a server on its own schedule - is not in play."""
 
 
 def inference_imports(path: Path) -> list[int]:

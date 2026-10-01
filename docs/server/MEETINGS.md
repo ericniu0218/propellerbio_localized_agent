@@ -119,7 +119,7 @@ a meeting bot — every off-the-shelf bot relays the call through its own server
 ```bash
 brew install whisper-cpp ffmpeg
 mkdir -p ~/.cache/whisper-models && cd ~/.cache/whisper-models
-curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
 curl -LO https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 
 # Speaker identification. Optional — without these a recording still
@@ -146,17 +146,156 @@ the meeting is already gone.
 | Variable | Default | Why you would change it |
 |---|---|---|
 | `MEETING_MODEL_DIR` | `~/.cache/whisper-models` | models kept elsewhere |
-| `MEETING_SPEECH_MODEL` | `<dir>/ggml-small.en.bin` | a larger model for accuracy, smaller for speed |
+| `MEETING_SPEECH_MODEL` | `<dir>/ggml-large-v3-turbo.bin` | a different whisper checkpoint; `ggml-small.en.bin` is used if it is the only one present |
+| `MEETING_SPEECH_MODEL_ZH` | `<dir>/ggml-large-v3.bin` if present | the checkpoint used once a recording is decided to be Mandarin. Measured better than turbo on Chinese technical terms (EGFR, 剂量反应), worse on noisy English, 2.2x slower; download it from huggingface.co/ggerganov/whisper.cpp to turn this on |
+| `MEETING_LANGUAGE` | `detect` | listen first and decide (see Languages); a language code fixes it server-wide; the Record dialog overrides it per meeting |
+| `MEETING_VOCABULARY_PACK` | unset | bundled term lists by name: `biotech` (several hundred targets, drugs, assays, indications and companies for antibodies, peptides and siRNA in immunology & inflammation, obesity and CNS). A comma list of names or file paths |
+| `MEETING_VOCABULARY_CORPUS` | unset | a folder of `.txt`/`.md`/`.csv` documents to harvest terms from, e.g. the company's papers |
+| `MEETING_VOCABULARY_AUTO` | `true` | terms harvested from this workspace's earlier meetings are added behind `MEETING_VOCABULARY`; `false` to use only the typed list |
+| `MEETING_VAD_THRESHOLD` | `0.4` | raise towards `0.5` if a noisy room produces junk cues; lower towards `0.3` if quiet speakers are missing |
+| `MEETING_VAD_PAD_MS` | `60` | audio kept either side of each detected stretch of speech |
+| `MEETING_NORMALIZE_AUDIO` | `false` | level the recording before transcription; measured to lower speech-to-noise on a noisy room, so opt-in for one quiet speaker in a quiet room |
 | `MEETING_VAD_MODEL` | `<dir>/ggml-silero-v5.1.2.bin` | |
 | `MEETING_WHISPER_THREADS` | cores − 2, capped at 10 | leave the box more headroom |
 | `MEETING_VOCABULARY` | unset | **set this** — see below |
-| `MEETING_SUMMARY_MODEL` | `llama3.1:8b` | the local model that writes the notes |
+| `MEETING_SUMMARY_MODEL` | `llama3.1:8b` | the local model that writes the notes. `qwen2.5:14b` is the one to use where it fits (9 GB): measured on a real recording it kept every specific the 8B llama garbled, and it extracts decisions and actions from Mandarin, which llama3.1:8b returns nothing for. `demo-recorder.sh` picks it automatically when pulled |
 | `MEETING_SUMMARY_ENDPOINT` | `http://localhost:11434/v1` | vLLM/SGLang in production |
 | `MEETING_RECORDING_DIR` | `data/recordings` | where audio is kept |
 | `MEETING_SEGMENTATION_MODEL` | `<dir>/diarization/sherpa-onnx-pyannote-segmentation-3-0/model.onnx` | speaker segmentation |
 | `MEETING_EMBEDDING_MODEL` | `<dir>/diarization/nemo_en_titanet_small.onnx` | speaker embedding |
 
-**`MEETING_VOCABULARY` is the highest-value setting here.** Whisper spells
+### Which speech model, and why
+
+The default is `ggml-large-v3-turbo.bin`, whisper's multilingual model, not
+the English-only `ggml-small.en.bin` this shipped with. The English-only model
+is a little faster on clear native English and is wrong for the rooms this is
+used in: heavily accented English drifts into phonetic spellings, and a
+sentence of Mandarin comes out as the previous English sentence repeated. On
+the same 49-second clip on an M-series laptop, turbo took 2.1 s to small.en's
+1.5 s, so the cost is small. An installation that only has `small.en` still
+runs; readiness says so, and the Record dialog offers English only.
+
+### As little to fill in as possible
+
+The Record dialog asks one question — is the meeting in this room, in a
+browser tab, or both — and has a Start button. Everything else is worked out
+from the audio or the notes:
+
+- **Speakers** are counted and told apart from the audio (diarisation).
+- **Language** is detected; see below.
+- **Vocabulary** is harvested from the workspace's earlier meetings
+  (`MEETING_VOCABULARY_AUTO`, on by default) and added behind whatever
+  `MEETING_VOCABULARY` names.
+- **The name**: a meeting left unnamed gets a dated placeholder while it is
+  being transcribed and is then named from its own notes, three to seven
+  words, by the notes model. If that produces nothing usable the placeholder
+  stays; a wrong name is worse than a dated one.
+
+Project, a language override, the microphone to use, room mode, a speaker
+floor, typed notes, the consent statement and the attendee list are under
+"More options". The consent statement moves to the top only when the
+deployment requires it (`MEETING_CONSENT_REQUIRED`), since then it blocks.
+
+### Languages
+
+The default, `detect`, listens before deciding. Once the audio is sliced at
+speaker changes, the dozen longest slices are run through whisper's language
+detection (about a second each, so under fifteen seconds for any length of
+meeting), each weighted by its length. If one language carries at least 80%
+of that speech the whole recording is transcribed in it, as a fixed
+language: that is a bias the decoder trusts, and it is more accurate on
+accented speech than guessing each turn. Below 80% the meeting is treated as
+mixed and every turn is detected on its own, which the slicing makes
+possible, so a meeting that switches between Mandarin and English gets each
+turn in its own script. The meeting page says which happened and what was
+heard ("Transcribed as Mandarin (detected: Mandarin 93%, English 7%)").
+
+The threshold is 80% rather than a majority on purpose: a Mandarin meeting
+with a fifth of it in English is a mixed meeting, and forcing those English
+turns into Chinese characters — which is what a fixed `zh` does to them — is
+the worse mistake.
+
+"Language spoken" under More options overrides all of that, sent as the
+`language` field of the upload. With an English-only model installed,
+detection simply means English.
+
+With the multilingual model, a fixed language is a bias rather than a wall:
+on a clip with two Mandarin sentences around an English one, `en` produced
+all three in their own scripts. `zh` prepends the standard simplified-Chinese
+hint (`以下是普通话的句子。`) to the prompt, which keeps the output in
+simplified characters and, in testing, also kept the English sentence that
+`zh` without the hint dropped.
+
+The notes are written in English whatever was spoken. Quotes that prove a
+timestamp are copied from the transcript in its original language, so
+citation checking is unaffected.
+
+### Hearing the far end of the room, and what was measured
+
+The first version of this section added a compressor with makeup gain in
+the browser and levelled the file on the server. A real 31-minute recording
+in a library showed both to be wrong, and the numbers are worth keeping:
+
+| | |
+|---|---|
+| Room noise floor | -23 dB, steady for the whole recording |
+| Speech above the noise | about 8 dB (whisper wants 15 or more) |
+| ffmpeg denoiser (`afftdn`) | 85 words from the first five minutes against 120 raw; "healing 66" for "E-Lang 66" |
+| Levelling (`dynaudnorm`) | speech-to-noise 5.1 dB against 6.8 raw |
+| Whole windows instead of per-turn slices | same words recovered, noticeably better readings |
+
+A compressor narrows the gap between speech and the pauses around it, which
+is the gap recognition depends on, so it lifted the room more than the
+voices. Denoising removed consonants with the noise. What did help was
+giving whisper more context: turns are now joined into windows of up to 24
+seconds across the silences between them (`WhisperConfig.window_ms`), while
+a cut made inside a turn because the speaker changed without a pause is
+kept. Speaker labels are assigned per cue by overlap afterwards.
+
+What remains for quiet speakers: room mode still turns off the laptop's
+noise suppression and echo cancellation (both treat a far voice as noise)
+and leaves automatic gain on, which brings a quiet voice up slowly enough to
+leave the pauses alone; the voice-activity threshold is 0.4 with 60 ms of
+pad. The one thing that reliably improves a noisy room is a microphone
+nearer the people, or one in the middle of the table.
+
+Whisper's reflexes on a second of noise — "Thank you.", "Thanks for
+watching" — are dropped when one of them is the entire output of a slice
+under three seconds. Non-speech tokens ("*coughs*") are suppressed.
+
+### For whoever missed the meeting
+
+Every meeting page has download links: **Text**, **Word**, **Subtitles**
+(WEBVTT) and **Markdown**, from `GET /workspace/api/meetings/{id}/transcript?format=txt|docx|vtt|md`.
+Each carries the notes first, then every line with its timestamp and speaker.
+
+Lines spoken in Chinese (or Japanese or Korean) get an English line beside
+them, written by the notes model after the notes. The original line is the
+record: citations quote it and retrieval searches it, so it always comes
+first and is never replaced. The page has a "Show English" toggle, and
+`&english=true` on a download puts the English under each translated line.
+A line the model leaves half-translated is retried once on its own.
+
+### Naming the speakers
+
+Labels like "Speaker 2" become names when a voice is enrolled: **Add a
+voice** on the Meetings tab takes a short sample (three seconds minimum;
+twenty is better) and keeps only a 192-number voice print, never the audio.
+Tested end to end: two enrolled voices came back named on the next
+recording, and the decisions and action items were credited to them by
+name. For a team that meets every week this is the single cheapest thing
+that makes a transcript readable, and it takes each person under a minute.
+
+**`MEETING_VOCABULARY` is the highest-value setting here.** When nobody can
+supply the customer's own list, `MEETING_VOCABULARY_PACK=biotech` is a
+starting point: the pack's first lines are the names whisper is most likely
+to misspell (cytokines and their receptors, then obesity and CNS targets),
+because whisper reads only about 200 tokens of prompt and weights the start
+most. Every term in the list, however far down, still repairs near-misses in
+the transcript — "dupilumob" becomes "dupilumab", "IL17" becomes "IL-17" — but
+a term under four characters without a digit is never a repair target, so
+"Sam" does not become "SAD". Put the customer's own terms in
+`MEETING_VOCABULARY`; they go first. Whisper spells
 words it does not know phonetically: across test runs of the same audio it
 wrote "CROS" and then "CRAS" for "KRAS", and "PREA" for "Priya". Set it to the
 drug names, assay names, gene symbols and people's names this customer actually

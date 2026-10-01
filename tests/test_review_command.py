@@ -12,10 +12,11 @@ import asyncio
 from pathlib import Path
 import pytest
 
-from tests.conftest import FakeBackend
+from tests.conftest import FakeBackend, FakeHistoryStore, make_services
 from tests.workers import wait_for_app_workers
 
 from bedrock.app import BedrockApp
+from bedrock.ui.services import ComplianceServices
 from bedrock.config import PROFILES, Settings
 from bedrock.inference import RequestOptions
 from bedrock.ui.argparsing import CommandUsageError
@@ -283,6 +284,27 @@ async def test_a_review_with_patents_shows_the_competitor_landscape(
         assert "2 filing" in body
 
 
+async def test_the_app_hands_its_history_and_actor_to_the_review_job(corpus_file, review_dir, models_yaml):
+    """`literature_review` must thread the app's own `ComplianceServices`
+    journal and actor through to `run_review_job` - the same way `/digest`
+    gets both (`ui/local_commands.py`) - so a review shows up in `/audit`."""
+    backend = ReviewBackend()
+    history = FakeHistoryStore()
+    settings = Settings(model=MODEL, profile=PROFILES["workstation"], user_id="alice")
+    services = make_services(settings, history=history)
+    app = BedrockApp(settings=settings, backend=backend, services=services)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+    rows = [r for r in history.rows if r["action"] == "litreview.review"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["actor_id"] == "alice" for r in rows)
+
+
 async def test_reviews_lists_the_run_and_verify_says_ok(corpus_file, review_dir, models_yaml):
     backend = ReviewBackend()
     app = make_app(backend)
@@ -332,14 +354,15 @@ async def test_reviews_does_not_need_the_configured_model_set_to_exist(review_di
 # ---------------------------------------------------------------------------
 
 
-async def test_reviews_check_reports_every_setup_problem_at_once(review_dir, models_yaml):
-    """The point of `check` over the error a review raises: a machine that is new
-    to this usually has more than one thing wrong, and finding them one failed
-    `/review` at a time is slow."""
-    backend = ReviewBackend()
-    # The laptop profile's 8,192-token window is too small, and its 120-second
-    # timeout is too short — two findings from one command.
-    app = make_app(backend, profile=PROFILES["laptop"], request_timeout=120.0)
+async def test_reviews_check_reports_the_failure_and_the_advice_beside_it(review_dir, models_yaml):
+    """`/reviews check` is `bedrock-litreview doctor`'s implementation
+    (`litreview/readiness.py`), asked through the app's own connection. What it
+    adds over the error a review raises is that the advice that does not stop a
+    review - here a timeout too short for an extraction call - is shown beside
+    the one thing that does, instead of being found one failed `/review` later."""
+    # The laptop profile's 8,192-token window is too small for a review (a
+    # failure), and a 120-second timeout is too short (worth knowing).
+    app = make_app(ReviewBackend(), profile=PROFILES["laptop"], request_timeout=120.0)
     async with app.run_test() as pilot:
         await pilot.pause()
         await run(app, "/reviews check")
@@ -347,9 +370,9 @@ async def test_reviews_check_reports_every_setup_problem_at_once(review_dir, mod
         await pilot.pause()
 
         report = notices(app)[-1]
-        assert "context window" in report and "12,288" in report
-        assert "request timeout" in report
-        assert "would stop a review" in report
+        assert "**FAIL**" in report and "12,288" in report, report
+        assert "request timeout" in report and "worth knowing" in report, report
+        assert "cannot run yet" in report
 
 
 async def test_reviews_check_passes_on_a_machine_that_is_set_up(review_dir, models_yaml):
@@ -361,8 +384,9 @@ async def test_reviews_check_passes_on_a_machine_that_is_set_up(review_dir, mode
         await pilot.pause()
 
         report = notices(app)[-1]
-        assert "A review can run." in report
-        assert "model server" in report, "it should have asked the server too"
+        assert "A review can run." in report, report
+        assert "**FAIL**" not in report
+        assert "operational" in report, "it should have asked the server, and said what it found"
 
 
 async def test_reviews_forget_deletes_the_run_and_says_what_went(
@@ -557,7 +581,7 @@ async def test_a_stale_install_says_to_reinstall_instead_of_showing_a_traceback(
     def missing(_args):
         raise ImportError("No module named 'pydantic'")
 
-    monkeypatch.setattr("bedrock.app.parse_review_command", missing)
+    monkeypatch.setattr("bedrock.ui.review_mixin.parse_review_command", missing)
     app = make_app(ReviewBackend())
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -605,6 +629,55 @@ async def test_quitting_stops_a_running_review_so_it_stays_resumable(review_dir,
         assert not app._review_cancel.is_set()
         await app.action_quit()
     assert app._review_cancel.is_set()
+
+
+async def test_an_unrecordable_intent_becomes_a_notice_not_a_crash(corpus_file, review_dir, models_yaml):
+    """`run_review_job` must catch `ReviewNotRecorded` and turn it into a
+    notice like every other failure it handles - it never raises, and the
+    app's one-review-at-a-time bookkeeping still gets to run."""
+    backend = ReviewBackend()
+    history = FakeHistoryStore(fail_states={"intent"})
+    settings = Settings(model=MODEL, profile=PROFILES["workstation"], user_id="alice")
+    services = make_services(settings, history=history)
+    app = BedrockApp(settings=settings, backend=backend, services=services)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        text = "\n".join(notices(app))
+        assert "Traceback" not in text
+        assert app._review_running is False
+
+    assert backend.review_requests == [], "the pipeline must never have run"
+async def test_a_journal_that_cannot_be_opened_stops_the_review_with_a_notice(
+    corpus_file, review_dir, models_yaml
+):
+    """A local history that exists but cannot be opened stops the review
+    before it starts, with a notice - never a crashed worker."""
+
+    class BrokenServices(ComplianceServices):
+        async def history(self):
+            raise OSError("history.sqlite3 is read-only")
+
+    backend = ReviewBackend()
+    settings = Settings(model=MODEL, profile=PROFILES["workstation"], user_id="alice")
+    app = BedrockApp(settings=settings, backend=backend, services=BrokenServices(settings))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await run(app, f"/review {QUESTION} --no-model --corpus {corpus_file}")
+        await wait_for_app_workers(app)
+        await pilot.pause()
+
+        text = "\n".join(notices(app))
+        assert "Local history is unavailable" in text
+        assert "read-only" in text
+        assert app._review_running is False
+
+    assert backend.review_requests == []
 
 
 async def test_a_typo_never_starts_a_review(corpus_file, review_dir, models_yaml):
@@ -681,11 +754,7 @@ async def test_a_model_the_server_does_not_have_names_the_pull_command(
 # ---------------------------------------------------------------------------
 
 
-async def test_agent_pack_mode_says_where_reviews_run():
-    from bedrock.agentpack_app import AGENTPACK_REVIEW_NOTICE
-
-    assert "default mode" in AGENTPACK_REVIEW_NOTICE
-    assert "bedrock-litreview" in AGENTPACK_REVIEW_NOTICE
+# Agent-pack mode runs `/review` for real: tests/test_agentpack_review.py.
 
 
 # ---------------------------------------------------------------------------

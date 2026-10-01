@@ -9,6 +9,7 @@ from typing import AsyncIterator
 import pytest
 
 from bedrock.agentpack.models import AgentEvent
+from bedrock.agentpack.citation_marker import CITATION_MARKER
 from bedrock.agentpack_app import AgentPackApp
 from bedrock.biotech import ProteinWorkflowResult
 from bedrock.config import Settings
@@ -1192,26 +1193,6 @@ async def test_a_scientific_job_holds_the_queue_until_it_finishes(fake_client, t
 # ---------------------------------------------------------------------------
 
 
-async def test_reviews_here_does_not_send_you_to_a_command_this_mode_refuses(
-    fake_client: FakeAgentPackClient, tmp_path, monkeypatch
-):
-    """With no reviews yet, `/reviews` used to say "Start one with `/review`" -
-    in the one mode that refuses `/review`. Every `/reviews` verb works here;
-    only *starting* a review does not."""
-    monkeypatch.setenv("BEDROCK_LITREVIEW_DIR", str(tmp_path / "litreview"))
-    app = make_app(fake_client)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press(*"/reviews", "enter")
-        for _ in range(6):
-            await pilot.pause()
-
-        notice = "\n".join(str(n.source) for n in app.query(SystemNotice))
-        assert "No literature reviews on this machine yet" in notice, notice
-        assert "Start one with `/review" not in notice
-        assert "bedrock-litreview ask" in notice
-
-
 async def test_the_retraction_settings_are_discoverable_here(fake_client: FakeAgentPackClient):
     """The reported gap: `/reviews settings` and `/reviews reinstate` work in
     agent-pack mode but were in none of its help tables."""
@@ -1224,3 +1205,43 @@ async def test_the_retraction_settings_are_discoverable_here(fake_client: FakeAg
         helped = "\n".join(str(n.source) for n in app.query(SystemNotice))
         assert "/reviews settings" in helped, helped
         assert "/reviews reinstate" in helped
+
+
+# ---- The unverified-citation marker (finding 8 of #30), at the app level --------
+#
+# bedrock.agentpack.citation_marker.looks_cited is unit-tested directly in
+# tests/test_citation_marker.py; what is particular to the app is that
+# AgentPackApp._finish applies it to a real, finished answer and only there.
+
+
+async def test_citation_marker_appears_on_an_answer_that_presents_itself_as_cited(
+    fake_client: FakeAgentPackClient,
+):
+    fake_client.results["res_1"] = "Smith et al. showed a reduction in symptoms."
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"is IL-23 worth targeting?", "enter")
+        await pilot.pause()
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+
+        reply = app.query_one(AssistantMessage).source
+        assert CITATION_MARKER in reply
+        assert "/review" in reply
+
+
+async def test_citation_marker_is_absent_from_an_ordinary_answer(fake_client: FakeAgentPackClient):
+    fake_client.results["res_1"] = "This is a general answer with no citations at all."
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"how should I think about this?", "enter")
+        await pilot.pause()
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+
+        reply = app.query_one(AssistantMessage).source
+        assert CITATION_MARKER not in reply

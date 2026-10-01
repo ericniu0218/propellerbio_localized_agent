@@ -6,6 +6,7 @@
     bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl --patents patents.jsonl
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
+    bedrock-litreview ask "..." --search --deck   # also write report.pptx, the target-proposal deck
     bedrock-litreview runs                  # the most recent runs
     bedrock-litreview verify-run RUN_ID     # re-prove a stored report, and say if today's rules differ
     bedrock-litreview verify-run --all --require-same-rules   # CI: also fail on changed rules
@@ -87,7 +88,8 @@ def _ask(args) -> int:
     it. Without a model there is nothing to talk to, so no backend is opened.
     """
     from bedrock.litreview.llm import ModelServerUnavailable, ReviewInterrupted
-    from bedrock.litreview.service import ReviewRequest, run_review, standalone_scheduler
+    from bedrock.litreview.journal import ReviewNotRecorded
+    from bedrock.litreview.service import ReviewRequest, local_history, run_review, standalone_scheduler
 
     try:
         settings = load_settings(model_set=args.models, check_endpoint=not args.no_model)
@@ -117,10 +119,14 @@ def _ask(args) -> int:
         full_text=not args.no_full_text,
         out_dir=args.out,
         patents=patents,
+        deck=args.deck,
     )
 
     async def go():
         from bedrock.config import load_settings as load_bedrock_settings
+
+        bedrock_settings = load_bedrock_settings()
+        history, actor_id = local_history(bedrock_settings)
 
         def review(scheduler):
             return run_review(
@@ -136,17 +142,23 @@ def _ask(args) -> int:
                 # prints is permanent, so the per-item ticks are throttled to
                 # a handful per stage rather than one per paper.
                 tick=throttled(_say, now=time.monotonic),
+                history=history, actor_id=actor_id,
             )
 
         # A run without a model never reaches a server, so none is opened: the
         # machine allowed to search is usually not the machine with the GPU.
         if args.no_model:
             return await review(None)
-        async with standalone_scheduler(load_bedrock_settings()) as scheduler:
+        # The review's own endpoint: bedrock's `api_base`, or in agent-pack
+        # mode the agent server's inference API (`config.resolve_endpoint`).
+        async with standalone_scheduler(bedrock_settings, review_settings=settings) as scheduler:
             return await review(scheduler)
 
     try:
         result = asyncio.run(go())
+    except ReviewNotRecorded as exc:
+        _say(f"ask: {exc}")
+        return 1
     except NothingFound as exc:
         _say(f"ask: {exc}")
         return 1
@@ -167,6 +179,8 @@ def _ask(args) -> int:
         return 1
 
     print(result.paths["html"])
+    if args.deck:
+        _write_deck(result, settings)
     if result.report.integrity:
         _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
              "it opens with a warning")
@@ -271,83 +285,31 @@ def _forget(args) -> int:
     return 0
 
 
-def _doctor(args) -> int:
-    """`doctor`: every setup check at once, and what was read to decide them.
+def _write_deck(result, settings) -> None:
+    """Write report.pptx beside the other report files.
 
-    The first-run banner (`bedrock.doctor`) runs only while there is no config
-    file, which is the one moment a machine is guaranteed *not* to be set up
-    yet. This is the re-runnable version: run it after changing a setting, after
-    IT changes the server, or when a review refuses to start and the message is
-    about something you cannot see.
-
-    Every check runs even when an earlier one failed, because a machine that is
-    new to this usually has more than one thing to fix and one-error-per-attempt
-    is a slow way to find that out. Exit status 1 means at least one finding
-    would stop a review.
+    The deck is drawn by code from the saved report and the figures the run
+    prepared, so this never reaches the network. A missing python-pptx is said
+    plainly and does not change the exit code: the report itself is finished.
     """
-    from bedrock.litreview.config import config_file
-    from bedrock.litreview.service import Finding, config_findings, findings, standalone_scheduler
+    import os
+    from datetime import datetime
 
-    def show(items) -> None:
-        for finding in items:
-            first, *rest = finding.detail.splitlines() or [""]
-            print(f"[{finding.mark}] {finding.title}: {first}")
-            for line in rest:
-                print(f"       {line}")
+    from bedrock.litreview.report.slides import to_pptx
+    from bedrock.litreview.service import deck_figures
 
+    now = datetime.now()
     try:
-        settings = load_settings(model_set=args.models)
-    except ConfigError as exc:
-        # A bad [litreview] table, an unknown model set, or a model endpoint
-        # that is not on the local network. All three stop every review, and all
-        # three are exactly what someone runs this to find out.
-        show([Finding(title="configuration", ok=False, blocking=True, detail=str(exc))])
-        return 1
-
-    print("Literature review — setup check\n")
-    for label, value in (
-        ("model set", settings.model_set),
-        ("models.yaml", config_file("models.yaml")),
-        ("pipeline.yaml", config_file("pipeline.yaml")),
-        ("report.yaml", config_file("report.yaml")),
-        ("model server", settings.base_url),
-        ("machine profile", settings.profile_name),
-        ("data directory", settings.data_dir),
-        ("database", settings.db_path),
-        ("reports", settings.out_dir),
-    ):
-        print(f"  {label + ':':<17}{value}")
-    print()
-
-    if args.no_server:
-        found = config_findings(settings)
-    else:
-        async def go():
-            from bedrock.config import load_settings as load_bedrock_settings
-
-            async with standalone_scheduler(load_bedrock_settings()) as scheduler:
-                return await findings(settings, scheduler.backend)
-
-        try:
-            found = asyncio.run(go())
-        except OSError as exc:
-            found = config_findings(settings) + [
-                Finding(title="model server", ok=False, blocking=True,
-                        detail=f"could not be reached at all: {exc}")
-            ]
-
-    show(found)
-    blocking = [f for f in found if f.blocking]
-    warnings = [f for f in found if not f.ok and not f.blocking]
-    print()
-    if blocking:
-        print(f"{len(blocking)} thing(s) would stop a review. Fix those and run this again.")
-        return 1
-    if warnings:
-        print(f"A review can run. {len(warnings)} thing(s) above are worth knowing first.")
-        return 0
-    print("Ready. `bedrock-litreview ask \"<question>\" --corpus <papers.jsonl>` runs one.")
-    return 0
+        deck = to_pptx(
+            result.report, f"review-{result.report_id}", figures=deck_figures(settings, result.run.id),
+            author=os.environ.get("BEDROCK_USER", ""), date=f"{now.day} {now:%B %Y}",
+        )
+    except ImportError:
+        _say('ask: the PowerPoint needs python-pptx: pip install -e ".[server]"')
+        return
+    path = result.paths["html"].with_name("report.pptx")
+    path.write_bytes(deck)
+    _say(f"ask: wrote {path}")
 
 
 def _unfinished_run_id(settings) -> str:
@@ -512,10 +474,27 @@ def main(argv: list[str] | None = None) -> int:
     ask.add_argument("--no-model", action="store_true", help="run without any model")
     ask.add_argument("--refresh", action="store_true", help="re-collect papers instead of reusing the frozen set")
     ask.add_argument("--resume", help="resume a run id from the stage it reached")
+    ask.add_argument("--deck", action="store_true",
+                     help="also write report.pptx, the target-proposal deck (with --search, paper figures are fetched)")
 
     for p in (search, ask):
         p.add_argument("--sources", help=f"comma-separated subset of {','.join(SOURCES)} (default: defaults/pipeline.yaml)")
         p.add_argument("--no-full-text", action="store_true", help="abstracts only; skip open-access full text")
+
+    aliases = sub.add_parser(
+        "aliases", help="propose names for the knowledge table from HGNC and MeSH downloads; a person approves them")
+    asub = aliases.add_subparsers(dest="aliases_command", required=True)
+    propose = asub.add_parser("propose", help="write proposed names to a file for a person to read (no network)")
+    propose.add_argument("--hgnc", type=Path, help="HGNC complete set or custom download (tab-separated)")
+    propose.add_argument("--mesh", type=Path, help="MeSH descriptors, NLM's XML download (descYYYY.xml)")
+    propose.add_argument("--symbol", action="append", default=[],
+                         help="an HGNC symbol the table does not know yet, to propose a new target entry (repeatable)")
+    propose.add_argument("--out", type=Path, required=True, help="where to write the proposals (.yaml)")
+    propose.add_argument("--table", type=Path,
+                         help="the table to propose for (default: the package's knowledge/entities.yaml)")
+    approve_cmd = asub.add_parser("approve", help="write the names marked `approve: true` into the table")
+    approve_cmd.add_argument("proposals", type=Path)
+    approve_cmd.add_argument("--table", type=Path, help="the table to edit (default: the package's knowledge/entities.yaml)")
 
     verify = sub.add_parser("verify-run", help="re-check a stored run's report against the papers it pinned")
     verify.add_argument("run_id", nargs="?", help="the run to check")
@@ -558,6 +537,9 @@ def main(argv: list[str] | None = None) -> int:
     imp.add_argument("bundle", type=Path)
     imp.add_argument("--db", help="database file (default: the configured one)")
 
+    sub.add_parser("doctor", help="check this machine can run a review: server, models, window, structured "
+                                  "output (sends no prompt)")
+
     runs = sub.add_parser("runs", help="list the most recent runs")
     runs.add_argument("--limit", type=int, default=20)
 
@@ -565,11 +547,6 @@ def main(argv: list[str] | None = None) -> int:
     forget.add_argument("run_id")
     forget.add_argument("--yes", action="store_true", dest="yes",
                         help="do not ask for confirmation (for scripts)")
-
-    doctor = sub.add_parser("doctor", help="check this machine can run a review, and say what to change")
-    doctor.add_argument("--models", help="check a particular model set instead of this machine's default")
-    doctor.add_argument("--no-server", action="store_true", dest="no_server",
-                        help="skip the checks that need the model server running")
 
     rate = sub.add_parser("rate", help="record a scientist's rating of a report")
     rate.add_argument("report_id")
@@ -593,9 +570,65 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _doctor() -> int:
+    """Print every readiness check; exit 0 only when a review can run."""
+    from bedrock.litreview.readiness import operational, review_readiness
+
+    checks = asyncio.run(review_readiness())
+    for check in checks:
+        print(check.line())
+    return 0 if operational(checks) else 1
+
+
+def _aliases(args) -> int:
+    """`aliases propose` and `aliases approve` (`knowledge/aliases.py`). Files
+    only: nothing here reaches the network or a model."""
+    from bedrock.litreview.knowledge import TABLE, Knowledge
+    from bedrock.litreview.knowledge import aliases as al
+
+    try:
+        if args.aliases_command == "propose":
+            if not args.hgnc and not args.mesh:
+                _say("aliases propose: give --hgnc, --mesh or both")
+                return 1
+            if args.symbol and not args.hgnc:
+                _say("aliases propose: --symbol needs --hgnc")
+                return 1
+            # The table `approve --table` will edit, so what is proposed and
+            # what is refused are read against the same names.
+            kb = Knowledge.load(args.table or TABLE)
+            proposals, sources = [], []
+            if args.hgnc:
+                proposals += al.propose_targets(kb, al.read_hgnc(args.hgnc), args.symbol)
+                sources.append({"kind": "hgnc", "file": args.hgnc.name, "sha256": al.sha256(args.hgnc)})
+            if args.mesh:
+                proposals += al.propose_diseases(kb, al.read_mesh(args.mesh))
+                sources.append({"kind": "mesh", "file": args.mesh.name, "sha256": al.sha256(args.mesh)})
+            al.write_proposals(proposals, sources, args.out)
+            named = sum(len(p.names) for p in proposals)
+            refused = sum(len(p.refused) for p in proposals)
+            print(f"{args.out}: {named} names proposed for {len(proposals)} entities, {refused} refused. "
+                  "Nothing is used until a person marks names `approve: true` and runs `aliases approve`.")
+            return 0
+        changes = al.approve(args.proposals, args.table or TABLE)
+    except (al.AliasError, OSError) as exc:
+        _say(f"aliases: {exc}")
+        return 1
+    if not changes:
+        print("no names are marked `approve: true`; the table is unchanged")
+        return 0
+    for line in changes:
+        print(line)
+    print(f"wrote {args.table or TABLE}. Review the diff and commit it; searches for these entities now use "
+          "the new names, so their frozen paper sets are collected again the next time a search is asked for.")
+    return 0
+
+
 def _run(args) -> int:
     """Everything after the arguments are read. Split out so `main` has exactly
     one place that turns a `ConfigError` into a message."""
+    if args.command == "doctor":
+        return _doctor()
     if args.command == "search":
         from bedrock.litreview.knowledge import load_knowledge
         from bedrock.litreview.sources.corpus import write_papers
@@ -622,8 +655,8 @@ def _run(args) -> int:
     if args.command == "ask":
         return _ask(args)
 
-    if args.command == "doctor":
-        return _doctor(args)
+    if args.command == "aliases":
+        return _aliases(args)
 
     if args.command == "runs":
         from bedrock.litreview.db import Database

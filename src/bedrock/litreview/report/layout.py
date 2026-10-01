@@ -17,7 +17,11 @@ import yaml
 from bedrock.litreview.config import config_file
 
 GENERATED = {"best_source", "background", "gaps", "plan", "ranking", "evidence_table", "method", "excluded",
-             "competitors"}
+             "glance", "synthesis", "disagreements", "numbers", "glossary", "competitors"}
+
+APPENDIX = ("best_source", "plan", "evidence_table", "ranking", "method", "excluded")
+"""Sections a scientist reaches for to check the work, not to read the answer:
+rendered after the references, under an Appendix heading (stages/s8_render.py)."""
 
 
 @dataclass(frozen=True)

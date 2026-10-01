@@ -49,6 +49,7 @@ MIN_SIMILARITY = 0.72
 # similarity, because the shape is itself evidence.
 NAME_SIMILARITY = 0.6
 MIN_TOKEN_LENGTH = 3
+MIN_REPAIR_TARGET = 4
 
 # How far a token may be from a term before it is a different word. This is
 # scaled by term length, and it is the guard that matters most: on a short
@@ -70,7 +71,7 @@ _TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 # A cue's timing line, which must never be rewritten.
 _TIMING = re.compile(r"-->")
 
-_INFLECTIONS = ("s", "es", "ed", "ing", "'s")
+_INFLECTIONS = ("s", "es", "ed", "ing", "'s", "ly", "er", "est")
 
 
 @dataclass
@@ -137,8 +138,12 @@ def _is_sentence_initial(text: str, start: int) -> bool:
 
 
 def _is_inflection(token: str, term: str) -> bool:
+    """Either is the other plus an ordinary ending: "cohorts" beside "cohort",
+    and — the other way round — "week" beside a harvested "Weekly". A repair
+    turned two spoken "next week"s into "next Weekly" before the second
+    direction was checked."""
     lowered, base = token.casefold(), term.casefold()
-    return any(lowered == base + suffix for suffix in _INFLECTIONS)
+    return any(lowered == base + suffix or base == lowered + suffix for suffix in _INFLECTIONS)
 
 
 # Words that are never a mis-hearing of anything, however close they look.
@@ -196,6 +201,14 @@ def looks_like_a_name(token: str, sentence_initial: bool) -> bool:
     return token[:1].isupper() and not sentence_initial
 
 
+def _is_tiny_acronym(term: str) -> bool:
+    """Under four characters, no digit, and not a capitalised name: "SAD",
+    "tau", "MS" — but not "Raj"."""
+    if len(term) >= MIN_REPAIR_TARGET or any(c.isdigit() for c in term):
+        return False
+    return not (term[:1].isupper() and term[1:].islower())
+
+
 def _match(token: str, terms: list[str], sentence_initial: bool = True) -> str | None:
     """The term this token is a misspelling of, or None to leave it alone."""
     if len(token) < MIN_TOKEN_LENGTH:
@@ -203,17 +216,31 @@ def _match(token: str, terms: list[str], sentence_initial: bool = True) -> str |
     # An ordinary word spelled in lower case is itself. Capitals still qualify,
     # because whisper writes an unfamiliar name as capitals and "LUKE" in the
     # middle of a sentence is not the adverb.
-    if not looks_like_a_name(token, sentence_initial) and is_common_word(token):
+    name_shaped = looks_like_a_name(token, sentence_initial)
+    if not name_shaped and is_common_word(token):
         return None
     lowered = token.casefold()
     # A name-shaped token is allowed a looser similarity, because the shape is
     # itself evidence. An ordinary lower-case word has to be a very close miss.
-    threshold = NAME_SIMILARITY if looks_like_a_name(token, sentence_initial) else MIN_SIMILARITY
+    threshold = NAME_SIMILARITY if name_shaped else MIN_SIMILARITY
     best: tuple[float, str] | None = None
     for term in terms:
         if lowered == term.casefold() or _is_inflection(token, term):
             return None  # already right, or a legitimate variation of it
+        if _is_tiny_acronym(term):
+            # A three-letter acronym is one edit from half the names in a
+            # meeting: "Sam" would become "SAD" and "Pam" "PAD". It still
+            # steers the decoder; it is never a repair target. A short *name*
+            # somebody configured ("Raj", "Amy") is still one, because that is
+            # exactly what they typed it in for.
+            continue
         budget = max_edits_for(term)
+        if not name_shaped:
+            # An ordinary lower-case word gets one edit, whatever the term's
+            # length. Two edits turned "action" into "activin" the moment a
+            # domain pack put "activin" in the list; one edit still repairs
+            # "dupilumob" and "semaglutyde", which is what the latitude is for.
+            budget = 1
         if _edit_distance(lowered, term.casefold(), budget) > budget:
             continue
         ratio = SequenceMatcher(None, lowered, term.casefold()).ratio()

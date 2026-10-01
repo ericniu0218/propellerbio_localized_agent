@@ -8,12 +8,16 @@ adds on top is the part that is specific to a literature review: which model
 name does which job, how big a context window a run needs, where its database
 and reports live, and the pipeline knobs.
 
-Four things are copied from bedrock's own settings rather than configured here:
-`base_url` (its `api_base`), `context_window` and `profile_name` (the machine
-profile's), and `request_timeout`. They are copied, not restated: nothing in
-`[litreview]` can set them, and they are here only so a review can check them
-and say what to change. The API key stays with the backend, which is the only
-thing that needs it.
+The model server comes from bedrock's own settings: its `api_base`, or - in
+agent-pack mode, where nothing on this machine serves models - the agent
+server's inference API at `agent_pack_api_base` + `/v1`. `[litreview] api_base`
+overrides both. The context window is what someone configured, else the
+machine profile's (which describes a local Ollama), else what the server
+reports for the model it will actually use (`service.preflight`).
+
+Two more are copied from bedrock's settings rather than configured here, only
+so a review can check them and say what to change: `request_timeout`, and
+`profile_name` (`laptop`, `workstation`, `server`).
 
 Model names come from `defaults/models.yaml`, shipped inside the package. A
 site that needs different names drops a whole replacement file into
@@ -58,11 +62,15 @@ DEFAULT_CONFIG_DIR = Path.home() / ".config" / "bedrock" / "litreview"
 # test ever touches a real home directory.
 
 #: Every key the `[litreview]` table in bedrock's config.toml may contain.
-KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email", "entailment_check", "integrity_checks")
+KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email", "entailment_check", "integrity_checks",
+              "api_base", "context_window")
 
 #: Which model set a machine profile gets when nothing says otherwise.
 PROFILE_MODEL_SETS = {"server": "office"}
 DEFAULT_MODEL_SET = "laptop"
+#: The model set a review uses when bedrock runs in agent-pack mode: the agent
+#: server's inference API names its models by role (`bedrock.server.api.routes_inference`).
+AGENTPACK_MODEL_SET = "agentpack"
 
 
 class ConfigError(RuntimeError):
@@ -151,12 +159,6 @@ class Settings:
     jobs: dict[str, str]
     context_window: int
     min_context_window: int
-    request_timeout: float
-    """bedrock's own `request_timeout`, carried here so a review can say when it
-    is too short. Not a setting of this package: the shell command and the HTTP
-    API raise the timeout to `REVIEW_TIMEOUT_FLOOR` for their own backend, and
-    `/review` in the app shares the chat's, so this is the number the app will
-    actually use."""
     profile_name: str
     """The machine profile's name (`laptop`, `workstation`, `server`), for
     messages that differ by machine. The window itself is `context_window`."""
@@ -181,13 +183,35 @@ class Settings:
     pipeline."""
     entailment_check: bool = False
     """Run the optional local entailment check in Stage 7
-    (`report/entailment.py`). Off by default: it is unmeasured, and a false
-    drop loses real evidence."""
+    (`report/entailment.py`). Off by default: no scientist has yet checked
+    what it drops, and a false drop loses real evidence."""
     integrity_checks: str = "auto"
     """`auto`: each new review asks PubMed and Crossref about retractions and
     other notices for its papers (identifiers only). `manual`: only
     `bedrock-litreview integrity refresh` does. Set in the app with
     `/reviews settings`; see `preferences.py`."""
+    endpoint_source: str = "api_base"
+    """Where `base_url` came from: `litreview` (`[litreview] api_base` or
+    BEDROCK_LITREVIEW_API_BASE), `agentpack` (the agent server's inference API,
+    because bedrock runs with `backend = "agentpack"`), or `api_base` (bedrock's
+    own model server)."""
+    api_key: str | None = None
+    """Bearer token for `base_url`: BEDROCK_LITREVIEW_API_KEY, else bedrock's
+    `api_key`. Never written into a run, a report or a log."""
+    request_timeout: float = 120.0
+    """bedrock's own `request_timeout`, carried here so a review can say when it
+    is too short. Not a setting of this package: the shell command and the HTTP
+    API raise the timeout to `REVIEW_TIMEOUT_FLOOR` for their own backend, and
+    `/review` in the app shares the chat's, so this is the number the app will
+    actually use."""
+    context_window_source: str = "profile"
+    """Where `context_window` came from: `litreview` (`[litreview]
+    context_window` or BEDROCK_LITREVIEW_CONTEXT_WINDOW), `bedrock` (bedrock's
+    own `context_window`), `profile` (the machine profile's default, which
+    describes Ollama on this machine), or `unset` - nothing was written down
+    and the model server is somewhere else, so the window is whatever that
+    server reports for the model (`service.preflight`), and a server that
+    reports none is refused rather than guessed at."""
 
     def model_for(self, job: str) -> str:
         tier = self.jobs.get(job, "medium")
@@ -218,6 +242,7 @@ def load_settings(
     env: Mapping[str, str] | None = None,
     check_endpoint: bool = True,
     require_models: bool = True,
+    as_server: bool = False,
 ) -> Settings:
     """Read the settings for one review. Touches no disk beyond the YAML files.
 
@@ -231,6 +256,13 @@ def load_settings(
     set should still be able to list and re-prove its past runs rather than
     being told its machine profile's default set does not exist. `models` comes
     back empty there, so `model_for` still refuses to invent a name.
+
+    Where the model server is, in order: `[litreview] api_base` (or
+    BEDROCK_LITREVIEW_API_BASE); the agent server's inference API
+    (`agent_pack_api_base` + `/v1`) when bedrock runs in agent-pack mode; else
+    bedrock's `api_base`. `as_server=True` is for the agent server's own
+    Research tab: that process *is* the agent server, and must never route a
+    review back through itself.
     """
     import os
 
@@ -246,10 +278,17 @@ def load_settings(
     models_cfg = yaml.safe_load(models_path.read_text(encoding="utf-8")) or {}
     pipeline = (yaml.safe_load(pipeline_path.read_text(encoding="utf-8")) if pipeline_path.exists() else {}) or {}
 
+    base_url, endpoint_source = resolve_endpoint(bedrock_settings, table, env, as_server=as_server)
+    context_window, window_source = _context_window(bedrock_settings, table, env, endpoint_source)
+
     # Argument, then environment, then the [litreview] table, then the machine
     # profile. The profile decides last because it describes the machine, not
-    # the job: a big server may still be asked for the laptop model set.
-    profile_default = PROFILE_MODEL_SETS.get(bedrock_settings.profile.name, DEFAULT_MODEL_SET)
+    # the job: a big server may still be asked for the laptop model set. In
+    # agent-pack mode the models are the agent server's, named by role.
+    if endpoint_source == "agentpack":
+        profile_default = AGENTPACK_MODEL_SET
+    else:
+        profile_default = PROFILE_MODEL_SETS.get(bedrock_settings.profile.name, DEFAULT_MODEL_SET)
     name = (
         model_set
         or env.get("BEDROCK_LITREVIEW_MODELS")
@@ -280,12 +319,11 @@ def load_settings(
     allowed = _allowed_hosts(env, table)
     settings = Settings(
         model_set=name,
-        base_url=bedrock_settings.api_base,
+        base_url=base_url,
         models=models,
         jobs=dict(models_cfg.get("jobs", {}) or {}),
-        context_window=int(bedrock_settings.profile.context_window),
+        context_window=context_window,
         min_context_window=int(models_cfg.get("min_context_window", 12288)),
-        request_timeout=float(bedrock_settings.request_timeout),
         profile_name=str(bedrock_settings.profile.name),
         data_dir=data_dir,
         cache_dir=data_dir / "cache" / "llm",
@@ -302,6 +340,10 @@ def load_settings(
         epo_ops_secret=env.get("EPO_OPS_SECRET", ""),
         entailment_check=_flag(env.get("BEDROCK_LITREVIEW_ENTAILMENT_CHECK"), table.get("entailment_check", False),
                                "entailment_check"),
+        endpoint_source=endpoint_source,
+        api_key=env.get("BEDROCK_LITREVIEW_API_KEY") or getattr(bedrock_settings, "api_key", None) or None,
+        request_timeout=float(getattr(bedrock_settings, "request_timeout", 120.0) or 120.0),
+        context_window_source=window_source,
     )
     from bedrock.litreview.preferences import PreferenceError, integrity_mode
 
@@ -314,6 +356,43 @@ def load_settings(
         for spec in models.values():
             assert_local_model(spec.name, env)
     return settings
+
+
+def resolve_endpoint(bedrock_settings, table: Mapping[str, Any], env: Mapping[str, str], *,
+                     as_server: bool = False) -> tuple[str, str]:
+    """(base URL, where it came from) for the review's model calls. See `load_settings`."""
+    explicit = env.get("BEDROCK_LITREVIEW_API_BASE") or table.get("api_base")
+    if explicit:
+        if not isinstance(explicit, str):
+            raise ConfigError(f"api_base in the [litreview] table must be a URL, got {explicit!r}")
+        return explicit.rstrip("/"), "litreview"
+    if getattr(bedrock_settings, "backend", "openai") == "agentpack" and not as_server:
+        # In agent-pack mode nothing on this machine serves models: the
+        # `api_base` default (Ollama on localhost) is not where they are.
+        return str(bedrock_settings.agent_pack_api_base).rstrip("/") + "/v1", "agentpack"
+    return str(bedrock_settings.api_base).rstrip("/"), "api_base"
+
+
+def _context_window(bedrock_settings, table: Mapping[str, Any], env: Mapping[str, str],
+                    endpoint_source: str) -> tuple[int, str]:
+    """(window, where it came from). 0 with `unset` means: ask the server."""
+    value = env.get("BEDROCK_LITREVIEW_CONTEXT_WINDOW") or table.get("context_window")
+    if value not in (None, ""):
+        try:
+            window = int(value)
+        except (TypeError, ValueError):
+            raise ConfigError(f"context_window must be a whole number of tokens, got {value!r}") from None
+        if isinstance(value, bool) or window < 1024:
+            raise ConfigError(f"context_window must be at least 1024 tokens, got {value!r}")
+        return window, "litreview"
+    configured = getattr(bedrock_settings, "context_window_configured", None)
+    if configured:
+        return int(configured), "bedrock"
+    if endpoint_source == "api_base":
+        # The profile describes the model server on this machine, which is
+        # what `api_base` points at by default.
+        return int(bedrock_settings.profile.context_window), "profile"
+    return 0, "unset"
 
 
 def _table(bedrock_settings) -> dict[str, Any]:

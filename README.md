@@ -699,7 +699,10 @@ with multi-agent activity and inline human approval prompts, while keeping the
 same terminal interface. Configure its endpoint with `AGENT_PACK_API_BASE`.
 In that mode `/tier quick|standard|deep|auto` chooses who answers and `/cancel`
 stops the running request, against a server that supports them (`bedrock-server`,
-see `docs/server/`).
+see `docs/server/`). `/review` works in both modes: in agent-pack mode the
+review runs on the laptop and sends its model calls to the server's inference
+API (`/v1`, named models, JSON-schema output, authenticated with `api_key`),
+never through the chat. `bedrock-litreview doctor` checks it end to end.
 
 ## Running the tests
 

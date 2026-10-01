@@ -186,15 +186,20 @@ def summarize(
 
 
 def best_units(
-    units: list[EvidenceUnit], rank_of: dict[str, int], limit: int, demoted: frozenset[str] | set[str] = frozenset()
+    units: list[EvidenceUnit], rank_of: dict[str, int], limit: int, demoted: frozenset[str] | set[str] = frozenset(),
+    prefer=None,
 ) -> list[EvidenceUnit]:
     """Pick the most informative units for a section: strongest evidence tier,
     then most relevant paper, spreading across papers before doubling up.
     Findings from `demoted` papers (a published expression of concern) come
-    after all others."""
+    after all others. `prefer`, when given, returns a sort key where lower is
+    better (`report/synthesis.section_preference`: a result about what the
+    question asks first), so a paper's liver-fat result - not whichever of its findings sorts
+    first - is the one a "does X reduce liver fat?" section is written from."""
     ordered = sorted(
         units,
-        key=lambda u: (u.paper_id in demoted, _TIER.get(u.evidence_type, 9), rank_of.get(u.paper_id, 10**6), u.quote),
+        key=lambda u: (u.paper_id in demoted, prefer(u) if prefer is not None else (), _TIER.get(u.evidence_type, 9),
+                       rank_of.get(u.paper_id, 10**6), u.quote),
     )
     picked: list[EvidenceUnit] = []
     seen_papers: set[str] = set()

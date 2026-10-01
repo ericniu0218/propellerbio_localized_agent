@@ -125,6 +125,16 @@ class SourceHTTP:
                 self.sleep(min(2.0 ** attempt, 30.0))
         raise SourceError(f"{method} {url} failed after {self.retries} attempts ({last})")
 
+    def stream(self, method: str, url: str, **kwargs):
+        """Like `request`, but the caller reads the body piece by piece (a
+        context manager around `httpx.Client.stream`), so it can stop reading
+        a download that turns out to be far larger than it wanted. Same host
+        allowlist, redirects included, and the same spacing between requests;
+        no retries, because a caller that streams has its own idea of what a
+        failed download is worth."""
+        self._throttle()
+        return self.client.stream(method, url, **kwargs)
+
     def get(self, url: str, **kwargs) -> httpx.Response:
         return self.request("GET", url, **kwargs)
 

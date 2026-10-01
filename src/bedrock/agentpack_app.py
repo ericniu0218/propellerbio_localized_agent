@@ -33,6 +33,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, Input
 
 from bedrock import attachments
+from bedrock.agentpack.citation_marker import with_citation_notice
 from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
@@ -50,6 +51,7 @@ from bedrock.ui.argparsing import CommandUsageError
 from bedrock.ui.commands import Command, parse_command, parse_scientific_request
 from bedrock.ui.digest_command import AUTO_CONTEXT_OFF_HINT
 from bedrock.ui.prompt_queue import PromptQueuePanel
+from bedrock.ui.review_mixin import ReviewCommandsMixin
 from bedrock.ui.fold_command import (
     parse_fold_request,
     parse_structure_argument,
@@ -79,16 +81,7 @@ PENDING_REVIEW_PREFIX = "_⏳ Drafting — not yet compliance-reviewed_\n\n---\n
 # still takes real time after that.
 REVIEWING_PREFIX = "_🔍 Reviewing before this is shown as final…_\n\n---\n\n"
 
-AGENTPACK_REVIEW_NOTICE = (
-    "Literature reviews are not available in agent-pack mode. Run one in the "
-    "default mode (start `bedrock` without `BEDROCK_BACKEND=agentpack`) or from "
-    "a shell with `bedrock-litreview ask`. `/reviews` works here either way, on "
-    "the reviews already on this machine — including `/reviews settings` and "
-    "`/reviews reinstate`, which record a choice of yours. `/reviews help` "
-    "lists all of it."
-)
-
-AGENTPACK_HELP_TEXT = f"""\
+AGENTPACK_HELP_TEXT = rf"""\
 **Commands**
 
 | Command | What it does |
@@ -100,7 +93,8 @@ AGENTPACK_HELP_TEXT = f"""\
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
-| `/review <question>` | Not available in this mode — use the default mode, or `bedrock-litreview ask` in a shell |
+| `/review <question> [--search \| --corpus FILE]` | Run a literature review; its model calls go to the AI system's inference API |
+| `/review stop` | Stop the running review (finished stages are kept; `--resume <run-id>` carries on) |
 {reviews_rows(compact=True)}
 | `/audit` | What this client has done on this machine |
 | `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
@@ -129,10 +123,15 @@ interactively in PyMOL.”
 `/runs`, `/confidence`, `/reviews` and `/audit` keep working when the AI system
 is unreachable, and nothing they show is sent to a model. They only read, with
 three exceptions that change something on this machine and say so when you run
-them: `/reviews settings`, `/reviews reinstate` and `/reviews forget`.
-*Starting* a literature review is the one thing this mode cannot do, as the
-`/review` row above says; everything that inspects reviews already run works
-here exactly as it does in the default mode.
+them: `/reviews settings`, `/reviews reinstate` and `/reviews forget`. `/review`
+runs the review on this machine and sends each model call to the AI system's
+inference API (named models, temperature 0, JSON-schema output), never through
+the chat; `bedrock-litreview doctor` checks it is ready.
+
+A citation-shaped answer from the AI system - a PMID, `et al.`, a bracketed
+reference - has only been checked that a citation is present, never that it
+says what the answer claims; the finished answer says so when this applies.
+`/review` is the one that checks every quote against its paper.
 """
 
 
@@ -143,12 +142,9 @@ TIERS = {"quick": "runner", "standard": "specialist", "deep": "director", "auto"
 TIER_LABELS = {"runner": "Quick Answer", "specialist": "Standard Task", "director": "Deep Analysis"}
 
 
-class AgentPackApp(LocalCommandsMixin, App[None]):
+class AgentPackApp(ReviewCommandsMixin, LocalCommandsMixin, App[None]):
     TITLE = "Bedrock Private AI"
     CSS_PATH = "ui/styles.tcss"
-    # `/review` is refused here (AGENTPACK_REVIEW_NOTICE), so `/reviews` must
-    # not tell someone with no reviews yet to start one with it.
-    CAN_START_REVIEWS = False
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear_chat", "Clear"),
@@ -176,6 +172,7 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
         self._answer_widget: AssistantMessage | None = None
         self._agents: dict[str, AgentCardState] = {}
         self._init_local_commands(sources=sources, services=services)
+        self._init_review_commands()
         self._scientific_job_running = False
         # Pending approvals by request fingerprint, so a re-delivered event
         # reuses its prompt instead of asking the same question twice. In
@@ -304,10 +301,9 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
                 else:
                     self.open_pymol(structure)
             case "review" | "litreview":
-                # The pipeline calls a model server directly and is not an
-                # agent; there is nothing for the agent system to run it on.
-                # `/reviews` still works here, because it reads local files.
-                await self.post_notice(AGENTPACK_REVIEW_NOTICE, kind="error")
+                # The pipeline runs here; its model calls go to the agent
+                # server's inference API, not its chat (ui/review_mixin.py).
+                await self.start_review(command.args)
             case _:
                 await self.post_notice(
                     f"`/{command.name}` isn't available in this mode. Type `/help` for what is.",
@@ -961,6 +957,13 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
             # /clear may have replaced this request during the result fetch.
             if self._answer_widget is not answer_widget:
                 return
+            if not failed and content:
+                # Only a real, finished answer: never the streaming draft
+                # (PENDING_REVIEW_PREFIX/REVIEWING_PREFIX own that state) and
+                # never a friendly_error() message - `failed` may have just
+                # been set above, on a result the server never produced.
+                # See bedrock.agentpack.citation_marker for the trigger.
+                content = with_citation_notice(content)
             answer_widget.update(content or "_(no answer produced)_")
         self._waiting_for = None
         self._answer_widget = None
@@ -1025,6 +1028,7 @@ class AgentPackApp(LocalCommandsMixin, App[None]):
             return
         if self._workspace_session is not None:
             self._workspace_session.close()
+        await self.close_review_commands()
         await self.client.close()
         self.exit()
 

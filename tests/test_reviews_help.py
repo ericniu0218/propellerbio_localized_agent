@@ -25,7 +25,7 @@ import re
 
 import pytest
 
-from bedrock.agentpack_app import AGENTPACK_HELP_TEXT, AGENTPACK_REVIEW_NOTICE
+from bedrock.agentpack_app import AGENTPACK_HELP_TEXT
 from bedrock.ui.commands import HELP_TEXT
 from bedrock.ui.review_command import REVIEWS_HELP, REVIEWS_VERBS, reviews_rows
 
@@ -98,19 +98,12 @@ def test_no_table_still_claims_reviews_only_reads():
             assert claim not in table, f"{name} still says /reviews only reads"
 
 
-def test_the_agent_pack_refusal_does_not_call_reviews_read_only():
-    assert "only reads" not in AGENTPACK_REVIEW_NOTICE
-
-
-def test_the_agent_pack_help_does_not_dangle_a_missing_review_row():
-    """It used to end "see `/review` below" with no `/review` row anywhere."""
+def test_agent_pack_help_documents_review_itself():
+    """`/review` runs in both modes now (`ui/review_mixin.py`), and the agent-pack
+    help used to end by pointing at a `/review` section that was not there.
+    `tests/test_help_text_guard.py` checks the commands a help text names against
+    the ones the app dispatches; this checks the row is actually in the table."""
+    assert "| `/review <question>" in AGENTPACK_HELP_TEXT
+    assert "| `/review stop`" in AGENTPACK_HELP_TEXT
     assert "`/review` below" not in AGENTPACK_HELP_TEXT
-    assert "| `/review <question>` |" in AGENTPACK_HELP_TEXT, (
-        "agent-pack help should say what /review is and that this mode cannot run it"
-    )
-
-
-def test_the_agent_pack_review_row_says_where_it_does_work():
-    row = next(line for line in AGENTPACK_HELP_TEXT.split("\n") if line.startswith("| `/review <question>`"))
-    assert "Not available" in row
-    assert "bedrock-litreview ask" in row
+    assert "Not available" not in AGENTPACK_HELP_TEXT, "reviews are available in agent-pack mode now"

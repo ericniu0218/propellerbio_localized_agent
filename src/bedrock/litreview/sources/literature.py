@@ -46,6 +46,7 @@ from bedrock.litreview.sources.europepmc import EuropePMC
 from bedrock.litreview.sources.http import SourceError, SourceHTTP
 from bedrock.litreview.sources.pubmed import PubMed
 from bedrock.litreview.sources.query import Query, build_queries
+from bedrock.litreview.sources.snowball import SnowballPolicy, choose_seeds, follow
 
 log = logging.getLogger(__name__)
 
@@ -73,10 +74,20 @@ class SearchReport:
     """No entity was recognised, so the question itself was sent as the query."""
     unique: int = 0
     returned: int = 0
+    """Papers returned: the ones the per-question cap kept, then any that
+    snowballing added after it (`snowball_added`)."""
     full_text_tried: int = 0
     full_text: int = 0
     title_only: int = 0
     seconds: float = 0.0
+    snowball_seeds: list[str] = field(default_factory=list)
+    """The papers whose citations and references were followed; empty when
+    snowballing is off (`sources/snowball.py`)."""
+    snowball_links: int = 0
+    """Linked PubMed ids the link requests returned, before dropping the ones
+    the search already had."""
+    snowball_added: int = 0
+    """Papers added by following them, after the searched ones."""
 
     def lines(self) -> list[str]:
         out = [f"searched {', '.join(self.queries) or 'nothing'} in {self.seconds:.1f}s"]
@@ -86,10 +97,14 @@ class SearchReport:
             out.append(f"  {source}: {n} records")
         for where, error in self.failures.items():
             out.append(f"  FAILED {where}: {error}")
+        if self.snowball_seeds:
+            out.append(f"  snowball: followed {len(self.snowball_seeds)} papers' citations and references, "
+                       f"{self.snowball_links} links, {self.snowball_added} papers added")
         abstract_only = self.returned - self.full_text - self.title_only
-        out.append(f"{self.unique} unique papers, {self.returned} kept: {self.full_text} with open-access "
-                   f"full text ({self.full_text_tried} tried), {abstract_only} abstract only, "
-                   f"{self.title_only} title only")
+        added = f" and {self.snowball_added} added by snowballing" if self.snowball_added else ""
+        out.append(f"{self.unique} unique papers, {self.returned - self.snowball_added} kept{added}: "
+                   f"{self.full_text} with open-access full text ({self.full_text_tried} tried), "
+                   f"{abstract_only} abstract only, {self.title_only} title only")
         return out
 
 
@@ -156,6 +171,7 @@ class LiteratureSearcher:
         focus: dict[str, list[str]] | None = None,
         ncbi_api_key: str = "",
         contact_email: str = "",
+        snowball: SnowballPolicy | None = None,
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -173,6 +189,7 @@ class LiteratureSearcher:
         self.focus = focus or {}
         self.ncbi_api_key = ncbi_api_key
         self.contact_email = contact_email
+        self.snowball = snowball or SnowballPolicy()
         self.timeout = timeout
         self.transport = transport
         self.sleep = sleep
@@ -190,6 +207,7 @@ class LiteratureSearcher:
             "focus": dict(knob("search.focus", {}) or {}),
             "ncbi_api_key": settings.ncbi_api_key,
             "contact_email": settings.contact_email,
+            "snowball": SnowballPolicy.from_knobs(knob),
         }
         kwargs.update(overrides)
         return cls(**kwargs)
@@ -221,6 +239,8 @@ class LiteratureSearcher:
             papers = merge(results)
             report.unique = len(papers)
             papers = papers[: request.max_results]
+            if self.snowball.on:
+                papers = papers + self._snowball(clients, papers, request, report)
             report.returned = len(papers)
             # Europe PMC answers a paper it holds no open text for with a
             # 500, every time, so one retry is plenty.
@@ -235,6 +255,35 @@ class LiteratureSearcher:
         for line in report.lines():
             log.info("search: %s", line.strip())
         return papers
+
+    def signature(self) -> dict | None:
+        """What this searcher adds to a collection signature beyond the
+        terms (`stages/s1_collect.collection_signature`): the snowball
+        policy when it is on, else None, so a set collected with it off
+        keeps the signature it always had."""
+        policy = self.snowball.signature()
+        return {"snowball": policy} if policy else None
+
+    def _snowball(self, clients, papers: list[Paper], request: SearchRequest, report: SearchReport) -> list[Paper]:
+        """Papers linked to the best searched ones (`sources/snowball.py`)
+        that are not already among `papers`, or among each other, by PubMed
+        id and then by DOI or title. Counted here, after that last check, so
+        `snowball_added` is the number of papers really added."""
+        seeds = choose_seeds(papers, request, self.snowball.seeds)
+        report.snowball_seeds = [f"PMID{p.pmid}" for p in seeds]
+        if not seeds:
+            return []
+        links = {s: clients[s] for s in ("europepmc", "pubmed") if s in self.sources}
+        known = {p.pmid for p in papers if p.pmid}
+        seen = {k for p in papers for k in _keys(p)}
+        new = []
+        for paper in follow(self.snowball, seeds, links, known, report):
+            keys = _keys(paper)
+            if not any(k in seen for k in keys):
+                seen.update(keys)
+                new.append(paper)
+        report.snowball_added = len(new)
+        return new
 
     def _run_sources(self, clients, queries: list[Query], report: SearchReport):
         def run(priority: int, source: str) -> list[tuple[int, int, list[Paper]]]:

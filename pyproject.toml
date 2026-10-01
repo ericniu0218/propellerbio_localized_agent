@@ -56,8 +56,10 @@ server = [
     "sqlalchemy>=2.0",
     "python-multipart>=0.0.9",   # meeting recording uploads
     "pypdf>=4.0",                # PDF text for workspace uploads
+    "python-docx>=1.1",          # Word export of a meeting transcript
     "python-jose[cryptography]>=3.3",  # verifies Keycloak tokens when SSO is configured
     "pydantic>=2.8",
+    "python-pptx>=1.0,<2",       # Research tab: PowerPoint export of a finished review
 ]
 # When DATABASE_URL points at Postgres.
 postgres = ["psycopg2-binary>=2.9"]
@@ -99,6 +101,7 @@ bedrock = [
     "server/static/*.html",
     "server/static/workspace/*",
     "server/defaults/*.yaml",
+    "server/defaults/vocabulary/*.txt",
     "server/sample_data/*/*.txt",
 ]
 

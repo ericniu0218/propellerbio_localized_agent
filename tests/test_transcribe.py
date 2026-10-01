@@ -138,15 +138,16 @@ async def test_slice_timestamps_land_on_the_meeting_timeline(tmp_path):
     (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
 
     runner = FakeRunner(
-        regions=[(1000, 3000), (20000, 23000)],
+        # Far enough apart not to share one whisper window.
+        regions=[(1000, 3000), (40000, 43000)],
         texts=["First thing.", "Much later thing."],
     )
     transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
     result = await transcribe_recording(tmp_path / "rec", transcriber, work_dir=tmp_path / "w")
 
     assert [c.text for c in result.cues] == ["First thing.", "Much later thing."]
-    # 1000ms and 20000ms, each less 150ms of padding.
-    assert [c.start_ms for c in result.cues] == [850, 19850]
+    # 1000ms and 40000ms, each less 150ms of padding.
+    assert [c.start_ms for c in result.cues] == [850, 39850]
     assert all(c.speaker == "Alice Chen" for c in result.cues)
 
 
@@ -177,7 +178,8 @@ async def test_one_whisper_process_per_track(tmp_path):
     (rec / "audio1_Alice Chen.wav").write_bytes(b"RIFFfake")
 
     runner = FakeRunner(
-        regions=[(0, 1000), (5000, 6000), (9000, 10000)],
+        # Too far apart to share a window, so three slices go to one process.
+        regions=[(0, 1000), (30000, 31000), (60000, 61000)],
         texts=["a", "b", "c"],
     )
     transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
@@ -609,3 +611,305 @@ def test_the_speech_model_can_be_chosen():
         build_parser().parse_args(["--speech-model", "ggml-large-v3-turbo.bin"]).speech_model
         == "ggml-large-v3-turbo.bin"
     )
+
+
+# --- Hearing the far end of the room, and other languages --------------------
+
+
+async def test_levelling_is_applied_only_when_asked(tmp_path):
+    from dataclasses import replace
+
+    from bedrock.meetings.transcribe import LEVELLING_FILTER
+
+    src = tmp_path / "in.webm"
+    src.write_bytes(b"x")
+
+    runner = FakeRunner(regions=[], texts=[])
+    await WhisperTranscriber(make_config(tmp_path), runner=runner).to_wav(src, tmp_path / "w")
+    (ffmpeg,) = [c for c in runner.commands if c[0] == "ffmpeg"]
+    assert "-af" not in ffmpeg
+
+    runner = FakeRunner(regions=[], texts=[])
+    levelled = replace(make_config(tmp_path), normalize_audio=True)
+    await WhisperTranscriber(levelled, runner=runner).to_wav(src, tmp_path / "w")
+    (ffmpeg,) = [c for c in runner.commands if c[0] == "ffmpeg"]
+    assert ffmpeg[ffmpeg.index("-af") + 1] == LEVELLING_FILTER
+    # The filter goes between the input and the output settings.
+    assert ffmpeg.index("-i") < ffmpeg.index("-af") < ffmpeg.index("-ar")
+
+
+async def test_vad_sensitivity_is_passed_through(tmp_path):
+    from dataclasses import replace
+
+    runner = FakeRunner(regions=[(0, 1000)], texts=[])
+    config = replace(make_config(tmp_path), vad_threshold=0.4, vad_speech_pad_ms=60)
+    await WhisperTranscriber(config, runner=runner).detect_speech_regions(tmp_path / "a.wav", tmp_path / "w")
+    (vad,) = [c for c in runner.commands if c[0] == "whisper-vad-speech-segments"]
+    assert vad[vad.index("-vt") + 1] == "0.4"
+    assert vad[vad.index("-vp") + 1] == "60"
+
+
+def test_an_english_only_model_cannot_be_asked_for_another_language(tmp_path):
+    from dataclasses import replace
+
+    from bedrock.meetings.transcribe import is_english_only_model
+
+    assert is_english_only_model(Path("ggml-small.en.bin"))
+    assert is_english_only_model(Path("ggml-medium.en-q5_0.bin"))
+    assert not is_english_only_model(Path("ggml-large-v3-turbo.bin"))
+    assert not is_english_only_model(Path("ggml-small.bin"))
+
+    english_only = tmp_path / "ggml-small.en.bin"
+    english_only.write_bytes(b"x")
+    config = replace(make_config(tmp_path), model=english_only)
+    runner = FakeRunner(regions=[], texts=[])
+
+    assert WhisperTranscriber(config, runner=runner).readiness_issues() == ()
+    issues = WhisperTranscriber(replace(config, language="zh"), runner=runner).readiness_issues()
+    assert len(issues) == 1 and "English-only" in issues[0] and "'zh'" in issues[0]
+    assert WhisperTranscriber(replace(config, model=tmp_path / "model.bin", language="zh"), runner=runner).readiness_issues() == ()
+
+
+# --- Listening before deciding the language ---------------------------------
+
+
+class DetectingRunner(FakeRunner):
+    """A FakeRunner that also answers whisper's language detection.
+
+    `languages` maps a slice's turn number (from its file name) to the code
+    whisper "detects" for it; slices not listed are detected as English.
+    """
+
+    def __init__(self, regions, texts, languages=None, **kw):
+        super().__init__(regions, texts, **kw)
+        self.languages = languages or {}
+
+    async def run(self, args, log_path, env=None):
+        args = list(args)
+        if args[0] == "whisper-cli" and "-dl" in args:
+            self.commands.append(args)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            lines = []
+            for path in (args[i + 1] for i, a in enumerate(args) if a == "-f"):
+                turn = int(Path(path).stem.replace("turn", ""))
+                code = self.languages.get(turn, "en")
+                lines += [f"main: processing '{path}' (x samples), 4 threads ...",
+                          f"whisper_full_with_state: auto-detected language: {code} (p = 0.98)"]
+            log_path.write_text("\n".join(lines))
+            return
+        await super().run(args, log_path, env)
+
+
+def _whisper_command(runner):
+    (cmd,) = [c for c in runner.commands if c[0] == "whisper-cli" and "-dl" not in c]
+    return cmd
+
+
+def _detection_command(runner):
+    found = [c for c in runner.commands if c[0] == "whisper-cli" and "-dl" in c]
+    return found[0] if found else None
+
+
+# Six turns: four long ones of eight seconds and two short ones of a second
+# and a half. Slices carry a little padding either side, so shares are
+# compared loosely rather than to the round numbers the regions suggest.
+REGIONS = [(0, 8000), (9000, 10500), (12000, 20000), (21000, 29000), (30000, 31500), (33000, 41000)]
+
+
+async def test_one_dominant_language_is_used_for_the_whole_recording(tmp_path):
+    from dataclasses import replace
+
+    from bedrock.meetings.transcribe import MANDARIN_PROMPT
+
+    # The four long turns are Mandarin: about 32 of 35 seconds.
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh", 2: "zh", 3: "zh", 5: "zh"})
+    config = replace(make_config(tmp_path), language="detect", initial_prompt="KRAS")
+    transcriber = WhisperTranscriber(config, runner=runner)
+    await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+
+    detect = _detection_command(runner)
+    assert detect is not None and detect.count("-f") == 6
+    cmd = _whisper_command(runner)
+    assert cmd[cmd.index("-l") + 1] == "zh"
+    assert cmd[cmd.index("--prompt") + 1] == f"{MANDARIN_PROMPT} KRAS"
+    assert transcriber.last_language.language == "zh"
+    assert transcriber.last_language.heard["zh"] == pytest.approx(0.91, abs=0.03)
+    assert list(transcriber.last_language.heard) == ["zh", "en"]
+    assert transcriber.last_language.sampled == 6
+
+
+async def test_a_mixed_meeting_is_detected_turn_by_turn(tmp_path):
+    from dataclasses import replace
+
+    # Two of the long turns are Mandarin: about 16 of 35 seconds.
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh", 2: "zh"})
+    config = replace(make_config(tmp_path), language="detect")
+    transcriber = WhisperTranscriber(config, runner=runner)
+    await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+
+    cmd = _whisper_command(runner)
+    assert cmd[cmd.index("-l") + 1] == "auto"
+    assert "--prompt" not in cmd
+    assert transcriber.last_language.mixed
+    assert transcriber.last_language.heard["zh"] == pytest.approx(0.46, abs=0.03)
+    assert transcriber.last_language.heard["en"] == pytest.approx(0.54, abs=0.03)
+
+
+async def test_detection_samples_the_longest_slices_only(tmp_path):
+    from dataclasses import replace
+
+    from bedrock.meetings.transcribe import DETECT_SAMPLES
+
+    regions = [(i * 3000, i * 3000 + 1000 + (i % 5) * 200) for i in range(30)]
+    runner = DetectingRunner(regions, ["x"] * 30)
+    config = replace(make_config(tmp_path), language="detect")
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    assert _detection_command(runner).count("-f") == DETECT_SAMPLES
+    # Detection sampled the turns; transcription got them joined into windows.
+    assert 1 <= _whisper_command(runner).count("-f") < 30
+
+
+async def test_an_english_only_model_never_runs_detection(tmp_path):
+    from dataclasses import replace
+
+    english_only = tmp_path / "ggml-small.en.bin"
+    english_only.write_bytes(b"x")
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh"})
+    config = replace(make_config(tmp_path), model=english_only, language="detect")
+    transcriber = WhisperTranscriber(config, runner=runner)
+    assert transcriber.readiness_issues() == ()
+    await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    assert _detection_command(runner) is None
+    assert _whisper_command(runner)[_whisper_command(runner).index("-l") + 1] == "en"
+    assert transcriber.last_language.sampled == 0
+
+
+async def test_a_chosen_language_skips_detection_and_mandarin_gets_its_hint(tmp_path):
+    from dataclasses import replace
+
+    from bedrock.meetings.transcribe import MANDARIN_PROMPT
+
+    runner = DetectingRunner(REGIONS, ["x"] * 6)
+    config = replace(make_config(tmp_path), language="zh")
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    assert _detection_command(runner) is None
+    cmd = _whisper_command(runner)
+    assert cmd[cmd.index("-l") + 1] == "zh"
+    assert cmd[cmd.index("--prompt") + 1] == MANDARIN_PROMPT
+
+    runner = DetectingRunner(REGIONS, ["x"] * 6)
+    config = replace(make_config(tmp_path), language="zh", initial_prompt=f"{MANDARIN_PROMPT} KRAS")
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    cmd = _whisper_command(runner)
+    assert cmd.count(MANDARIN_PROMPT) == 0 and cmd[cmd.index("--prompt") + 1].count(MANDARIN_PROMPT) == 1
+
+
+def test_the_dominance_rule():
+    from bedrock.meetings.transcribe import decide_language
+
+    assert decide_language({"zh": 1.0}) == "zh"
+    assert decide_language({"zh": 0.8, "en": 0.2}) == "zh"
+    assert decide_language({"zh": 0.79, "en": 0.21}) == "auto"
+    assert decide_language({}) == "auto"
+
+
+async def test_an_unsure_detection_is_not_counted(tmp_path):
+    from dataclasses import replace
+
+    class Unsure(DetectingRunner):
+        async def run(self, args, log_path, env=None):
+            if args[0] == "whisper-cli" and "-dl" in list(args):
+                self.commands.append(list(args))
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                paths = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
+                lines = []
+                for n, path in enumerate(paths):
+                    p = "0.3" if n == 0 else "0.99"
+                    lines += [f"main: processing '{path}'", f"auto-detected language: {'ja' if n == 0 else 'en'} (p = {p})"]
+                log_path.write_text("\n".join(lines))
+                return
+            await FakeRunner.run(self, args, log_path, env)
+
+    runner = Unsure(REGIONS, ["x"] * 6)
+    transcriber = WhisperTranscriber(replace(make_config(tmp_path), language="detect"), runner=runner)
+    await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    assert transcriber.last_language.heard == {"en": 1.0}
+
+
+# --- Whole windows, and whisper's reflexes -----------------------------------
+
+
+def test_turns_are_joined_into_windows_but_not_across_a_cut_inside_a_turn():
+    from bedrock.meetings.transcribe import _join_into_windows
+
+    # Four turns with silences between them fit one 24-second window.
+    assert _join_into_windows([(0, 4000), (5000, 9000), (10000, 15000), (16000, 22000)], 24_000) == [(0, 22000)]
+    # A fifth that would push past the window starts a new one.
+    assert _join_into_windows([(0, 4000), (5000, 9000), (10000, 20000), (21000, 26000)], 24_000) == [(0, 20000), (21000, 26000)]
+    # Pieces that touch were cut on purpose — a speaker change with no pause —
+    # and are never joined back together.
+    assert _join_into_windows([(0, 4000), (4000, 8000), (9000, 12000)], 24_000) == [(0, 4000), (4000, 12000)]
+    assert _join_into_windows([], 24_000) == []
+
+
+async def test_whisper_gets_windows_not_turns(tmp_path):
+    regions = [(0, 3000), (4000, 7000), (8000, 11000), (40000, 43000)]
+    runner = FakeRunner(regions=regions, texts=["a b", "c"])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    cues = await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    (cmd,) = [c for c in runner.commands if c[0] == "whisper-cli" and "-dl" not in c]
+    assert cmd.count("-f") == 2  # three close turns became one window; the far one its own
+    assert "--suppress-nst" in cmd
+    assert [c.text for c in cues] == ["a b", "c"]
+    assert cues[1].start_ms >= 39000  # timestamps still land on the meeting timeline
+
+
+def test_a_reflex_on_a_second_of_noise_is_recognised():
+    from bedrock.meetings.transcribe import looks_hallucinated
+
+    assert looks_hallucinated(["Thank you."], 1500)
+    assert looks_hallucinated(["Thanks for watching!"], 2900)
+    assert looks_hallucinated(["*coughs*", "you"], 1000) is False  # not a listed phrase as a whole
+    assert not looks_hallucinated(["Thank you."], 3500)  # long enough to be real
+    assert not looks_hallucinated(["Thank you for the numbers."], 1500)
+    assert not looks_hallucinated(["Okay, so the controls came back clean."], 1500)
+
+
+async def test_a_hallucinated_slice_is_dropped_and_a_real_short_one_kept(tmp_path):
+    regions = [(0, 1500), (30000, 31500), (60000, 62000)]
+    runner = FakeRunner(regions=regions, texts=["Thank you.", "Order the antibody.", "Thanks for watching"])
+    transcriber = WhisperTranscriber(make_config(tmp_path), runner=runner)
+    cues = await transcriber.transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    assert [c.text for c in cues] == ["Order the antibody."]
+
+
+async def test_the_decided_language_picks_the_checkpoint(tmp_path):
+    from dataclasses import replace
+
+    zh_model = tmp_path / "large.bin"
+    zh_model.write_bytes(b"x")
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh", 2: "zh", 3: "zh", 5: "zh"})
+    config = replace(make_config(tmp_path), language="detect", models_by_language={"zh": zh_model})
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w")
+    detect, cmd = _detection_command(runner), _whisper_command(runner)
+    assert detect[detect.index("-m") + 1] == str(config.model)   # detection on the main model
+    assert cmd[cmd.index("-m") + 1] == str(zh_model)              # transcription on the Mandarin one
+
+    # An English decision, or a Mandarin model file that is missing, uses the main model.
+    runner = DetectingRunner(REGIONS, ["x"] * 6)
+    await WhisperTranscriber(config, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w2")
+    assert _whisper_command(runner)[_whisper_command(runner).index("-m") + 1] == str(config.model)
+    runner = DetectingRunner(REGIONS, ["x"] * 6, languages={0: "zh", 2: "zh", 3: "zh", 5: "zh"})
+    gone = replace(config, models_by_language={"zh": tmp_path / "missing.bin"})
+    await WhisperTranscriber(gone, runner=runner).transcribe_track(tmp_path / "a.wav", tmp_path / "w3")
+    assert _whisper_command(runner)[_whisper_command(runner).index("-m") + 1] == str(config.model)
+
+
+def test_a_real_one_word_answer_is_never_a_reflex():
+    """"Shall we proceed?" — "Okay." A decision can hang on that word."""
+    from bedrock.meetings.transcribe import looks_hallucinated
+
+    for word in ("Okay.", "So.", "Hmm.", "Yes.", "No.", "Sure."):
+        assert not looks_hallucinated([word], 1200), word
+    assert looks_hallucinated(["you"], 1200)
+    assert looks_hallucinated(["Thank you."], 1200)

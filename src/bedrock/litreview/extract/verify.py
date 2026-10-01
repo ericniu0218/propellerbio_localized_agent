@@ -627,6 +627,22 @@ _OTHER_WORK_LEAD_IN = re.compile(
     re.I,
 )
 
+# "Tirzepatide has been also reported to be beneficial in reducing liver fat
+# content." - a case report's background sentence, cited as the evidence that
+# tirzepatide reduces liver fat (tirzepatide/liver-fat run, E8). The
+# lead-in above only knew the impersonal "it has been reported". The subject
+# comes first here, then a present-perfect passive of a reporting verb:
+# someone else reported it. "Shown" and "demonstrated" are left out on
+# purpose: "IL-23 has been shown to drive psoriasis in treated mice" is a
+# result in a Results section (test_verify.py). A subject naming this study ("we", "our", "this
+# study", "here") is the paper's own work and does not match.
+_REPORTED_BY_OTHERS = re.compile(
+    r"^(?![^,;:]*\b(?:we|our|this study|the present study|this trial|here)\b)"
+    r"[^,;:.]{1,120}?\b(?:has|have)\s+(?:also\s+)?been\s+(?:also\s+|previously\s+|widely\s+)?"
+    r"(?:reported|described|suggested|proposed|documented)\b",
+    re.I,
+)
+
 # The canonical section names a paper's text can carry are exactly
 # `parsing/sections.py` `CANONICAL`. Introduction and Background are not
 # among them - both fold into "other" - so "other" is the real name to check.
@@ -706,7 +722,7 @@ def other_work_reason(quote: str, section: str) -> str | None:
     """
     if section in _INTRO_LIKE_SECTIONS:
         return "other_work:section"
-    if _OTHER_WORK_LEAD_IN.match(quote):
+    if _OTHER_WORK_LEAD_IN.match(quote) or _REPORTED_BY_OTHERS.match(quote):
         return "other_work:lead_in"
     markers = _markers(quote)
     if markers and not _fenced_by_comparison(quote, markers):

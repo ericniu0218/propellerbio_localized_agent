@@ -105,4 +105,30 @@ def speakers(cues: list[Cue]) -> list[str]:
 
 
 def word_count(cues: list[Cue]) -> int:
-    return sum(len(cue.text.split()) for cue in cues)
+    return sum(count_words(cue.text) for cue in cues)
+
+
+# Han, Hiragana, Katakana and Hangul: scripts written without spaces between
+# words, where splitting on whitespace counts a whole sentence as one word.
+_CJK = re.compile(
+    "[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\uf900-\ufaff]"
+)
+
+
+def count_words(text: str) -> int:
+    """Words in a line, for budgets and thresholds rather than for linguistics.
+
+    Whitespace-separated tokens, plus one for each Chinese, Japanese or Korean
+    character. A Mandarin sentence of twenty characters is about that many
+    words of English; counted by whitespace it was one, and a twenty-minute
+    Mandarin meeting came out under the forty-word floor below which no
+    overview is written.
+    """
+    cjk = len(_CJK.findall(text))
+    # What is left of a token once its CJK characters are gone counts only if
+    # it still has a letter or digit in it: "KRAS" does, "，。" does not.
+    latin = sum(1 for token in text.split() if _WORDISH.search(_CJK.sub("", token)))
+    return cjk + latin
+
+
+_WORDISH = re.compile(r"[^\W_]")

@@ -25,6 +25,7 @@ matching the AlphaFold adapter next door.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -50,7 +51,91 @@ _PARTICIPANT_DIR = "audio record"
 _AUDIO_PREFIX = "audio"
 
 # Whisper wants 16 kHz mono; anything else is resampled internally and slower.
+logger = logging.getLogger(__name__)
+
 TARGET_SAMPLE_RATE = 16_000
+
+# What `normalize_audio` applies. highpass=80 Hz is below every voice and above
+# table rumble and HVAC. dynaudnorm: 300 ms frames (f) smoothed over 21 of
+# them (g) so a word is levelled without pumping; at most 20x gain (m), so a
+# whisper across the room comes up but the silence between sentences does not
+# become a roar; 0.9 peak (p) leaves headroom for whisper's own resampling.
+LEVELLING_FILTER = "highpass=f=80,dynaudnorm=f=300:g=21:m=20:p=0.9"
+
+
+# `language` values with a meaning of their own, beside whisper's codes.
+DETECT = "detect"
+"""Listen first, then decide. A sample of the speech is run through whisper's
+language detection; if one language carries most of it the whole recording is
+transcribed in that language (a fixed language is a bias the decoder trusts,
+and is more accurate on accented speech than guessing each turn), otherwise
+every turn is detected on its own so a meeting that switches between Mandarin
+and English gets each turn in its own script."""
+AUTO = "auto"
+"""whisper's own per-file detection: each slice is guessed separately."""
+
+# Whisper decides between simplified and traditional characters from its
+# prompt, and with no prompt a Mandarin meeting comes out in whichever it
+# feels like line by line. This sentence ("The following are sentences in
+# Mandarin.") is the community's standard nudge towards simplified, and in
+# testing it also kept an English sentence in the middle of a Mandarin clip
+# that was dropped without it. It goes before the vocabulary because whisper
+# weights the start of its prompt most.
+MANDARIN_PROMPT = "以下是普通话的句子。"
+
+# How much of the sampled speech one language must carry for the whole
+# recording to be transcribed in it. Below this the meeting is treated as
+# mixed and every turn is detected separately. 0.8 rather than 0.5: a meeting
+# in Mandarin with a fifth of it in English is a mixed meeting, and forcing
+# those English turns into Chinese characters (which is what a fixed `zh`
+# does to them) is the worse mistake.
+DOMINANT_SHARE = 0.8
+# Slices sampled for detection. Detection reads a 30-second window per slice,
+# about a second each on a laptop, so a dozen keeps it under fifteen seconds
+# for any length of meeting. The longest slices are taken: a long turn is a
+# sentence or more, which detection is sure about; a one-word turn is not.
+DETECT_SAMPLES = 12
+
+_DETECTED_LINE = re.compile(r"auto-detected language: (?P<lang>[a-z]{2,3}) \(p = (?P<p>[0-9.]+)\)")
+_PROCESSING_LINE = re.compile(r"processing '(?P<path>[^']+)'")
+
+
+@dataclass(frozen=True)
+class LanguageDecision:
+    """What the recording was transcribed as, and why."""
+
+    language: str
+    """The value whisper ran with: a language code, or ``auto`` for per-turn."""
+    heard: dict[str, float] = field(default_factory=dict)
+    """Share of sampled speech time per detected language, most first."""
+    sampled: int = 0
+    """How many slices were listened to. 0 when nothing was detected because a
+    language was chosen up front."""
+
+    @property
+    def mixed(self) -> bool:
+        return self.language == AUTO and len(self.heard) > 1
+
+
+def decide_language(heard: dict[str, float]) -> str:
+    """The rule, on its own so it can be tested without whisper."""
+    if not heard:
+        return AUTO
+    top, share = max(heard.items(), key=lambda item: item[1])
+    return top if share >= DOMINANT_SHARE else AUTO
+
+
+def is_english_only_model(model: Path) -> bool:
+    """whisper.cpp's English-only checkpoints carry ``.en`` in the file name
+    (``ggml-small.en.bin``). They are faster and slightly more accurate on
+    clear English, and produce gibberish for anything else."""
+    return _ENGLISH_ONLY.search(model.name) is not None
+
+
+# ``.en`` as its own dotted component: ``ggml-small.en.bin``,
+# ``ggml-medium.en-q5_0.bin``; not the ``en`` inside ``ggml-tiny-encoder.bin``.
+_ENGLISH_ONLY = re.compile(r"\.en(?=[.\-_]|$)")
+
 AUDIO_SUFFIXES = (".m4a", ".mp4", ".wav", ".mp3", ".aac", ".aiff")
 
 # Zoom's intermediate format. A local recording lands as these and is only
@@ -86,6 +171,50 @@ _SLICE_PAD_MS = 150
 # Whisper writes these in place of words when a slice turns out to hold no
 # speech. They are markers, not something anybody said.
 _NON_SPEECH = re.compile(r"^\[?(BLANK_AUDIO|SILENCE|INAUDIBLE|NO_SPEECH|MUSIC|SOUND)\]?$", re.IGNORECASE)
+
+
+# What whisper says when handed a second of room noise. These are the model's
+# training-data reflexes — the end of a YouTube video — and they arrive as a
+# confident, well-punctuated cue at 00:00:00. Dropped only when one of them is
+# the *entire* content of a short slice: a real "thank you" in the middle of a
+# conversation sits among other words and is left alone.
+# Not "okay", "so" or "hmm": those are whisper reflexes on noise too, but a
+# one-word "Okay." after "shall we proceed?" is a real answer, and a decision
+# can hang on it. Only phrases that carry no information in a meeting.
+HALLUCINATIONS = frozenset({
+    "thank you", "thanks", "thank you very much", "thanks for watching",
+    "thank you for watching", "thanks for listening", "please subscribe",
+    "like and subscribe", "subtitles by the amara org community", "you", "bye",
+    "the end",
+})
+HALLUCINATION_MAX_MS = 3000
+
+
+def looks_hallucinated(texts: list[str], slice_ms: int) -> bool:
+    """Whether a short slice's whole output is one of whisper's reflexes."""
+    if slice_ms > HALLUCINATION_MAX_MS:
+        return False
+    joined = " ".join(texts)
+    normalised = re.sub(r"[^a-z ]+", " ", joined.casefold()).split()
+    return " ".join(normalised) in HALLUCINATIONS
+
+
+def _join_into_windows(turns: list[tuple[int, int]], window_ms: int) -> list[tuple[int, int]]:
+    """Consecutive turns become one window while it stays under ``window_ms``.
+
+    Only across a real gap: two pieces that touch (end == next start) are a
+    turn that was cut where the speaker changed mid-flow, or a long turn cut
+    to fit whisper's window, and both cuts are there for a reason.
+    """
+    windows: list[tuple[int, int]] = []
+    for start, end in turns:
+        if windows:
+            w_start, w_end = windows[-1]
+            if start > w_end and end - w_start <= window_ms:
+                windows[-1] = (w_start, end)
+                continue
+        windows.append((start, end))
+    return windows
 
 
 def is_speech(text: str) -> bool:
@@ -193,6 +322,48 @@ class WhisperConfig:
     Seeding the decoder with the study's real terms is the cheapest fix there
     is, and it is per-customer, so it belongs in configuration rather than code.
     """
+    normalize_audio: bool = False
+    """Level the recording before anything listens to it.
+
+    A laptop on the table hears the person beside it at full volume and the
+    person at the far end of the room 20 dB quieter, and Opus at a meeting
+    bitrate then spends its bits on the loud voice. ``dynaudnorm`` lifts the
+    quiet passages towards the loud ones a few hundred milliseconds at a time,
+    and a high-pass drops the rumble of the table and the air conditioning
+    that would otherwise be lifted with them. Off by default because the Zoom
+    per-participant tracks this module was written for are already levelled
+    per speaker; the room recorder turns it on.
+    """
+    vad_threshold: float = 0.5
+    """Silero's speech probability above which a frame counts as speech.
+    0.5 is upstream's default and is tuned for one clear voice. Lower it for a
+    room: a far-away or soft-spoken person sits at 0.3-0.5 for whole
+    sentences, and everything below the threshold is silently thrown away
+    before whisper ever hears it."""
+    vad_speech_pad_ms: int = 30
+    """Extra audio kept either side of each detected region. VAD cuts tight
+    and quiet speech starts below its threshold, so a bigger pad keeps the
+    first syllable of a soft opening."""
+    models_by_language: dict[str, Path] = field(default_factory=dict)
+    """A different checkpoint for particular languages, keyed by whisper code
+    and looked up once the language is decided. On the same Mandarin clips
+    the full large-v3 got EGFR and 剂量反应 (dose response) right where the
+    turbo model wrote BGFR and 计量, while on noisy English it read worse and
+    hallucinated — so a deployment can hand Mandarin to large-v3 and keep
+    turbo for everything else. Detection always runs on ``model``."""
+    window_ms: int = 24_000
+    """How much consecutive speech whisper is handed at once.
+
+    Whisper reads a whole window of context and decodes far better with a
+    few sentences in front of it than with one. Cutting the audio at every
+    turn gave it one-line slices: on a real library recording the same five
+    minutes read "No. No, it's nowhere close to that" in slices and "No.
+    Wait, homework five" in whole windows, with the same words recovered in
+    both. Turns are joined into windows up to this long, across the silences
+    between them; a cut made *inside* a turn because the speaker changed with
+    no pause is never joined back, since whisper would not separate those two
+    people itself. Just under whisper's 30-second window, less the padding.
+    """
 
 
 @dataclass
@@ -225,6 +396,8 @@ class WhisperTranscriber:
         # process's PATH; model files are required in both cases.
         self._check_host_tools = runner is None
         self.runner = runner or SubprocessCommandRunner()
+        self.last_language: LanguageDecision | None = None
+        """Set by every ``transcribe_track`` call: what that track was run as."""
 
     def readiness_issues(self) -> tuple[str, ...]:
         issues: list[str] = []
@@ -245,7 +418,14 @@ class WhisperTranscriber:
         if not self.config.model.exists():
             issues.append(
                 f"No speech model at {self.config.model}. Download a ggml model, e.g. "
-                "ggml-small.en.bin from huggingface.co/ggerganov/whisper.cpp."
+                "ggml-large-v3-turbo.bin from huggingface.co/ggerganov/whisper.cpp."
+            )
+        elif is_english_only_model(self.config.model) and self.config.language not in ("en", DETECT):
+            issues.append(
+                f"{self.config.model.name} is an English-only model and cannot transcribe "
+                f"language '{self.config.language}'. Download a multilingual model such as "
+                "ggml-large-v3-turbo.bin from huggingface.co/ggerganov/whisper.cpp, or set "
+                "the language to English."
             )
         if not self.config.vad_model.exists():
             issues.append(
@@ -259,10 +439,12 @@ class WhisperTranscriber:
         """Normalise any audio Zoom produced into 16 kHz mono PCM."""
         work_dir.mkdir(parents=True, exist_ok=True)
         target = work_dir / f"{source.stem}.16k.wav"
+        filters = ["-af", LEVELLING_FILTER] if self.config.normalize_audio else []
         await self.runner.run(
             [
                 self.config.ffmpeg, "-y", "-v", "error",
                 "-i", str(source),
+                *filters,
                 "-ar", str(TARGET_SAMPLE_RATE), "-ac", "1",
                 str(target),
             ],
@@ -304,6 +486,8 @@ class WhisperTranscriber:
                 "-vm", str(self.config.vad_model),
                 "-f", str(wav),
                 "-t", str(self.config.threads),
+                "-vt", f"{self.config.vad_threshold:g}",
+                "-vp", str(self.config.vad_speech_pad_ms),
             ],
             log_path=log,
         )
@@ -326,6 +510,81 @@ class WhisperTranscriber:
                     regions.append((start, end))
         regions.sort()
         return regions
+
+    async def _language_for(self, slices: list[tuple[Path, int, int]], work_dir: Path) -> LanguageDecision:
+        """The language this track runs as: chosen up front, or detected."""
+        chosen = self.config.language
+        if chosen != DETECT:
+            return LanguageDecision(language=chosen)
+        if is_english_only_model(self.config.model):
+            # The model can only do English; detection would be theatre.
+            return LanguageDecision(language="en")
+        return await self.detect_language(slices, work_dir)
+
+    async def detect_language(self, slices: list[tuple[Path, int, int]], work_dir: Path) -> LanguageDecision:
+        """Listen to a sample of the slices and decide how to run the rest.
+
+        The longest slices are sampled, each detection weighted by its
+        slice's length, and ``decide_language`` turns the shares into either
+        one fixed language or per-turn detection. A detection whisper is not
+        sure of (below 0.5) is left out rather than counted for a language
+        that is probably wrong.
+        """
+        sample = sorted(slices, key=lambda item: item[2] - item[1], reverse=True)[:DETECT_SAMPLES]
+        args = [
+            self.config.binary,
+            "-m", str(self.config.model),
+            "-dl",
+            "-t", str(self.config.threads),
+        ]
+        for path, _, _ in sample:
+            args += ["-f", str(path)]
+        log = work_dir / "language.log"
+        await self.runner.run(args, log_path=log)
+
+        weights = {str(path): end - start for path, start, end in sample}
+        heard: dict[str, float] = {}
+        current: str | None = None
+        for line in log.read_text(errors="replace").splitlines():
+            if match := _PROCESSING_LINE.search(line):
+                current = match.group("path")
+                continue
+            match = _DETECTED_LINE.search(line)
+            if not match or current is None:
+                continue
+            if float(match.group("p")) < 0.5:
+                continue
+            heard[match.group("lang")] = heard.get(match.group("lang"), 0.0) + weights.get(current, 0)
+            current = None
+        total = sum(heard.values())
+        shares = {lang: ms / total for lang, ms in sorted(heard.items(), key=lambda i: -i[1])} if total else {}
+        return LanguageDecision(language=decide_language(shares), heard=shares, sampled=len(sample))
+
+    async def _slice(self, wav: Path, turns: list[tuple[int, int]], slice_dir: Path) -> list[tuple[Path, int, int]]:
+        """Cut the audio into one file per turn (or window), with a little padding."""
+        slice_dir.mkdir(parents=True, exist_ok=True)
+        slices: list[tuple[Path, int, int]] = []
+        for index, (start_ms, end_ms) in enumerate(turns):
+            # A little padding either side: VAD trims tight and can clip the
+            # first consonant or a trailing syllable.
+            padded_start = max(0, start_ms - _SLICE_PAD_MS)
+            padded_end = end_ms + _SLICE_PAD_MS
+            target = slice_dir / f"turn{index:04d}.wav"
+            await self.runner.run(
+                [
+                    self.config.ffmpeg, "-y", "-v", "error",
+                    "-i", str(wav),
+                    "-ss", f"{padded_start / 1000:.3f}",
+                    "-to", f"{padded_end / 1000:.3f}",
+                    "-ar", str(TARGET_SAMPLE_RATE), "-ac", "1",
+                    str(target),
+                ],
+                log_path=slice_dir / f"turn{index:04d}.ffmpeg.log",
+            )
+            if target.exists():
+                slices.append((target, padded_start, padded_end))
+
+        return slices
 
     async def transcribe_track(
         self, audio: Path, work_dir: Path, split_at_ms: list[int] | None = None
@@ -360,42 +619,41 @@ class WhisperTranscriber:
         turns = _group_regions(regions, self.config.turn_gap_ms)
         if split_at_ms:
             turns = _split_turns_at(turns, split_at_ms, regions)
-        slice_dir = work_dir / f"{wav.stem}.slices"
-        slice_dir.mkdir(parents=True, exist_ok=True)
-
-        slices: list[tuple[Path, int, int]] = []
-        for index, (start_ms, end_ms) in enumerate(turns):
-            # A little padding either side: VAD trims tight and can clip the
-            # first consonant or a trailing syllable.
-            padded_start = max(0, start_ms - _SLICE_PAD_MS)
-            padded_end = end_ms + _SLICE_PAD_MS
-            target = slice_dir / f"turn{index:04d}.wav"
-            await self.runner.run(
-                [
-                    self.config.ffmpeg, "-y", "-v", "error",
-                    "-i", str(wav),
-                    "-ss", f"{padded_start / 1000:.3f}",
-                    "-to", f"{padded_end / 1000:.3f}",
-                    "-ar", str(TARGET_SAMPLE_RATE), "-ac", "1",
-                    str(target),
-                ],
-                log_path=slice_dir / f"turn{index:04d}.ffmpeg.log",
-            )
-            if target.exists():
-                slices.append((target, padded_start, padded_end))
-
-        if not slices:
+        turn_slices = await self._slice(wav, turns, work_dir / f"{wav.stem}.slices")
+        if not turn_slices:
             return []
 
+        # The language is decided on the turns, which is also the unit
+        # per-turn detection needs: a mixed meeting is transcribed turn by
+        # turn so each gets its own language. Once one language is fixed,
+        # whisper is handed whole windows instead — several turns and the
+        # silences between them — because it reads far better with a few
+        # sentences of context than with one line.
+        decision = await self._language_for(turn_slices, work_dir)
+        self.last_language = decision
+        slices = turn_slices
+        if decision.language != AUTO:
+            windows = _join_into_windows(turns, self.config.window_ms)
+            if len(windows) < len(turns):
+                slices = await self._slice(wav, windows, work_dir / f"{wav.stem}.windows")
+        prompt = self.config.initial_prompt
+        if decision.language == "zh" and (not prompt or MANDARIN_PROMPT not in prompt):
+            prompt = f"{MANDARIN_PROMPT} {prompt}" if prompt else MANDARIN_PROMPT
+
+        model = self.config.models_by_language.get(decision.language) or self.config.model
+        if model != self.config.model and not model.exists():
+            logger.warning("Model for %s at %s is missing; using %s", decision.language, model, self.config.model)
+            model = self.config.model
         args = [
             self.config.binary,
-            "-m", str(self.config.model),
-            "-l", self.config.language,
+            "-m", str(model),
+            "-l", decision.language,
             "-t", str(self.config.threads),
             "-ovtt", "--no-prints",
+            "--suppress-nst",  # no "*coughs*" or "[MUSIC]" as if somebody said it
         ]
-        if self.config.initial_prompt:
-            args += ["--prompt", self.config.initial_prompt]
+        if prompt:
+            args += ["--prompt", prompt]
         for path, _, _ in slices:
             args += ["-f", str(path)]
 
@@ -410,7 +668,10 @@ class WhisperTranscriber:
             if not vtt.exists():
                 continue
             transcribed_any = True
-            for cue in parse_vtt(vtt.read_text(errors="replace")):
+            slice_cues = parse_vtt(vtt.read_text(errors="replace"))
+            if looks_hallucinated([c.text for c in slice_cues], slice_end_ms - offset_ms):
+                continue
+            for cue in slice_cues:
                 if not is_speech(cue.text):
                     continue
                 text = clean_cue_text(cue.text)

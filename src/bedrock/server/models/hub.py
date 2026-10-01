@@ -56,9 +56,23 @@ class ModelHub:
         return _key(self._models.for_role(role))
 
     def scheduler_for(self, role: str) -> Scheduler:
-        key = self._key_for(role)
+        return self._scheduler(self._key_for(role), role)
+
+    def inference_scheduler_for(self, role: str) -> Scheduler:
+        """The role's *real* model server, even in mock mode.
+
+        The inference API (api/routes_inference.py) serves structured calls -
+        a named model, a JSON schema, a seed - that ``MockBackend`` cannot
+        honour, so it never answers them with fixtures. In real mode this is
+        the same scheduler the agents use: one queue per model server."""
+        return self._scheduler(_key(self._models.for_role(role)), role)
+
+    def _scheduler(self, key: tuple[str, str | None], role: str) -> Scheduler:
         if key not in self._schedulers:
-            sharing = [self._models.for_role(r) for r in ROLES if self._key_for(r) == key]
+            sharing = [
+                self._models.for_role(r) for r in ROLES
+                if self._key_for(r) == key or (r == role and _key(self._models.for_role(r)) == key)
+            ]
             profile = replace(
                 PROFILES["server"],
                 name=f"server:{key[0]}",

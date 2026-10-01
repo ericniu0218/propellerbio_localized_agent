@@ -27,16 +27,19 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from bedrock.server.meetings.config import (
+    DEFAULT_SPEECH_MODEL,
+    LANGUAGES,
     MAX_RECORDING_BYTES,
     MAX_RECORDING_SECONDS,
     RecordingConfig,
     readiness_issues,
 )
 from bedrock.server.meetings.delivery import MEETING_ID_PREFIX, deliver_recording
+from bedrock.server.meetings import export
 from bedrock.meetings.enrollment import (
     ENROLLMENT_AVAILABLE,
     ENROLLMENT_MISSING,
@@ -94,15 +97,53 @@ def config() -> RecordingConfig:
 
 @router.get("/readiness")
 def readiness(user=Depends(identity)):
-    """What would stop this server transcribing a recording right now."""
-    issues = readiness_issues(config())
-    return {"ready": not issues, "issues": issues}
+    """What would stop this server transcribing a recording right now.
+
+    Also says which speech model is loaded and which languages it can take,
+    so the Record dialog can offer a language choice that will actually work
+    and say out loud when only English will.
+    """
+    cfg = config()
+    issues = readiness_issues(cfg)
+    multilingual = cfg.multilingual
+    return {
+        "ready": not issues,
+        "issues": issues,
+        "consentRequired": consent_required(),
+        "speechModel": cfg.speech_model.name,
+        "mandarinModel": cfg.speech_model_zh.name if cfg.speech_model_zh and cfg.speech_model_zh.exists() else None,
+        "multilingual": multilingual,
+        "recommendedModel": DEFAULT_SPEECH_MODEL,
+        "defaultLanguage": cfg.language,
+        "languages": [
+            {"code": code, "label": label}
+            for code, label in LANGUAGES.items()
+            if multilingual or code == "en"
+        ],
+    }
+
+
+def _resolve_language(requested: str | None, cfg: RecordingConfig) -> RecordingConfig:
+    """The language this recording is in, from the dialog, else the server's."""
+    code = (requested or "").strip().lower()
+    if not code:
+        return cfg
+    if code not in LANGUAGES:
+        raise HTTPException(422, f"'{requested}' is not a language this server offers.")
+    if code not in ("en", "detect") and not cfg.multilingual:
+        raise HTTPException(
+            422,
+            f"This server's speech model ({cfg.speech_model.name}) is English-only. "
+            f"Ask whoever runs it to install {DEFAULT_SPEECH_MODEL} for "
+            f"{LANGUAGES[code]}.",
+        )
+    return replace(cfg, language=code)
 
 
 @router.post("/recordings")
 async def create_recording(
     audio: UploadFile = File(...),
-    title: str = Form("Untitled meeting"),
+    title: str = Form(""),  # blank means: name it from what was said
     projectId: str | None = Form(None),
     notes: str | None = Form(None),
     startedAt: str | None = Form(None),
@@ -112,11 +153,12 @@ async def create_recording(
     liveSessionId: str | None = Form(None),
     consentConfirmed: bool = Form(False),
     participants: str | None = Form(None),
+    language: str | None = Form(None),
     user=Depends(identity),
 ):
     """Accept a recording and start turning it into a meeting."""
 
-    recording_config = config()
+    recording_config = _resolve_language(language, config())
     if auto_enabled():
         # Harvested terms go after the configured ones: whisper weights the
         # start of its prompt most heavily, and somebody typed those on purpose.
@@ -185,6 +227,7 @@ async def create_recording(
         raise HTTPException(422, "The recording was empty. Nothing was captured.")
 
     started_at = _parse_started_at(startedAt)
+    auto_title = not (title or "").strip()
     clean_title = (title or "").strip() or _default_title(started_at)
 
     job = RecordingJob(
@@ -206,18 +249,35 @@ async def create_recording(
             status="queued", stage="Queued", started_at=started_at.isoformat(),
             project_id=projectId, typed_notes=notes,
             expected_speakers=expectedSpeakers, consent=consent,
-            access_groups=None,
+            access_groups=None, language=recording_config.language, auto_title=auto_title,
         )
     )
     recording_jobs().start(job, _runner_for(job, recording_config, workspace, projectId, notes,
                                  started_at, expectedSpeakers, consent, user["id"],
-                                 minimumSpeakers, screen))
+                                 minimumSpeakers, screen, auto_title=auto_title))
     workspace.audit(user["id"], "recorded meeting", job_id)
     return job.public()
 
 
 def voice_store() -> VoicePrintStore:
     return VoicePrintStore(config().storage_dir / "voice-prints.sqlite")
+
+
+@router.get("/{meeting_id}/transcript")
+def download_transcript(meeting_id: str, format: str = "txt", english: bool = False, user=Depends(identity)):
+    """The meeting as a file: notes, then every line with timestamp and
+    speaker. ``format`` is txt, md, vtt or docx; ``english`` adds the English
+    under lines that were spoken in Chinese, where the notes model wrote one."""
+    if format not in export.FORMATS:
+        raise HTTPException(422, f"format must be one of {', '.join(export.FORMATS)}")
+    meeting = require_object(store(), user["id"], meeting_id, "meetings")
+    try:
+        body, media_type = export.render(meeting, format, english)
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    store().audit(user["id"], f"downloaded transcript ({format})", meeting_id)
+    return Response(body, media_type=media_type, headers={
+        "Content-Disposition": export.content_disposition(meeting, format)})
 
 
 @router.get("/voices")
@@ -339,7 +399,7 @@ def rename_speakers(meeting_id: str, body: SpeakerNames, user=Depends(identity))
             return [swap(item) for item in value]
         return value
 
-    for field in ("transcript", "summary", "enhancedNotes", "decisions", "actions",
+    for field in ("transcript", "transcriptEnglish", "summary", "enhancedNotes", "decisions", "actions",
                   "findings", "deadlines", "questions", "people"):
         if field in meeting:
             meeting[field] = swap(meeting[field])
@@ -540,11 +600,20 @@ def vocabulary(user=Depends(identity)):
         if term.strip()
     ]
     everything = suggest(meetings)
+    in_use = everything if auto_enabled() else configured
+    # Two different things: the terms that steer whisper's decoder (cut to
+    # its prompt budget, from the front) and the full list that repairs
+    # near-misses afterwards. Reporting the whole list as "in use" told
+    # people a term was steering the decoder when it never reached it.
+    from bedrock.server.meetings.pipeline import hint_within_budget
+
+    hint = hint_within_budget(", ".join(in_use)) or ""
     return {
         "configured": configured,
         "suggested": [term for term in everything if term not in configured],
         "auto": auto_enabled(),
-        "inUse": everything if auto_enabled() else configured,
+        "inUse": in_use,
+        "decoderHint": [t.strip() for t in hint.split(",") if t.strip()],
     }
 
 
@@ -583,7 +652,8 @@ def run_retention_sweep() -> dict:
 
 
 def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
-                expected_speakers, consent, owner, minimum_speakers=None, screen=None):
+                expected_speakers, consent, owner, minimum_speakers=None, screen=None,
+                auto_title=False):
     """One runner shape for both a fresh upload and a recovered job."""
 
     async def runner(running_job: RecordingJob) -> None:
@@ -602,6 +672,7 @@ def _runner_for(job, recording_config, workspace, project_id, notes, started_at,
             consent=consent,
             voice_prints=prints,
             screen=screen,
+            auto_title=auto_title,
         )
 
     return runner
@@ -633,9 +704,10 @@ def resume_interrupted() -> list[str]:
         recording_jobs().register(job)
         recording_jobs().advance(job, "Resuming after a restart")
         recording_jobs().start(job, _runner_for(
-            job, config(), workspace, claimed.project_id, claimed.typed_notes,
+            job, _resolve_language(claimed.language, config()), workspace,
+            claimed.project_id, claimed.typed_notes,
             _parse_started_at(claimed.started_at), claimed.expected_speakers,
-            claimed.consent, claimed.owner,
+            claimed.consent, claimed.owner, auto_title=claimed.auto_title,
         ))
         resumed.append(claimed.id)
     if resumed:

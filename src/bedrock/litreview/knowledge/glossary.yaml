@@ -1,0 +1,57 @@
+# Standard expansions of abbreviations that reports use without defining them.
+#
+# Read by report/synthesis.py to build a report's "Abbreviations" section. A
+# paper's own definition ("fatty liver index (FLI)", knowledge/abbreviations.py)
+# always wins over this table, because it is what that paper meant by the
+# letters. Only unambiguous, field-standard expansions belong here: nothing
+# that means two different things in biomedicine (AD, RA, MS, CAP, PD...).
+# Keys are matched case-sensitively as whole words.
+
+ALT: alanine aminotransferase (a liver enzyme; raised when liver cells are damaged)
+AST: aspartate aminotransferase (a liver enzyme)
+GGT: gamma-glutamyl transferase (a liver enzyme)
+BMI: body mass index (weight in kg divided by height in m squared)
+WC: waist circumference
+HbA1c: glycated haemoglobin (average blood glucose over about three months)
+FPG: fasting plasma glucose
+HOMA-IR: homeostatic model assessment of insulin resistance (higher means more insulin resistance)
+hs-CRP: high-sensitivity C-reactive protein (a marker of systemic inflammation)
+CRP: C-reactive protein (a marker of systemic inflammation)
+LDL: low-density lipoprotein
+HDL: high-density lipoprotein
+TG: triglycerides
+MRI-PDFF: magnetic resonance imaging proton density fat fraction (the MRI measure of the fraction of liver tissue that is fat)
+PDFF: proton density fat fraction (the MRI measure of the fraction of liver tissue that is fat)
+LFC: liver fat content
+FLI: fatty liver index (a score calculated from BMI, waist circumference, triglycerides and GGT; an estimate of fatty liver, not a direct measurement)
+HSI: hepatic steatosis index (a score calculated from routine measurements; an estimate of fatty liver, not a direct measurement)
+FIB-4: fibrosis-4 index (a score estimating liver fibrosis from age, AST, ALT and platelet count)
+LSM: liver stiffness measurement (an estimate of liver fibrosis)
+VAT: visceral adipose tissue (fat around the internal organs)
+SAT: subcutaneous adipose tissue (fat under the skin)
+MASLD: metabolic dysfunction-associated steatotic liver disease (fatty liver disease linked to metabolic risk factors; formerly NAFLD)
+MAFLD: metabolic dysfunction-associated fatty liver disease (an earlier name for MASLD)
+NAFLD: nonalcoholic fatty liver disease (the former name for MASLD)
+MASH: metabolic dysfunction-associated steatohepatitis (MASLD with liver inflammation and cell injury; formerly NASH)
+NASH: nonalcoholic steatohepatitis (the former name for MASH)
+T2D: type 2 diabetes
+T2DM: type 2 diabetes mellitus
+T1D: type 1 diabetes
+GLP-1: glucagon-like peptide-1 (a gut hormone; GLP-1 receptor agonists are a class of drugs)
+GLP-1RA: glucagon-like peptide-1 receptor agonist
+GIP: glucose-dependent insulinotropic polypeptide (a gut hormone)
+RCT: randomised controlled trial
+CI: confidence interval
+OR: odds ratio
+HR: hazard ratio
+RR: relative risk
+SD: standard deviation
+SEM: standard error of the mean
+IQR: interquartile range
+LS: least-squares
+ETD: estimated treatment difference (the difference between two treatments' effects)
+PASI: Psoriasis Area and Severity Index (a psoriasis severity score)
+FEV1: forced expiratory volume in one second (a lung function measure)
+MMD: monthly migraine days
+IL: interleukin
+TNF: tumour necrosis factor

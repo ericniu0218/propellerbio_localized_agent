@@ -5,6 +5,129 @@
 > and `evals/` is `evals/litreview/`; the numbers are unaffected. The to-do
 > list in § Next steps is still the to-do list.
 
+# The entailment check against the hand audit (30 September 2026)
+
+FRONTIER_LITREVIEW.md task C. The optional entailment check
+(`report/entailment.py`, off by default) was measured before and after it was
+narrowed, against the hand audits rather than the strong judge: the judge sees
+a quote and the sentences beside it as one passage and settles a claim
+verbatim anywhere in them as "supported" in code, so it cannot see OPEN_ISSUES
+#3 by construction (it calls four of the five #3 cases supported below).
+
+- **Before, prompt v1:** the model read each cited finding's quote, context,
+  next and naming sentences joined as one passage.
+- **After, prompt v2:** it reads the quote apart from the others, each
+  labelled, and is told the sentence's main claim must be in a quote.
+- **What was measured:** 105 report sentences from the seven hand-audit sheets
+  (`evals/litreview/hand_audit/`, 15 a report), 93 graded faithful and 12 not.
+  Model `qwen3:8b` (the `laptop` set's `entail` model), temperature 0, through
+  the scheduler and the call cache, on an 8 GB M2 at Ollama's default window
+  (4,096; each prompt fits).
+
+```
+python -m evals.litreview.entailment_audit --models laptop --rows rows_v1.jsonl          # v1 code
+python -m evals.litreview.entailment_audit --models laptop --rows rows_v2.jsonl \
+    --before rows_v1.jsonl --sheet drops_v2.md                                          # v2 code
+```
+
+The rows and the sheet are in `evals/litreview/entailment/`.
+
+| | v1 | v2 |
+|---|---|---|
+| **The 101 sentences guard check 10 keeps** (93 faithful, 8 not): what the check would see | | |
+| faithful, dropped (evidence lost) | 0 | 0 |
+| not faithful, dropped | 1 | 2 |
+| not faithful, kept | 7 | 6 |
+| faithful, called partial (kept, counted) | 26 | 18 |
+| call failed | 0 | 0 |
+| **All 105** (93 faithful, 12 not) | | |
+| faithful, dropped | 0 | 0 |
+| not faithful, dropped | 1 | 2 |
+
+| OPEN_ISSUES #3 sentence | hand | check 10 | judge | v1 | v2 |
+|---|---|---|---|---|---|
+| obesity_after S6 | misleading | drops | partial | partial | partial |
+| obesity_after S18 | weak_citation | drops | supported | supported | partial |
+| obesity_after S29 | weak_citation | drops | supported | partial | supported |
+| migraine_after S5 | weak_citation | drops | supported | supported | supported |
+| asthma_after S25 | misleading | kept | supported | partial | supported |
+
+**What this says.**
+
+- **No evidence lost, under either prompt.** Not one of the 93 faithful
+  sentences was dropped. That is the number that decides whether the check is
+  safe, and on this sample it is.
+- **It catches very little on this model.** v2 drops 2 of the 12 unfaithful
+  sentences: asthma S41 (montelukast "reduced exacerbations" citing a quote
+  about enrolment and ages; v1 dropped it too) and asthma S34 (a Penh reading
+  turned into "increased airway hyperresponsiveness", new in v2). Of the 8
+  unfaithful sentences check 10 lets through, it catches 2.
+- **The narrowing did not catch the class it was aimed at, on this model.**
+  All five #3 cases are "supported" or "partial" under v2, so all five are
+  kept. qwen3:8b does not apply the rule that the claim must be in the quote.
+  Check 10 still catches four of the five; S25 (a dropped hedge) is caught by
+  neither.
+- **Its labels are unstable.** Changing only the prompt moved 35 of the 105
+  sentences, nearly all between "supported" and "partial". A small model's
+  "partial" is noise, and it is right that code only counts it.
+- **v2 is kept.** It drops nothing faithful, catches one more, calls fewer
+  faithful sentences partial (18 against 26), and gives a stronger model the
+  quote and its neighbours apart, which is the shape the question needs.
+
+**Decision: it stays off.** On the laptop model it is safe but catches almost
+nothing, at one model call per kept sentence (about a minute each on this
+machine). Before it is switched on anywhere:
+
+1. A scientist marks `evals/litreview/entailment/drops_v2_qwen3-8b.md`
+   (2 sentences, right or wrong).
+2. The same measurement on the office model: `--models office`, with `--before`
+   the v2 rows.
+3. `entailment_agreement.py` on the stored benchmark reports, on the machine
+   that keeps them (none are on this one).
+
+**Caveats.** The hand audits were graded by AI models, not a scientist
+(OPEN_ISSUES #21). 12 unfaithful sentences is a small sample, so "2 of 12"
+and "0 of 93" carry wide error bars. The five #3 sentences are the ones the
+second hand audit found, not a sample of the class.
+
+# The measurement batch (30 September 2026): no new numbers
+
+No benchmark was run for this entry, and no number in it is new. Branch
+`litreview/measurement` changed what a scorecard says about itself (OPEN_ISSUES
+#21, #23, #25–#28), and the offline re-score meant to show a new scorecard
+could not be made: the machine this was built on holds no stored benchmark
+run (no `bench.sqlite3`, and `evals/litreview/results/` holds only
+`history.jsonl`). Re-score one where the runs are kept:
+
+```
+python -m bedrock.litreview.bench run evals/litreview/questions/<q>.yaml --corpora evals/litreview/corpora-searcher \
+    --from-run <run id> --judge-file evals/litreview/judge/answers.jsonl --skip-baselines --skip-perturb
+```
+
+**What a scorecard now says, and every result below does not:**
+
+- **The context window.** `bench run` calls `service.preflight` before its
+  first model call and records the window per model. Every number below was
+  produced at an unrecorded window; `bench history` shows those rows as "not
+  recorded", and the 27 September entry says `OLLAMA_CONTEXT_LENGTH` was unset
+  before that run.
+- **What each score rests on.** Every judged score carries (judged/total).
+  Below, only the 27 September migraine run says it (30/42, then 40/42).
+- **Who judged.** Each answer on file now names its judge; the 1,790 answers
+  written before load as `unknown`, and they came from more than one judge.
+- **Which checks measured anything.** A gate with no input is "not measured",
+  and is not counted as passed. Below, "9 of 9" counts any gate whose input was
+  missing as a pass - obesity's distractor gate on 26 September, for one.
+- **One more way the validity gate could flip.** A perturbation the file judge
+  had no answer for counted as *not caught*, so "judge catches flipped effects"
+  could fail on missing answers alone and pass once they were written. It is
+  now left out, and the gate reports how many perturbations were judged.
+
+`python -m bedrock.litreview.bench compare` refuses every pair of runs in this
+file: none records its judged fractions or raters. That refusal is the
+finding. Before-and-after numbers below are indicative, and item 25's spread
+(69.4, 69.2, 69.2 on one report) is the floor on what any of them can show.
+
 # Benchmark results — the mechanical fix batch (27 September 2026)
 
 Run after the eight-item fix batch `5373d99..de1915b` (see

@@ -921,6 +921,69 @@ async def test_the_written_notes_file_carries_only_verified_citations(tmp_path, 
     assert built and built[0].request_timeout == 600.0
 
 
+def _transcribe_without_whisper(tmp_path, monkeypatch, env):
+    """A recording folder whose transcription is faked, and settings from `env`."""
+    from bedrock.config import load_settings
+    from bedrock.meetings import cli
+    from bedrock.meetings.transcribe import TranscriptionResult
+
+    folder = tmp_path / "2026-09-15 09.00.12 Phase II weekly sync"
+    folder.mkdir()
+    (folder / "audio_only.m4a").write_bytes(b"")
+    cues = parse_vtt(VTT)
+
+    class FakeTranscriber:
+        def __init__(self, config):
+            self.config = config
+
+        def readiness_issues(self):
+            return ()
+
+    async def fake_transcribe(folder, transcriber, work_dir=None):
+        return TranscriptionResult(cues=cues, speakers=speakers(cues))
+
+    monkeypatch.setattr(cli, "WhisperTranscriber", FakeTranscriber)
+    monkeypatch.setattr(cli, "transcribe_recording", fake_transcribe)
+    monkeypatch.setattr(cli, "discover_participant_tracks", lambda folder: {})
+    monkeypatch.setattr(cli, "load_settings", lambda: load_settings(config_path=tmp_path / "none.toml", env=env))
+    return cli, folder
+
+
+async def test_an_agentpack_machine_is_told_how_to_name_a_model_server(tmp_path, monkeypatch, capsys):
+    """`create_backend` refuses backend = "agentpack" rather than build an
+    OpenAI client against the wrong address. Meeting notes say so in plain
+    language and exit 2, not with a traceback."""
+    cli, folder = _transcribe_without_whisper(tmp_path, monkeypatch, {"BEDROCK_BACKEND": "agentpack"})
+
+    assert await cli._run(cli.build_parser().parse_args([str(folder)])) == 2
+
+    err = capsys.readouterr().err
+    assert "OpenAI-compatible model server" in err
+    assert "--api-base" in err
+
+
+async def test_api_base_on_the_command_line_works_on_an_agentpack_machine(tmp_path, monkeypatch):
+    """Naming a model server with --api-base is enough, even when bedrock's own
+    chat runs in agent-pack mode."""
+    cli, folder = _transcribe_without_whisper(tmp_path, monkeypatch, {"BEDROCK_BACKEND": "agentpack"})
+    built = []
+
+    class Stop(Exception):
+        pass
+
+    def capture(settings):
+        built.append(settings)
+        raise Stop
+
+    monkeypatch.setattr(cli, "create_backend", capture)
+    args = cli.build_parser().parse_args([str(folder), "--api-base", "http://vllm-host:8000/v1/"])
+    with pytest.raises(Stop):
+        await cli._run(args)
+
+    assert built[0].backend == "openai"
+    assert built[0].api_base == "http://vllm-host:8000/v1"
+
+
 # --- The model handing back its own JSON skeleton -----------------------------
 
 
@@ -1210,3 +1273,167 @@ async def test_notes_too_long_for_the_window_are_refused_plainly():
     assert any("too long to rewrite" in notice for notice in summary.notices)
     assert len(backend.prompts) == 1  # only the extraction pass was sent
     assert "too long to rewrite" in summary.render()
+
+
+def test_the_extraction_prompt_covers_everyday_task_language_and_writes_english():
+    """The requests that make up most real action items are never announced as
+    "action item". The prompt has to name them, and the notes have to come out
+    in English whatever was spoken, with the quote left in the original."""
+    from bedrock.meetings.summarize import _EXTRACT_PROMPT, _OVERVIEW_PROMPT
+
+    prompt = _EXTRACT_PROMPT.format(transcript="x")
+    for phrase in ("Can you send me", "Will do", "loop in", "I'll follow up", "Sending an email"):
+        assert phrase in prompt
+    assert "in English whatever language" in prompt
+    assert "never translated" in prompt
+    assert "in English whatever language" in _OVERVIEW_PROMPT.format(transcript="x")
+
+
+def test_chinese_is_counted_by_character_not_by_space():
+    """Splitting on whitespace made a Mandarin meeting one word per sentence,
+    which put it under the floor below which no overview is written."""
+    from bedrock.meetings.transcript import count_words
+
+    assert count_words("the controls came back clean") == 5
+    assert count_words("大家早上好，我们开始今天的周会。") == 14
+    assert count_words("第一项是KRAS G12D对照实验的结果") == 11 + 2
+    assert count_words("") == 0
+    assert count_words("   ") == 0
+
+    cues = parse_vtt("WEBVTT\n\n1\n00:00:00.000 --> 00:00:05.000\n大家早上好，我们开始今天的周会。\n")
+    assert word_count(cues) == 14
+
+
+def test_a_title_reply_is_cleaned_or_refused():
+    from bedrock.meetings.summarize import clean_title
+
+    assert clean_title("KRAS G12D control assay review") == "KRAS G12D control assay review"
+    assert clean_title('"Dose response study kickoff."') == "Dose response study kickoff"
+    assert clean_title("Title: Sequencing delay and antibody order\n\nThe meeting covered...") == "Sequencing delay and antibody order"
+    assert clean_title("**Weekly KRAS sync**") == "Weekly KRAS sync"
+    assert clean_title("Meeting about the assay") is None
+    assert clean_title("This meeting was a weekly review of the KRAS program and its many open questions") is None
+    assert clean_title("") is None
+    assert clean_title("\n  \n") is None
+
+
+async def test_a_blank_name_is_replaced_from_the_notes_but_only_when_there_are_some():
+    from bedrock.meetings.summarize import MeetingSummary, Point, compute_facts, suggest_title
+
+    facts = compute_facts(parse_vtt(VTT), title="Meeting — 28 Sep 2026, 21:00")
+
+    class Scheduler:
+        def __init__(self, reply): self.reply = reply; self.prompts = []
+        async def complete(self, model, messages, priority=None, options=None):
+            self.prompts.append(messages[0]["content"]); return self.reply
+
+    summary = MeetingSummary(facts=facts, overview="The group reviewed the G12D control assay and agreed to start the dose response study on Monday.")
+    summary.actions = [Point(text="Order the EGFR antibody before Thursday", owner="Ravi")]
+    scheduler = Scheduler("Dose response study go-ahead")
+    assert await suggest_title(scheduler, "m", summary) == "Dose response study go-ahead"
+    assert "Order the EGFR antibody" in scheduler.prompts[0]
+
+    thin = MeetingSummary(facts=facts, overview="Test.")
+    scheduler = Scheduler("Anything")
+    assert await suggest_title(scheduler, "m", thin) is None
+    assert scheduler.prompts == []
+
+
+def test_a_bullet_that_describes_the_recording_goes_and_so_does_an_empty_one():
+    """Seen on a real recording: the brief was a list whose first bullet
+    described the recording and whose second was a bare dash."""
+    from bedrock.meetings.summarize import clean_overview
+
+    brief = ("- This is a conversation between two students who are studying together in a library.\n"
+             "\n-\n- They have a lab meeting on Friday from 3:00 to 6:00 p.m.\n"
+             "- They made plans to check in later.")
+    assert clean_overview(brief) == (
+        "- They have a lab meeting on Friday from 3:00 to 6:00 p.m.\n- They made plans to check in later."
+    )
+    # A bullet about the content that happens to start with "this" stays.
+    assert clean_overview("Weekly sync.\n\n- This assay needs a repeat.\n- Site four needs a coordinator.") == (
+        "Weekly sync.\n\n- This assay needs a repeat.\n- Site four needs a coordinator."
+    )
+
+
+async def test_chinese_lines_get_english_beside_them_by_index():
+    from bedrock.meetings.summarize import needs_translation, translate_cues
+    from bedrock.meetings.transcript import Cue
+
+    cues = [
+        Cue(0, 1000, "Speaker 1", "大家早上好，我们开始今天的周会。"),
+        Cue(1000, 2000, "Speaker 2", "The controls came back clean."),
+        Cue(2000, 3000, "Speaker 1", "Ravi负责在周四之前订购EGFR抗体。"),
+        Cue(3000, 4000, "Speaker 2", "IL-17 arm"),
+    ]
+    assert [needs_translation(c.text) for c in cues] == [True, False, True, False]
+
+    class Scheduler:
+        def __init__(self): self.prompts = []
+        async def complete(self, model, messages, priority=None, options=None):
+            self.prompts.append(messages[0]["content"])
+            return "1. Good morning everyone, let's start today's weekly meeting.\n2) Ravi will order the EGFR antibody before Thursday.\n"
+    sched = Scheduler()
+    out = await translate_cues(sched, "m", cues)
+    assert out == {0: "Good morning everyone, let's start today's weekly meeting.",
+                   2: "Ravi will order the EGFR antibody before Thursday."}
+    assert "1. 大家早上好" in sched.prompts[0] and "2. Ravi负责" in sched.prompts[0]
+    assert "controls came back" not in sched.prompts[0]
+
+    # Nothing Chinese: the model is never called.
+    sched = Scheduler()
+    assert await translate_cues(sched, "m", cues[1:2]) == {} and sched.prompts == []
+
+
+async def test_a_half_translated_line_gets_one_more_try_alone():
+    from bedrock.meetings.summarize import translate_cues
+    from bedrock.meetings.transcript import Cue
+
+    cues = [Cue(0, 1000, "Speaker 1", "第一项是对照实验的结果。"), Cue(1000, 2000, "Speaker 1", "我周五会跟进。")]
+
+    class Scheduler:
+        def __init__(self): self.prompts = []
+        async def complete(self, model, messages, priority=None, options=None):
+            self.prompts.append(messages[0]["content"])
+            if len(self.prompts) == 1:
+                return "1. The first item is the result of the 对照实验 experiment.\n2. I will follow up on Friday."
+            return "1. The first item is the result of the control experiment."
+    sched = Scheduler()
+    out = await translate_cues(sched, "m", cues)
+    assert out == {0: "The first item is the result of the control experiment.", 1: "I will follow up on Friday."}
+    assert len(sched.prompts) == 2 and "1. 第一项是对照实验的结果。" in sched.prompts[1]
+
+
+def test_translation_batches_are_bounded_by_lines_and_by_size():
+    from bedrock.meetings.summarize import TRANSLATE_BATCH, _translation_batches
+    from bedrock.meetings.transcript import Cue
+
+    short = [Cue(i * 1000, i * 1000 + 900, "S", "好的。") for i in range(60)]
+    batches = _translation_batches(short, list(range(60)))
+    assert [len(b) for b in batches] == [TRANSLATE_BATCH, TRANSLATE_BATCH, 10]
+    long = [Cue(i * 1000, i * 1000 + 900, "S", "我们决定下周一开始剂量反应研究，" * 12) for i in range(10)]
+    batches = _translation_batches(long, list(range(10)))
+    assert len(batches) > 1 and all(len(b) < TRANSLATE_BATCH for b in batches)
+    assert [i for b in batches for i in b] == list(range(10))
+
+
+async def test_translation_batches_run_together_not_one_after_another():
+    import asyncio
+
+    from bedrock.meetings.summarize import TRANSLATE_BATCH, translate_cues
+    from bedrock.meetings.transcript import Cue
+
+    cues = [Cue(i * 1000, i * 1000 + 900, "S", f"第{i}项是对照实验的结果。") for i in range(TRANSLATE_BATCH * 3)]
+
+    class Scheduler:
+        def __init__(self): self.in_flight = 0; self.peak = 0
+        async def complete(self, model, messages, priority=None, options=None):
+            self.in_flight += 1; self.peak = max(self.peak, self.in_flight)
+            await asyncio.sleep(0.01)
+            self.in_flight -= 1
+            lines = [l for l in messages[0]["content"].splitlines() if l[:1].isdigit()]
+            return "\n".join(f"{n + 1}. Item {n} is the control result." for n in range(len(lines)))
+    sched = Scheduler()
+    out = await translate_cues(sched, "m", cues)
+    assert len(out) == TRANSLATE_BATCH * 3
+    assert sched.peak == 3  # all three batches were in flight at once

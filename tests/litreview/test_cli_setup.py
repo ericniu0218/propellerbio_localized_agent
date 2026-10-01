@@ -56,112 +56,84 @@ class Server:
 
 # ---------------------------------------------------------------------------
 # doctor
+#
+# `bedrock-litreview doctor` is `litreview/readiness.py`'s `review_readiness`,
+# printed. These tests are about what this branch adds to it: advice that does
+# not stop a review (a short timeout, a nearly full disk), shown beside the one
+# thing that does. What the readiness check itself decides - windows, models,
+# structured output, authentication - is main's, and is tested with it.
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_says_what_it_read_so_the_answer_can_be_checked(data_dir, monkeypatch, capsys):
-    """Which files were read is half the answer. "The model set is wrong" is
-    unactionable until you know which of two models.yaml files it came from."""
-    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server())
+def _ready(monkeypatch, *, timeout: str | None = "600"):
     monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
-    monkeypatch.setenv("BEDROCK_TIMEOUT", "600")
+    if timeout is not None:
+        monkeypatch.setenv("BEDROCK_TIMEOUT", timeout)
+
+
+def test_doctor_is_ready_on_a_machine_that_is_set_up(data_dir, monkeypatch, capsys):
+    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server())
+    _ready(monkeypatch)
 
     assert cli.main(["doctor"]) == 0
     out = capsys.readouterr().out
 
-    assert "models.yaml:" in out and "defaults/models.yaml" in out
-    assert "model set:" in out and "laptop" in out
-    assert str(data_dir) in out
-    assert "Ready." in out, "a fully set up machine should say so plainly"
+    assert "operational" in out
+    assert "FAIL" not in out
+    assert "free disk" in out, "the disk advice is part of the check"
 
 
-def test_doctor_separates_worth_knowing_from_would_stop_you(data_dir, monkeypatch, capsys):
-    """bedrock's default 120-second timeout is the common case, and it is a
-    warning rather than a refusal: a review that hits it resumes."""
+def test_doctor_shows_advice_that_does_not_stop_a_review(data_dir, monkeypatch, capsys):
+    """bedrock's default 120-second timeout is the common case. It is worth
+    saying and must not turn a working machine into a failing one: a review
+    that hits it stops between calls and resumes."""
     monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server())
-    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
+    _ready(monkeypatch, timeout=None)
 
-    assert cli.main(["doctor"]) == 0, "a warning must not make this exit non-zero"
-    out = capsys.readouterr().out
-    assert "[warn] request timeout" in out
-    assert "A review can run." in out
-
-
-def test_doctor_reports_every_problem_not_just_the_first(data_dir, monkeypatch, capsys):
-    """The whole reason it exists. A review refuses at the first blocker, so
-    setting a machine up that way is one failed review per mistake."""
-    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server(models=["something-else"]))
-    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "8192")  # too small
-
-    assert cli.main(["doctor"]) == 1
+    assert cli.main(["doctor"]) == 0, "advice must not make this exit non-zero"
     out = capsys.readouterr().out
 
-    assert "[FAIL] context window" in out
-    assert "[FAIL] models" in out, "the model check must still run after the window failed"
-    assert "would stop a review" in out
+    assert "request timeout: worth knowing" in out
+    assert "request_timeout = 600" in out
+    assert "operational" in out
 
 
 def test_doctor_names_what_the_server_actually_offers(data_dir, monkeypatch, capsys):
-    """OPEN_ISSUES item 16: the `office` model names are guesses, and nobody can
-    confirm them before the office server exists. The next best thing is for the
-    failure to say what this server calls its models, and which file to write
-    them into."""
+    """The `office` model names are guesses until IT says what the vLLM server
+    serves, and nobody can confirm them before that server exists. The next
+    best thing is for the failure to say what this server calls its models and
+    which file to write them into."""
     monkeypatch.setattr(
-        "bedrock.inference.create_backend",
-        lambda s: Server(models=["Qwen/Qwen3-30B-A3B-Instruct-2507"]),
+        "bedrock.inference.create_backend", lambda s: Server(models=["Qwen/Qwen3-30B-A3B-Instruct-2507"])
     )
-    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
+    _ready(monkeypatch)
 
     assert cli.main(["doctor"]) == 1
     out = capsys.readouterr().out
 
-    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in out
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in out, "it must say what the server does offer"
     assert "--served-model-name" in out
     assert "models.yaml" in out
 
 
-def test_doctor_reports_a_silent_server_rather_than_crashing(data_dir, monkeypatch, capsys):
+def test_doctor_shows_the_advice_even_when_the_server_is_down(data_dir, monkeypatch, capsys):
+    """The advice is configuration and the disk, so it needs no server - and a
+    server that is down is when someone is most likely to be reading this."""
     monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server(silent=True))
-    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
+    _ready(monkeypatch, timeout=None)
 
     assert cli.main(["doctor"]) == 1
-    assert "not answering" in capsys.readouterr().out
-
-
-def test_doctor_without_a_server_checks_the_configuration_alone(data_dir, monkeypatch, capsys):
-    """The state of a machine before anyone has started Ollama, which is when
-    somebody is most likely to run this."""
-    def refuse(_settings):
-        raise AssertionError("--no-server must not open a backend")
-
-    monkeypatch.setattr("bedrock.inference.create_backend", refuse)
-    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
-
-    assert cli.main(["doctor", "--no-server"]) == 0
     out = capsys.readouterr().out
-    assert "[ok  ] context window" in out
-    assert "model server:" in out, "it still says which address it would use"
+
+    assert "could not list models" in out
+    assert "free disk" in out and "request timeout" in out
 
 
-def test_doctor_reports_a_broken_config_table_as_a_finding(data_dir, monkeypatch, capsys):
-    """A typo in [litreview] stops every review. It should be the answer to
-    "check my setup", not a traceback."""
+def test_doctor_reports_a_broken_config_as_a_finding_not_a_traceback(data_dir, monkeypatch, capsys):
     monkeypatch.setenv("BEDROCK_LITREVIEW_MODELS", "not-a-real-set")
 
-    assert cli.main(["doctor", "--no-server"]) == 1
+    assert cli.main(["doctor"]) == 1
     assert "unknown model set" in capsys.readouterr().out
-
-
-def test_doctor_checks_the_model_set_it_was_asked_about(data_dir, monkeypatch, capsys):
-    """`--models office` is how somebody checks the office server's names from a
-    laptop, before going anywhere near it."""
-    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server())
-    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
-
-    assert cli.main(["doctor", "--models", "office"]) == 1
-    out = capsys.readouterr().out
-    assert "office" in out
-    assert "qwen3-30b-a3b-instruct" in out, "the office set's names, not the laptop set's"
 
 
 # ---------------------------------------------------------------------------

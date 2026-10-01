@@ -129,6 +129,33 @@ def test_doctor_shows_the_advice_even_when_the_server_is_down(data_dir, monkeypa
     assert "free disk" in out and "request timeout" in out
 
 
+async def test_the_advice_sits_just_before_the_verdict_and_never_moves_the_checks_ahead_of_it(
+    data_dir, monkeypatch
+):
+    """Callers and tests read the readiness checks by position (the model
+    server, then what went wrong, then the verdict), and `operational()` needs
+    the verdict last. The advice must slot in between without moving any of
+    them: putting it near the top once shifted `checks[1]` and broke the
+    agent-server tests, which only run where the `[server]` extra is installed."""
+    from bedrock.litreview.readiness import operational, review_readiness
+
+    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server(silent=True))
+    monkeypatch.setenv("BEDROCK_CONTEXT_WINDOW", "12288")
+    monkeypatch.delenv("BEDROCK_TIMEOUT", raising=False)
+
+    checks = await review_readiness()
+    names = [c.name for c in checks]
+
+    assert names[0] == "Model server", "the first check must stay first"
+    assert names[-1] == "Literature review", "the verdict must stay last"
+    assert not operational(checks)
+    advice = [c for c in checks if c.name in {"request timeout", "free disk"}]
+    assert advice, "the advice is shown even though the server is down"
+    assert all(names.index(c.name) > names.index("Model discovery") for c in advice), (
+        "advice goes after the checks that decide the outcome, before the verdict"
+    )
+
+
 def test_doctor_reports_a_broken_config_as_a_finding_not_a_traceback(data_dir, monkeypatch, capsys):
     monkeypatch.setenv("BEDROCK_LITREVIEW_MODELS", "not-a-real-set")
 

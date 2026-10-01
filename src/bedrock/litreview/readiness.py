@@ -52,9 +52,41 @@ async def _health(url: str) -> tuple[int, set[str]]:
 
 
 async def review_readiness(bedrock_settings=None, *, env=None, backend=None) -> list[Check]:
-    """Every check, in order, stopping at the first one that makes the rest moot."""
+    """Every check, in order, stopping at the first one that makes the rest moot,
+    with advice that does not stop a review set just before the verdict.
+
+    The advice - a `request_timeout` too short for an extraction call, a nearly
+    full disk, a company server name that may need `allowed_hosts` - is
+    configuration and the disk, so it needs no server and is shown even when the
+    server is down, which is when someone is most likely to be reading this. It
+    is information, never failure: `operational()` ignores it.
+
+    It goes *before the last check*, not at the top: the checks that matter keep
+    the positions callers and tests read them at (the model server, then the
+    agent server, then what went wrong), and the verdict stays last, which
+    `operational()` requires.
+    """
+    checks = await _review_readiness(bedrock_settings, env=env, backend=backend)
+    try:
+        settings = load_settings(bedrock_settings, env=env)
+    except ConfigError:
+        return checks  # the configuration failure is already the finding
+    from bedrock.litreview.service import config_findings
+
+    # A review opens its own connection (and so has its timeout raised) unless
+    # it shares the chat's, which only a default-mode review aimed at bedrock's
+    # own `api_base` does.
+    advice = [
+        Check(f.title, True if f.ok else None, f.detail if f.ok else f"worth knowing: {f.detail}")
+        for f in config_findings(settings, timeout_floor_applied=settings.endpoint_source != "api_base")
+    ]
+    return checks[:-1] + advice + checks[-1:]
+
+
+async def _review_readiness(bedrock_settings=None, *, env=None, backend=None) -> list[Check]:
+    """The checks that decide whether a review can run; see `review_readiness`."""
     from bedrock.inference import InferenceError
-    from bedrock.litreview.service import config_findings, preflight, review_backend
+    from bedrock.litreview.service import preflight, review_backend
 
     checks: list[Check] = []
     try:
@@ -68,17 +100,6 @@ async def review_readiness(bedrock_settings=None, *, env=None, backend=None) -> 
                      if job in settings.jobs)
     checks.append(Check("Model server", None, f"{settings.base_url} ({where}); API key "
                         f"{'set' if settings.api_key else 'not set'}; model set {settings.model_set!r}: {jobs}"))
-
-    # Things worth knowing that never stop a review: a short `request_timeout`,
-    # a nearly full disk, a company server name that may need `allowed_hosts`.
-    # Information, not failure - `operational()` ignores them - and shown before
-    # any network check so they appear even when the server is down, which is
-    # when someone is most likely to be reading this. A review opens its own
-    # connection (and so has its timeout raised) unless it shares the chat's,
-    # which only a default-mode review aimed at bedrock's own `api_base` does.
-    for finding in config_findings(settings, timeout_floor_applied=settings.endpoint_source != "api_base"):
-        checks.append(Check(finding.title, True if finding.ok else None,
-                            finding.detail if finding.ok else f"worth knowing: {finding.detail}"))
 
     if settings.endpoint_source == "agentpack":
         health_url = settings.base_url[: -len("/v1")] + "/health" if settings.base_url.endswith("/v1") \

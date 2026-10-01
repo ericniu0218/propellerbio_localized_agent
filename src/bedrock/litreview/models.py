@@ -365,8 +365,18 @@ class PatentRecord(BaseModel):
     granted patent. Collapsing these would show a filing as an issued right,
     which is a materially different fact for a competitor landscape."""
     claim_1: str | None = None
+    claim_1_cut: bool = False
+    """True when `claim_1` was cut at `sources/epo_ops.MAX_CLAIM_1_CHARS`: a very
+    long claim (a Markush formula listing hundreds of substituents) is never
+    shown as though it were the whole of it."""
     jurisdiction: str | None = None
     found_by_queries: list[str] = Field(default_factory=list)
+    matched_targets: list[str] = Field(default_factory=list)
+    """The question's candidate targets (canonical names, from the literature the
+    run just read) whose search found this filing. Empty for a search that did not
+    start from a target - which is the disease-only search, and finds mostly
+    filings that list the disease among dozens (psoriasis alone: 5 of the first
+    100 hits mention IL-23)."""
     source: str = "epo_ops"
 
 

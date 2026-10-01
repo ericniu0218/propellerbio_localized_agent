@@ -30,6 +30,16 @@ class PatentSearchRequest(BaseModel):
     spec: QuestionSpec | None = None
     exact_terms: dict[str, list[str]] = Field(default_factory=dict)
     max_results: int = 100
+    targets: dict[str, list[str]] = Field(default_factory=dict)
+    """Candidate targets to search for *with* the question's other entities:
+    canonical name -> the exact terms the knowledge table accepts for it. Chosen
+    by code from the evidence the run has already read (never by a model, and
+    never a name the knowledge table does not list). Empty: one search for the
+    question's own entities, which is the only thing to search before any
+    target is known (a run without a model, or a question naming none)."""
+    per_target: int = 40
+    """Most filings kept per target, so one crowded target cannot use the whole
+    `max_results` and leave the others unsearched."""
 
 
 @runtime_checkable

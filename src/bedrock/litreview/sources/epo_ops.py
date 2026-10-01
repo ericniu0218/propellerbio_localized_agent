@@ -33,7 +33,8 @@ element shape is still only what this parser tolerates: it matches by local
 name ("claim" or "claim-text"), logs a warning and returns None rather than
 raising if nothing recognisable is found. The one thing the live run showed it
 getting wrong - a leading "CLAIMS" heading, which is in the register's own text
-for WO filings - is removed by `_without_claims_heading`.
+for WO filings - is removed by `split_claim_1`, which also cuts claim 1 out of
+the whole claim set the endpoint returns.
 `scripts/litreview/epo_ops_selftest.py` repeats the live check.
 """
 
@@ -200,41 +201,114 @@ def parse_search_response(xml_bytes: bytes, *, found_by: str) -> tuple[list[Pate
     return records, total
 
 
-# A WO filing's claims often open with the word CLAIMS as a heading, and the
-# register's text keeps it: a live search for "interleukin-23" returned
-# '1. CLAIMS 1. A method for treating ulcerative colitis ...' for claim 1. The
-# heading is in the patent's own text, not something this parser added, so it
-# is removed here - and only in the exact shape seen: an optional leading
-# number, the word CLAIM(S), then the claim's own number. A claim that merely
-# begins with the word ("1. Claims processing ...") has no number after it and
-# is left alone.
-_CLAIMS_HEADING = re.compile(r"^\s*(?:\d+\s*[.)]\s*)?claims?\s*:?\s*(?=\d+\s*[.)]\s)", re.I)
+# What the claims endpoint really returns - seen live, on WO, EP and CA filings -
+# is ONE <claim> element holding the whole claim set as flat text, 5,000 to
+# 55,000 characters, numbered "1.", "2.", ... inline. So "claim 1" has to be cut
+# out of it, and the text round it is untidy in ways that are the register's own:
+#
+#   "CLAIMS\n1 . A compound of the formula (I) ..."         a heading, a spaced dot
+#   "1. CLAIMS\n1. A compound ..."                          page number, heading
+#   "1. <img class="EMIRef" .../> 2. CLAIMS WHAT IS CLAIMED IS:3. 1. A method"
+#   "1. 一种环肽化合物 ..."                                  not English
+#
+# Each is handled by one named step below, and a claim that merely begins with
+# the word ("1. Claims processing ...") is left alone.
+MAX_CLAIM_1_CHARS = 4000
+"""A cap, not a target: a Markush claim listing hundreds of substituents can run
+long, and a model reading it gets nothing from the tail. `PatentRecord.claim_1_cut`
+says when it was applied, so a cut claim is never mistaken for a whole one."""
+
+_IMG = re.compile(r"<img\b[^>]*>", re.I)
+_PUBLICATION_PREFIX = re.compile(r"^[A-Z]{2}\d{4,}[A-Z]\d?(?=\D|$)")
+_HEADING = re.compile(
+    r"(?:\b(?:what\s+is\s+claimed\s+is|we\s+claim|i\s+claim|claims?)\b\s*:?\s*)+(?=\d{1,3}\s*[.)]|$)", re.I)
+_LEAD_MARKERS = re.compile(r"^\s*((?:\d{1,3}\s*[.)]\s*)+)")
+_MARKER = re.compile(r"(\d{1,3})\s*[.)]\s*(?=[A-Z\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af(])")
+_REFERS_TO_CLAIM_1 = re.compile(
+    r"claims?\s*1\b|claim\s+one\b|any\s+(?:one\s+)?of\s+(?:the\s+)?(?:preceding|previous)\s+claims|"
+    r"\u6743\u5229\u8981\u6c42\s*1|\u8acb\u6c42\u9805\s*1|\uccad\uad6c\ud56d\s*1", re.I)
+_TRAILING_NUMBER = re.compile(r"(?<=[.;])\s*\d{1,3}\s*[.)]\s*$")
 
 
-def _without_claims_heading(text: str) -> str:
-    return _CLAIMS_HEADING.sub("", text, count=1).strip() or text
+def _flat(text: str) -> str:
+    text = _IMG.sub(" ", text.replace("\u2003", " "))
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def parse_claim_1(xml_bytes: bytes) -> str | None:
-    """First claim's text, or None if nothing recognisable is found.
+def _claim_2_start(text: str) -> int | None:
+    """Where claim 2 begins, found by what it says rather than by its number.
 
-    Deliberately loose (see the module docstring: this shape is not
-    independently confirmed). Matches any element locally named "claim" or
-    "claim-text", in document order, and returns the first non-empty one.
+    Numbers are the unreliable part: page and paragraph numbers stack in front of
+    a claim ("... score.13. 3. The method of claim 1"), and some filings glue a
+    claim onto the previous word ("... thereof.2. The compound"). What every
+    dependent claim does say is which claim it hangs from, so claim 2 is the
+    nearest numbered sentence before the first "...claim 1". With no such
+    reference (a single claim, or an independent claim 2) there is no safe end,
+    and the caller's cap applies.
+    """
+    ref = _REFERS_TO_CLAIM_1.search(text, 20)
+    if ref is None:
+        return None
+    markers = list(_MARKER.finditer(text, max(0, ref.start() - 160), ref.start()))
+    return markers[-1].start() if markers else None
+
+
+def split_claim_1(text: str) -> tuple[str, bool] | None:
+    """Claim 1 out of a flat claim set -> (its text, whether it was cut at the cap).
+
+    Steps, in order: tidy the text; drop a leading publication number; drop a
+    "CLAIMS" / "WHAT IS CLAIMED IS" heading but only where it sits ahead of the
+    first claim number; take the *last* of the numbering markers stacked ahead of
+    the claim ("1. 2. 3. 1." is page and paragraph numbers, then claim 1); end it
+    where claim 2 starts (`_claim_2_start`), and failing that at the cap.
+    """
+    text = _flat(text)
+    text = _PUBLICATION_PREFIX.sub("", text).strip()
+    head_match = _HEADING.search(text[:160])
+    if head_match and re.match(r"^[\s\d.):]*$", text[: head_match.start()]):
+        text = text[: head_match.start()] + " " + text[head_match.end():]
+    markers = _LEAD_MARKERS.match(text)
+    if markers:
+        numbers = re.findall(r"\d+", markers.group(1))
+        if numbers[-1] == "1":
+            text = text[markers.end():]
+    text = text.strip(" :")
+    if not text:
+        return None
+
+    end = _claim_2_start(text)
+    claim = text[:end].strip() if end is not None else text
+    claim = _TRAILING_NUMBER.sub("", claim).strip()
+    cut = False
+    if len(claim) > MAX_CLAIM_1_CHARS:
+        claim, cut = claim[:MAX_CLAIM_1_CHARS].rsplit(" ", 1)[0], True
+    return (claim, cut) if claim else None
+
+
+def parse_claim_1(xml_bytes: bytes) -> tuple[str, bool] | None:
+    """Claim 1 of a claims response and whether it was cut at `MAX_CLAIM_1_CHARS`,
+    or None if nothing recognisable is found.
+
+    The shape is what the live API returns, not what the reference guide shows
+    (its example is an image): a single <claim>, or one per claim from an office
+    that splits them. Either way the first <claim> is flattened and handed to
+    `split_claim_1`. With no <claim> at all, a <claim-text> is tried before
+    giving up, and a warning says which shape was not recognised.
     """
     try:
         root = etree.fromstring(xml_bytes)
     except etree.XMLSyntaxError as exc:
         log.warning("epo_ops: claims response did not parse as XML: %s", exc)
         return None
-    for el in root.iter():
-        if _local(el.tag) in ("claim", "claim-text"):
-            text = re.sub(r"\s+", " ", "".join(el.itertext())).strip()
-            if text:
-                return _without_claims_heading(text)
+    for name in ("claim", "claim-text"):
+        for el in root.iter():
+            if _local(el.tag) == name:
+                found = split_claim_1("".join(el.itertext()))
+                if found:
+                    return found
+                break
     log.warning("epo_ops: no <claim>/<claim-text> element recognised in the claims "
-                "response — this shape was not confirmed against the primary doc; "
-                "see the module docstring and run scripts/litreview/epo_ops_selftest.py")
+                "response; run scripts/litreview/epo_ops_selftest.py")
     return None
 
 
@@ -265,12 +339,24 @@ class EpoOps:
         self.throttle = throttle or EpoThrottle()
         self.claims_max = claims_max
         self._own_http = http is None
+        self._no_claims: set[str] = set()
+        """Offices that answered `CLIENT.InvalidCountryCode` to a claims request.
+        Learned, not listed: which offices serve claim text is EPO's to change,
+        and a list written today would be wrong on the day it did."""
 
     def close(self) -> None:
         """Close the HTTP connection, if this instance opened one. A caller that
         handed in its own `http` keeps ownership of it, so this leaves it alone."""
         if self._own_http:
             self.http.close()
+
+    def check(self) -> None:
+        """Ask for a token and nothing else: one cheap call that proves the
+        account works. A run does this before any model call, so a key EPO
+        refuses is reported in the first seconds although the search itself now
+        happens much later, once the targets are known. Raises `AuthError`
+        (a `SourceError`) when the key or secret is refused."""
+        self.tokens.header()
 
     # -- one authenticated, throttle-aware request -----------------------------
 
@@ -347,7 +433,13 @@ class EpoOps:
 
     # -- claim 1, bounded --------------------------------------------------------
 
-    def claim_1(self, record: PatentRecord) -> str | None:
+    def claim_1(self, record: PatentRecord) -> tuple[str, bool] | None:
+        """(claim 1, whether it was cut at the cap), or None. An office that
+        answers `InvalidCountryCode` is remembered and not asked again: in a live
+        search 40 claim requests spent about half a minute each learning that
+        CN, US, JP, KR, DE and ZA filings have no claim text to give."""
+        if record.jurisdiction in self._no_claims:
+            return None
         try:
             root = self._request(
                 "retrieval", "GET",
@@ -355,39 +447,87 @@ class EpoOps:
                 headers={"Accept": "application/fulltext+xml"},
             )
         except PatentSearchFailed as exc:
-            log.warning("epo_ops: could not fetch claim 1 for %s: %s", record.id, exc)
+            if exc.status_code == 404 and "InvalidCountryCode" in str(exc) and record.jurisdiction:
+                self._no_claims.add(record.jurisdiction)
+                log.info("epo_ops: %s filings have no claim text through OPS; not asking again", record.jurisdiction)
+            else:
+                log.warning("epo_ops: could not fetch claim 1 for %s: %s", record.id, exc)
             return None
         return parse_claim_1(etree.tostring(root))
 
     # -- PatentSearcher -----------------------------------------------------------
 
+    def _queries(self, request: PatentSearchRequest) -> list[tuple[Query, str | None]]:
+        """(query, the target it searches for or None). With candidate targets,
+        one query each: the question's other entities AND that target's exact
+        terms. Without, the question's own entities, as before."""
+        base = build_queries(request)
+        if not request.targets:
+            return [(q, None) for q in base]
+        from bedrock.litreview.sources.query import _group, entity_groups
+
+        # The disease (and any other required entity that is not itself a target
+        # being searched): the same exact-term groups the literature search uses.
+        target_names = {t.lower() for t in request.targets}
+        context = [g for g, name in zip(entity_groups(request), _required_names(request))
+                   if name.lower() not in target_names]
+        return [(Query(label=f"target:{name}", groups=tuple(context) + (_group(list(terms) or [name]),)), name)
+                for name, terms in request.targets.items()]
+
     def search(self, request: PatentSearchRequest) -> list[PatentRecord]:
-        queries = build_queries(request)  # same code path/discipline as the literature searcher
         by_family: dict[str, PatentRecord] = {}
         without_family: list[PatentRecord] = []
-        for query in queries:
+        for query, target in self._queries(request):
             cql = cql_query(query)
+            limit = min(request.per_target, request.max_results) if target else request.max_results
             try:
-                for record in self.search_all(cql, request.max_results):
-                    key = record.family_id
-                    if key and key in by_family:
-                        by_family[key].found_by_queries.append(cql)
-                        continue
-                    if key:
-                        by_family[key] = record
-                    else:
-                        without_family.append(record)
+                found = self.search_all(cql, limit)[:limit]
             except PatentSearchFailed as exc:
                 log.warning("epo_ops: query %r failed: %s", cql, exc)
+                continue
+            for record in found:
+                key = record.family_id
+                if key and key in by_family:
+                    kept = by_family[key]
+                    kept.found_by_queries.append(cql)
+                    if target and target not in kept.matched_targets:
+                        kept.matched_targets.append(target)
+                    continue
+                if target:
+                    record.matched_targets = [target]
+                if key:
+                    by_family[key] = record
+                else:
+                    without_family.append(record)
 
-        records = list(by_family.values()) + without_family
-        # Claim 1 is a per-document call (p.66); bounded the same way the
+        records = (list(by_family.values()) + without_family)[: request.max_results]
+        # Claim 1 is a per-document call (p.66), so it is bounded the way the
         # literature searcher bounds open-access full text
-        # (defaults/pipeline.yaml: search.full_text_max) — relevance decides
-        # which patents are worth the extra round trip, not "all of them".
-        for record in records[: self.claims_max]:
-            record.claim_1 = self.claim_1(record)
-        return records[: request.max_results]
+        # (defaults/pipeline.yaml: search.full_text_max). Only calls actually
+        # made count against the bound: a filing from an office known to have no
+        # claim text costs nothing, so the budget goes to the ones that can answer.
+        asked = 0
+        for record in records:
+            if asked >= self.claims_max:
+                break
+            if record.jurisdiction in self._no_claims:
+                continue
+            learned_before = len(self._no_claims)
+            found = self.claim_1(record)
+            if len(self._no_claims) == learned_before:
+                asked += 1  # the call that taught us an office has no claims cost nothing
+            if found:
+                record.claim_1, record.claim_1_cut = found
+        return records
+
+
+def _required_names(request: PatentSearchRequest) -> list[str]:
+    """The question's required entity names, in the order `entity_groups` lists
+    their groups (it skips an entity with no usable term, so zip stays aligned
+    only because both read the same list)."""
+    if request.spec is not None:
+        return [e.canonical for e in request.spec.entities if e.required]
+    return list(request.exact_terms)
 
 
 def _docdb_ref(record: PatentRecord) -> str:

@@ -62,7 +62,8 @@ def main() -> int:
     print("\n3. Fetching claim 1 for the first result "
           "(THE UNCONFIRMED PART — read this output carefully)...")
     target = page[0]
-    claim = ops.claim_1(target)
+    found = ops.claim_1(target)
+    claim = found[0] if found else None
     if claim is None:
         print("   claim_1() returned None. Either this patent genuinely has no claims text")
         print("   available (some jurisdictions don't), or parse_claim_1()'s assumed <claim>/")
@@ -71,7 +72,9 @@ def main() -> int:
         print(f"     https://ops.epo.org/3.2/rest-services/published-data/publication/docdb/"
               f"{target.jurisdiction}.{target.id[len(target.jurisdiction or ''):]}/claims")
     else:
-        print(f"   ok: {claim[:200]!r}")
+        print(f"   ok ({len(claim)} chars{', cut at the cap' if found[1] else ''}): {claim[:200]!r}")
+        if len(claim) > 4000:
+            print("   TOO LONG for one claim: the splitter has not found where claim 2 starts.")
         print("   Read this against the real patent (search its number on Espacenet) and confirm")
         print("   it really is claim 1, not a fragment or the wrong claim.")
 

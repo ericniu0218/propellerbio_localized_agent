@@ -9,6 +9,7 @@ import asyncio
 
 import pytest
 from textual.widgets import Input
+from textual.worker import WorkerCancelled
 
 from tests.workers import wait_for_app_workers
 
@@ -60,12 +61,34 @@ async def type_prompt(app: BedrockApp, pilot, text: str) -> None:
 
 async def settle(app: BedrockApp, pilot, rounds: int = 6) -> None:
     """Let the queue drain: each finished reply may start the next prompt."""
+    async def wait_for_prompt_workers(timeout: float = 10) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while workers := [worker for worker in app.workers if worker.group in {"queue", "chat"}]:
+            tasks = [asyncio.create_task(worker.wait()) for worker in workers]
+            try:
+                _, pending = await asyncio.wait(
+                    tasks, timeout=max(0, deadline - asyncio.get_running_loop().time())
+                )
+                if pending:
+                    raise TimeoutError("Queue workers did not settle before the test deadline")
+                for task in tasks:
+                    try:
+                        task.result()
+                    except WorkerCancelled:
+                        pass
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(0)
+
     for _ in range(rounds):
-        await wait_for_app_workers(app)
+        await wait_for_prompt_workers()
         await pilot.pause()
-        if app.queue_snapshot().is_idle:
+        if app.queue_snapshot().is_idle and not app._active_prompt_workers():
             return
-    await wait_for_app_workers(app)
+    await wait_for_prompt_workers()
 
 
 def questions(backend: FakeBackend) -> list[str]:

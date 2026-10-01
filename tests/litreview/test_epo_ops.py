@@ -23,6 +23,9 @@ What this proves, with no network and no real account:
 from __future__ import annotations
 
 import base64
+import json
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -280,7 +283,7 @@ def test_total_result_count_is_read_even_when_the_page_is_partial():
 
 
 def test_claim_1_is_the_first_claim_in_document_order():
-    assert parse_claim_1(CLAIMS_XML.encode()) == "1. An isolated antibody that binds human IL-23."
+    assert parse_claim_1(CLAIMS_XML.encode()) == ("An isolated antibody that binds human IL-23.", False)
 
 
 def _claims_xml(text: str) -> bytes:
@@ -289,11 +292,9 @@ def _claims_xml(text: str) -> bytes:
             f'</claim></claims></ops:world-patent-data>').encode()
 
 
-def test_a_claims_heading_in_the_registers_text_is_not_part_of_claim_1():
-    """Seen live against a real WO patent: claim 1 came back as
-    '1. CLAIMS 1. A method for ...'. The heading is in the register's own text."""
-    text = parse_claim_1(_claims_xml("1. CLAIMS 1. A method for treating ulcerative colitis (UC)"))
-    assert text == "1. A method for treating ulcerative colitis (UC)"
+def claim_1(text: str):
+    found = parse_claim_1(_claims_xml(text))
+    return found[0] if found else None
 
 
 @pytest.mark.parametrize("raw", [
@@ -301,23 +302,84 @@ def test_a_claims_heading_in_the_registers_text_is_not_part_of_claim_1():
     "CLAIMS: 1. A method for treating UC",
     "1) Claims 1. A method for treating UC",
     "1. claims 1. A method for treating UC",
+    "1. CLAIMS 1. A method for treating UC",              # seen live: a page number, then the heading
+    "1. 2. CLAIMS WHAT IS CLAIMED IS:3. 1. A method for treating UC",  # stacked numbers and headings
+    "WO2026012345A1CLAIMS 1 . A method for treating UC",   # publication number glued on, spaced dot
+    "A method for treating UC",                           # no numbering at all
 ])
-def test_the_heading_is_removed_in_each_shape_it_comes_in(raw):
-    assert parse_claim_1(_claims_xml(raw)) == "1. A method for treating UC"
+def test_the_heading_and_stacked_numbers_are_removed_in_each_shape_they_come_in(raw):
+    assert claim_1(raw) == "A method for treating UC"
 
 
 @pytest.mark.parametrize("raw", [
-    "1. A method for treating UC",                      # nothing to remove
     "1. Claims processing apparatus comprising a CPU",  # the word, but no claim number after it
     "A claim for a composition comprising an antibody",
-    "CLAIMS",                                           # a bare heading must not become an empty claim
 ])
 def test_a_claim_that_merely_uses_the_word_is_left_alone(raw):
-    assert parse_claim_1(_claims_xml(raw)) == raw
+    assert claim_1(raw) == raw.removeprefix("1. ")
+
+
+def test_a_bare_heading_is_not_a_claim():
+    assert claim_1("CLAIMS") is None
 
 
 def test_an_unrecognised_claims_shape_returns_none_not_a_crash(caplog):
     assert parse_claim_1(b"<root><surprise>text</surprise></root>") is None
+
+
+# --- claim 1 out of the whole claim set -------------------------------------------
+#
+# What the claims endpoint returns is ONE <claim> holding every claim as flat
+# text, and the first version of this parser returned all of it as "claim 1" -
+# 5,000 to 55,000 characters, which the report footer called "never the full
+# claim set". Claim 1 is cut out here, from real captured responses: the first
+# 9,000 characters of the claims of 14 real WO, EP and CA filings from a live
+# search (tests/litreview/fixtures/epo_claims_real.json), unchanged.
+
+REAL_CLAIMS = json.loads((Path(__file__).parent / "fixtures" / "epo_claims_real.json").read_text())
+
+
+@pytest.mark.parametrize("patent", sorted(REAL_CLAIMS))
+def test_claim_1_of_a_real_claim_set_is_one_claim_and_not_the_next_ones(patent):
+    from bedrock.litreview.sources.epo_ops import MAX_CLAIM_1_CHARS
+
+    found = parse_claim_1(_claims_xml(REAL_CLAIMS[patent]["text"].replace("&", "&amp;").replace("<", "&lt;")))
+    assert found is not None
+    claim, cut = found
+    assert 0 < len(claim) <= MAX_CLAIM_1_CHARS
+    assert not re.match(r"^\s*(?:\d+\s*[.)]\s*)+", claim), f"numbering left on the front: {claim[:30]!r}"
+    assert "<img" not in claim and "EMIRef" not in claim
+    # It never runs into the next claim: no dependent claim's opening in it.
+    assert not re.search(r"(?i)\b(?:according to|of|as claimed in|as defined in)\s+claims?\s+1\b", claim)
+    assert not re.search(r"\u6839\u636e\u6743\u5229\u8981\u6c42\s*1", claim)
+    if cut:
+        assert len(claim) > MAX_CLAIM_1_CHARS - 100, "only a long claim is ever cut"
+
+
+def test_the_numbers_glued_to_the_previous_word_do_not_hide_claim_2():
+    """EP and CA text runs claims together: '... salt or solvate thereof.2. The
+    compound according to claim 1'. Claim 2 is found by what it says."""
+    claim = claim_1("1. A compound of formula (I), or a salt thereof.2. The compound according to claim 1, "
+                    "wherein R is H.3. The compound of claim 2.")
+    assert claim == "A compound of formula (I), or a salt thereof."
+
+
+def test_stacked_page_and_paragraph_numbers_before_claim_2_are_not_left_on_claim_1():
+    claim = claim_1("1. A method of treating psoriasis comprising dosing a patient.13. 3. The method of claim 1, "
+                    "wherein the dose is oral.")
+    assert claim == "A method of treating psoriasis comprising dosing a patient."
+
+
+def test_a_number_that_ends_a_real_sentence_in_claim_1_is_kept():
+    assert claim_1("1. A formulation wherein the pH is 2. 2. The formulation of claim 1.") == \
+        "A formulation wherein the pH is 2."
+
+
+def test_a_long_claim_is_cut_and_says_so():
+    from bedrock.litreview.sources.epo_ops import MAX_CLAIM_1_CHARS
+
+    found = parse_claim_1(_claims_xml("1. A compound selected from " + "alanine, " * 1000 + "valine."))
+    assert found is not None and found[1] is True and len(found[0]) <= MAX_CLAIM_1_CHARS
 
 
 def test_docdb_ref_strips_jurisdiction_and_kind_for_the_claims_url():
@@ -516,3 +578,126 @@ def test_no_model_call_is_possible_for_this_section():
     here for `report/guard.py` to check, by construction."""
     import inspect
     assert "client" not in inspect.signature(_competitors).parameters
+
+
+# --- claim availability is learned, not listed -----------------------------------
+
+
+class NoClaimsServer(OpsServer):
+    """Like EPO's claims endpoint: only some offices have claim text to give."""
+
+    def __init__(self, docs, *, serves=("WO", "EP"), **kw):
+        super().__init__(docs, **kw)
+        self.serves = serves
+        self.claim_requests: list[str] = []
+
+    def __call__(self, request):
+        if request.url.path.endswith("/claims"):
+            office = request.url.path.split("/")[-2].split(".")[0]
+            self.claim_requests.append(office)
+            if office not in self.serves:
+                self.requests.append(request)
+                return httpx.Response(404, text='<fault xmlns="http://ops.epo.org"><code>CLIENT.InvalidCountryCode'
+                                                '</code><message>unsupported country code</message></fault>')
+        return super().__call__(request)
+
+
+def test_an_office_with_no_claim_text_is_asked_once_and_then_left_alone():
+    """A live search spent 40 claim requests, about half a minute, learning that
+    CN, US, JP, KR, DE and ZA filings have no claim text through OPS."""
+    docs = [exchange_document(family=str(i), country="CN", number=str(i)) for i in range(6)]
+    server = NoClaimsServer(docs)
+    ops = make_ops(server, claims_max=40)
+    records = ops.search(PatentSearchRequest(question="q", exact_terms={"x": ["term"]}, max_results=10))
+    assert len(records) == 6 and not any(r.claim_1 for r in records)
+    assert server.claim_requests == ["CN"], "one question to the office, not six"
+
+
+def test_claims_skipped_for_a_known_office_do_not_use_up_the_claim_budget():
+    """The budget is for calls that can answer: 3 CN filings first must not leave
+    a budget of 2 spent before the WO ones that behind them can be read."""
+    docs = ([exchange_document(family=f"c{i}", country="CN", number=f"c{i}") for i in range(3)]
+            + [exchange_document(family=f"w{i}", country="WO", number=f"w{i}") for i in range(4)])
+    server = NoClaimsServer(docs)
+    ops = make_ops(server, claims_max=2)
+    records = ops.search(PatentSearchRequest(question="q", exact_terms={"x": ["term"]}, max_results=10))
+    assert [r.jurisdiction for r in records if r.claim_1] == ["WO", "WO"]
+
+
+def test_a_failure_that_is_not_the_country_is_not_remembered_against_the_office():
+    docs = [exchange_document(family=str(i), country="WO", number=str(i)) for i in range(3)]
+
+    class Flaky(NoClaimsServer):
+        def __call__(self, request):
+            if request.url.path.endswith("/claims") and len(self.claim_requests) == 0:
+                self.claim_requests.append("WO")
+                return httpx.Response(404, text="<fault><code>SERVER.EntityNotFound</code></fault>")
+            return super().__call__(request)
+
+    server = Flaky(docs, serves=("WO",))
+    records = make_ops(server, claims_max=10).search(
+        PatentSearchRequest(question="q", exact_terms={"x": ["term"]}, max_results=10))
+    assert sum(1 for r in records if r.claim_1) == 2, "one filing's missing claims is that filing's problem"
+
+
+def test_the_account_can_be_checked_with_a_token_request_and_nothing_else():
+    server = OpsServer([])
+    make_ops(server).check()
+    assert [str(r.url) for r in server.requests] == [TOKEN_URL]
+
+
+def test_a_refused_account_fails_the_check_with_a_clear_error():
+    ops = EpoOps(KEY, SECRET, http=_http(httpx.MockTransport(lambda r: httpx.Response(401, text="bad"))))
+    with pytest.raises(AuthError, match="rejected"):
+        ops.check()
+
+
+# --- search per target -------------------------------------------------------------
+
+
+def _searches(server) -> list[str]:
+    return [dict(r.url.params)["q"] for r in server.requests
+            if "search/biblio" in str(r.url)]
+
+
+def test_each_target_is_searched_together_with_the_questions_own_entities():
+    """Searching 'psoriasis' alone finds mostly filings that list it among dozens
+    of diseases (5 of the first 100 hits mention IL-23); 'IL-23 AND psoriasis'
+    finds 26 and all 26 do."""
+    server = OpsServer([exchange_document()])
+    make_ops(server).search(PatentSearchRequest(
+        question="q", exact_terms={"psoriasis": ["psoriasis"]},
+        targets={"IL23A": ["IL-23", "interleukin-23"], "IL17A": ["IL-17A"]}))
+    assert _searches(server) == ["ta=psoriasis AND (ta=IL-23 OR ta=interleukin-23)",
+                                 "ta=psoriasis AND ta=IL-17A"]
+
+
+def test_a_target_that_is_the_questions_own_entity_is_not_searched_twice():
+    server = OpsServer([exchange_document()])
+    make_ops(server).search(PatentSearchRequest(
+        question="q", exact_terms={"IL23A": ["IL-23"], "psoriasis": ["psoriasis"]}, targets={"IL23A": ["IL-23"]}))
+    assert _searches(server) == ["ta=psoriasis AND ta=IL-23"]
+
+
+def test_without_targets_the_search_is_the_questions_own_terms_as_before():
+    server = OpsServer([exchange_document()])
+    make_ops(server).search(PatentSearchRequest(question="q", exact_terms={"psoriasis": ["psoriasis"]}))
+    assert _searches(server) == ["ta=psoriasis"]
+
+
+def test_a_filing_remembers_every_target_that_found_it():
+    server = OpsServer([exchange_document(family="999", country="EP", number="1")])
+    records = make_ops(server).search(PatentSearchRequest(
+        question="q", exact_terms={"psoriasis": ["psoriasis"]},
+        targets={"IL23A": ["IL-23"], "IL17A": ["IL-17A"]}))
+    assert len(records) == 1, "the same family under two targets is one family"
+    assert records[0].matched_targets == ["IL23A", "IL17A"]
+
+
+def test_one_crowded_target_cannot_use_every_slot():
+    docs = [exchange_document(family=str(i), number=str(i)) for i in range(30)]
+    server = OpsServer(docs)
+    records = make_ops(server).search(PatentSearchRequest(
+        question="q", exact_terms={"psoriasis": ["psoriasis"]}, targets={"IL23A": ["IL-23"]},
+        per_target=5, max_results=100))
+    assert len(records) == 5

@@ -64,9 +64,14 @@ def test_a_genotype_subgroup_null_is_not_a_treatment_null():  # E8
 
 
 def test_arms_that_all_got_the_drug_are_a_co_intervention_comparison():  # E14, E15
+    differed = u("Between-group differences were statistically significant for both groups (TZP + LEKT versus "
+                 "TZP + LCD) in CAP and LSM.", outcome="association")
+    assert claims.contrast_of(differed, SPEC, TZP_PAPER) == "co_intervention"
+    # What each arm did from its own baseline is still the drug's within-arm
+    # change - shared-treatment studies do not disappear (scientist's review, 1 Oct).
     diets = u("Both groups showed significant reductions in body weight (TZP + LEKT, p = 0.0289; TZP + LCD, "
               "p = 0.0278), with no significant intergroup difference (p = 0.665).")
-    assert claims.contrast_of(diets, SPEC, TZP_PAPER) == "co_intervention"
+    assert claims.contrast_of(diets, SPEC, TZP_PAPER) == "within_arm"
     versus = u("The absolute reduction in LFC was significantly greater for the pooled tirzepatide 10 mg and 15 mg "
                "groups versus the insulin degludec group.")
     assert claims.contrast_of(versus, SPEC, TZP_PAPER) == "between_arm"
@@ -207,3 +212,140 @@ def test_no_agent_and_no_drug_named_is_not_the_drugs_result():  # E1, E77
     assert not claims.attributable(population, SPEC, TZP_PAPER)
     assert not claims.attributable(model, SPEC, TZP_PAPER)
     assert claims.attributable(plain, SPEC, TZP_PAPER)
+
+
+
+# --- the scientist's review of the re-run (1 October) ---------------------------------------------------------
+
+ACTIVE_ARMS = Paper(id="p6", title="Real-World Effectiveness and Safety of Tirzepatide, Semaglutide, and Liraglutide",
+                    abstract="Adults received liraglutide, semaglutide, or tirzepatide for 36 weeks.", signals=PaperSignals())
+DIET_ARMS = Paper(id="p8", title="Tirzepatide Plus Low-Energy Ketogenic Versus Low-Calorie Diet",
+                  abstract="Patients on tirzepatide (TZP) were randomised to a ketogenic (LEKT) or low-calorie diet (LCD).",
+                  signals=PaperSignals())
+
+
+def test_arms_on_other_drugs_are_an_active_comparison_not_a_co_intervention():  # [6] vs [8]
+    quote = ("At week 36, significant within-group reductions in AST, ALT, and GGT levels were observed across all "
+             "treatment groups (all p < 0.01). However, no significant between-group differences were detected.")
+    enzymes = u(quote, outcome="association", intervention=None)
+    assert claims.contrast_of(enzymes, SPEC, ACTIVE_ARMS) != "co_intervention"
+    assert claims.contrast_of(u("Both groups showed no significant between-group difference in CAP (TZP + LEKT "
+                                "versus TZP + LCD).", outcome="association"), SPEC, DIET_ARMS) == "co_intervention"
+
+
+@pytest.mark.parametrize("quote, reason", [
+    ("A total of 276 participants were included in this analysis.", "not_a_result"),  # E5
+    ("This single-center, retrospective, real-world observational study was conducted at a private internal "
+     "medicine clinic in Istanbul between September 2023 and September 2024.", "not_a_result"),  # E55
+    ("Data on its hepatic effects in people without diabetes remain limited.", "background"),  # E32
+    ("The mean levels of the different analytes are seen in .", "dangling"),  # E82
+    ("The expression level of these markers was not significantly different in the other intervention groups.",
+     "unresolved"),  # E81
+    ("The estimated treatment difference versus insulin degludec was -4·71% (95% CI -6·72 to -2·70; "
+     "pInterpretationTirzepatide showed a significant reduction.", "damaged"),  # E13
+    ("Treatment with the dual GLP⍰1/GIP receptor agonist tirzepatide ameliorated hepatic steatosis.", "damaged"),
+    ("TZP use was associated with a reduced risk of the composite outcome (HR, 0.66; 95% CI, 0.58–0.42).",
+     "anomaly"),  # E38
+])
+def test_a_quote_that_is_not_a_usable_result_is_excluded_with_its_reason(quote, reason):
+    a = claims.assess(u(quote), SPEC, TZP_PAPER)
+    assert a.status == claims.EXCLUDED and reason in a.reasons, a
+
+
+def test_a_plain_result_is_counted_and_a_subgroup_is_context():
+    counted = claims.assess(u("Tirzepatide reduced liver fat content by 8.09 percentage points versus 3.38 with "
+                              "insulin degludec at week 52."), SPEC, TZP_PAPER)
+    assert counted.status == claims.COUNTED and counted.reasons == ()
+    subgroup = claims.assess(u("There were no statistically significant differences between any of the genotype "
+                               "subgroups (CC vs. CG).", outcome="no_effect"), SPEC, TZP_PAPER)  # E8
+    assert subgroup.status == claims.CONTEXT and subgroup.reasons == ("subgroup",)
+
+
+def test_regardless_of_a_subgroup_is_the_drugs_result_not_a_subgroup_comparison():  # E6
+    e6 = u("Approximately 30%–40% of tirzepatide-treated participants with baseline LFC ≥ 6% achieved LFC < 6% at "
+           "Week 52 regardless of the presence of the G allele.")
+    assert claims.contrast_of(e6, SPEC, TZP_PAPER) != "subgroup"
+
+
+def test_a_label_the_paper_contradicts_is_corrected_not_dropped():  # E28 (mouse study, labelled human), E69
+    mouse = u("TZP treatment was associated with reduced abundance of HFHFr-induced proteins.",
+              evidence_type="human_clinical", species_raw="HFHFr-fed mice")
+    a = claims.assess(mouse, SPEC, TZP_PAPER, tier="animal")
+    assert a.evidence_type == "in_vivo" and "design_corrected" in a.reasons
+    rats = claims.assess(u("Metabolic analytes decreased in the intervention groups compared to sham.",
+                           evidence_type="in_vitro", species_raw="rats"), SPEC, TZP_PAPER, tier="animal")
+    assert rats.evidence_type == "in_vivo"
+
+
+def _ctx(**kw):
+    from types import SimpleNamespace
+
+    base = dict(spec=SPEC, papers={}, studies={}, status={}, summary=SimpleNamespace(units=[], short_ids={}))
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_causal_wording_is_removed_only_when_every_cited_study_is_non_randomised():  # E56, "led to"
+    from types import SimpleNamespace
+
+    from bedrock.litreview.stages.s7_write import _causal_from_observational
+
+    cohort = u("Tirzepatide treatment improved liver steatosis.", paper_id="obs")
+    trial = u("Tirzepatide reduced LFC versus insulin degludec.", paper_id="rct")
+    ctx = _ctx(studies={"obs": SimpleNamespace(tier="observational"), "rct": SimpleNamespace(tier="rct")})
+    led = "In patients with T2DM and MASLD, tirzepatide treatment led to significant improvements in steatosis."
+    assert _causal_from_observational(led, [cohort], ctx)
+    assert _causal_from_observational(led, [trial], ctx) is None
+    assert _causal_from_observational("Tirzepatide was associated with improvements in steatosis.", [cohort], ctx) is None
+
+
+def test_adverse_events_are_reported_as_occurrence_and_comparison_never_as_no_effect():  # E85
+    from bedrock.litreview.report import synthesis
+
+    e85 = u("Gastrointestinal adverse events, including nausea, were the most frequently reported events across "
+            "treatment groups.", paper_id="p6", outcome="no_effect")
+    row = synthesis.SynthesisRow("Adverse events and tolerability", [e85], {"no_effect": {"p6"}}, {"p6": "observational"},
+                                 {"no_effect": {"p6"}}, {}, set(), "Non-randomised human studies only", "1 study",
+                                 endpoint="adverse_events")
+    text = synthesis.render_synthesis([row], {"p6": 6})
+    assert "no significant effect" not in text
+    assert "reported in 1 study [6]" in text and "no comparison of rates" in text
+
+
+def test_the_answer_says_which_of_its_studies_are_the_population_asked_about():
+    from bedrock.litreview.report import synthesis
+
+    obese = Paper(id="a", title="Tirzepatide in adults with obesity", abstract="x", signals=PaperSignals())
+    t2d = Paper(id="b", title="Tirzepatide in type 2 diabetes", abstract="BMI of at least 25.", signals=PaperSignals())
+    note = synthesis.cited_population_note(_ctx(papers={"a": obese, "b": t2d}), {"a", "b"}, {"a": 3, "b": 1})
+    assert note and "[3] names obesity" in note and "[1] does not" in note
+    assert synthesis.cited_population_note(_ctx(papers={"a": obese}), {"a"}, {"a": 3}) is None
+
+
+def test_an_unread_paper_about_a_harm_is_a_lead_not_a_finding():
+    from types import SimpleNamespace
+
+    from bedrock.litreview.stages.s7_write import _unread_safety_leads
+
+    case = Paper(id="c", title="A Rare Case of Tirzepatide-Induced Hepatotoxicity", abstract="", signals=PaperSignals())
+    read = Paper(id="r", title="Tirzepatide hepatotoxicity in a cohort", abstract="", signals=PaperSignals())
+    other = Paper(id="o", title="Semaglutide-induced pancreatitis", abstract="", signals=PaperSignals())
+    ctx = _ctx(papers={p.id: p for p in (case, read, other)},
+               ranked=[SimpleNamespace(paper_id=x) for x in ("c", "r", "o")],
+               plan=SimpleNamespace(paper_ids=["r"]))
+    leads = _unread_safety_leads(ctx)
+    assert len(leads) == 1 and "Rare Case of Tirzepatide-Induced Hepatotoxicity" in leads[0]
+
+
+def test_a_report_stored_before_statuses_existed_still_re_serialises_to_its_own_bytes(tmp_path):
+    """`verify-run` re-serialises every stored report and compares bytes; a new
+    field must not appear in an old report."""
+    from bedrock.litreview.models import EvidenceStatus, Report
+    from bedrock.litreview.stages.s8_render import to_json
+
+    old = Report(question_id="q", question="q", sections=[])
+    body = to_json(old)
+    assert "evidence_status" not in body
+    assert to_json(Report.model_validate_json(body)) == body
+    new = old.model_copy(update={"evidence_status": {"u1": EvidenceStatus(status="excluded", reasons=["x"])}})
+    assert to_json(Report.model_validate_json(to_json(new))) == to_json(new)

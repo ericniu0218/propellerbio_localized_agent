@@ -202,6 +202,50 @@ as such (with Retry that does not repeat the question), and gives the model the
 report's Answer, glance, synthesis and limitations plus the sections the
 question is about (`tests/server/test_chat_lifecycle.py`).
 
+## Third pass: the scientist's review of the re-run (1 October)
+
+The reviewer found the summary improved but the evidence underneath still
+contradicting it: enrolment counts and study settings labelled "improved", a
+"data remain limited" sentence counted as an association, "are seen in ." and
+"these markers" used as findings, a mouse finding labelled human, a reversed
+interval kept as an ordinary row, adverse events summarised as "no significant
+effect", a co-intervention reason given for a study whose arms took three
+different drugs, and "led to" for a small observational study.
+
+The fix is one decision per finding, made once and stored on the report
+(`report/claims.assess`, `Report.evidence_status`): counted, context or
+excluded, with plain reasons, and a corrected evidence type where the paper's
+design contradicts the label. The writer never sees an excluded finding and
+writes the Answer only from counted ones; the synthesis (now one table row per
+measure, with what was not counted listed below it), Key results, the glance
+table, "Most relevant source", the coverage status and the deck all read the
+same field; the evidence table keeps every finding with its status. Also:
+co-intervention is decided from what the arms were (other drugs as arms make
+it an active comparison) and a shared-treatment study's within-arm change is
+counted as such; adverse events are reported as occurrence, comparison and
+severity, never as an effect, and Safety is marked a limited assessment with
+unread safety leads named; the negative section and its gap line share one
+rule; a different estimate from the same paper is shown beside the result;
+"no human evidence" now reads "no eligible human finding was extracted";
+the glossary merges plurals and spelling variants; the writer is told each
+finding's design, asked for comparator values, between-group differences,
+percentage points and pooled doses (prompt v6), and code removes "led to" /
+"resulted in" from sentences resting only on non-randomised studies; the
+Answer says which of its studies are the population asked about.
+
+Re-run on the same 177 papers (cache for search and extraction, new writing):
+85 findings - 49 counted, 18 context, 18 excluded; every finding the review
+named has the status it described; the Answer gives 8.09 vs 3.38 percentage
+points with insulin degludec and says the SURPASS-3 papers did not study an
+obesity-defined population; `verify-run --all` passes on all eight stored runs.
+
+Still not fixed by this: the trial's between-group difference (-4.71, 95% CI
+-6.72 to -2.70) is in E13, whose stored abstract was damaged by the old parser
+before the fix; the frozen paper set keeps that text until the papers are
+re-collected (`--refresh`), which this pass did not do. The Safety section
+lost both drafted sentences to the citation guard (one named only liraglutide;
+one restated the naming sentence), so it shows only its note.
+
 ## Still open
 
 - **Writer faithfulness beyond names, numbers, populations and comparison

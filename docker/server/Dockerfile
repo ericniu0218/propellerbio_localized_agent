@@ -9,12 +9,18 @@
 # model files are not in this image, exactly as before: mount them and point
 # MEETING_MODEL_DIR (and PATH) at them, or the meeting recorder reports itself
 # unavailable and everything else runs. See docs/server/DEPLOYMENT.md.
+#
+# --build-arg SLIDES_PDF=1 adds LibreOffice Impress (about 300 MB), which the
+# Research tab uses to offer a review's slides as a PDF. Without it the
+# PowerPoint and the report PDF still work; only "Slides (PDF)" is hidden.
 FROM python:3.12-slim
 
 ARG EXTRAS=server,postgres,recorder,speakers
+ARG SLIDES_PDF=0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
+    && if [ "$SLIDES_PDF" = "1" ]; then apt-get install -y --no-install-recommends libreoffice-impress; fi \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

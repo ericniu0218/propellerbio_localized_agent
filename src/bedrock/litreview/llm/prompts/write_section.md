@@ -1,5 +1,5 @@
 ---
-version: 5
+version: 6
 job: write
 model_tier: medium
 ---
@@ -38,6 +38,14 @@ the quotes beside them gave the changes those p-values tested (baseline to
 3 months, with units). Rule 3 now asks for the change, its comparison and its
 time point together, and never a bare p-value when the quote gives the change.
 Everything it asks for is copied from a quote, so the guard can check it.
+
+v6, from a scientist's review of the same report (1 October): the Answer gave
+"an absolute decrease of 8.09%" for a fall in liver fat measured in percent,
+without the comparator's change, the between-group difference or the pooled
+doses, and said a small observational study "led to" improvements. Rules 11-13
+ask for the comparison the quote gives, percentage points for a change in a
+percentage, and association wording for non-randomised studies (each item now
+says its design). Code removes "led to" from such sentences anyway.
 -->
 
 # Task: write one section of a research report
@@ -87,3 +95,13 @@ the paper's own sentences.
    finding directly.
 10. If the items do not support a clear conclusion, say what they do show and
     stop. Fewer, correct sentences are better than more.
+11. When a quote gives the comparator's result, the difference between groups
+    or its confidence interval, include them beside the treatment's result. If
+    the quote says doses were pooled ("pooled 10 mg and 15 mg groups"), say so.
+12. A change in something already measured in percent (liver fat fraction,
+    HbA1c) is a change in **percentage points**: write "fell by 8.09
+    percentage points", not "fell by 8.09%", unless the quote says it is a
+    relative change.
+13. When an item's design says it is not randomised, write "was associated
+    with" or "changed from baseline" - never "led to", "resulted in" or
+    "caused".

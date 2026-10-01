@@ -26,6 +26,16 @@ docker compose -f docker/server/compose.yml up --build                # mock mod
 docker compose -f docker/server/compose.yml --profile real up --build # plus the vLLM model servers
 ```
 
+A finished literature review downloads from the Research tab as HTML, PDF,
+JSON and - when the review was started with the deck option - PowerPoint. The
+report PDF needs nothing beyond the `server` extra (reportlab, with its font in
+the package). **Slides as PDF** are the PowerPoint converted by LibreOffice on
+this server, so they need LibreOffice Impress installed
+(`apt install libreoffice-impress`, or `--build-arg SLIDES_PDF=1` for the
+Docker image); the button appears only when it is found (`soffice` on PATH, or
+`BEDROCK_SOFFICE=/path/to/soffice`). Nothing in either conversion leaves the
+server.
+
 Python 3.11 or 3.12. On 3.13+ the recorder's screen reading
 (`rapidocr-onnxruntime`) does not install; everything else works and the
 recorder falls back to telling speakers apart by voice.

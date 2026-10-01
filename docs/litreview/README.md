@@ -512,7 +512,23 @@ shows the exact sentence it rests on; a table of contents and links from each
 claim to its evidence and from each reference to the sentences that cite it,
 with no scripts).
 
+**One status per finding.** Before anything is written, `report/claims.assess`
+decides how each verified finding may be used, and the report stores it
+(`Report.evidence_status`): **counted** (the requested treatment's own result),
+**context** (true, but not that: a subgroup comparison, arms that all got the
+treatment, a disease model, another drug) or **excluded** (not a usable result:
+it describes the study, is background or the authors' view, was damaged when
+the paper was read, points at an unread table, refers to "these markers"
+without naming them, or prints an impossible statistic). A label the paper's
+own design contradicts (a mouse finding labelled human) is corrected, not
+dropped. The writer never sees an excluded finding; the Answer is written only
+from counted ones; the synthesis, Key results, glance table and the deck count
+only what is counted; the evidence table keeps every finding with its status
+and reasons.
+
 The report is structured data, so **the PowerPoint deck is a renderer, not a rewrite**: [report/slides.py](../../src/bedrock/litreview/report/slides.py) renders a finished report into presentation slides drawn in ArcDeck format (layouts, visual elements, native charts) with python-pptx, following Propeller's target-proposal template: single-target, bispecific when the question names two targets, or disease-level with an overview plus one slide per candidate target. Slide content comes from verified sentences with their [n], code-generated lines (counts, comparisons), paper captions and quotes. A slide shows at most 6 of its sentences (4 beside a chart); the rest go to "Appendix: further findings" slides, and text that does not fit a page continues on a "(cont.)" slide, never shrunk. Every page footer lists its references with links. Paper figures are chosen by code from the paper's own xref in the paragraph where a verified quote came from; only open-access papers with a license; fetched only during runs with both `deck` and `search` enabled, at most 8 papers and 2 figures each, cached from www.ebi.ac.uk. Competitive landscape and SWOT are assembled by written rule and marked "Assembled by rule from the report - review before presenting"; company, stage and unmet need say "fill in".
+
+Every report also downloads as a **PDF** ([report/pdf.py](../../src/bedrock/litreview/report/pdf.py)): laid out by code from the report's own Markdown, so it carries the same sentences, citations, tables, quotes and linked references, in a font shipped with the package (DejaVu Sans) because the server is air-gapped and reports use ≥ ± · − η² β. The deck downloads as a PDF too, when LibreOffice is installed on the server ([report/convert.py](../../src/bedrock/litreview/report/convert.py) converts the real .pptx, so the two cannot differ). In the Research tab the report's section list is a collapsed "Contents" panel, and the report can be read full screen or in its own tab.
 
 A Research-tab checkbox "Also make a target-proposal PowerPoint" sets `deck` on the review; without it, only the text report is written. `bedrock-litreview ask --deck` also makes the deck. The download button (`/research/runs/{id}/report?format=pptx`) is hidden for reviews without a deck but available for older runs that predate the option. Layouts and text rules are configurable at `~/.config/bedrock/litreview/deck.yaml`, defaulting to `src/bedrock/litreview/defaults/deck.yaml`.
 

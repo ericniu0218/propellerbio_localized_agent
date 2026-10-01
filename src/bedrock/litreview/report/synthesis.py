@@ -279,18 +279,31 @@ def glance(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study])
         f"({mix}). {full} read in full text; {len(studies) - full} from the abstract alone"
         + (", so their methods, tables and full results were not seen." if len(studies) - full else "."),
         "",
-        "| Ref | What the study was | Who was studied | Read from | Findings |",
+        "| Ref | What it found (counted for the treatment) | What the study was | Who was studied | Read from |",
         "|---|---|---|---|---|",
     ]
-    by_paper: dict[str, list[str]] = defaultdict(list)
+    status = getattr(ctx, "status", {})
+    found: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    set_aside: dict[str, int] = defaultdict(int)
     for u in ctx.summary.units:
-        by_paper[u.paper_id].append(ctx.summary.short_ids[u.id])
+        a = status.get(u.id)
+        if a is not None and a.status != claims.COUNTED:
+            set_aside[u.paper_id] += 1
+            continue
+        cls = claims.endpoint_of(u)
+        measure = cls.label.split(" (")[0] if cls else (u.target or "other")
+        found[u.paper_id][f"{measure}: {DIRECTION.get(u.outcome, u.outcome)}"].append(ctx.summary.short_ids[u.id])
     for pid, s in studies.items():
         title = ctx.papers[pid].title.rstrip(".")
         design = s.design + (f" — {s.trial}" if s.trial else "")
-        lines.append(f"| {_refs([pid], refs)} | {_cell(design)}: *{_cell(title[:110])}* | "
-                     f"{_cell(s.subjects) or 'not stated'} | {s.access} | "
-                     f"{', '.join(by_paper[pid][:8])}{'…' if len(by_paper[pid]) > 8 else ''} |")
+        results = [f"{what} ({', '.join(ids[:3])}{'…' if len(ids) > 3 else ''})"
+                   for what, ids in list(found[pid].items())[:3]]
+        if len(found[pid]) > 3:
+            results.append(f"{len(found[pid]) - 3} more")
+        if set_aside[pid]:
+            results.append(f"{set_aside[pid]} quote(s) not counted - see the evidence table")
+        lines.append(f"| {_refs([pid], refs)} | {_cell('; '.join(results) or 'nothing counted')} | "
+                     f"{_cell(design)}: *{_cell(title[:90])}* | {_cell(s.subjects) or 'not stated'} | {s.access} |")
     shared = defaultdict(list)
     for s in studies.values():
         if s.trial:
@@ -439,7 +452,7 @@ def _level(directions: dict[str, set[str]], tiers: dict[str, str], abstract_only
         basis, why = "Animal or cell studies only", (
             f"no tested effect in humans; {len(linked)} human stud{'y' if len(linked) == 1 else 'ies'} "
             f"report{'s' if len(linked) == 1 else ''} associations only" if linked
-            else "no human evidence among the papers read")
+            else "no eligible human finding was extracted from the papers read")
     else:
         basis, why = "Associations only", "no tested effect of an intervention"
     if pre and human:
@@ -538,6 +551,9 @@ class SynthesisRow:
     basis: str | None
     why: str
 
+    endpoint: str | None = None
+    """The endpoint class id (`knowledge/endpoints.yaml`) the row measures, if any."""
+
     @property
     def tested_human(self) -> bool:
         """Human tested effects by the same rule that computes the basis.
@@ -563,7 +579,16 @@ def synthesis_rows(ctx: "WriteContext", studies: dict[str, Study]) -> list[Synth
                 continue
             paper = ctx.papers.get(u.paper_id)
             contrast = claims.contrast_of(u, ctx.spec, paper)
-            why_not = None if contrast in ("subgroup", "co_intervention") else claims.attribution(u, ctx.spec, paper)
+            assessed = getattr(ctx, "status", {}).get(u.id)
+            if assessed is not None:
+                # The one decision every view reads (claims.assess): a finding
+                # set aside here is set aside everywhere, for the same reason.
+                if assessed.status != claims.COUNTED:
+                    aside[claims.REASONS[assessed.reasons[0]]].add(u.paper_id)
+                    continue
+                why_not = None
+            else:
+                why_not = None if contrast in ("subgroup", "co_intervention") else claims.attribution(u, ctx.spec, paper)
             if why_not:
                 aside[claims.NOT_ATTRIBUTED[why_not]].add(u.paper_id)
                 continue
@@ -585,40 +610,78 @@ def synthesis_rows(ctx: "WriteContext", studies: dict[str, Study]) -> list[Synth
         all_abstract = all(not studies[u.paper_id].full_text for u in g.units if u.paper_id in studies)
         basis, why = _level(directions, tiers, all_abstract) if keys else (None, "")
         rows.append(SynthesisRow(g.label, counted, dict(directions), tiers, dict(papers), dict(aside), within,
-                                 basis, why))
+                                 basis, why, endpoint=_endpoint_id(g.label)))
     return rows
 
 
+def _endpoint_id(label: str) -> str | None:
+    return next((c.id for c in claims.endpoint_classes() if c.label == label), None)
+
+
+_COMPARATIVE = re.compile(r"\b(?:more|less)\s+(?:frequent|common|often)|\b(?:higher|lower)\s+(?:incidence|rate|"
+                          r"risk|frequency|proportion)|\bthan\b|\bcompared\s+(?:with|to)\b|\bversus\b|\bvs\.?\b|"
+                          r"\b(?:HR|OR|RR)\b", re.I)
+_SEVERE = re.compile(r"\bserious\b|\bsevere\b|\bdiscontinu\w*|\bhospitali[sz]\w*|\bdeath|\bgrade\s*[3-5]\b", re.I)
+
+
+def _adverse_parts(row: SynthesisRow, refs: dict[str, int]) -> list[str]:
+    """Adverse events as what the papers report about them - that they
+    occurred, any comparison of rates, any serious events - never as a
+    treatment "effect". "Gastrointestinal events were the most frequently
+    reported" is not "no significant effect"."""
+    occurred = {u.paper_id for u in row.units}
+    compared = {u.paper_id for u in row.units if _COMPARATIVE.search(u.quote)}
+    severe = {u.paper_id for u in row.units if _SEVERE.search(u.quote)}
+    parts = [f"reported in {len(occurred)} stud{'y' if len(occurred) == 1 else 'ies'} {_refs(occurred, refs)}"]
+    parts.append(f"rates compared between groups in {_refs(compared, refs)}" if compared
+                 else "no comparison of rates between groups in the quotes")
+    if severe:
+        parts.append(f"serious events or stopping treatment described in {_refs(severe, refs)}")
+    return parts
+
+
 def render_synthesis(rows: list[SynthesisRow], refs: dict[str, int], limit: int = 10) -> str:
-    """Keep the established Markdown shape: the slides parse these lines."""
+    """One table row per measure - what was measured, which studies, what they
+    found, and what kind of evidence that is - then, per measure, what was not
+    counted and why. A reader compares measures down the table; the reasons a
+    finding was set aside are there to check, not to read first."""
     if not rows:
         return "No verified findings to compare."
-    lines = []
+    table = ["| Measure | Studies | What they found | Basis |", "|---|---|---|---|"]
+    not_counted = []
     for row in rows[:limit]:
         directions, tiers, papers = row.directions, row.tiers, row.papers
         keys = set().union(*directions.values()) if directions else set()
+        if row.aside:
+            not_counted.append(f"- **{_cell(row.label)}** — "
+                               + "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items()) + ".")
         if not keys:
-            reasons = "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items())
-            lines.append(f"- **{_cell(row.label)}** — no finding here can be counted for the requested treatment: {reasons}.")
+            table.append(f"| **{_cell(row.label)}** | – | nothing here can be counted for the requested treatment "
+                         "(see below) | – |")
             continue
-        parts = []
-        for outcome in ("improved", "no_effect", "worsened", "mixed", "association"):
-            if directions.get(outcome):
-                n = len(directions[outcome])
-                parts.append(f"{DIRECTION[outcome]} in {n} stud{'y' if n == 1 else 'ies'} {_refs(papers[outcome], refs)}")
+        if row.endpoint == "adverse_events":
+            parts = _adverse_parts(row, refs)
+        else:
+            parts = []
+            for outcome in ("improved", "no_effect", "worsened", "mixed", "association"):
+                if directions.get(outcome):
+                    n = len(directions[outcome])
+                    parts.append(f"{DIRECTION[outcome]} in {n} stud{'y' if n == 1 else 'ies'} "
+                                 f"{_refs(papers[outcome], refs)}")
+        if row.within:
+            parts.append(f"change from baseline, with no comparison group, in {_refs(row.within, refs)}")
         designs = defaultdict(int)
         for k in keys:
             designs[TIER_TEXT[tiers[k]]] += 1
         mix = ", ".join(f"{v} {_plural(d, v)}" for d, v in sorted(designs.items()))
-        extra = ""
-        if row.within:
-            extra += f" Change from baseline, with no comparison group, in {_refs(row.within, refs)}."
-        if row.aside:
-            extra += " Not counted: " + "; ".join(f"{why} {_refs(pids, refs)}" for why, pids in row.aside.items()) + "."
-        lines.append(f"- **{_cell(row.label)}** — {len(keys)} independent stud{'y' if len(keys) == 1 else 'ies'} "
-                     f"({mix}): {'; '.join(parts)}. Basis: **{row.basis}** ({row.why}).{extra}")
+        table.append(f"| **{_cell(row.label)}** | {len(keys)} independent: {_cell(mix)} | {_cell('; '.join(parts))} | "
+                     f"**{_cell(row.basis)}** — {_cell(row.why)} |")
+    lines = table
     if len(rows) > limit:
-        lines.append(f"- {len(rows) - limit} further measures are in the evidence table (Appendix).")
+        lines += ["", f"{len(rows) - limit} further measures are in the evidence table (Appendix)."]
+    if not_counted:
+        lines += ["", "**Not counted, and why** (each finding stays in the evidence table with its status):", ""]
+        lines += not_counted
     lines += ["", LEVEL_RULE]
     return "\n".join(lines)
 
@@ -730,6 +793,24 @@ _QUANT = re.compile(r"\d(?:[\d.,]*)\s*(?:%|kg|mg|g/|mmol|µ|mcg|U/L|IU|cm|mm|poi
 _SECTION_ORDER = {"results": 0, "tables": 0, "abstract": 1, "discussion": 2}
 
 
+def _other_estimates(ctx: "WriteContext", u: EvidenceUnit, refs: dict[str, int]) -> list[str]:
+    """Where the same paper gives a different estimate for an outcome this
+    quote reports: said beside the result, not only in the Limitations."""
+    mine = claims.estimates(u.quote)
+    if not mine:
+        return []
+    out = []
+    for other in ctx.summary.units:
+        if other.paper_id != u.paper_id or other.id == u.id:
+            continue
+        for label, value in claims.estimates(other.quote).items():
+            if label in mine and mine[label] != value:
+                out.append(f"The same paper gives a different estimate for {label} elsewhere ({value}, "
+                           f"{ctx.summary.short_ids[other.id]}) - perhaps a different analysis or follow-up; "
+                           "not reconciled here.")
+    return list(dict.fromkeys(out))
+
+
 def key_results(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, Study],
                 per_group: int = 3, limit: int = 14) -> str:
     """The quantitative findings, as the papers state them, with the study they
@@ -742,6 +823,9 @@ def key_results(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, St
         units = sorted(g.units, key=lambda u: (_SECTION_ORDER.get(u.section, 3), -len(_QUANT.findall(u.quote)),
                                                ctx.rank_of.get(u.paper_id, 10**6), u.id))
         for u in units:
+            assessed = getattr(ctx, "status", {}).get(u.id)
+            if assessed is not None and assessed.status != claims.COUNTED:
+                continue
             if not _QUANT.search(u.quote) or not substantive(u) or u.paper_id not in studies \
                     or seen_papers[u.paper_id] >= 2 or claims.statistical_anomalies(u.quote) \
                     or not claims.attributable(u, ctx.spec, ctx.papers.get(u.paper_id)):
@@ -757,6 +841,8 @@ def key_results(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, St
                         f"{ctx.summary.short_ids[u.id]}, {where}.")
             if u.qualifier_quote:
                 rows.append(f"  - The paper's next sentence qualifies it: “{" ".join(u.qualifier_quote.split())}”")
+            for note in _other_estimates(ctx, u, refs):
+                rows.append(f"  - {note}")
         if len(rows) >= limit:
             break
     if not rows:
@@ -792,9 +878,14 @@ def glossary(ctx: "WriteContext", text: str, refs: dict[str, int]) -> str:
     own: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
     def same_meaning(a: str, b: str) -> bool:
-        # Capitalisation, stray punctuation and a plural are not a different meaning.
-        norm = lambda x: re.sub(r"[^a-z0-9]+", " ", x.lower()).strip().rstrip("s")
-        return norm(a) == norm(b)
+        # Capitalisation, stray punctuation, a plural and a near-identical
+        # wording ("homeostatic" / "homeostasis model assessment") are not a
+        # different meaning; a different expansion (heart failure / hazard
+        # ratio) is.
+        from rapidfuzz import fuzz
+
+        norm = lambda x: re.sub(r"[^a-z0-9]+", " ", x.lower()).strip().rstrip("s")  # noqa: E731
+        return norm(a) == norm(b) or fuzz.ratio(norm(a), norm(b)) >= 85
 
     for pid in sorted(refs, key=refs.get):
         for short, long_form in paper_abbreviations(ctx.papers[pid]).items():
@@ -805,8 +896,19 @@ def glossary(ctx: "WriteContext", text: str, refs: dict[str, int]) -> str:
                 own[short].append((long_form, refs[pid]))
     found = []
     tokens = set(re.findall(r"(?<![\w-])([A-Za-zΔ]*[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)(?![\w-])", text))
+    # "HRs" and "MALOs" are the plurals of HR and MALO: one entry each.
+    plural_of: dict[str, str] = {}
+    for token in list(tokens):
+        bare = token.lstrip("Δ")
+        if len(bare) > 2 and bare.endswith("s") and bare[:-1].upper() == bare[:-1] and any(c.isalpha() for c in bare[:-1]):
+            plural_of[bare[:-1]] = bare
+            tokens.discard(token)
+            tokens.add(bare[:-1])
     for token in sorted(tokens, key=str.lower):
         bare = token.lstrip("Δ")
+        also = f" (also {plural_of[bare]})" if bare in plural_of else ""
+        if bare not in own and bare not in standard and plural_of.get(bare) in own:
+            own[bare] = own[plural_of[bare]]
         if bare.lower() in _NOT_ABBREVIATIONS:
             continue
         if len(bare) < 2 or not any(c.isupper() for c in bare[1:] + bare[:1]) or bare.isdigit():
@@ -814,17 +916,17 @@ def glossary(ctx: "WriteContext", text: str, refs: dict[str, int]) -> str:
         if bare in STATISTICAL and bare in standard:
             # "HR, 0.66; 95% CI" is a hazard ratio whatever a cited paper
             # abbreviated as HR elsewhere (one defined it as heart failure).
-            found.append(f"- **{bare}** — {standard[bare]}")
+            found.append(f"- **{bare}**{also} — {standard[bare]}")
         elif bare in own:
             meanings = own[bare]
             if len(meanings) == 1:
                 long_form, ref = meanings[0]
-                found.append(f"- **{bare}** — {long_form} (as defined in [{ref}])")
+                found.append(f"- **{bare}**{also} — {long_form} (as defined in [{ref}])")
             else:
-                found.append(f"- **{bare}** — the cited papers use it differently: "
+                found.append(f"- **{bare}**{also} — the cited papers use it differently: "
                              + "; ".join(f"{lf} in [{ref}]" for lf, ref in meanings))
         elif bare in standard:
-            found.append(f"- **{bare}** — {standard[bare]}")
+            found.append(f"- **{bare}**{also} — {standard[bare]}")
     found = list(dict.fromkeys(found))
     if not found:
         return "No abbreviations need expanding."
@@ -853,6 +955,29 @@ def population_note(ctx: "WriteContext", studies: dict[str, Study]) -> str | Non
     return (f"The question is about {population}. {len(about)} of the {len(keys)} independent studies name "
             f"{names} in their title or abstract; the others studied a related population (see who was studied, "
             "above), so their results may not carry over.")
+
+
+def cited_population_note(ctx: "WriteContext", paper_ids: set[str], refs: dict[str, int]) -> str | None:
+    """For the papers behind one section: which name the question's
+    population in their title or abstract, said beside that section. None
+    when the question names no population or every cited paper names it."""
+    population = ctx.spec.population
+    entities = [e for e in ctx.spec.entities if population and e.text and e.text.lower() in population.lower()]
+    pids = [p for p in paper_ids if p in ctx.papers]
+    if not entities or not pids:
+        return None
+    matchers = [TermMatcher(e.exact_terms) for e in entities]
+    names = {p for p in pids if any(m.exact_count(f"{ctx.papers[p].title}\n{ctx.papers[p].abstract or ''}")
+                                    for m in matchers)}
+    if len(names) == len(pids):
+        return None
+    word = ", ".join(e.canonical for e in entities)
+    others = [p for p in pids if p not in names]
+    return (f"Who was studied: the question asks about {population}; "
+            + (f"{_refs(names, refs)} name{'s' if len(names) == 1 else ''} {word} in the title or abstract, "
+               if names else "")
+            + f"{_refs(others, refs)} do{'es' if len(others) == 1 else ''} not, so "
+            + ("its" if len(others) == 1 else "their") + " results may not carry over.")
 
 
 def basis_note(units: list[EvidenceUnit], studies: dict[str, Study], refs: dict[str, int]) -> str | None:

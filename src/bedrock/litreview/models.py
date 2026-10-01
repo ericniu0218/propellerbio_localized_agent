@@ -656,6 +656,24 @@ class ReportSection(BaseModel):
     note: str | None = None
 
 
+class EvidenceStatus(BaseModel):
+    """How one verified finding may be used (`report/claims.assess`): every
+    view of the report reads this one decision."""
+
+    status: Literal["counted", "context", "excluded"]
+    """`counted`: the requested treatment's own result, used everywhere.
+    `context`: a true finding that is not that (a subgroup comparison, arms
+    that all got the drug, a disease model, another drug) - shown, never
+    counted for the treatment. `excluded`: not usable as a result (describes
+    the study, background, damaged text, an impossible statistic) - kept in
+    the evidence table with the reason, used nowhere else."""
+    reasons: list[str] = Field(default_factory=list)
+    """Plain-language reasons, for the table and the chat."""
+    evidence_type: str | None = None
+    """The evidence type the finding's own paper supports, when the extracted
+    label contradicts it."""
+
+
 class Reference(BaseModel):
     number: int
     paper_id: str
@@ -681,9 +699,24 @@ class Report(BaseModel):
     stats: dict[str, int] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)
     prompt_versions: dict[str, str] = Field(default_factory=dict)
+    evidence_status: dict[str, EvidenceStatus] = Field(default_factory=dict)
+    """Unit id -> how that finding may be used. Empty on a report made before
+    statuses existed: every view then treats each finding as it always did."""
     integrity: list[str] = Field(default_factory=list)
     """Violations found by `report/invariants.py`. Empty on a sound report; any
     entry is a bug, and the rendered report opens with a warning banner."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_status(self, handler):
+        """Leave `evidence_status` out of the JSON when there is none. It was
+        added after reports were stored, and a stored run is verified by
+        re-serialising its report and comparing the bytes
+        (`report/invariants.py` `check_pinned`): writing an empty table into
+        every old report would make every old run fail that check."""
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("evidence_status"):
+            data.pop("evidence_status", None)
+        return data
 
     def kept_sentences(self) -> list[tuple[str, Sentence]]:
         out: list[tuple[str, Sentence]] = []

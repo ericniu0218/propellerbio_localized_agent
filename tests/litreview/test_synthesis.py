@@ -109,16 +109,17 @@ def _report(tmp_path):
                            db=Database(tmp_path / "db")).report
 
 
-def test_the_synthesis_refactor_preserves_the_pipeline_fixtures_markdown(tmp_path):
+def test_the_synthesis_is_one_table_row_per_measure(tmp_path):
     report = _report(tmp_path)
     body = next(s.body_markdown for s in report.sections if s.id == "synthesis")
-    # Captured before separating computation from rendering. Slides consume
-    # these exact lines, including punctuation and the order of the measures.
+    # One row per measure - measure, studies, what they found, basis - so
+    # measures are compared down a column (scientist's review, 1 October).
     expected = (
-        "- **IL17A** — 1 independent study (1 animal study): no significant effect in 1 study [1]. "
-        "Basis: **Animal or cell studies only** (no human evidence among the papers read).\n"
-        "- **IL23A** — 1 independent study (1 animal study): improved in 1 study [1]. "
-        "Basis: **Animal or cell studies only** (no human evidence among the papers read).\n\n"
+        "| Measure | Studies | What they found | Basis |\n|---|---|---|---|\n"
+        "| **IL17A** | 1 independent: 1 animal study | no significant effect in 1 study [1] | "
+        "**Animal or cell studies only** — no eligible human finding was extracted from the papers read |\n"
+        "| **IL23A** | 1 independent: 1 animal study | improved in 1 study [1] | "
+        "**Animal or cell studies only** — no eligible human finding was extracted from the papers read |\n\n"
         + synthesis.LEVEL_RULE
     )
     assert body == expected
@@ -304,3 +305,14 @@ def test_demographics_are_not_results():
                   "Lipid-lowering therapy was taken by 59% and 27% of participants with T2D and those without T2D.",
                   "The most common glucose-lowering agent was metformin, predominantly in participants with T2D (76%)."):
         assert not synthesis.substantive(unit(quote=quote)), quote
+
+
+def test_the_glossary_merges_plurals_and_spelling_variants():  # scientist's review, 1 October
+    paper_a = _paper("a", "t", abstract="The homeostatic model assessment of insulin resistance (HOMA-IR) fell. "
+                                         "Major adverse liver outcomes (MALOs) were fewer.")
+    paper_b = _paper("b", "t", abstract="Homeostasis model assessment of insulin resistance (HOMA-IR) rose.")
+    out = synthesis.glossary(_Ctx({"a": paper_a, "b": paper_b}), "HOMA-IR fell; MALO and MALOs; HR, 0.5; HRs below 1",
+                             {"a": 1, "b": 2})
+    assert out.count("**HOMA-IR**") == 1 and "use it differently" not in out
+    assert "**MALO** (also MALOs)" in out and "**MALOs**" not in out
+    assert "**HR** (also HRs) — hazard ratio" in out and "**HRs**" not in out

@@ -76,7 +76,7 @@ def test_a_human_disagreement_names_both_report_lines_and_shows_the_studies():
     ctx = context([benefit, null], titles={"benefit": "IL-23 in psoriasis: the BENEFIT trial"}, full={"benefit"})
     report = report_for(ctx)
     body = section(report).body_markdown
-    assert "Basis: **Studies disagree**" in section(report, "synthesis").body_markdown
+    assert "**Studies disagree** —" in section(report, "synthesis").body_markdown
     assert "Papers disagree on this target" in next(s for s in section(report, "targets").subsections
                                                    if s.id == "targets:IL23A").note
     assert "How the studies line up: **IL23A** (Studies disagree)" in body
@@ -95,7 +95,7 @@ def test_a_target_conflict_across_systems_is_shown_without_changing_the_human_ba
     ctx = context([finding("mouse", species="mouse"), finding("human", "no_effect")])
     report = report_for(ctx)
     body = section(report).body_markdown
-    assert "Basis: **Randomised comparison: 1 trial**" in section(report, "synthesis").body_markdown
+    assert "**Randomised comparison: 1 trial** —" in section(report, "synthesis").body_markdown
     assert "Studies disagree" not in section(report, "synthesis").body_markdown.split("\n\n")[0]
     assert "Candidate targets: **IL23A**" in body and "How the studies line up:" not in body
     assert "animal study, mice (n=12)" in body and "randomised controlled trial, patients (n=40)" in body
@@ -139,7 +139,7 @@ def test_publications_from_one_trial_stay_in_one_independent_study_block():
         "a": "IL-23 in psoriasis: the SHARED trial", "b": "IL-23 in psoriasis: post hoc analysis of SHARED trial"})
     report = report_for(ctx)
     body = section(report).body_markdown
-    assert "Basis: **Randomised comparison: 1 trial**" in section(report, "synthesis").body_markdown
+    assert "**Randomised comparison: 1 trial** —" in section(report, "synthesis").body_markdown
     # Stage 6's target flag must still be explained, without treating the
     # two papers as independent replications.
     assert body.count("Independent study") == 1
@@ -255,5 +255,5 @@ def test_gaps_include_every_measure_beyond_the_synthesis_display_limit():
 def test_an_animal_only_disagreement_still_has_no_tested_human_effect():
     ctx = context([finding('benefit', species='mouse'), finding('null', 'no_effect', species='mouse')])
     report = report_for(ctx)
-    assert 'Basis: **Studies disagree**' in section(report, 'synthesis').body_markdown
+    assert '**Studies disagree** —' in section(report, 'synthesis').body_markdown
     assert 'No tested effect in humans among the papers read for targets: IL23A [1][2].' in section(report, 'gaps').body_markdown

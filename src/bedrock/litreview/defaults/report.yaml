@@ -109,9 +109,12 @@ intervention_efficacy:
       Answer the question directly in your first sentence: does the evidence
       show the intervention changes this outcome, in whom, and by how much?
       Give each effect as its quote states it - the change with its units,
-      what it was compared with, and when it was measured - never a p-value
-      without the change it refers to. Then say what kind of study each
-      result comes from, as its quote or context says.
+      what it was compared with and that comparator's own change, the
+      difference between groups with its confidence interval when the quote
+      gives one, and when it was measured - never a p-value without the
+      change it refers to. Say who was studied as the quote or context says,
+      even when that differs from the population in the question. Then say
+      what kind of study each result comes from.
   - {id: glance, title: Evidence at a glance, kind: generated}
   - {id: synthesis, title: How the studies line up, kind: generated}
   - {id: disagreements, title: Where the studies disagree, kind: generated}

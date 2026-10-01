@@ -707,3 +707,28 @@ def test_the_layout_file_can_be_replaced_whole(tmp_path):
     bad.write_text("version: deck.v1\nslides: {moa: {title: x}}\n")
     with pytest.raises(ValueError, match="no entry for slide"):
         slides.load_deck_layout(bad)
+
+
+def test_the_deck_counts_only_what_the_report_lets_it():
+    """Scientist's review, 1 October: an excluded finding must not reach the
+    deck, and a mouse finding labelled "human" must not be counted as human."""
+    from bedrock.litreview.models import EvidenceStatus, Report
+    from tests.litreview.test_guard_cache_config import unit
+
+    mouse = unit(id="u-mouse", paper_id="p1", evidence_type="human_clinical", species_raw="mice")
+    enrolment = unit(id="u-enrol", paper_id="p2", quote="A total of 276 participants were included.")
+    trial = unit(id="u-trial", paper_id="p3")
+    report = Report(question_id="q", question="q", sections=[], evidence=[mouse, enrolment, trial],
+                    short_ids={"u-mouse": "E1", "u-enrol": "E2", "u-trial": "E3"},
+                    evidence_status={
+                        "u-mouse": EvidenceStatus(status="counted", reasons=["labelled with a study type its paper "
+                                                                             "contradicts"], evidence_type="in_vivo"),
+                        "u-enrol": EvidenceStatus(status="excluded", reasons=["describes the study"]),
+                        "u-trial": EvidenceStatus(status="counted")})
+    used = {u.id: u for u in slides.deck_units(report)}
+    assert "u-enrol" not in used
+    assert used["u-mouse"].evidence_type == "in_vivo" and used["u-trial"].evidence_type == "human_clinical"
+    assert report.evidence[0].evidence_type == "human_clinical", "the stored finding is not changed"
+    # A report made before statuses existed: everything, as before.
+    old = report.model_copy(update={"evidence_status": {}})
+    assert [u.id for u in slides.deck_units(old)] == ["u-mouse", "u-enrol", "u-trial"]

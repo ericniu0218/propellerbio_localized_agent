@@ -39,6 +39,7 @@ from bedrock.litreview.knowledge import Knowledge, load_knowledge
 from bedrock.litreview.llm import LLMError, ask_json, load_prompt, strict_schema
 from bedrock.litreview.models import (
     DraftSection,
+    EvidenceStatus,
     EvidencePlan,
     EvidenceSummary,
     EvidenceUnit,
@@ -171,6 +172,18 @@ class WriteContext:
     collection_note: str | None = None
     """Set when the papers were collected for a different reading of the
     question (`stages/s1_collect.stale_collection`): the first gap shown."""
+    status: dict = field(default_factory=dict)
+    """Unit id -> `report.claims.Assessment`, filled by `write_report` before
+    any section is written. Empty means "not assessed": every finding is then
+    treated as it was before statuses existed."""
+
+    def usable(self, u: EvidenceUnit, *, counted_only: bool = False) -> bool:
+        """May this finding be used: not excluded, and - for the Answer, the
+        negative results and any count - the treatment's own result."""
+        a = self.status.get(u.id)
+        if a is None:
+            return True
+        return a.status == claims.COUNTED if counted_only else a.status != claims.EXCLUDED
 
     def __post_init__(self) -> None:
         self.rank_of = {r.paper_id: r.rank for r in self.ranked}
@@ -212,8 +225,15 @@ def _evidence_lines(units: list[EvidenceUnit], ctx: WriteContext) -> str:
         sid = ctx.summary.short_ids[u.id]
         n = f", n={u.n}" if u.n is not None else ""
         drug = f" · agent: {u.intervention}" if u.intervention else ""
-        who = (f"studied in {_WHO.get(u.evidence_type, u.evidence_type)} ({u.species_raw}{n})"
+        assessed = getattr(ctx, "status", {}).get(u.id)
+        etype = (assessed.evidence_type if assessed is not None and assessed.evidence_type else u.evidence_type)
+        who = (f"studied in {_WHO.get(etype, etype)} ({u.species_raw}{n})"
                if u.species_raw else "who was studied: not stated in the quoted text")
+        study = (getattr(ctx, "studies", None) or {}).get(u.paper_id)
+        if study is not None:
+            who += f" · design: {study.design}" + (
+                " (not randomised: it shows an association or a change from baseline - write \"was associated "
+                "with\", never \"led to\" or \"caused\")" if study.tier in _NOT_RANDOMISED else "")
         context = f'\n    Context: "{u.context_quote}"' if u.context_quote else ""
         if u.qualifier_quote:
             context += ("\n    Qualifier (the paper's next sentence; it may limit the quote, e.g. \"not "
@@ -308,7 +328,8 @@ def write_section_text(
             # `repeated`, not surfaced as a citation-guard drop reason.
             ctx.sentence_stats["garbled"] += 1
             continue
-        expansion = _invented_expansion(text, [short[c] for c in citations if c in short], ctx)
+        expansion = (_invented_expansion(text, [short[c] for c in citations if c in short], ctx)
+                     or _causal_from_observational(text, [short[c] for c in citations if c in short], ctx))
         if expansion:
             # The writer spelled out an abbreviation its evidence never
             # does: "compared to best medical standard (BMS)", where the
@@ -386,6 +407,29 @@ def write_section_text(
         # was already said. Say which one this is.
         note = "Everything drafted here is already stated in an earlier section."
     return sentences, note
+
+
+_CAUSAL = re.compile(r"\b(?:led|leads|lead)\s+to\b|\bresult(?:ed|s)?\s+in\b|\bcaus(?:ed|es|ing)\b|"
+                     r"\bproduced\b|\bbrought\s+about\b", re.I)
+_NOT_RANDOMISED = ("observational", "case", "human", "genetic")
+
+
+def _causal_from_observational(text: str, cited: list[EvidenceUnit], ctx: WriteContext) -> str | None:
+    """A sentence that says the treatment *caused* something ("led to",
+    "resulted in") when everything it cites is a non-randomised human study.
+    Such a study shows the change happened with the treatment, not that the
+    treatment made it happen: "was associated with" or "changed from
+    baseline" is what it supports (scientist's review, 1 October). Animal and
+    cell experiments are interventions, and randomised trials compare: both
+    may say "led to". The wording is the writer's; the guard checks names and
+    numbers, so this is checked here."""
+    if not cited or not _CAUSAL.search(text):
+        return None
+    tiers = {getattr(ctx.studies.get(u.paper_id), "tier", None) for u in cited}
+    if tiers and all(t in _NOT_RANDOMISED for t in tiers):
+        return ("it says the treatment caused the change, but every study it cites is non-randomised: "
+                "those show an association or a change from baseline, not a cause")
+    return None
 
 
 def _invented_expansion(text: str, cited: list[EvidenceUnit], ctx: WriteContext) -> str | None:
@@ -508,7 +552,11 @@ def _overlap(a: set[str], b: set[str]) -> float:
 
 
 def _slice(ctx: WriteContext, source: str) -> list[EvidenceUnit]:
-    units = ctx.summary.units
+    # An excluded finding is never written from; the Answer is written only
+    # from the treatment's own results (subgroup and co-intervention findings
+    # stay available to the sections that describe them).
+    units = [u for u in ctx.summary.units if ctx.usable(u, counted_only=source == "all"
+                                                         and ctx.spec.question_type != "target_identification")]
     limit = ctx.max_units_per_section
     if ctx.spec.question_type != "target_identification":
         # Lead with findings that measure what the question asks about.
@@ -521,16 +569,7 @@ def _slice(ctx: WriteContext, source: str) -> list[EvidenceUnit]:
     if source == "all":
         return best_units(units, ctx.rank_of, limit, ctx.demoted)
     if source == "negative":
-        conflict_ids = {uid for c in ctx.summary.conflicts for uid in c.unit_ids}
-        chosen = [u for u in units if u.outcome in ("no_effect", "worsened", "mixed") or u.id in conflict_ids]
-        if ctx.spec.question_type != "target_identification":
-            # Not the diet that induced the disease, not a comparison of
-            # genotype subgroups, not two arms that both got the drug: none of
-            # those is the requested treatment failing or doing harm.
-            chosen = [u for u in chosen if synthesis.substantive(u)
-                      and claims.attributable(u, ctx.spec, ctx.papers.get(u.paper_id))
-                      and claims.contrast_of(u, ctx.spec, ctx.papers.get(u.paper_id)) not in ("subgroup", "co_intervention")]
-        return best_units(chosen, ctx.rank_of, limit, ctx.demoted)
+        return best_units(negative_findings(ctx), ctx.rank_of, limit, ctx.demoted)
     if source == "prevention":
         # By setting, not by facet: a prophylaxis finding is prevention
         # evidence whichever information need it was filed under, and it
@@ -549,6 +588,28 @@ def _slice(ctx: WriteContext, source: str) -> list[EvidenceUnit]:
             chosen += best_units(usable, ctx.rank_of, 2)
         return chosen[: max(limit, 2 * ctx.max_targets)]
     raise ValueError(f"unknown section source {source!r}")
+
+
+def negative_findings(ctx: WriteContext) -> list[EvidenceUnit]:
+    """What "Negative and conflicting results" may say, by one written rule.
+
+    For a question about a treatment: the treatment's own result (counted,
+    so not the diet that induced the disease, not a comparison of genotype
+    subgroups, not two arms that both got the drug), showing no benefit or
+    harm, on what the question is about or on clinical events. A lipase level
+    that differed between two active drugs is a comparative biomarker result,
+    not evidence against the treatment working, and "these markers" without
+    saying which is not a finding a reader can use. For a target question:
+    no-effect, worse or mixed results, and conflicts between papers."""
+    conflict_ids = {uid for c in ctx.summary.conflicts for uid in c.unit_ids}
+    units = [u for u in ctx.summary.units if ctx.usable(u)]
+    chosen = [u for u in units if u.outcome in ("no_effect", "worsened", "mixed") or u.id in conflict_ids]
+    if ctx.spec.question_type == "target_identification":
+        return chosen
+    on_subject = synthesis.subject_test(ctx)
+    relevant = {"clinical_events"}
+    return [u for u in chosen if ctx.usable(u, counted_only=True) and synthesis.substantive(u)
+            and (on_subject(u) or getattr(claims.endpoint_of(u), "id", None) in relevant)]
 
 
 # --- generated sections ---------------------------------------------------------
@@ -578,7 +639,12 @@ def _best_source(ctx: WriteContext, refs: dict[str, int]) -> str:
     own = [u for u in ctx.summary.units if u.paper_id == pid]
     if own:
         ids = ", ".join(ctx.summary.short_ids[u.id] for u in own[:8])
-        lines += ["", f"It supplied {len(own)} verified finding(s) to this report ({ids})."]
+        counted = [u for u in own if ctx.usable(u, counted_only=True)]
+        lines += ["", f"It supplied {len(own)} verified quote(s) to this report ({ids}); "
+                      + (f"{len(counted)} {'is a result' if len(counted) == 1 else 'are results'} counted for the "
+                         "requested treatment." if counted else
+                         "none is a result counted for the requested treatment (see their status in the evidence "
+                         "table).")]
     return "\n".join(lines)
 
 
@@ -591,8 +657,13 @@ def _realized(ctx: WriteContext) -> dict[str, set[str]]:
     for u in ctx.summary.units:
         # A quote that reports no result (an enrolment count, a baseline
         # table, an aim) does not cover a need, however verified it is.
-        if synthesis.substantive(u):
+        if synthesis.substantive(u) and ctx.usable(u):
             out.setdefault(u.facet or "other", set()).add(u.paper_id)
+    if ctx.spec.question_type != "target_identification":
+        # The negative need is met by what the negative section may say, not by
+        # which papers were filed under it: one rule for both, so the section
+        # and the gaps cannot contradict each other.
+        out["negative"] = {u.paper_id for u in negative_findings(ctx)}
     return out
 
 
@@ -601,6 +672,10 @@ def _realized_status(ctx: WriteContext, facet: Facet, got: int) -> str:
         return "not extracted"
     if got == 0:
         return "gap"
+    if facet.id == "safety":
+        # Adverse events as the papers read report them are not a safety
+        # assessment, however many papers mention them.
+        return "limited"
     return "thin" if got < facet.min_sources else "covered"
 
 
@@ -616,7 +691,12 @@ def _gaps(ctx: WriteContext, comparison_rows: list[synthesis.SynthesisRow] | Non
             if planned == 0:
                 bullets.append(f"No paper selected for reading could supply **{f.title.lower()}** ({f.need}).")
             continue
-        if got == 0 and planned == 0:
+        if f.id == "negative" and got == 0 and ctx.spec.question_type != "target_identification":
+            bullets.append(
+                f"No finding met the rule for **negative and conflicting results** - the requested treatment "
+                f"showing no benefit, or harm, on {subject} or on clinical events - among the papers read. That "
+                "is not evidence that no such result exists.")
+        elif got == 0 and planned == 0:
             bullets.append(f"No paper that was read supplied **{f.title.lower()}** ({f.need}).")
         elif got == 0:
             bullets.append(
@@ -643,6 +723,11 @@ def _gaps(ctx: WriteContext, comparison_rows: list[synthesis.SynthesisRow] | Non
     if abstract_only:
         bullets.append(f"{abstract_only} of {len(jobs)} papers read were available as abstract only.")
     bullets.append("Figures and tables are not read: results reported only in a figure are not in this report.")
+    leads = _unread_safety_leads(ctx)
+    if leads:
+        bullets.append("Unread safety leads - collected papers whose titles concern harms but which were not read, "
+                       "so nothing from them is in this report (a title is not evidence of cause or frequency): "
+                       + "; ".join(leads) + ".")
     near = [g for g in ctx.gates.values() if g.status == "near_miss"]
     if near:
         examples = sorted({h for g in near for hs in g.near_miss_hits.values() for h in hs})[:4]
@@ -708,6 +793,34 @@ def _gaps(ctx: WriteContext, comparison_rows: list[synthesis.SynthesisRow] | Non
     return "\n".join(f"- {b}" for b in bullets)
 
 
+_SAFETY_TITLE = re.compile(r"\b(?:hepatotoxicity|toxicity|toxic|adverse|safety|harms?|side[- ]effects?|injury|"
+                           r"induced\s+(?:liver|hepatitis|pancreatitis|injury)|pancreatitis|"
+                           r"[\w-]+-induced)\b", re.I)
+
+
+def _unread_safety_leads(ctx: WriteContext, limit: int = 5) -> list[str]:
+    """Collected papers about the requested treatment whose titles concern a
+    harm, and which were not read. Shown as leads, never as findings."""
+    if ctx.spec.question_type == "target_identification":
+        return []
+    read = set(ctx.plan.paper_ids)
+    names = [t for e in ctx.spec.entities if e.kind == "drug" for t in e.exact_terms]
+    if not names:
+        return []
+    from bedrock.litreview.knowledge import TermMatcher
+
+    drug = TermMatcher(names)
+    out = []
+    for r in ctx.ranked:
+        p = ctx.papers.get(r.paper_id)
+        if p is None or r.paper_id in read or not _SAFETY_TITLE.search(p.title) or not drug.exact_count(p.title):
+            continue
+        out.append(f"“{cell(p.title.rstrip('.'))}” ({r.paper_id})")
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _plan(ctx: WriteContext) -> str:
     units_by_facet = Counter(u.facet for u in ctx.summary.units)
     realized = _realized(ctx)
@@ -760,21 +873,30 @@ def _ranking(ctx: WriteContext, refs: dict[str, int], limit: int = 20) -> str:
 
 def _evidence_table(ctx: WriteContext, refs: dict[str, int]) -> str:
     rows = [
-        "| Id | Target | Agent | Evidence | Subjects | Outcome | Setting | Result | Ref |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "Every finding extracted and verified, with how this report uses it. **Counted**: the requested "
+        "treatment's own result, used in every summary. **Context**: a true finding that is not that (a subgroup "
+        "comparison, arms that all got the treatment, a disease model, another drug); shown, never counted for "
+        "the treatment. **Excluded**: not usable as a result; kept here with the reason and used nowhere else.",
+        "",
+        "| Id | Status | Target | Agent | Evidence | Subjects | Outcome | Setting | Result | Ref |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for u in ctx.summary.units:
         n = f" (n={u.n})" if u.n is not None else ""
+        a = ctx.status.get(u.id)
+        status = (f"**{a.status}**" + (f": {cell(a.text())}" if a.reasons else "")) if a else ""
+        etype = (f"{a.evidence_type} (labelled {u.evidence_type})" if a is not None and a.evidence_type
+                 else u.evidence_type)
         rows.append(
-            f"| {ctx.summary.short_ids[u.id]} | {cell(u.target)}{' (measured)' if u.outcome_measure else ''} | "
+            f"| {ctx.summary.short_ids[u.id]} | {status} | {cell(u.target)}{' (measured)' if u.outcome_measure else ''} | "
             f"{cell(u.intervention or '')} | "
-            f"{u.evidence_type}{' · discussion' if u.from_discussion else ''} | "
+            f"{etype}{' · discussion' if u.from_discussion else ''} | "
             f"{cell(u.species_raw) if u.species_raw else 'not stated'}{n} | "
             f"{u.outcome} | {u.setting} | {cell(u.effect_detail)} | {refs.get(u.paper_id, '')}"
             f"{' ⚠ concern' if u.paper_id in ctx.demoted else ''} |"
         )
     if not ctx.summary.units:
-        rows.append("| – | no verified findings | | | | | | | |")
+        rows.append("| – | | no verified findings | | | | | | | |")
     return "\n".join(rows)
 
 
@@ -1025,6 +1147,12 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     # returns at once, so counting all of them would make the bar jump.
     written_total = sum(1 for s in layout if s.kind == "written")
     written_done = 0
+    # Who each paper is and how each finding may be used, decided once before
+    # anything is written, so every section, summary and table reads the same.
+    ctx.studies = synthesis.profiles(ctx)
+    ctx.status = {u.id: claims.assess(u, ctx.spec, ctx.papers.get(u.paper_id),
+                                      getattr(ctx.studies.get(u.paper_id), "tier", None))
+                  for u in ctx.summary.units}
     for spec in layout:
         if spec.id == "prevention" and ctx.spec.goal != "prevent":
             # A treatment question does not get a prevention section: a
@@ -1184,6 +1312,9 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         stats=stats,
         model_versions=model_versions,
         prompt_versions=prompt_versions,
+        evidence_status={uid: EvidenceStatus(status=a.status, reasons=[claims.REASONS[r] for r in a.reasons],
+                                             evidence_type=a.evidence_type)
+                         for uid, a in ctx.status.items()},
     )
 
 
@@ -1238,6 +1369,10 @@ def _kept(section: ReportSection):
         yield from _kept(sub)
 
 
+SAFETY_LIMIT = ("Limited safety assessment: these are adverse events as the papers read report them, not a "
+                "systematic review of harms or a comparison of rates. No reported harm is not evidence of safety.")
+
+
 def _basis_notes(ctx: WriteContext, sections: list[ReportSection], refs: dict[str, int], studies) -> None:
     """Under every written section with kept sentences: which studies its
     sentences rest on - design, who and how many, full text or abstract -
@@ -1250,6 +1385,13 @@ def _basis_notes(ctx: WriteContext, sections: list[ReportSection], refs: dict[st
         cited = [ctx.by_unit_id[by_short[c]] for s in section.sentences if s.kept for c in s.citations
                  if c in by_short and by_short[c] in ctx.by_unit_id]
         line = synthesis.basis_note(cited, studies, refs)
+        if line and section.id == "answer":
+            # Whether the studies behind the Answer are the population asked
+            # about, said where the Answer is read, not only in Limitations.
+            who = synthesis.cited_population_note(ctx, {u.paper_id for u in cited}, refs)
+            line = f"{line} {who}" if who else line
+        if section.id == "safety":
+            line = f"{line} {SAFETY_LIMIT}" if line else SAFETY_LIMIT
         if line:
             section.note = f"{section.note} {line}" if section.note else line
         for sub in section.subsections:

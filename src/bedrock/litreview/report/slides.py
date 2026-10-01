@@ -67,6 +67,24 @@ _INTEGRITY = ("This report failed its integrity check: a quote or field did not 
               "until it is fixed.")
 
 HUMAN_TYPES = ("human_clinical", "human_genetic")
+
+
+def deck_units(report: Report) -> list[EvidenceUnit]:
+    """The findings the deck may count and chart, by the report's own status
+    (`report/claims.assess`): an excluded finding (a sentence describing the
+    study, background, damaged text, an impossible statistic) is left out, and
+    a finding whose paper contradicts its label is counted as the paper's own
+    type - so a mouse result labelled "human" never reaches the human-evidence
+    count or the competitive landscape. A report made before statuses existed
+    has none, and every finding is used as before."""
+    out = []
+    for u in report.evidence:
+        st = report.evidence_status.get(u.id)
+        if st is not None and st.status == "excluded":
+            continue
+        out.append(u.model_copy(update={"evidence_type": st.evidence_type}) if st is not None and st.evidence_type
+                   else u)
+    return out
 _NUM = re.compile(r"\[(\d+)\]")
 _LIST_MAX = 6
 """Most targets, or diseases, a stacked list shows; the rest are counted."""
@@ -394,7 +412,7 @@ def _agents(report: Report, number_of: dict[str, int], ref_of: dict[str, Referen
     (a provenance of "none" blanks the agent: never shown; a bare "inhibition"
     or the target's own name is no agent). One row per agent, target and
     disease, in the order of the paper's reference number."""
-    units = sorted((u for u in report.evidence if u.evidence_type == "human_clinical" and _is_agent(u)
+    units = sorted((u for u in deck_units(report) if u.evidence_type == "human_clinical" and _is_agent(u)
                     and u.paper_id in number_of),
                    key=lambda u: (number_of[u.paper_id], u.id))
     seen: set[tuple[str, str, str]] = set()
@@ -511,8 +529,8 @@ def outline(report: Report, source: str = "", *, figures: Sequence[FigureAsset] 
     targets = _targets(report)
     mode = _mode(report, targets)
     refs, quotes = _ref_map(report)
-    units = list(report.evidence)
-    by_uid = {u.id: u for u in units}
+    units = deck_units(report)
+    by_uid = {u.id: u for u in report.evidence}
     by_short = {short: by_uid[uid] for uid, short in report.short_ids.items() if uid in by_uid}
     number_of = {r.paper_id: r.number for r in report.references}
     ref_of = {r.paper_id: r for r in report.references}

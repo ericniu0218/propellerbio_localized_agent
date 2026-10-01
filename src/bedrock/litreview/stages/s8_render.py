@@ -192,7 +192,9 @@ def to_markdown(report: Report) -> str:
             # paper's paragraph break, which would end the list item); the
             # stored quote, which the integrity check re-proves, is untouched.
             flat = lambda text: " ".join(text.split())  # noqa: E731
-            out.append(f"- **{short}** [{refs.get(short, '?')}] ({unit.section}, {unit.quote_status} match) "
+            st = report.evidence_status.get(uid)
+            used = f" — **{st.status}**" + (f": {'; '.join(st.reasons)}" if st.reasons else "") if st else ""
+            out.append(f"- **{short}** [{refs.get(short, '?')}] ({unit.section}, {unit.quote_status} match{used}) "
                        f"\"{flat(unit.quote)}\"")
             if unit.context_quote:
                 out.append(f"  - context ({unit.context_section}): \"{flat(unit.context_quote)}\"")
@@ -454,8 +456,11 @@ def to_html(report: Report) -> str:
         for uid, short in sorted(report.short_ids.items(), key=lambda kv: int(kv[1][1:])):
             u = by_uid[uid]
             num = refs.get(short, "?")
+            st = report.evidence_status.get(uid)
+            used = (f" — <strong>{st.status}</strong>" + (f": {html.escape('; '.join(st.reasons))}" if st.reasons
+                                                          else "")) if st else ""
             body.append(f'<li id="{short}"><strong>{short}</strong> <a href="#ref-{num}">[{num}]</a> '
-                        f'({u.section}, {u.quote_status} match) “{html.escape(u.quote)}”'
+                        f'({u.section}, {u.quote_status} match{used}) “{html.escape(u.quote)}”'
                         + (f'<br><small>context ({html.escape(u.context_section or "")}): '
                            f'“{html.escape(u.context_quote)}”</small>' if u.context_quote else "")
                         + (f'<br><small>qualifier (next sentence): “{html.escape(u.qualifier_quote)}”</small>'

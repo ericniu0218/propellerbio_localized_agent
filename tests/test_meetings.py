@@ -921,6 +921,69 @@ async def test_the_written_notes_file_carries_only_verified_citations(tmp_path, 
     assert built and built[0].request_timeout == 600.0
 
 
+def _transcribe_without_whisper(tmp_path, monkeypatch, env):
+    """A recording folder whose transcription is faked, and settings from `env`."""
+    from bedrock.config import load_settings
+    from bedrock.meetings import cli
+    from bedrock.meetings.transcribe import TranscriptionResult
+
+    folder = tmp_path / "2026-09-15 09.00.12 Phase II weekly sync"
+    folder.mkdir()
+    (folder / "audio_only.m4a").write_bytes(b"")
+    cues = parse_vtt(VTT)
+
+    class FakeTranscriber:
+        def __init__(self, config):
+            self.config = config
+
+        def readiness_issues(self):
+            return ()
+
+    async def fake_transcribe(folder, transcriber, work_dir=None):
+        return TranscriptionResult(cues=cues, speakers=speakers(cues))
+
+    monkeypatch.setattr(cli, "WhisperTranscriber", FakeTranscriber)
+    monkeypatch.setattr(cli, "transcribe_recording", fake_transcribe)
+    monkeypatch.setattr(cli, "discover_participant_tracks", lambda folder: {})
+    monkeypatch.setattr(cli, "load_settings", lambda: load_settings(config_path=tmp_path / "none.toml", env=env))
+    return cli, folder
+
+
+async def test_an_agentpack_machine_is_told_how_to_name_a_model_server(tmp_path, monkeypatch, capsys):
+    """`create_backend` refuses backend = "agentpack" rather than build an
+    OpenAI client against the wrong address. Meeting notes say so in plain
+    language and exit 2, not with a traceback."""
+    cli, folder = _transcribe_without_whisper(tmp_path, monkeypatch, {"BEDROCK_BACKEND": "agentpack"})
+
+    assert await cli._run(cli.build_parser().parse_args([str(folder)])) == 2
+
+    err = capsys.readouterr().err
+    assert "OpenAI-compatible model server" in err
+    assert "--api-base" in err
+
+
+async def test_api_base_on_the_command_line_works_on_an_agentpack_machine(tmp_path, monkeypatch):
+    """Naming a model server with --api-base is enough, even when bedrock's own
+    chat runs in agent-pack mode."""
+    cli, folder = _transcribe_without_whisper(tmp_path, monkeypatch, {"BEDROCK_BACKEND": "agentpack"})
+    built = []
+
+    class Stop(Exception):
+        pass
+
+    def capture(settings):
+        built.append(settings)
+        raise Stop
+
+    monkeypatch.setattr(cli, "create_backend", capture)
+    args = cli.build_parser().parse_args([str(folder), "--api-base", "http://vllm-host:8000/v1/"])
+    with pytest.raises(Stop):
+        await cli._run(args)
+
+    assert built[0].backend == "openai"
+    assert built[0].api_base == "http://vllm-host:8000/v1"
+
+
 # --- The model handing back its own JSON skeleton -----------------------------
 
 

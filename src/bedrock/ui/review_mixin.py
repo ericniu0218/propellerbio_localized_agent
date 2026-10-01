@@ -30,7 +30,7 @@ from textual import work
 
 from bedrock.config import Settings
 from bedrock.ui.argparsing import CommandUsageError
-from bedrock.ui.rendering import markdown_text
+from bedrock.ui.rendering import markdown_text, safe_line
 from bedrock.ui.review_command import parse_review_command, run_review_job
 
 
@@ -77,7 +77,9 @@ class ReviewCommandsMixin:
     # A review is hundreds of model calls, so every one of them goes in at
     # ``USER_JOB``: behind the chat, ahead of background work. Its notices are
     # not saved into any conversation; the run is recorded in litreview's own
-    # database, and ``/reviews`` finds it.
+    # database, and ``/reviews`` finds it. Local history (``/audit``) records
+    # that it ran and which outside hosts it was allowed to contact - never
+    # the question (``bedrock.litreview.journal``).
 
     async def start_review(self, args: str) -> None:
         """Validate the arguments here, so a typo never starts a long job."""
@@ -129,6 +131,17 @@ class ReviewCommandsMixin:
     @work(group="litreview")
     async def literature_review(self, request, settings) -> None:
         try:
+            try:
+                # As for /digest: a build without `bedrock.provenance` still
+                # runs a review, just unrecorded (ui/services.py). A journal
+                # that exists but cannot be opened stops it before it starts.
+                history = await self.services.optional_history()
+            except self.services.errors as exc:
+                await self.post_notice(
+                    safe_line(f"Local history is unavailable ({exc}); the review was not started.", limit=600),
+                    kind="error",
+                )
+                return
             scheduler = self.review_scheduler(settings) if request.use_model else None
             await run_review_job(
                 request,
@@ -137,6 +150,8 @@ class ReviewCommandsMixin:
                 cancel=self._review_cancel,
                 notify=self.post_notice,
                 progress=lambda message: self.call_from_thread(self.notify, message),
+                history=history,
+                actor_id=self.settings.user_id,
             )
         finally:
             self._review_running = False

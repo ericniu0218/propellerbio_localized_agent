@@ -312,13 +312,20 @@ async def run_review_job(
     cancel: threading.Event,
     notify: Notify,
     progress: Callable[[str], None],
+    history: object | None = None,
+    actor_id: str = "",
 ) -> bool:
     """Run one review and report it. Never raises; True means a finished report.
 
     Every failure the pipeline can produce is turned into a notice here, so the
     app's own bookkeeping - the one-review-at-a-time flag - always gets to run.
+
+    `history` and `actor_id` go straight to `service.run_review`, which records
+    the run in local history when a journal is supplied. `history=None` runs
+    unrecorded, which is what a build without `bedrock.provenance` gets.
     """
     from bedrock.litreview.config import ConfigError
+    from bedrock.litreview.journal import ReviewNotRecorded
     from bedrock.litreview.llm import ReviewInterrupted
     from bedrock.litreview.service import run_review
     from bedrock.litreview.sources.literature import SearchFailed
@@ -340,7 +347,14 @@ async def run_review_job(
             scheduler=scheduler,
             progress=progress_to_toasts(progress),
             cancel=cancel,
+            history=history,
+            actor_id=actor_id,
         )
+    except ReviewNotRecorded as exc:
+        # Nothing ran: local history could not record that this review was
+        # starting - the same "did not start" meaning as a ConfigError.
+        await notify(safe_line(exc, limit=600), "error")
+        return False
     except ReviewInterrupted as exc:
         run_id = await asyncio.to_thread(_unfinished_run_id, settings)
         await notify(interrupted_notice(exc, run_id), "error")
@@ -430,7 +444,8 @@ async def run_reviews_command(args: str, *, settings_for, notify: Notify) -> Non
     if not rows:
         await notify(
             "No literature reviews on this machine yet. Start one with "
-            "`/review <question> --corpus <file.jsonl>`.",
+            "`/review <question> --corpus <file.jsonl>` (papers from a file), or "
+            "`/review <question> --search` (a live search of Europe PMC and PubMed).",
             "info",
         )
         return

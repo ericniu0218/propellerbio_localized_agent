@@ -21,7 +21,7 @@ from dataclasses import replace
 
 from bedrock.biotech.errors import ToolIntegrationError
 from bedrock.config import load_settings
-from bedrock.inference import Scheduler, choose_default_model, create_backend
+from bedrock.inference import Scheduler, UnsupportedBackendError, choose_default_model, create_backend
 from bedrock.inference.base import InferenceError
 from bedrock.meetings.summarize import summarize_meeting
 from bedrock.meetings.transcribe import (
@@ -219,8 +219,23 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"\nConfiguration error: {exc}", file=sys.stderr)
         return 2
     settings = replace(settings, api_base=(args.api_base or settings.api_base).rstrip("/"), request_timeout=600.0)
+    if args.api_base:
+        # Naming a model server on the command line is a statement that it is
+        # a plain OpenAI-compatible one, even on an agent-pack machine.
+        settings = replace(settings, backend="openai")
     model = args.model or settings.model
-    backend = create_backend(settings)
+    try:
+        backend = create_backend(settings)
+    except UnsupportedBackendError as exc:
+        # On an agent-pack machine `settings.backend` is "agentpack", and
+        # create_backend refuses to build a model client for it rather than
+        # talk to the wrong address in silence.
+        print(
+            f"\nMeeting notes need an OpenAI-compatible model server: {exc}\n"
+            "Or name one for this run with --api-base, e.g. --api-base http://vllm-host:8000/v1",
+            file=sys.stderr,
+        )
+        return 2
     scheduler = Scheduler(backend, settings.profile)
     try:
         if not await backend.check_connection():

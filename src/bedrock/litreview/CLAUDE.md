@@ -208,6 +208,13 @@ as `improved`. Models skip these unless explicitly told not to.
 - Nothing else in this package imports `bedrock.inference`: only
   `llm/scheduled.py` and `service.py` do. Everything else depends on the
   `LLMClient` protocol, so tests use `FakeLLMClient`
+- The same rule protects `bedrock.provenance`: `journal.py` takes a
+  duck-typed `history` (one `append(...)` method) and never imports it. The
+  real `HistoryStore` is built only by `service.local_history` (the CLI and
+  the HTTP API) and bedrock's `ComplianceServices` (`/review`), each guarded so
+  a build without `bedrock.provenance` still runs a review, just unrecorded. A
+  journal that exists but cannot record the start of a run stops the run
+  (`ReviewNotRecorded`). The server's Research tab records nothing locally
 - A model-using review starts through `service.run_review` and nothing else.
   It is what runs `preflight`, builds the client and puts the blocking pipeline
   on a worker thread
@@ -229,6 +236,7 @@ as `improved`. Models skip these unless explicitly told not to.
 | Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
 | Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
 | Front ends | `/review` and `/reviews` in the terminal app - both modes, `ui/review_mixin.py` - `bedrock-litreview` in a shell, the server's Research tab, the FastAPI app as the optional `api` extra. All call `service.run_review`. `bedrock-litreview doctor` (`readiness.py`) checks a machine can run one |
+| Local audit trail | Built and tested: `run_review` records a `litreview.review` intent/outcome and one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) in bedrock's local history, for `/review`, `bedrock-litreview ask` and the HTTP API. `/audit` reads it back. Metadata only, never the question. See `journal.py` |
 | Report | Reading view, then References, then an Appendix. `report/synthesis.py` computes study profiles, independent-study counts, evidence basis, disagreements with whole quotes and qualifiers, key results and abbreviations from verified fields and paper records. Synthesis, disagreements and the gaps bullet naming measures or targets without tested human effects share comparison rows. `check_disagreements` binds each quote to evidence from its cited paper; no new stored model fields |
 | Coverage ledger, study design, drift disclosure | Built and tested offline: `coverage.v1`, `study_design.v1`, `verification_context.v1` run artifacts, never in the report; `verify-run` compares environments (`--require-same-rules`). `rank.selection: evidence_aware` is opt-in and unmeasured on a real model |
 | Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |

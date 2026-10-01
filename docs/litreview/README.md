@@ -806,6 +806,7 @@ scripts/litreview/judge_answers.py  the file-judge helper
 | Benchmark (`bedrock.litreview.bench`) | **Built and tested** with a fake model; sample corpora for two questions frozen in `evals/litreview/corpora/` |
 | Benchmark results with a real model | **Run** on MedGemma 1.5 4B for both sample questions — [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) |
 | In bedrock | **Built.** `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. Every model call goes through bedrock's `Scheduler` at `USER_JOB` |
+| Local audit trail | **Built.** `/review`, `bedrock-litreview ask` and the HTTP API record a `litreview.review` intent/outcome in bedrock's local history, plus one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) - metadata only, never the question. `/audit` reads it back. See `bedrock.litreview.journal` |
 | Alias import, citation snowballing | **Built and tested offline.** Aliases wait for a person's approval; snowballing is off until measured |
 | Stage 9 (chat), PPTX, patents, drop folder, GROBID PDF rung | Not started |
 

@@ -270,3 +270,26 @@ async def test_a_missing_provenance_module_does_not_break_digest(tmp_path):
     )
 
     assert len(store.list()) == 1
+
+
+# ---- Wording now covers literature reviews ---------------------------------
+
+
+async def test_the_empty_state_now_mentions_literature_reviews(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await submit(app, pilot, "/audit")
+
+        text = notices(app)
+        assert "literature reviews" in text
+        assert "Folds, digests, approvals" in text
+
+
+async def test_audit_help_now_mentions_literature_reviews(tmp_path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await submit(app, pilot, "/audit help")
+
+        text = notices(app)
+        assert "literature review" in text
+        assert "retraction check" in text

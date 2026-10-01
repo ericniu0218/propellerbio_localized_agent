@@ -11,6 +11,45 @@ def test_defaults_point_at_local_ollama(tmp_path: Path):
     assert settings.api_base == DEFAULT_API_BASE
     assert settings.model is None
     assert settings.api_key is None
+    assert settings.backend == "openai"
+
+
+# ---------------------------------------------------------------------------
+# backend
+# ---------------------------------------------------------------------------
+
+
+def test_the_known_backends_load(tmp_path: Path):
+    missing = tmp_path / "missing.toml"
+    assert load_settings(config_path=missing, env={"BEDROCK_BACKEND": "openai"}).backend == "openai"
+    assert load_settings(config_path=missing, env={"BEDROCK_BACKEND": "agentpack"}).backend == "agentpack"
+
+
+def test_backend_follows_environment_file_default_precedence(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text('backend = "agentpack"\n')
+    assert load_settings(config_path=config, env={}).backend == "agentpack"
+    assert load_settings(config_path=config, env={"BEDROCK_BACKEND": "openai"}).backend == "openai"
+    assert load_settings(config_path=tmp_path / "missing.toml", env={}).backend == "openai"
+
+
+def test_backend_is_case_and_whitespace_insensitive(tmp_path: Path):
+    config = tmp_path / "config.toml"
+    config.write_text('backend = "  AgentPack  "\n')
+    assert load_settings(config_path=config, env={}).backend == "agentpack"
+
+    missing = tmp_path / "missing.toml"
+    assert load_settings(config_path=missing, env={"BEDROCK_BACKEND": " OPENAI "}).backend == "openai"
+
+
+def test_an_unknown_backend_names_the_valid_ones(tmp_path: Path):
+    with pytest.raises(ValueError, match="backend must be one of agentpack, openai, not 'azure'"):
+        load_settings(config_path=tmp_path / "missing.toml", env={"BEDROCK_BACKEND": "azure"})
+
+    config = tmp_path / "config.toml"
+    config.write_text('backend = "vllm-direct"\n')
+    with pytest.raises(ValueError, match="backend must be one of agentpack, openai"):
+        load_settings(config_path=config, env={})
 
 
 def test_config_file_is_read(tmp_path: Path):

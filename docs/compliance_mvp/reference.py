@@ -26,7 +26,10 @@ class Journal:
     This is local history: the OS-account owner can alter or delete the database.
     """
 
-    ACTIONS = {"fold", "digest.ingest", "digest.forget", "approval", "run.tag"}
+    ACTIONS = {
+        "fold", "digest.ingest", "digest.forget", "approval", "run.tag",
+        "litreview.review", "litreview.search",
+    }
     STATES = {"intent", "succeeded", "failed", "cancelled", "unknown"}
     FIELDS = {
         "artifact_id", "run_id", "project_id", "session_id", "task_id",

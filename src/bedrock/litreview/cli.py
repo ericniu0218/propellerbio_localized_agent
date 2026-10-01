@@ -76,7 +76,8 @@ def _ask(args) -> int:
     it. Without a model there is nothing to talk to, so no backend is opened.
     """
     from bedrock.litreview.llm import ModelServerUnavailable, ReviewInterrupted
-    from bedrock.litreview.service import ReviewRequest, run_review, standalone_scheduler
+    from bedrock.litreview.journal import ReviewNotRecorded
+    from bedrock.litreview.service import ReviewRequest, local_history, run_review, standalone_scheduler
 
     try:
         settings = load_settings(model_set=args.models, check_endpoint=not args.no_model)
@@ -100,10 +101,14 @@ def _ask(args) -> int:
     async def go():
         from bedrock.config import load_settings as load_bedrock_settings
 
+        bedrock_settings = load_bedrock_settings()
+        history, actor_id = local_history(bedrock_settings)
+
         def review(scheduler):
             return run_review(
                 request, settings=settings, scheduler=scheduler,
                 progress=_say, cancel=threading.Event(),
+                history=history, actor_id=actor_id,
             )
 
         # A run without a model never reaches a server, so none is opened: the
@@ -112,11 +117,14 @@ def _ask(args) -> int:
             return await review(None)
         # The review's own endpoint: bedrock's `api_base`, or in agent-pack
         # mode the agent server's inference API (`config.resolve_endpoint`).
-        async with standalone_scheduler(load_bedrock_settings(), review_settings=settings) as scheduler:
+        async with standalone_scheduler(bedrock_settings, review_settings=settings) as scheduler:
             return await review(scheduler)
 
     try:
         result = asyncio.run(go())
+    except ReviewNotRecorded as exc:
+        _say(f"ask: {exc}")
+        return 1
     except NothingFound as exc:
         _say(f"ask: {exc}")
         return 1

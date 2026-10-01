@@ -36,6 +36,11 @@ Each action records an **intent** before it runs and an **outcome** after it
 finishes. An intent with no outcome means the result was never confirmed —
 possibly still running, never failed-by-assumption.
 
+Folds, digests, approvals, run tagging and literature reviews are recorded
+here — including, for a review, the external hosts it was authorised to
+contact (the literature search, the automatic retraction check), never the
+question itself.
+
 Export writes metadata only: identifiers, hashes, decisions and bounded error
 codes. No file contents, prompts, approval previews or credentials are stored.
 """
@@ -113,7 +118,8 @@ def format_events(events: list[dict], after: int = 0, prefix: str = "/audit") ->
     if not events:
         return (
             "_No recorded actions after sequence "
-            f"{after}._ Folds, digests, approvals and run tagging are recorded here."
+            f"{after}._ Folds, digests, approvals, run tagging and literature "
+            "reviews are recorded here."
         )
     lines = [
         f"**Local action history** — {len(events)} event(s) after sequence {after}",

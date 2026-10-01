@@ -178,12 +178,18 @@ def parse_review_command(args: str) -> ReviewCommand:
     parser.add_argument("--sources")
     parser.add_argument("--no-full-text", action="store_true", dest="no_full_text")
     parser.add_argument("--patents")
+    parser.add_argument("--patent-search", action="store_true", dest="patent_search")
     options = parser.parse_args(split_arguments(option_text))
 
     if options.corpus and options.search:
         raise CommandUsageError(
             "/review: use `--corpus FILE` or `--search`, not both: papers come "
             "from one place so a run can be pinned to them."
+        )
+    if options.patents and options.patent_search:
+        raise CommandUsageError(
+            "/review: use `--patents FILE` or `--patent-search`, not both: the "
+            "records in the file are the ones a run would use."
         )
     if not question and not options.resume:
         raise CommandUsageError(REVIEW_QUESTION_MISSING)
@@ -202,6 +208,7 @@ def parse_review_command(args: str) -> ReviewCommand:
             sources=_sources(options.sources),
             full_text=not options.no_full_text,
             patents=_patents(options.patents),
+            patent_search=options.patent_search,
         )
     )
 
@@ -235,7 +242,11 @@ def _patents(path: str | None):
     thread, before the request is built — not inside the pipeline. It is a
     handful of records at most, and reading it here means a bad or missing
     file is a usage error shown immediately, the same way an unreadable
-    `--corpus` would be, rather than a failure discovered minutes into a run."""
+    `--corpus` would be, rather than a failure discovered minutes into a run.
+
+    `--patent-search` is the other way to the same section: the run searches EPO
+    OPS itself, with the account configured on this machine. A file is the
+    air-gapped way, and it is the one that needs reading here."""
     if not path:
         return None
     from bedrock.litreview.sources.patent_corpus import read_patents
@@ -270,10 +281,18 @@ def start_notice(request: ReviewRequest, settings: ReviewSettings) -> str:
                   "`/reviews settings` to change")
     else:
         checks = "manual — nothing is sent; `/reviews settings` to change"
+    if request.patents is not None:
+        patents = "- Patents: the records given with `--patents` (competitor landscape only, never evidence)\n"
+    elif request.patent_search:
+        patents = ("- Patents: a new patent search — the question's exact terms go to the European Patent "
+                   "Office (competitor landscape only, never evidence)\n")
+    else:
+        patents = ""
     return (
         f"**Literature review started** — {question}\n\n"
         f"- Papers: {papers}\n"
         f"- Models: {model}\n"
+        f"{patents}"
         f"- Retraction check: {checks}\n\n"
         "It runs beside the chat: keep asking questions while it works. "
         "`/review stop` stops it, and the run can be resumed afterwards."

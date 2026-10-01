@@ -1746,6 +1746,11 @@
     modelIn.checked = !!model.ready;
     const deckIn = el("input", { type: "checkbox" });
     const fullIn = el("input", { type: "checkbox", checked: "checked" });
+    // Patents are offered only when the server has an EPO account of its own:
+    // the key belongs to the deployment, not to the person asking.
+    const patents = st.patents || {};
+    const patentIn = el("input", { type: "checkbox" });
+    if (!patents.available) patentIn.disabled = true;
     const sourceIns = (st.sources || []).map((s) => {
       const box = el("input", { type: "checkbox", checked: "checked", value: s.name });
       return { box, row: el("label", { class: "check-row" }, [box, s.label]) };
@@ -1760,7 +1765,10 @@
         el("label", { class: "check-row" }, [searchIn, "Search the literature for papers (needs internet)"]),
         el("label", { class: "check-row" }, [modelIn, "Use the model to read the papers and write the report" + (model.ready ? "" : " (not ready)")]),
         el("label", { class: "check-row" }, [deckIn, "Also make a target-proposal PowerPoint ", el("span", { class: "small muted" }, "(paper figures are added when searching)")]),
+        el("label", { class: "check-row" }, [patentIn, "Also search patents for a competitor landscape ",
+          el("span", { class: "small muted" }, patents.available ? "(European Patent Office; never used as evidence)" : "(not set up on this server)")]),
       ]),
+      patents.available === false && patents.reason ? el("div", { class: "small muted", style: "margin:-4px 2px 0" }, patents.reason) : null,
       el("details", { class: "research-options" }, [
         el("summary", {}, "More options"),
         el("div", { class: "research-options-grid" }, [
@@ -1777,7 +1785,7 @@
       submit.disabled = true;
       try {
         const review = await researchApi("/runs", { method: "POST", body: {
-          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked, deck: deckIn.checked,
+          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked, deck: deckIn.checked, patents: patentIn.checked,
           sources: sourceIns.filter((s) => s.box.checked).map((s) => s.box.value), projectId: projectSel.value || null } });
         R.draft = null;
         R.reviews = [review, ...R.reviews.filter((r) => r.id !== review.id)];
@@ -1831,6 +1839,7 @@
     const card = el("div", { class: "detail-card" });
     card.appendChild(el("div", { class: "pane-header" }, [el("h2", {}, d.question), el("span", { class: "badge status-" + (REVIEW_STATUS[d.status] || d.status) }, d.status)]));
     const facts = [d.search ? "searched " + (d.sources || []).length + " sources" : "papers already collected", d.useModel ? "with the model" : "without a model"];
+    if (d.patents) facts.push("patents searched");
     const project = d.projectId && byId(state.projects, d.projectId);
     if (project) facts.push("project: " + project.name);
     facts.push("started " + since(d.startedAt));

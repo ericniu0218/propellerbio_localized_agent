@@ -62,6 +62,29 @@ Before going live, read `docs/server/HARDWARE.md` for whether the three models
 fit your GPU server and `docs/server/ARCHITECTURE.md` section 3 for the model
 version caveats (recent releases — re-verify against vendor model cards).
 
+### Patent search on the Research tab (optional)
+
+The Research tab's **“Also search patents for a competitor landscape”** box is
+offered only when this server has an EPO Open Patent Services account. It is one
+account for the whole server, set here once, so no scientist is ever asked for a
+key:
+
+```bash
+# in the server's environment (systemd unit, compose file, .env)
+EPO_OPS_KEY=...
+EPO_OPS_SECRET=...
+```
+
+Equivalently, `epo_ops_key` and `epo_ops_secret` in the `[litreview]` table of
+the server's `config.toml` — it holds a secret, so keep that file readable only
+by the account running the server.
+
+Get the key free at developers.epo.org → My Apps. Everyone using this server
+shares its fair-use quota. Without it the box is greyed out and says so; with
+it, `bedrock-litreview doctor` reports `Patent search: configured`. Patents are
+never evidence: they only fill the report's code-written competitor-landscape
+section (`src/bedrock/litreview/sources/patents_base.py`).
+
 ## Project layout
 
 ```

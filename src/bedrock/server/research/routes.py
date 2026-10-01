@@ -475,7 +475,7 @@ async def report(review_id: str, format: str = "html", download: bool = False, u
             # install surfaces from the call, not from importing slides.
             deck = await asyncio.to_thread(_deck, rep, review, user)
         except ImportError:
-            raise HTTPException(501, "PowerPoint export needs python-pptx on the server: pip install -e \".[server]\".")
+            raise HTTPException(501, 'PowerPoint export needs python-pptx on the server: pip install "python-pptx>=1.0,<2".')
         return Response(deck, headers={"Content-Disposition": f'attachment; filename="{name}.pptx"'},
                         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
     raise HTTPException(400, "format is html, md, json or pptx.")

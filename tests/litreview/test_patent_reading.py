@@ -484,3 +484,19 @@ def test_patent_sentences_dropped_are_counted_apart_from_the_papers(settings, tm
     plain = answer_question(QUESTION, settings=settings, client=client(Script()), papers=corpus(),
                             db=Database(tmp_path / "db-plain.sqlite3"))
     assert result.report.stats == plain.report.stats, "a dropped patent sentence is not a dropped paper sentence"
+
+
+def test_the_competitor_landscape_is_in_the_main_text_after_the_evidence_and_before_the_limitations():
+    """It is a section a scientist reads, not one they reach for to check the work."""
+    from bedrock.litreview.report.layout import APPENDIX, load_layout
+
+    ids = [s.id for s in load_layout("target_identification")]
+    assert "competitors" not in APPENDIX
+    assert ids.index("numbers") < ids.index("competitors") < ids.index("gaps")
+
+
+def test_the_rendered_report_shows_it_ahead_of_the_references_and_the_appendix(settings, tmp_path):
+    result, _ = run(settings, tmp_path)
+    html = result.paths["html"].read_text()
+    at = html.index("Competitor landscape")
+    assert at < html.index(">References<") < html.index(">Appendix<")

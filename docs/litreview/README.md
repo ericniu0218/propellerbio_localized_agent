@@ -754,7 +754,8 @@ working on this* — never the biological evidence sections, and they are marked
 as a distinct class in the UI.
 
 **Built, against EPO OPS** (`sources/epo_ops.py`), confirmed live. Three ways to
-ask for one, all reaching the same code-written section:
+ask for one, all reaching the same section, "Competitor landscape", which sits in
+the main text after the key results and before the limitations:
 
 | Where | How |
 |---|---|
@@ -1197,8 +1198,10 @@ great deal of the result is a picture of a graph. Flag early.
 The bulk snapshot is the fallback. Confirm before building a dependency on the
 live API.
 
-**Patents may stay hard.** We have scoped them to competitor landscape only. If
-the client wants real patent claim analysis, that is a separate project.
+**Patents are scoped to the competitor landscape.** What each filing says it
+covers is read and summarised there (see [Patents](#patents)); analysing claims -
+validity, infringement, freedom to operate - is not attempted and would be a
+separate project.
 
 ---
 

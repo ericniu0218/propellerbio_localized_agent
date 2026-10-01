@@ -129,18 +129,6 @@ answer is the drop folder (`dropfolder.py`, to be built on bedrock's `share`
 connector) — Propeller already pays
 for journal access, and we ingest what their scientists legally download.
 
-**A patent says what its filer claims, never that it works.** A model may copy
-what a filing says it covers - from its title, abstract and claim 1, nothing else -
-and may never judge it. Everything stated about a filing is attributed ("claims",
-"describes", "is directed to"); the patent guard drops a sentence that says
-otherwise, adds a number, name or company the cited filings do not, or calls an
-application granted. Patents are never counted as evidence and never reach the
-Answer, the targets or a count; "none found" is never freedom to operate, and the
-section is not a legal view. `check_patents` re-proves every quote against the
-stored filing. Do not widen the text a model reads (the description, the other
-claims) without the owner's approval: the client said patents are much harder for
-AI than papers.
-
 **Reviews are not evidence.** A review article citing a trial is not a trial.
 Counting one would inflate the apparent weight of evidence.
 

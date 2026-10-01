@@ -9,7 +9,7 @@ evidence or read by a model for a biological claim. What it feeds is one report
 section, the competitor landscape: who else has filed a patent naming the same
 targets, and what each filing says it covers.
 
-A model may now *copy* what a filing says it covers - from its title, abstract and
+A model copies what a filing says it covers - from its title, abstract and
 claim 1 only (`stages/s6c_patent_extract.py`) - and a model may write sentences
 about those copies (`stages/s7b_patent_write.py`). It may not judge a filing: every
 sentence is attributed to the filer ("claims", "describes") and checked by

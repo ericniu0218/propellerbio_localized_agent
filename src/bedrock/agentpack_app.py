@@ -33,6 +33,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, Input
 
 from bedrock import attachments
+from bedrock.agentpack.citation_marker import with_citation_notice
 from bedrock.agentpack.client import AgentPackClient
 from bedrock.agentpack.friendly import friendly_error
 from bedrock.agentpack.models import AgentCardState, AgentEvent
@@ -124,6 +125,11 @@ working when the AI system is unreachable, and nothing they show is sent to a
 model. `/review` runs the review on this machine and sends each model call to
 the AI system's inference API (named models, temperature 0, JSON-schema
 output), never through the chat; `bedrock-litreview doctor` checks it is ready.
+
+A citation-shaped answer from the AI system - a PMID, `et al.`, a bracketed
+reference - has only been checked that a citation is present, never that it
+says what the answer claims; the finished answer says so when this applies.
+`/review` is the one that checks every quote against its paper.
 """
 
 
@@ -949,6 +955,13 @@ class AgentPackApp(ReviewCommandsMixin, LocalCommandsMixin, App[None]):
             # /clear may have replaced this request during the result fetch.
             if self._answer_widget is not answer_widget:
                 return
+            if not failed and content:
+                # Only a real, finished answer: never the streaming draft
+                # (PENDING_REVIEW_PREFIX/REVIEWING_PREFIX own that state) and
+                # never a friendly_error() message - `failed` may have just
+                # been set above, on a result the server never produced.
+                # See bedrock.agentpack.citation_marker for the trigger.
+                content = with_citation_notice(content)
             answer_widget.update(content or "_(no answer produced)_")
         self._waiting_for = None
         self._answer_widget = None

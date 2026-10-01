@@ -9,6 +9,7 @@ from typing import AsyncIterator
 import pytest
 
 from bedrock.agentpack.models import AgentEvent
+from bedrock.agentpack.citation_marker import CITATION_MARKER
 from bedrock.agentpack_app import AgentPackApp
 from bedrock.biotech import ProteinWorkflowResult
 from bedrock.config import Settings
@@ -1185,3 +1186,41 @@ async def test_a_scientific_job_holds_the_queue_until_it_finishes(fake_client, t
         for _ in range(4):
             await pilot.pause()
         assert fake_client.sent_messages == [("sess_fake", "what does that structure show?")]
+# ---- The unverified-citation marker (finding 8 of #30), at the app level --------
+#
+# bedrock.agentpack.citation_marker.looks_cited is unit-tested directly in
+# tests/test_citation_marker.py; what is particular to the app is that
+# AgentPackApp._finish applies it to a real, finished answer and only there.
+
+
+async def test_citation_marker_appears_on_an_answer_that_presents_itself_as_cited(
+    fake_client: FakeAgentPackClient,
+):
+    fake_client.results["res_1"] = "Smith et al. showed a reduction in symptoms."
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"is IL-23 worth targeting?", "enter")
+        await pilot.pause()
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+
+        reply = app.query_one(AssistantMessage).source
+        assert CITATION_MARKER in reply
+        assert "/review" in reply
+
+
+async def test_citation_marker_is_absent_from_an_ordinary_answer(fake_client: FakeAgentPackClient):
+    fake_client.results["res_1"] = "This is a general answer with no citations at all."
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"how should I think about this?", "enter")
+        await pilot.pause()
+
+        fake_client.push("task.completed", {"task_id": "task_fake", "result_ref": "res_1", "citations": []})
+        await pilot.pause()
+
+        reply = app.query_one(AssistantMessage).source
+        assert CITATION_MARKER not in reply

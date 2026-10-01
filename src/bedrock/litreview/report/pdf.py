@@ -141,7 +141,6 @@ def to_pdf(report: Report) -> bytes:
     small = ParagraphStyle("small", parent=base, fontSize=7.8, leading=10, textColor=muted)
     quote = ParagraphStyle("quote", parent=base, leftIndent=14, textColor=muted, fontSize=9)
     cell = ParagraphStyle("cell", parent=base, fontSize=7.6, leading=9.6, spaceAfter=0)
-    head_cell = ParagraphStyle("head", parent=cell, fontName=FONT_BOLD)
 
     page_w, _page_h = LETTER
     margin = 0.7 * inch
@@ -154,14 +153,36 @@ def to_pdf(report: Report) -> bytes:
                          bulletText=mark)
 
     def table(rows: list[list[str]]) -> Table:
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
         n = max(len(r) for r in rows)
         rows = [r + [""] * (n - len(r)) for r in rows]
-        # Column widths from how much each column holds, with a floor, so a
-        # short column (a reference number) is narrow and a quote column wide.
-        weight = [max(6, min(60, max(len(r[i]) for r in rows))) for i in range(n)]
-        total = sum(weight)
-        widths = [width * w / total for w in weight]
-        data = [[Paragraph(inline(c), head_cell if i == 0 else cell) for c in r] for i, r in enumerate(rows)]
+        plain_rows = [[re.sub(r"\*\*|(?<!\w)\*|<[^>]+>", "", c) for c in r] for r in rows]
+
+        def floors(size: float) -> list[float]:
+            # Every column at least as wide as its longest word (capped), so a
+            # short column - an id, an outcome - never breaks letter by letter.
+            out = []
+            for i in range(n):
+                words = [w for r in plain_rows for w in r[i].split()] or [""]
+                widest = max(stringWidth(w, FONT_BOLD, size) for w in words)
+                out.append(min(widest, 1.25 * inch) + 8)
+            return out
+
+        size = 7.6
+        mins = floors(size)
+        while sum(mins) > width and size > 6.2:
+            size -= 0.7
+            mins = floors(size)
+        if sum(mins) > width:
+            mins = [m * width / sum(mins) for m in mins]
+        # What is left goes by how much each column holds.
+        weight = [max(1, min(400, sum(len(r[i]) for r in plain_rows))) for i in range(n)]
+        spare = width - sum(mins)
+        widths = [m + spare * w / sum(weight) for m, w in zip(mins, weight)]
+        body = ParagraphStyle("cell", parent=cell, fontSize=size, leading=size * 1.27)
+        head = ParagraphStyle("head", parent=body, fontName=FONT_BOLD)
+        data = [[Paragraph(inline(c), head if i == 0 else body) for c in r] for i, r in enumerate(rows)]
         t = Table(data, colWidths=widths, repeatRows=1)
         t.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.4, line_colour),

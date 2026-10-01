@@ -837,10 +837,10 @@ def key_results(ctx: "WriteContext", refs: dict[str, int], studies: dict[str, St
         for u in chosen:
             s = studies[u.paper_id]
             where = f"{u.section}" + (", from the Discussion" if u.from_discussion else "")
-            rows.append(f"- **{_cell(g.label)}** — “{" ".join(u.quote.split())}” — {study_label(s, refs)}; "
+            rows.append(f"- **{_cell(g.label)}** — “{' '.join(u.quote.split())}” — {study_label(s, refs)}; "
                         f"{ctx.summary.short_ids[u.id]}, {where}.")
             if u.qualifier_quote:
-                rows.append(f"  - The paper's next sentence qualifies it: “{" ".join(u.qualifier_quote.split())}”")
+                rows.append(f"  - The paper's next sentence qualifies it: “{' '.join(u.qualifier_quote.split())}”")
             for note in _other_estimates(ctx, u, refs):
                 rows.append(f"  - {note}")
         if len(rows) >= limit:

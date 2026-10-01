@@ -156,6 +156,25 @@ async def test_the_advice_sits_just_before_the_verdict_and_never_moves_the_check
     )
 
 
+def test_doctor_says_whether_patent_search_has_an_account_to_use(data_dir, monkeypatch, capsys):
+    """Whoever sets a server up needs a way to find out they finished the job.
+    Without this line, an unset EPO key is discovered by a scientist ticking the
+    box - and it is information, never a failure: a review does not need one."""
+    monkeypatch.setattr("bedrock.inference.create_backend", lambda s: Server())
+    _ready(monkeypatch)
+
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "Patent search: not offered" in out and "EPO_OPS_KEY" in out
+
+    monkeypatch.setenv("EPO_OPS_KEY", "sw0rdf1sh-key")
+    monkeypatch.setenv("EPO_OPS_SECRET", "sw0rdf1sh-secret")
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "Patent search: configured" in out
+    assert "sw0rdf1sh" not in out, "whether an account is set is printed; the credentials never are"
+
+
 def test_doctor_reports_a_broken_config_as_a_finding_not_a_traceback(data_dir, monkeypatch, capsys):
     monkeypatch.setenv("BEDROCK_LITREVIEW_MODELS", "not-a-real-set")
 

@@ -291,6 +291,48 @@ def answer_question(
 
     done(0, "spec", spec.model_dump_json())
 
+    # Patents — competitor landscape only, never evidence (patents_base.py).
+    # The question is all this needs, so it runs here rather than beside the
+    # section that consumes it: a wrong key or an exhausted EPO quota is then
+    # reported in the first seconds of a run instead of after an hour of model
+    # calls it has no part in.
+    #
+    # Deliberately not pinned or resumed the way `papers` is below: unlike the
+    # evidence pipeline, nothing here feeds a citation-checked sentence, so a
+    # stale or refreshed landscape does not change what the report asserts as
+    # fact. Known scope-cut, not an oversight — worth adding if a client
+    # wants "which run pinned which patents" answered the same way papers are.
+    patent_search_failed = False
+    if patents is None and patent_searcher is not None:
+        from bedrock.litreview.sources.http import SourceError
+        from bedrock.litreview.sources.patents_base import PatentSearchRequest
+
+        try:
+            patents = patent_searcher.search(PatentSearchRequest(
+                question=spec.text, spec=spec,
+                exact_terms={e.canonical: e.exact_terms for e in spec.entities},
+                max_results=int(settings.knob("patents.max_results", 100)),
+            ))
+        except (SourceError, ValueError) as exc:
+            # Patents are a bolt-on lane, so a failure here costs the
+            # competitor landscape and nothing else. Failing the run would
+            # throw away the evidence work, which is the part that answers the
+            # question — the same call `sources/integrity.py` makes about a
+            # retraction check that could not be run.
+            log.warning("run %s: the patent search failed: %s", run.id, exc)
+            say(f"patents: WARNING - the patent search failed ({exc}); "
+                "this report has no competitor landscape")
+            patents, patent_search_failed = [], True
+    patents = patents or []
+    if patents:
+        # Distinct families, not raw records — the same count `_competitors`
+        # (s7_write.py) uses for its own headline. A run over three filings of
+        # one EP/US/CN family must not report "3 families" while the section
+        # underneath it correctly says "1 family, 3 filings".
+        families = {p.family_id or p.id for p in patents}
+        say(f"patents: {len(families)} competitor famil{'y' if len(families) == 1 else 'ies'} "
+            f"({len(patents)} filing{'' if len(patents) == 1 else 's'})")
+
     # 1 — collect (frozen per question unless asked to refresh). A resumed
     # run reads the exact paper versions it pinned, never the question's
     # current set: its gates, ranking and plan were built from those.
@@ -495,30 +537,6 @@ def answer_question(
     summary = summarize(units, spec, facets, ranked, plan, demoted=demoted)
     done(6, "summary", summary.model_dump_json())
 
-    # Patents — competitor landscape only, never evidence (patents_base.py).
-    # Deliberately not pinned or resumed the way `papers` is above: unlike the
-    # evidence pipeline, nothing here feeds a citation-checked sentence, so a
-    # stale or refreshed landscape does not change what the report asserts as
-    # fact. Known scope-cut, not an oversight — worth adding if a client
-    # wants "which run pinned which patents" answered the same way papers are.
-    if patents is None and patent_searcher is not None:
-        from bedrock.litreview.sources.patents_base import PatentSearchRequest
-
-        patents = patent_searcher.search(PatentSearchRequest(
-            question=spec.text, spec=spec,
-            exact_terms={e.canonical: e.exact_terms for e in spec.entities},
-            max_results=int(settings.knob("patents.max_results", 100)),
-        ))
-    patents = patents or []
-    if patents:
-        # Distinct families, not raw records — the same count `_competitors`
-        # (s7_write.py) uses for its own headline. A run over three filings of
-        # one EP/US/CN family must not report "3 families" while the section
-        # underneath it correctly says "1 family, 3 filings".
-        families = {p.family_id or p.id for p in patents}
-        say(f"patents: {len(families)} competitor famil{'y' if len(families) == 1 else 'ies'} "
-            f"({len(patents)} filing{'' if len(patents) == 1 else 's'})")
-
     # 7 — write
     ctx = WriteContext(
         spec=spec, facets=facets, plan=plan, summary=summary, ranked=ranked, papers=by_id, gates=gates,
@@ -527,6 +545,7 @@ def answer_question(
         units_per_target=int(settings.knob("write.units_per_target", 5)),
         max_units_per_section=int(settings.knob("write.max_units_per_section", 14)),
         patents=patents,
+        patent_search_failed=patent_search_failed,
         entailment=entailment,
         integrity_notes={**notices_in(integrity), **notice_texts(integrity)},
         demoted=demoted,

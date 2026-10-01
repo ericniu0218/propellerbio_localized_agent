@@ -264,6 +264,13 @@ class EpoOps:
         self.tokens = tokens or TokenStore(consumer_key, consumer_secret, http=self.http)
         self.throttle = throttle or EpoThrottle()
         self.claims_max = claims_max
+        self._own_http = http is None
+
+    def close(self) -> None:
+        """Close the HTTP connection, if this instance opened one. A caller that
+        handed in its own `http` keeps ownership of it, so this leaves it alone."""
+        if self._own_http:
+            self.http.close()
 
     # -- one authenticated, throttle-aware request -----------------------------
 

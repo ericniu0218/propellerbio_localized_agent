@@ -137,6 +137,9 @@ every sentence cites a verified quote from a paper: `/review` beside the chat,
 an optional FastAPI front door. A Research-tab checkbox (and
 `bedrock-litreview ask --deck`) also makes a target-proposal PowerPoint, drawn
 by code from the report, with paper figures fetched only when searching.
+Another (and `--patent-search`) adds a competitor landscape from EPO Open
+Patent Services, using an account the *server* is configured with so no
+scientist handles a key; patents are never evidence.
 **Read `src/bedrock/litreview/CLAUDE.md` before
 changing any of it** - it is a pipeline, not an agent, and its guarantees
 (verbatim quote verification, per-field provenance, the citation guard, the

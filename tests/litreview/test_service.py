@@ -728,6 +728,157 @@ async def test_a_run_with_no_manifest_reads_back_as_no_figures(settings):
     assert service.deck_figures(settings, "no-such-run") == []
 
 
+# ---------------------------------------------------------------------------
+# run_review: the competitor landscape (`ReviewRequest.patent_search`)
+#
+# The point of these is that the EPO account belongs to the machine, not to the
+# person asking. On the server's Research tab a scientist ticks a box; the
+# server's own key answers it, and nobody is ever asked to type one.
+# ---------------------------------------------------------------------------
+
+
+class FakePatentOffice:
+    """Stands in for `EpoOps`. Records the credentials it was built with, so a
+    test can prove they came from settings rather than from a request."""
+
+    name = "epo_ops"
+    instances: list["FakePatentOffice"] = []
+    fail_with: Exception | None = None
+    """Set by a test to make the office refuse, as an exhausted quota does."""
+
+    def __init__(self, key, secret, *, claims_max=40, **kwargs):
+        self.credentials = (key, secret)
+        self.claims_max = claims_max
+        self.requests = []
+        self.closed = False
+        self.fail = FakePatentOffice.fail_with
+        FakePatentOffice.instances.append(self)
+
+    def search(self, request):
+        self.requests.append(request)
+        if self.fail is not None:
+            raise self.fail
+        return _patent_records()
+
+    def close(self):
+        self.closed = True
+
+
+def _patent_records():
+    from bedrock.litreview.models import PatentRecord
+
+    return [
+        PatentRecord(id="EP1A1", family_id="f1", title="Anti-IL-23 antibody", assignee="Genentech, Inc.",
+                     kind_code="A1", priority_date="2018-01-01"),
+        PatentRecord(id="US1A1", family_id="f1", title="Anti-IL-23 antibody", assignee="Genentech, Inc.",
+                     kind_code="A1", priority_date="2018-01-01"),
+        PatentRecord(id="EP2B1", family_id="f2", title="IL-23 receptor blocker", assignee="Amgen Inc.",
+                     kind_code="B1", priority_date="2019-06-01"),
+    ]
+
+
+@pytest.fixture()
+def patent_office(monkeypatch):
+    """`EpoOps` replaced, and the EPO account configured as a server's would be."""
+    from bedrock.litreview.sources import epo_ops
+
+    FakePatentOffice.instances = []
+    monkeypatch.setattr(FakePatentOffice, "fail_with", None)
+    monkeypatch.setattr(epo_ops, "EpoOps", FakePatentOffice)
+    return FakePatentOffice
+
+
+async def test_a_patent_search_uses_the_machines_account_and_reaches_the_report(settings, patent_office):
+    """The whole point of the flag: the key is configuration, the question's own
+    exact terms are the query, and what comes back lands in the generated
+    competitor-landscape section - never in the evidence."""
+    settings.epo_ops_key, settings.epo_ops_secret = "server-key", "server-secret"
+    said: list[str] = []
+
+    result = await go(review(papers=corpus(), patent_search=True), settings, ScriptedBackend(), progress=said.append)
+
+    office = patent_office.instances[0]
+    assert office.credentials == ("server-key", "server-secret"), "the account is the machine's"
+    assert office.closed, "the review closes the connection it opened"
+    terms = office.requests[0].exact_terms
+    assert "psoriasis" in terms, f"the question's own exact terms are the query: {terms}"
+
+    assert [p.id for p in result.patents] == ["EP1A1", "US1A1", "EP2B1"]
+    md = result.paths["md"].read_text()
+    assert "Competitor landscape" in md and "2 patent famil" in md
+    assert any("2 competitor families (3 filings)" in m for m in said)
+
+
+async def test_no_account_is_refused_before_anything_runs_and_says_whose_job_it_is(settings):
+    """A scientist who ticked the box hears it in the first second, not after an
+    hour of model calls - and the fix is addressed to whoever runs the server,
+    because that is who sets the key."""
+    backend = ScriptedBackend()
+    with pytest.raises(ConfigError) as exc:
+        await go(review(papers=corpus(), patent_search=True), settings, backend)
+
+    message = str(exc.value)
+    assert "EPO_OPS_KEY" in message and "developers.epo.org" in message
+    assert "nobody types a key per review" in message
+    assert backend.calls == [], "nothing may run before this is sorted out"
+
+
+async def test_a_patents_file_wins_over_the_flag_and_contacts_nobody(settings, patent_office):
+    """`--patents FILE` is the air-gapped way in, and the records in it are the
+    ones to use: no account is needed and nothing is searched."""
+    records = _patent_records()
+    result = await go(review(papers=corpus(), patents=records, patent_search=True), settings, ScriptedBackend())
+
+    assert patent_office.instances == [], "no patent office was contacted"
+    assert result.patents == records
+
+
+async def test_a_patent_office_that_cannot_answer_costs_the_landscape_and_not_the_review(settings, patent_office):
+    """Patents are a bolt-on lane. An exhausted quota or a key the office
+    refuses must not throw away the evidence work - and the report must say a
+    search was run and failed, not that nobody asked."""
+    from bedrock.litreview.sources.epo_ops import PatentSearchFailed
+
+    settings.epo_ops_key, settings.epo_ops_secret = "server-key", "wrong-secret"
+    patent_office.fail_with = PatentSearchFailed("EPO OPS fair-use quota exhausted", status_code=403)
+    said: list[str] = []
+
+    result = await go(review(papers=corpus(), patent_search=True), settings, ScriptedBackend(), progress=said.append)
+
+    assert result.report_id, "the review still produced its report"
+    assert result.patents == []
+    assert any("the patent search failed" in m and "quota exhausted" in m for m in said)
+    md = result.paths["md"].read_text()
+    assert "could not answer it" in md
+    assert "No patent search was run" not in md, "a search was run; saying otherwise would be false"
+
+
+async def test_the_patent_search_is_declared_in_local_history_only_when_it_happens(settings, tmp_path, patent_office):
+    """`/audit` says which outside hosts a run was allowed to contact. A patent
+    search is one of them; a run handed a patents file contacts nobody."""
+    settings.epo_ops_key, settings.epo_ops_secret = "server-key", "server-secret"
+    searched, from_file = FakeHistoryStore(), FakeHistoryStore()
+
+    await go(review(papers=corpus(), patent_search=True), settings, ScriptedBackend(),
+             history=searched, actor_id="alice")
+    settings.db_path = tmp_path / "from-file.sqlite3"
+    await go(review(papers=corpus(), patents=_patent_records(), patent_search=True), settings, ScriptedBackend(),
+             history=from_file, actor_id="alice")
+
+    rows = [r for r in searched.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"]["source_kind"] == "patent_search" for r in rows)
+    assert [r for r in from_file.rows if r["action"] == "litreview.search"] == []
+
+
+def test_the_option_is_offered_only_where_there_is_an_account_to_use(settings):
+    assert service.patents_configured(settings) is False
+    settings.epo_ops_key = "key"
+    assert service.patents_configured(settings) is False, "half an account is not an account"
+    settings.epo_ops_secret = "secret"
+    assert service.patents_configured(settings) is True
+
+
 async def test_the_figure_download_is_recorded_only_when_the_deck_and_a_search_are_both_on(settings, deck_steps):
     both, deck_only, search_only = FakeHistoryStore(), FakeHistoryStore(), FakeHistoryStore()
 

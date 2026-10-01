@@ -192,6 +192,22 @@ def test_allowed_hosts_lets_one_extra_host_through_from_the_table_or_the_env():
     assert load_settings(public, env=env).allowed_hosts == ("gpu-box", "other-box")
 
 
+def test_the_epo_account_comes_from_the_environment_or_the_table_and_is_one_per_machine():
+    """A patent search is answered by the machine's own EPO account, so that a
+    scientist on the server's Research tab never types a key. Both places exist
+    because a server is started differently in different deployments; the
+    environment wins, as it does everywhere else here."""
+    assert load_settings(bedrock(), env={}).epo_ops_key == ""
+
+    from_table = bedrock(litreview={"epo_ops_key": "from-table", "epo_ops_secret": "secret-from-table"})
+    settings = load_settings(from_table, env={})
+    assert (settings.epo_ops_key, settings.epo_ops_secret) == ("from-table", "secret-from-table")
+
+    env = {"EPO_OPS_KEY": "from-env", "EPO_OPS_SECRET": "secret-from-env"}
+    settings = load_settings(from_table, env=env)
+    assert (settings.epo_ops_key, settings.epo_ops_secret) == ("from-env", "secret-from-env")
+
+
 def test_an_ollama_cloud_model_is_refused_even_though_the_endpoint_is_local(tmp_path):
     (tmp_path / "models.yaml").write_text(
         "min_context_window: 12288\nmodel_sets:\n  cloud: {medium: {name: 'gpt-oss:120b-cloud'}}\n"

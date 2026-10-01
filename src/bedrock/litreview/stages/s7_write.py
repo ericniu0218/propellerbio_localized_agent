@@ -136,10 +136,15 @@ class WriteContext:
     max_units_per_section: int = 14
     sentence_stats: Counter = field(default_factory=Counter)
     patents: list[PatentRecord] = field(default_factory=list)
-    """Competitor-landscape input, from `bedrock-litreview patents` (EPO OPS).
-    Read only by `_competitors` below, generated (code, no model call) for
-    exactly the reason no other generated section takes one: nothing here is
-    a biological claim, so there is nothing for the citation guard to check."""
+    """Competitor-landscape input: EPO OPS searched during the run, or records
+    from `bedrock-litreview patents`. Read only by `_competitors` below,
+    generated (code, no model call) for exactly the reason no other generated
+    section takes one: nothing here is a biological claim, so there is nothing
+    for the citation guard to check."""
+    patent_search_failed: bool = False
+    """A patent search was asked for and the patent office could not answer it.
+    Without this, an empty `patents` reads as "nobody asked", which would be a
+    false statement in a report that did ask (`runner.py`)."""
     entailment: object = None
     """A `report.entailment.EntailmentCheck`, or None (the default): the
     optional model check run on sentences the guard kept. See that module."""
@@ -956,11 +961,19 @@ def _competitors(ctx: WriteContext, limit: int = 60) -> str:
     office record says, not a claim about biology. `sources/patents_base.py`
     has the full reasoning for why patents never reach the evidence pipeline.
     """
+    if not ctx.patents and ctx.patent_search_failed:
+        return (
+            "A patent search was run for this question and the patent office could not answer it, so "
+            "this report has no competitor landscape. The run's progress log says what went wrong. "
+            "Nothing else in this report depends on it: patents are never evidence here."
+        )
     if not ctx.patents:
         return (
-            "No patent search was run for this question. Run "
-            "`bedrock-litreview patents \"<question>\" --out patents.jsonl` and pass "
-            "`--patents patents.jsonl` to `ask` to add one."
+            "No patent search was run for this question. Ask again with "
+            "“Also search patents” ticked on the Research tab, or with "
+            "`--patent-search`. On a machine with no way out, run "
+            "`bedrock-litreview patents \"<question>\" --out patents.jsonl` where there is one "
+            "and pass `--patents patents.jsonl`."
         )
 
     by_assignee: dict[str, list[PatentRecord]] = {}

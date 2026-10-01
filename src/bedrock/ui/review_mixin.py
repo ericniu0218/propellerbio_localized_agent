@@ -25,13 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 from textual import work
 
 from bedrock.config import Settings
 from bedrock.ui.argparsing import CommandUsageError
 from bedrock.ui.rendering import markdown_text, safe_line
-from bedrock.ui.review_command import parse_review_command, run_review_job
+from bedrock.ui.review_command import REVIEW_STALE_INSTALL, parse_review_command, run_review_job
+from bedrock.ui.widgets import StatusBar
 
 
 class ReviewCommandsMixin:
@@ -46,6 +48,11 @@ class ReviewCommandsMixin:
         self._review_running = False
         self._review_cancel = threading.Event()
         self._own_review_scheduler = None
+        # The status bar's live position for a running review, and the timer
+        # that redraws it once a second. See `_review_tick`.
+        self._review_started: float | None = None
+        self._review_position: tuple[str, int, int, str] | None = None
+        self._review_clock = None
 
     # ---- Where the review's model calls go ------------------------------------
 
@@ -88,6 +95,14 @@ class ReviewCommandsMixin:
         except CommandUsageError as exc:
             await self.post_notice(str(exc), kind="error")
             return
+        except ImportError as exc:
+            # The review pipeline is imported lazily (see below), so a virtual
+            # environment left behind by an older checkout - one without
+            # pydantic, lxml, PyYAML or rapidfuzz - fails here, on the first
+            # `/review` rather than at start-up. Raw, that is a traceback over
+            # the whole screen for something a reinstall fixes.
+            await self.post_notice(REVIEW_STALE_INSTALL.format(detail=markdown_text(str(exc))), kind="error")
+            return
         if command.stop:
             await self.stop_review()
             return
@@ -99,7 +114,11 @@ class ReviewCommandsMixin:
         # Imported here, not at the top: the pipeline pulls in pydantic and the
         # whole of sources/ and stages/, which is 115 ms of start-up for a
         # feature most sessions never use. See ui/review_command.py.
-        from bedrock.litreview.config import ConfigError as LitReviewConfigError
+        try:
+            from bedrock.litreview.config import ConfigError as LitReviewConfigError
+        except ImportError as exc:  # as above
+            await self.post_notice(REVIEW_STALE_INSTALL.format(detail=markdown_text(str(exc))), kind="error")
+            return
 
         try:
             settings = await asyncio.to_thread(self._review_settings, command.request.model_set)
@@ -126,10 +145,49 @@ class ReviewCommandsMixin:
 
         return load_review_settings(self.settings, model_set=model_set)
 
+    def _review_tick(self, stage: str, done: int, total: int, detail: str = "") -> None:
+        """Called (on the UI thread) as each item of a stage finishes.
+
+        Draws straight away so a new count is never up to a second stale, and
+        `_tick_review_clock` keeps redrawing on a timer so the elapsed time
+        goes on moving *between* ticks. Both halves matter: a single extraction
+        call can take minutes, and a counter frozen for minutes looks exactly
+        like a hung process, which is what this exists to rule out.
+        """
+        self._review_position = (stage, done, total, detail)
+        self._tick_review_clock()
+
+    def _tick_review_clock(self) -> None:
+        from bedrock.litreview.progress import format_tick
+
+        if self._review_started is None or self._review_position is None:
+            return
+        stage, done, total, detail = self._review_position
+        elapsed = time.monotonic() - self._review_started
+        self.query_one(StatusBar).review_progress = format_tick(stage, done, total, detail, elapsed)
+
+    def _clear_review_progress(self) -> None:
+        self._review_started = None
+        self._review_position = None
+        if self._review_clock is not None:
+            self._review_clock.stop()
+            self._review_clock = None
+        try:
+            self.query_one(StatusBar).review_progress = None
+        except Exception:  # noqa: BLE001 - the app may be shutting down
+            pass
+
     # Not exclusive: the flag above is what keeps it to one review, and an
     # exclusive worker would cancel a long run if that ever failed.
     @work(group="litreview")
     async def literature_review(self, request, settings) -> None:
+        self._review_started = time.monotonic()
+        self._review_position = ("starting", 0, 0, "")
+        self._review_clock = self.set_interval(1.0, self._tick_review_clock)
+        # Drawn once here as well: the first stage that ticks may be minutes
+        # away (papers are collected and gated first), and the bar should say
+        # a review is running from the moment one is.
+        self._tick_review_clock()
         try:
             try:
                 # As for /digest: a build without `bedrock.provenance` still
@@ -149,12 +207,20 @@ class ReviewCommandsMixin:
                 scheduler=scheduler,
                 cancel=self._review_cancel,
                 notify=self.post_notice,
+                tick=lambda *a: self.call_from_thread(self._review_tick, *a),
                 progress=lambda message: self.call_from_thread(self.notify, message),
                 history=history,
                 actor_id=self.settings.user_id,
+                # A review that shares the chat's connection uses the chat's
+                # `request_timeout`; one that opens its own has it raised to
+                # `REVIEW_TIMEOUT_FLOOR`, so only the first is worth warning about.
+                timeout_floor_applied=self.shared_review_scheduler(settings) is None,
             )
         finally:
             self._review_running = False
+            # However the run ended - finished, stopped, or failed - the bar
+            # must not keep showing a position that is no longer moving.
+            self._clear_review_progress()
 
     async def close_review_commands(self) -> None:
         """On quit, before any backend closes: a review waiting on a model call

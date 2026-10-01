@@ -341,19 +341,33 @@ class Paper(BaseModel):
 
 class PatentRecord(BaseModel):
     """Patents are a separate, lower-confidence class. They feed the competitor
-    landscape section only, never the biological evidence sections.
+    landscape section only, never the biological evidence sections. No model
+    ever reads one for a biological claim, and none is ever cited as evidence.
 
     We deliberately store claim 1 and nothing else from the body — patents are
     long, legally worded, and hard for a small model to read correctly.
     """
 
     id: str
+    """Jurisdiction + number + kind, e.g. "EP3000000A1" — one publication."""
+    family_id: str | None = None
+    """The INPADOC simple-family id. The same invention is filed and
+    published separately in EP, US, CN, JP, ...; this is the only sane
+    cross-jurisdiction dedup key, and EPO OPS hands it over for free with
+    every hit — nothing here has to compute it."""
     title: str
     abstract: str | None = None
     assignee: str | None = None
     priority_date: date | None = None
+    publication_date: date | None = None
+    kind_code: str | None = None
+    """DOCDB kind code: "A1"/"A2" is a published application, "B1"/"B2" a
+    granted patent. Collapsing these would show a filing as an issued right,
+    which is a materially different fact for a competitor landscape."""
     claim_1: str | None = None
     jurisdiction: str | None = None
+    found_by_queries: list[str] = Field(default_factory=list)
+    source: str = "epo_ops"
 
 
 # --- gate, rank, plan --------------------------------------------------------

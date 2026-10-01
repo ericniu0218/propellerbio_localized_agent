@@ -96,7 +96,12 @@ a violation is a bug, written on the report (warning banner) and makes
 `/reviews verify` re-check a stored run.
 Runs record the exact paper versions they read (`paper_versions`,
 `papers_manifest`); never read a past run's papers from the question's
-current set. Merging duplicate papers never loses a review or retraction flag
+current set. **`paper_versions` is append-only, and deleting from it is how
+that guarantee breaks silently** — a run that loses a paper version keeps
+looking finished until somebody runs `verify-run` on it, possibly months later.
+`db.delete_run` therefore removes one run and never a paper version, and drops a
+report row only when `runs_for_report` says no other run points at it.
+Merging duplicate papers never loses a review or retraction flag
 (`ingest.merge_records`).
 
 **The model copies; code normalises.** The model returns "C57BL/6 mice"; code
@@ -137,6 +142,15 @@ as `improved`. Models skip these unless explicitly told not to.
   s8_render (s9_chat not built). `runner.py` calls them; nothing else sequences
 - What each question type needs is `facets.py` (code). The report layout is
   `defaults/report.yaml`. Pipeline knobs are `defaults/pipeline.yaml`
+- Two ways to say a run is alive, and they are not interchangeable
+  (`progress.py`): `progress`/`say` is one line per *milestone* and there are
+  about a dozen in a run; a `Tick` is per *item* in the three stages that make
+  one model call each (rank, extract, write) and there are hundreds. Ticks go
+  somewhere that overwrites itself — the status bar, a throttled stderr line —
+  never into notices, or a 40-paper rank posts 40 toasts. A tick must never
+  change what a run produces: the report is byte-identical with and without
+  one, and `tests/litreview/test_progress.py` proves it. Add a stage that
+  loops over model calls, give it a `tick`
 - The paper searcher plugs in only through `sources/base.py`
 - The searcher goes to the internet only when asked: `bedrock-litreview search`,
   `ask --search`, `/review --search`, or `"search": true` over HTTP. Never make
@@ -206,8 +220,10 @@ as `improved`. Models skip these unless explicitly told not to.
   fails if anything reaches the backend directly, and nothing here may talk
   HTTP to a model server
 - Nothing else in this package imports `bedrock.inference`: only
-  `llm/scheduled.py` and `service.py` do. Everything else depends on the
-  `LLMClient` protocol, so tests use `FakeLLMClient`
+  `llm/scheduled.py`, `service.py` and `readiness.py` (the doctor, which only
+  catches `InferenceError` and makes no model call) do. Everything else depends on the
+  `LLMClient` protocol, so tests use `FakeLLMClient`.
+  `tests/litreview/test_inference_boundary.py` fails on a new import
 - The same rule protects `bedrock.provenance`: `journal.py` takes a
   duck-typed `history` (one `append(...)` method) and never imports it. The
   real `HistoryStore` is built only by `service.local_history` (the CLI and
@@ -218,6 +234,17 @@ as `improved`. Models skip these unless explicitly told not to.
 - A model-using review starts through `service.run_review` and nothing else.
   It is what runs `preflight`, builds the client and puts the blocking pipeline
   on a worker thread
+- What *stops* a review is `service.preflight`, which raises `ConfigError`; it is
+  also what `readiness.review_readiness` runs for `bedrock-litreview doctor` and
+  `/reviews check`, so the two cannot disagree. Advice that does not stop one -
+  a short `request_timeout`, a nearly full disk, a company host name - is
+  `service.config_findings`, shown by the doctor as information and passed to
+  `run_review`'s `warn`. Add a refusal to preflight and advice to
+  `config_findings`, never to one caller: a check that exists in the doctor and
+  not in preflight is a review that starts and should not have
+- Any file the package reads at run time and is not `.py` needs a glob in
+  `[tool.setuptools.package-data]`. Editable installs hide a miss;
+  `tests/test_package_data.py` catches it
 - A server that goes away raises `ReviewInterrupted`, which no stage catches, so
   the run stops and can be resumed. `LLMError` still means "skip this one item"
 - Prompts live in `llm/prompts/*.md` with a `version` in front matter.
@@ -242,14 +269,18 @@ as `improved`. Models skip these unless explicitly told not to.
 | Benchmark (`bench/`) | Built and tested with a fake model; sample corpora in `evals/litreview/corpora/` |
 | Real-model benchmark results | Run on MedGemma 1.5 4B, both sample questions — see [BENCHMARK_RESULTS.md](../../../docs/litreview/BENCHMARK_RESULTS.md) |
 | Front ends | `/review` and `/reviews` in the terminal app - both modes, `ui/review_mixin.py` - `bedrock-litreview` in a shell, the server's Research tab (its deck checkbox, like `ask --deck`, also makes the target-proposal PowerPoint), the FastAPI app as the optional `api` extra. All call `service.run_review`. `bedrock-litreview doctor` (`readiness.py`) checks a machine can run one |
+| Setup check | Built. `bedrock-litreview doctor`, `/reviews check`; same checks as a run's preflight |
+| Deleting a run | Built. `bedrock-litreview forget`, `/reviews forget`; the run's own output only |
+| `office` model names | **Unconfirmed.** `defaults/models.yaml` names two guesses; a vLLM server answers to its `--served-model-name`. `doctor` reports what the server really offers. Needs IT, then ship the real names |
 | Local audit trail | Built and tested: `run_review` records a `litreview.review` intent/outcome and one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) in bedrock's local history, for `/review`, `bedrock-litreview ask` and the HTTP API. `/audit` reads it back. Metadata only, never the question. See `journal.py` |
 | Report | Reading view, then References, then an Appendix. `report/synthesis.py` computes study profiles, independent-study counts, evidence basis, disagreements with whole quotes and qualifiers, key results and abbreviations from verified fields and paper records. Synthesis, disagreements and the gaps bullet naming measures or targets without tested human effects share comparison rows. `check_disagreements` binds each quote to evidence from its cited paper; no new stored model fields |
 | Coverage ledger, study design, drift disclosure | Built and tested offline: `coverage.v1`, `study_design.v1`, `verification_context.v1` run artifacts, never in the report; `verify-run` compares environments (`--require-same-rules`). `rank.selection: evidence_aware` is opt-in and unmeasured on a real model |
 | Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |
 | Background from reviews | A code-written report section quoting reviews with links; never counted as evidence |
 | Fresh-inference determinism | Harness built (`bench determinism`, runbook in `docs/litreview/DETERMINISM_RUNBOOK.md`); not run on vLLM |
+| Patents | Built and tested offline; search confirmed live against EPO OPS. `bedrock-litreview patents`, `ask --patents`, `/review --patents`; the code-written "Competitor landscape" section only, never evidence. claim 1 confirmed live (a WO filing's leading "CLAIMS" heading is stripped); its element shape is tolerated, not confirmed against the guide — see `sources/epo_ops.py` |
 | Target-proposal deck (PPTX) | Built: code-rendered slides from the stored report following Propeller's template (single target, bispecific, or disease-level). Drawn by `report/slides.py` (content), `report/deck_model.py` (data), `report/deck_render.py` (rendering), with configurable layout in `defaults/deck.yaml`. Paper figures fetched only during a search-enabled run from open-access papers; stored in `deck_figures.v1` artifact. Never in Report or Paper data; always code-only |
-| Stage 9 (chat), patents, drop folder | Not started |
+| Stage 9 (chat), drop folder | Not started |
 
 Working and tested today, with no GPU and no network: everything above except
 real-model quality. Run `pytest tests/litreview` for this package, `pytest` for

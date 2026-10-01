@@ -61,6 +61,7 @@ from bedrock.litreview.models import (
     EvidenceUnit,
     GateResult,
     Paper,
+    PatentRecord,
     QuestionSpec,
     RankedPaper,
     Report,
@@ -69,6 +70,7 @@ from bedrock.litreview.models import (
 )
 from bedrock.litreview.sources.base import PaperSearcher
 from bedrock.litreview.sources.corpus import file_sha256
+from bedrock.litreview.sources.patents_base import PatentSearcher
 from bedrock.litreview.stages.s0_question import QuestionError, parse_question
 from bedrock.litreview.stages.s1_collect import (
     NothingFound,
@@ -115,6 +117,7 @@ class RunResult:
     report_id: str
     paths: dict[str, Path] = field(default_factory=dict)
     extract_stats: dict[str, int] = field(default_factory=dict)
+    patents: list[PatentRecord] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -201,16 +204,25 @@ def answer_question(
     use_model: bool = True,
     searcher: PaperSearcher | None = None,
     papers: list[Paper] | None = None,
+    patent_searcher: PatentSearcher | None = None,
+    patents: list[PatentRecord] | None = None,
     db: Database | None = None,
     refresh_papers: bool = False,
     approved_terms: dict[str, list[str]] | None = None,
     out_dir: Path | None = None,
     resume_run_id: str | None = None,
     progress: Callable[[str], None] | None = None,
+    tick=None,
     integrity_check: Callable | None = None,
 ) -> RunResult:
     settings = settings or load_settings()
     say = progress or (lambda msg: log.info(msg))
+    # `say` is one line per milestone; `tick` is the "still alive" signal from
+    # inside the three stages that make one model call per item. See
+    # `progress.py` for why they are separate.
+    from bedrock.litreview.progress import safe_tick
+
+    tick = safe_tick(tick)
     if client is None and use_model:
         client = make_client(settings)
     if not use_model:
@@ -427,6 +439,7 @@ def answer_question(
             designs=designs,
             reservations=settings.knob("rank.reservations", None),
             knowledge=kb,
+            tick=tick,
         )
         keep_ledger("grading", grading_reasons)
         done(3, "ranking", _RANKED.dump_json(ranked).decode())
@@ -469,6 +482,7 @@ def answer_question(
             methods_chars=int(settings.knob("extract.methods_context_chars", 2500)),
             knowledge=kb,
             progress=say,
+            tick=tick,
             traces=outcomes,
         )
         keep_ledger("extraction", outcomes)
@@ -481,6 +495,30 @@ def answer_question(
     summary = summarize(units, spec, facets, ranked, plan, demoted=demoted)
     done(6, "summary", summary.model_dump_json())
 
+    # Patents — competitor landscape only, never evidence (patents_base.py).
+    # Deliberately not pinned or resumed the way `papers` is above: unlike the
+    # evidence pipeline, nothing here feeds a citation-checked sentence, so a
+    # stale or refreshed landscape does not change what the report asserts as
+    # fact. Known scope-cut, not an oversight — worth adding if a client
+    # wants "which run pinned which patents" answered the same way papers are.
+    if patents is None and patent_searcher is not None:
+        from bedrock.litreview.sources.patents_base import PatentSearchRequest
+
+        patents = patent_searcher.search(PatentSearchRequest(
+            question=spec.text, spec=spec,
+            exact_terms={e.canonical: e.exact_terms for e in spec.entities},
+            max_results=int(settings.knob("patents.max_results", 100)),
+        ))
+    patents = patents or []
+    if patents:
+        # Distinct families, not raw records — the same count `_competitors`
+        # (s7_write.py) uses for its own headline. A run over three filings of
+        # one EP/US/CN family must not report "3 families" while the section
+        # underneath it correctly says "1 family, 3 filings".
+        families = {p.family_id or p.id for p in patents}
+        say(f"patents: {len(families)} competitor famil{'y' if len(families) == 1 else 'ies'} "
+            f"({len(patents)} filing{'' if len(patents) == 1 else 's'})")
+
     # 7 — write
     ctx = WriteContext(
         spec=spec, facets=facets, plan=plan, summary=summary, ranked=ranked, papers=by_id, gates=gates,
@@ -488,6 +526,7 @@ def answer_question(
         max_targets=int(settings.knob("write.max_targets", 6)),
         units_per_target=int(settings.knob("write.units_per_target", 5)),
         max_units_per_section=int(settings.knob("write.max_units_per_section", 14)),
+        patents=patents,
         entailment=entailment,
         integrity_notes={**notices_in(integrity), **notice_texts(integrity)},
         demoted=demoted,
@@ -499,7 +538,7 @@ def answer_question(
         collection_note=collection_note,
         designs=designs,
     )
-    report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions)
+    report = write_report(ctx, model_versions=run.model_versions, prompt_versions=run.prompt_versions, tick=tick)
     # The integrity check: everything the report shows as the paper's words is
     # the paper's words, on the papers this run pinned. A violation is a bug;
     # it is written on the report, which then opens with a warning.
@@ -536,14 +575,16 @@ def answer_question(
     paths = render(report, target_dir)
     run.finished = _now()
     run.report_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    (target_dir / "run.json").write_text(run.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    run_json = target_dir / "run.json"
+    run_json.write_text(run.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    run_json.chmod(0o600)  # as the three report files are; see `s8_render.render`
     done(8)
     close_context(db, run.id, 8)
     say(f"report: {paths['html']}")
 
     return RunResult(
         run=run, spec=spec, papers=collected, gates=gates, ranked=ranked, plan=plan, summary=summary,
-        report=report, report_id=report_id, paths=paths, extract_stats=extract_stats,
+        report=report, report_id=report_id, paths=paths, extract_stats=extract_stats, patents=patents,
     )
 
 
@@ -551,7 +592,13 @@ def load_result(db: Database, run_id: str, papers: list[Paper] | None = None) ->
     """Re-open a finished run exactly as it was written, from its stored
     artifacts — nothing is recomputed. For scoring an earlier report against
     a later one after the code has changed (`python -m bedrock.litreview.bench run
-    --from-run`)."""
+    --from-run`).
+
+    `RunResult.patents` comes back empty here: patents are not persisted as a
+    run artifact (see the "Patents" comment in `answer_question`), so a
+    reopened run cannot recover the raw list. The report's own rendered
+    "Competitor landscape" section is unaffected — that markdown was written
+    once, into the stored report, and reopens with everything else."""
     run = db.get_run(run_id)
     if run is None or run.stage_reached < 7:
         raise ValueError(f"run {run_id!r} has no finished report")

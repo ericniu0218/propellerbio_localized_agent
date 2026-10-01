@@ -116,6 +116,48 @@ def test_renderers_write_all_three_formats(settings, tmp_path):
     assert json.loads(result.paths["json"].read_text())["question"] == QUESTION
 
 
+def test_patents_are_carried_through_to_the_report_and_the_run_result(settings, tmp_path):
+    """Patents never enter the evidence pipeline (sources/patents_base.py), so
+    this is the one seam that proves they still reach the one place they
+    should: the generated competitor-landscape section, and `RunResult` for a
+    caller that wants the raw records."""
+    from bedrock.litreview.models import PatentRecord
+
+    patents = [
+        PatentRecord(id="EP1A1", family_id="f1", title="Anti-IL-23 antibody",
+                     assignee="Genentech, Inc.", kind_code="A1", priority_date="2018-01-01"),
+        PatentRecord(id="US1A1", family_id="f1", title="Anti-IL-23 antibody",
+                     assignee="Genentech, Inc.", kind_code="A1", priority_date="2018-01-01"),
+        PatentRecord(id="EP2B1", family_id="f2", title="IL-23 receptor blocker",
+                     assignee="Amgen Inc.", kind_code="B1", priority_date="2019-06-01"),
+    ]
+    seen: list[str] = []
+    result = run(settings, tmp_path, patents=patents, progress=seen.append)
+
+    assert result.patents == patents
+    md = result.paths["md"].read_text()
+    assert "Competitor landscape" in md
+    assert "2 patent famil" in md and "3 filing" in md
+
+    # The progress line is a second place the same family-vs-filing count is
+    # rendered, separately from `_competitors` — a fix to one must not leave
+    # the other saying "3 competitor families" for one family of 3 filings.
+    line = next(p for p in seen if p.startswith("patents:"))
+    assert line == "patents: 2 competitor families (3 filings)"
+
+
+def test_the_report_files_are_readable_only_by_this_account(settings, tmp_path):
+    """A report quotes unpublished papers, and which target a company is
+    considering is itself the strategy. `--out` may point at a shared drive, so
+    the mode goes on the files rather than resting on the parent directory."""
+    result = run(settings, tmp_path)
+    for name, path in result.paths.items():
+        assert path.stat().st_mode & 0o777 == 0o600, f"{name} is world-readable"
+    run_json = result.paths["json"].parent / "run.json"
+    assert run_json.stat().st_mode & 0o777 == 0o600
+    assert result.paths["json"].parent.stat().st_mode & 0o777 == 0o700
+
+
 def test_without_a_model_the_pipeline_still_ranks_and_plans(settings, tmp_path):
     result = answer_question(
         QUESTION, settings=settings, use_model=False, papers=corpus(), db=Database(tmp_path / "db2.sqlite3")

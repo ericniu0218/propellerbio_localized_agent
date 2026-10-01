@@ -848,6 +848,8 @@ The same review runs inside the terminal app, beside the chat:
 /review If I want to prevent psoriasis, what should I target? --corpus papers.jsonl
 /reviews
 /reviews verify <run-id>
+/reviews check
+/reviews forget <run-id>
 ```
 
 **Before the first run with a model,** run `bedrock-litreview doctor`. It
@@ -868,6 +870,22 @@ reports (vLLM and the agent server always; Ollama once a model is loaded)
 before it starts, and every call's reported prompt size as it runs: a
 truncated prompt stops the run with the fix, rather than producing a report
 built on answers to questions the model never saw.
+
+`/reviews check` in the app runs the same check as `bedrock-litreview doctor`,
+and both are the preflight a run does (`service.preflight`), so a check cannot
+exist in one and not the other. Beside what stops a review, they show advice
+that does not: a `request_timeout` too short for an extraction call, free disk
+(a review keeps a model resident for hours, and on a 16 GB machine that has
+filled a disk through swap), and whether a company server name needs
+`allowed_hosts`. When the server lacks a model, the message says what it does
+offer and which `models.yaml` to write the right names into.
+
+`bedrock-litreview forget <run-id>` (`/reviews forget` in the app) deletes one
+run: its record, its stage artifacts and its rendered report. Not reversible,
+and deliberately narrow — the question, its frozen paper set and every stored
+paper version stay, because `paper_versions` is append-only and is what lets
+*other* runs be re-proved against the exact bytes they read. A report that a
+second identical run also produced is kept for that run.
 
 Where the model server is: bedrock's `api_base` (`BEDROCK_API_BASE`); in
 agent-pack mode (`backend = "agentpack"`) the agent server's inference API at

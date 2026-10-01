@@ -15,6 +15,10 @@ overrides both. The context window is what someone configured, else the
 machine profile's (which describes a local Ollama), else what the server
 reports for the model it will actually use (`service.preflight`).
 
+Two more are copied from bedrock's settings rather than configured here, only
+so a review can check them and say what to change: `request_timeout`, and
+`profile_name` (`laptop`, `workstation`, `server`).
+
 Model names come from `defaults/models.yaml`, shipped inside the package. A
 site that needs different names drops a whole replacement file into
 `~/.config/bedrock/litreview/models.yaml`; the two are never merged, so there
@@ -155,6 +159,9 @@ class Settings:
     jobs: dict[str, str]
     context_window: int
     min_context_window: int
+    profile_name: str
+    """The machine profile's name (`laptop`, `workstation`, `server`), for
+    messages that differ by machine. The window itself is `context_window`."""
     data_dir: Path
     cache_dir: Path
     out_dir: Path
@@ -168,6 +175,12 @@ class Settings:
     contact_email: str = ""
     """Sent to NCBI with PubMed searches, as their terms ask. Use a generic
     mailbox: it travels with every query."""
+    epo_ops_key: str = ""
+    epo_ops_secret: str = ""
+    """Consumer key/secret from developers.epo.org > My Apps. Patents are a
+    separate, lower-confidence lane (sources/patents_base.py) — these are
+    read only by `bedrock-litreview patents`, never by the model-facing
+    pipeline."""
     entailment_check: bool = False
     """Run the optional local entailment check in Stage 7
     (`report/entailment.py`). Off by default: no scientist has yet checked
@@ -186,6 +199,11 @@ class Settings:
     """Bearer token for `base_url`: BEDROCK_LITREVIEW_API_KEY, else bedrock's
     `api_key`. Never written into a run, a report or a log."""
     request_timeout: float = 120.0
+    """bedrock's own `request_timeout`, carried here so a review can say when it
+    is too short. Not a setting of this package: the shell command and the HTTP
+    API raise the timeout to `REVIEW_TIMEOUT_FLOOR` for their own backend, and
+    `/review` in the app shares the chat's, so this is the number the app will
+    actually use."""
     context_window_source: str = "profile"
     """Where `context_window` came from: `litreview` (`[litreview]
     context_window` or BEDROCK_LITREVIEW_CONTEXT_WINDOW), `bedrock` (bedrock's
@@ -306,6 +324,7 @@ def load_settings(
         jobs=dict(models_cfg.get("jobs", {}) or {}),
         context_window=context_window,
         min_context_window=int(models_cfg.get("min_context_window", 12288)),
+        profile_name=str(bedrock_settings.profile.name),
         data_dir=data_dir,
         cache_dir=data_dir / "cache" / "llm",
         out_dir=data_dir / "reports",
@@ -317,6 +336,8 @@ def load_settings(
         allowed_hosts=allowed,
         ncbi_api_key=env.get("NCBI_API_KEY", ""),
         contact_email=str(env.get("SOURCES_CONTACT_EMAIL") or table.get("contact_email") or ""),
+        epo_ops_key=env.get("EPO_OPS_KEY", ""),
+        epo_ops_secret=env.get("EPO_OPS_SECRET", ""),
         entailment_check=_flag(env.get("BEDROCK_LITREVIEW_ENTAILMENT_CHECK"), table.get("entailment_check", False),
                                "entailment_check"),
         endpoint_source=endpoint_source,

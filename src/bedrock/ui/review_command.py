@@ -59,19 +59,87 @@ SEARCH_NOTICE = (
     "question, papers and report stay on this machine"
 )
 
-REVIEWS_HELP = """\
+REVIEW_STALE_INSTALL = (
+    "**The literature review is not installed in this environment.** "
+    "It needs four packages the rest of the app does not (`pydantic`, `lxml`, "
+    "`PyYAML`, `rapidfuzz`), so a virtual environment set up before the review "
+    "was added will not have them.\n\n"
+    "Re-install and restart:\n\n"
+    "```\n"
+    'pip install -e ".[dev]"\n'
+    "```\n\n"
+    "If bedrock was installed with `uv tool install`, run `uv tool upgrade "
+    "bedrock-private-ai` instead. Everything else in the app keeps working.\n\n"
+    "The missing piece was: {detail}"
+)
+
+
+@dataclass(frozen=True)
+class ReviewsVerb:
+    """One `/reviews` verb, described once.
+
+    Three help tables used to list these by hand - `REVIEWS_HELP` below,
+    `ui/commands.py`'s default-mode `/help`, and `agentpack_app.py`'s - and
+    they drifted: `settings` and `reinstate` shipped in only the first, so in
+    agent-pack mode the retraction settings were undiscoverable. All three are
+    now generated from this list, and `tests/test_reviews_help.py` fails if a
+    dispatched verb is missing from any of them.
+    """
+
+    command: str
+    """As typed, with its argument: "/reviews verify <run-id>"."""
+    summary: str
+    verb: str | None = None
+    """The word `run_reviews_command` dispatches on; None for bare `/reviews`
+    and for the `--all` variant, which is a flag on an existing verb."""
+    writes: bool = False
+    """Changes something on this machine. `settings` saves a preference and
+    `reinstate` records a decision, so "reads local files only" was wrong of
+    them - a claim worth keeping true, because it is what tells a scientist
+    whether a command is safe to try."""
+    needs_server: bool = False
+    """Asks the model server something. Only `check`, and only which models it
+    has - no prompt, no paper, no question."""
+    compact: bool = False
+    """Also shown in the short `/help` tables, which list commands across the
+    whole app rather than just this one."""
+
+
+REVIEWS_VERBS: tuple[ReviewsVerb, ...] = (
+    ReviewsVerb("/reviews", "Literature reviews recorded on this machine", compact=True),
+    ReviewsVerb("/reviews verify <run-id>", "Re-prove one report against the papers it pinned",
+                verb="verify", compact=True),
+    ReviewsVerb("/reviews verify --all", "Re-prove every finished report"),
+    ReviewsVerb("/reviews check", "Can this machine run a review? What to change",
+                verb="check", needs_server=True, compact=True),
+    ReviewsVerb("/reviews settings", "Retraction checks: automatic or manual, and what each means",
+                verb="settings", writes=True, compact=True),
+    ReviewsVerb("/reviews reinstate <paper>",
+                "Add back a paper that was retracted and later reinstated (your decision)",
+                verb="reinstate", writes=True, compact=True),
+    ReviewsVerb("/reviews forget <run-id>", "Delete one run's report and working notes",
+                verb="forget", writes=True, compact=True),
+)
+
+
+def reviews_rows(*, compact: bool = False) -> str:
+    """The `/reviews` rows of a Markdown help table, without a header."""
+    verbs = [v for v in REVIEWS_VERBS if v.compact] if compact else list(REVIEWS_VERBS)
+    return "\n".join(f"| `{v.command}` | {v.summary} |" for v in verbs)
+
+
+REVIEWS_HELP = f"""\
 **`/reviews` — literature reviews on this machine**
 
 | Command | What it does |
 |---|---|
-| `/reviews` | The 20 most recent runs |
-| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
-| `/reviews verify --all` | Re-prove every finished report |
-| `/reviews settings` | Retraction checks: automatic or manual, and what each means |
-| `/reviews reinstate <paper>` | Add back a paper that was retracted and later reinstated (your decision) |
+{reviews_rows()}
 
-Reading local files only: this works with the model server switched off, and
-nothing here is sent to a model.
+Everything here works with the model server switched off, and nothing here
+sends your question, your papers or a report to a model. Two of them do change
+something on this machine: `settings` saves your choice, and `reinstate`
+records your decision to add a paper back. `check` is the one that asks the
+server anything, and only which models it has.
 """
 
 
@@ -109,6 +177,7 @@ def parse_review_command(args: str) -> ReviewCommand:
     parser.add_argument("--models")
     parser.add_argument("--sources")
     parser.add_argument("--no-full-text", action="store_true", dest="no_full_text")
+    parser.add_argument("--patents")
     options = parser.parse_args(split_arguments(option_text))
 
     if options.corpus and options.search:
@@ -132,6 +201,7 @@ def parse_review_command(args: str) -> ReviewCommand:
             model_set=options.models,
             sources=_sources(options.sources),
             full_text=not options.no_full_text,
+            patents=_patents(options.patents),
         )
     )
 
@@ -158,6 +228,22 @@ def _sources(value: str | None) -> tuple[str, ...] | None:
     if not names:
         raise CommandUsageError("/review: --sources needs at least one source name")
     return names
+
+
+def _patents(path: str | None):
+    """Read `--patents FILE` (from `bedrock-litreview patents`) here, on the UI
+    thread, before the request is built — not inside the pipeline. It is a
+    handful of records at most, and reading it here means a bad or missing
+    file is a usage error shown immediately, the same way an unreadable
+    `--corpus` would be, rather than a failure discovered minutes into a run."""
+    if not path:
+        return None
+    from bedrock.litreview.sources.patent_corpus import read_patents
+
+    try:
+        return read_patents(Path(path.removeprefix("@")).expanduser())
+    except (OSError, ValueError) as exc:
+        raise CommandUsageError(f"/review: --patents {path!r}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +400,8 @@ async def run_review_job(
     progress: Callable[[str], None],
     history: object | None = None,
     actor_id: str = "",
+    tick: Callable[[str, int, int, str], None] | None = None,
+    timeout_floor_applied: bool = False,
 ) -> bool:
     """Run one review and report it. Never raises; True means a finished report.
 
@@ -323,6 +411,10 @@ async def run_review_job(
     `history` and `actor_id` go straight to `service.run_review`, which records
     the run in local history when a journal is supplied. `history=None` runs
     unrecorded, which is what a build without `bedrock.provenance` gets.
+
+    `tick` is the per-item signal from inside the stages, which the app puts in
+    the status bar rather than in a notice; `progress` stays the milestone
+    lines. See `litreview/progress.py`.
     """
     from bedrock.litreview.config import ConfigError
     from bedrock.litreview.journal import ReviewNotRecorded
@@ -337,6 +429,16 @@ async def run_review_job(
     if note:
         await notify(note, "info")
 
+    # Said before the run rather than through `run_review`'s `warn`, which would
+    # only be read once the run was over. A short `request_timeout` and a nearly
+    # full disk are both things to go and change, and the moment they are worth
+    # knowing is now - a review takes hours, and `/review` in the app is the one
+    # front end that really uses the configured timeout. A notice, not a toast,
+    # for the same reason: a toast disappears.
+    for advisory in await asyncio.to_thread(
+            lambda: _setup_warnings(settings, timeout_floor_applied=timeout_floor_applied)):
+        await notify(advisory, "info")
+
     handler = _NoticeHandler(progress)
     logger = logging.getLogger("bedrock.litreview")
     logger.addHandler(handler)
@@ -347,6 +449,7 @@ async def run_review_job(
             scheduler=scheduler,
             progress=progress_to_toasts(progress),
             cancel=cancel,
+            tick=tick,
             history=history,
             actor_id=actor_id,
         )
@@ -380,6 +483,24 @@ async def run_review_job(
     return True
 
 
+def _setup_warnings(settings: ReviewSettings, *, timeout_floor_applied: bool = False) -> list[str]:
+    """What is worth knowing before a review starts, and does not stop it.
+
+    Only configuration and the disk, which need no server and no event loop, so
+    it is safe on a worker thread. What *stops* a review runs inside
+    `run_review`'s `preflight`, where it belongs: this says what is worth
+    knowing, not what is allowed. `timeout_floor_applied` is True when the review
+    opens its own connection and so already has its timeout raised.
+    """
+    from bedrock.litreview.service import config_findings
+
+    try:
+        return [f.detail for f in config_findings(settings, timeout_floor_applied=timeout_floor_applied)
+                if not f.ok]
+    except Exception:  # noqa: BLE001 - an advisory must never stop a review
+        return []
+
+
 def _unfinished_run_id(settings: ReviewSettings) -> str | None:
     """The most recent run with no report, so a notice can name what to resume."""
     from bedrock.litreview.db import Database
@@ -402,19 +523,37 @@ def _unfinished_run_id(settings: ReviewSettings) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-async def run_reviews_command(args: str, *, settings_for, notify: Notify) -> None:
-    """`/reviews` and `/reviews verify`. Local files only; never a model.
+async def run_reviews_command(
+    args: str,
+    *,
+    settings_for,
+    notify: Notify,
+    readiness_for=None,
+) -> None:
+    """`/reviews`, and every verb in `REVIEWS_VERBS`.
 
     `settings_for` is a zero-argument callable returning litreview's settings,
     so a broken `[litreview]` table is reported here rather than at startup.
     All the reading happens in a worker thread, with the database opened and
     closed there - SQLite connections belong to the thread that made them.
+
+    `readiness_for` is an async zero-argument callable returning
+    `bedrock.litreview.readiness.review_readiness`'s checks, which only `check`
+    needs. Listing, verifying and forgetting want `db_path` and nothing about
+    models, and a site whose `models.yaml` names only its own set must still be
+    able to manage its past runs - so `check` loads its own settings, and a
+    broken configuration is something it reports rather than something that
+    stops the other verbs.
     """
     from bedrock.litreview.config import ConfigError
 
     text = args.strip()
     if text.casefold() in {"help", "--help", "-h"}:
         await notify(REVIEWS_HELP, "info")
+        return
+
+    if text.casefold() in {"check", "doctor"}:
+        await _check(readiness_for, notify)
         return
 
     try:
@@ -431,6 +570,9 @@ async def run_reviews_command(args: str, *, settings_for, notify: Notify) -> Non
         return
     if text.casefold().startswith("reinstate"):
         await _reinstate(text[len("reinstate"):].strip(), settings, notify)
+        return
+    if text.casefold().startswith("forget"):
+        await _forget(text[len("forget"):].strip(), settings, notify)
         return
     if text:
         await notify(f"/reviews: I do not know `{markdown_text(text)}`. Try `/reviews help`.", "error")
@@ -635,5 +777,123 @@ def _verify_runs(
             except Exception as exc:  # noqa: BLE001 - an unreadable run is a failure too
                 out.append((one, [f"cannot be verified: {type(exc).__name__}: {exc}"], None, [], []))
         return out
+    finally:
+        db.conn.close()
+
+
+# ---------------------------------------------------------------------------
+# /reviews check
+# ---------------------------------------------------------------------------
+
+
+async def _check(readiness_for, notify: Notify) -> None:
+    """`/reviews check`: whether a review could start, without starting one.
+
+    The same implementation `bedrock-litreview doctor` prints
+    (`litreview/readiness.py`), so the two cannot disagree. Worth having in the
+    app as well as the shell, because the person who hits "a review needs a
+    context window of at least 12,288 tokens" is in the app when they hit it,
+    and the rest of what is wrong with the machine is worth knowing at the same
+    time.
+    """
+    from bedrock.litreview.readiness import operational
+
+    if readiness_for is None:
+        await notify("/reviews check: not available here. `bedrock-litreview doctor` runs the same check "
+                     "from a shell.", "error")
+        return
+    try:
+        checks = await readiness_for()
+    except Exception as exc:  # noqa: BLE001 - a check that crashes is a finding, not a crash of the app
+        await notify(f"**Literature review setup**\n\n- **FAIL** — the check itself failed: "
+                     f"{safe_line(exc, limit=400)}", "error")
+        return
+
+    marks = {True: "ok", False: "**FAIL**", None: "note"}
+    lines = ["**Literature review setup**", ""]
+    lines += [f"- {marks[c.ok]} — {markdown_text(c.name)}: {safe_line(c.detail, limit=500)}" for c in checks]
+    ready = operational(checks)
+    lines += ["", "A review can run." if ready else "A review cannot run yet; fix the FAIL lines above."]
+    await notify("\n".join(lines), "info" if ready else "error")
+
+
+# ---------------------------------------------------------------------------
+# /reviews forget
+# ---------------------------------------------------------------------------
+
+
+async def _forget(argument: str, settings: ReviewSettings, notify: Notify) -> None:
+    """`/reviews forget <run-id>`: delete one run's output.
+
+    Deletes on the first ask, as `/digest forget` does, rather than putting a
+    confirmation in front of it: naming a run id is already a deliberate act,
+    and the app has no plain yes/no prompt. What it does instead is say exactly
+    what went, so a mistake is visible immediately rather than discovered later.
+    (`bedrock-litreview forget` does confirm, because a shell can ask.)
+    """
+    parser = CommandParser("/reviews forget")
+    parser.add_argument("run_id", nargs="?")
+    try:
+        options = parser.parse_args(split_arguments(argument))
+    except CommandUsageError as exc:
+        await notify(str(exc), "error")
+        return
+    if not options.run_id:
+        await notify(
+            "/reviews forget: name a run id — `/reviews` lists them. This deletes that "
+            "run's report and working notes and cannot be undone; the question and its "
+            "papers stay, so it can be asked again.",
+            "error",
+        )
+        return
+
+    try:
+        result = await asyncio.to_thread(_forget_run, settings, options.run_id)
+    except OSError as exc:
+        await notify(safe_line(exc, limit=400), "error")
+        return
+    if result is None:
+        await notify(
+            f"/reviews forget: no run {as_code(options.run_id)} on this machine. "
+            f"{as_code('/reviews')} lists them.",
+            "error",
+        )
+        return
+
+    deleted, files = result
+    lines = [
+        f"**Deleted review run {as_code(deleted.run_id)}**",
+        "",
+        f"- {deleted.artifacts} stage artifact(s) removed",
+    ]
+    if deleted.report_deleted:
+        lines.append(f"- Report {as_code(deleted.report_id)} removed, with {len(files)} file(s)")
+        if deleted.ratings:
+            lines.append(f"- {deleted.ratings} rating(s) of that report removed")
+        if not files:
+            lines.append("- No report files were found where they are normally written. "
+                         "A report written to another directory has to be deleted by hand.")
+    elif deleted.report_shared_with:
+        lines.append(
+            f"- Report {as_code(deleted.report_id)} was **kept**: "
+            f"{', '.join(as_code(r) for r in deleted.report_shared_with)} produced the identical "
+            "report and still points at it"
+        )
+    else:
+        lines.append("- The run wrote no report, so there was none to remove")
+    lines += ["", "The question and its papers were not touched, so the same question can be asked again."]
+    await notify("\n".join(lines), "info")
+
+
+def _forget_run(settings: ReviewSettings, run_id: str):
+    from bedrock.litreview.api import forget_run
+    from bedrock.litreview.db import Database
+
+    if not Path(settings.db_path).exists():
+        return None
+    db = Database(settings.db_path)
+    try:
+        result = forget_run(run_id, db=db, settings=settings)
+        return None if result is None else (result.deleted, result.files_removed)
     finally:
         db.conn.close()

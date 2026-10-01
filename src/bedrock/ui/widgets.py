@@ -46,6 +46,11 @@ class StatusBar(Horizontal):
     StatusBar #status-context.full {
         color: $warning;
     }
+    StatusBar #status-review {
+        width: auto;
+        color: $text-muted;
+        margin-right: 3;
+    }
     """
 
     FULL_SHARE = 0.9
@@ -65,12 +70,28 @@ class StatusBar(Horizontal):
     # dropped and is being retried with backoff.
     reconnecting: reactive[bool] = reactive(False)
 
+    review_progress: reactive[str | None] = reactive(None)
+    """One line while a literature review runs: `review: rank 12/40 · 2m 10s`.
+
+    It replaces itself rather than adding a message, which is the whole point.
+    A review makes hundreds of model calls, and its three per-item stages used
+    to say nothing between milestones - four minutes of silence while papers
+    were graded, and no way to tell that from a hung process. A notice per
+    graded paper would be 40 toasts covering the screen and then fading, so
+    the count goes here instead and the notices stay milestones.
+
+    None while no review is running, which clears the label."""
+
     def compose(self) -> ComposeResult:
         yield Label("Bedrock Private AI", id="status-title")
         yield Label("", id="status-workspace")
+        yield Label("", id="status-review")
         yield Label("", id="status-model")
         yield Label("", id="status-context")
         yield Label("", id="status-connection")
+
+    def watch_review_progress(self, value: str | None) -> None:
+        self.query_one("#status-review", Label).update(value or "")
 
     def watch_model_name(self, value: str) -> None:
         self.query_one("#status-model", Label).update(f"model: {value}")

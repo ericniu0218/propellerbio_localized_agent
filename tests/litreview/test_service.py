@@ -153,6 +153,107 @@ async def test_preflight_passes_when_the_machine_can_run_a_review(settings):
     await preflight(settings, ScriptedBackend())
 
 
+async def test_a_short_timeout_is_a_warning_and_never_a_refusal(settings):
+    """A review that hits it stops between calls and resumes with `--resume`,
+    so a short `request_timeout` costs time, not the run: `preflight` still
+    passes, and the advice is a separate, non-blocking finding."""
+    settings.request_timeout = 120.0
+    await preflight(settings, ScriptedBackend())  # must not raise
+
+    by_title = {f.title: f for f in service.config_findings(settings)}
+    assert not by_title["request timeout"].ok
+    assert "request_timeout = 600" in by_title["request timeout"].detail
+
+
+async def test_a_review_that_raised_its_own_timeout_is_not_warned_about_it(settings):
+    """The shell, the HTTP API and agent-pack mode open their own connection,
+    which `review_backend` raises to 600. Warning them about the configured 120
+    would be telling them to fix something already fixed - while a default-mode
+    review that shares the chat's connection genuinely needs it."""
+    settings.request_timeout = 120.0
+    timeout = {f.title: f for f in service.config_findings(settings, timeout_floor_applied=True)}["request timeout"]
+    assert timeout.ok
+    assert "raised to 600s" in timeout.detail
+    # ...and it still says the shared connection needs the config change, because that is true.
+    assert "request_timeout = 600" in timeout.detail
+
+
+async def test_run_review_passes_the_advice_to_warn_and_never_to_progress(settings, tmp_path):
+    """The advice reaches the caller's `warn`, not its progress lines (which
+    become toasts in the app), and a review that is warned still runs."""
+    settings.request_timeout = 120.0
+    warned: list[str] = []
+    said: list[str] = []
+    scheduler = Scheduler(ScriptedBackend(), PROFILES["workstation"])
+    result = await run_review(
+        review(papers=corpus()), settings=settings, scheduler=scheduler,
+        progress=said.append, cancel=threading.Event(), warn=warned.append,
+    )
+    assert result.report_id, "a warning must not stop the run"
+    assert any("request_timeout = 600" in w for w in warned), warned
+    assert not any("request_timeout" in m for m in said)
+
+
+async def test_no_warn_callback_means_the_advice_is_simply_skipped(settings, tmp_path):
+    settings.request_timeout = 120.0
+    scheduler = Scheduler(ScriptedBackend(), PROFILES["workstation"])
+    result = await run_review(
+        review(papers=corpus()), settings=settings, scheduler=scheduler,
+        progress=lambda m: None, cancel=threading.Event(),
+    )
+    assert result.report_id
+
+
+# ---------------------------------------------------------------------------
+# advice that sits beside preflight: what `doctor` and `/reviews check` add
+# ---------------------------------------------------------------------------
+
+
+async def test_a_missing_model_names_the_override_file_and_what_the_server_has(settings):
+    """Issue 16's practical half. Nobody can be told the office server's real
+    model names in advance, so the message has to say what this server calls its
+    models and which file to write them into."""
+    with pytest.raises(ConfigError) as exc:
+        await preflight(settings, ScriptedBackend(models=["Qwen/Qwen3-30B-A3B-Instruct-2507"]))
+    message = str(exc.value)
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in message, "it must say what the server does offer"
+    assert "models.yaml" in message and "--served-model-name" in message
+
+
+async def test_a_nearly_full_disk_is_a_warning_not_a_refusal(settings, monkeypatch):
+    """A review keeps a model resident for hours, and on a 16 GB machine that
+    has filled a disk through swap (OPEN_ISSUES, "A 16 GB laptop is not a review
+    machine"). Still only a warning: the disk this check looks at is not what a
+    review itself fills, so `preflight` must not refuse over it."""
+    import shutil
+
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _p: type("U", (), {"free": 2 * 1024**3, "total": 0, "used": 0})
+    )
+    disk = [f for f in service.config_findings(settings) if f.title == "free disk"][0]
+    assert not disk.ok
+    assert "2.0 GB free" in disk.detail
+    await preflight(settings, ScriptedBackend())  # a warning, so the run is still allowed to start
+
+
+def test_a_company_server_name_is_explained_rather_than_assumed_obvious(settings):
+    """`allowed_hosts` is the one piece of review configuration nobody finds by
+    accident, and the first-run banner has been known to suggest exactly such a
+    host."""
+    settings.base_url = "http://ai.company.internal:8000/v1"
+    settings.allowed_hosts = ("ai.company.internal",)
+    note = [f for f in service.config_findings(settings) if f.title == "model server address"][0]
+    assert note.ok and "allowed_hosts" in note.detail
+
+    settings.allowed_hosts = ()
+    note = [f for f in service.config_findings(settings) if f.title == "model server address"][0]
+    assert 'allowed_hosts = ["ai.company.internal"]' in note.detail
+
+    # Nothing to explain about a local address.
+    settings.base_url = "http://localhost:11434/v1"
+    assert not [f for f in service.config_findings(settings) if f.title == "model server address"]
+
+
 async def test_a_run_without_a_model_never_touches_the_server(settings, tmp_path):
     backend = ScriptedBackend(models=[])  # would fail preflight if it ran
     result = await go(review(corpus=_corpus_file(tmp_path), use_model=False), settings, backend)

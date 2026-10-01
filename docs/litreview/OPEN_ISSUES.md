@@ -8,6 +8,45 @@ docs listed in [INTEGRATION_REVIEW.md](INTEGRATION_REVIEW.md). Everything
 here is bigger: a design change, a decision, or work that needs the office
 server.
 
+> **Update, 26 September 2026** (branch `litreview/deployment-and-it`): section
+> **D** items 17, 18, 19 and 20 are done; 16 is blocked on IT and 21 is advice.
+> Each carries a note on what it actually turned out to be — two of them were
+> not quite what this list described, and one (the title between review calls)
+> was a real scheduler bug now covered by a test that fails without the fix.
+> Sections A, B, C and E are untouched by that branch. Renumbered 16-21 to
+> 15-20 when that branch merged `main`, so section E still starts at 21.
+
+> **Update, 29 September 2026** (same branch): three UX and hygiene items from
+> a separate deploy review, none of which had a row in this document.
+>
+> - **Long silences during a run.** `rank`, `extract` and `write` make one
+>   model call per item and said nothing between milestones — about four
+>   minutes of silence while papers were graded, against a run of over two
+>   hours. They now emit a per-item *tick* (`litreview/progress.py`), which the
+>   app shows in the status bar and the shell prints about once per tenth of a
+>   stage. Ticks never become notices (40 toasts) and never change the run: the
+>   report is byte-identical with and without one, which is tested. Counts and
+>   elapsed time only — no ETA, because call durations vary more than tenfold
+>   and a confident wrong one is worse than none. Writing the throttle turned
+>   up a flaw in its own first draft: with a 15-second floor, a *slower* stage
+>   printed *more* lines (40 against 11), which the test now pins.
+> - **`SyntaxWarning` on import.** `agentpack_app.py` wrote a Markdown-escaped
+>   pipe as `\|` in an ordinary string. Harmless today, a `SyntaxError` in a
+>   future Python — the agent-pack app would stop importing over a help table.
+>   Fixed on branch `litreview/syntax-warning`, off `main`, with a test that
+>   compiles every file under `src/`, `tests/` and `scripts/` with
+>   `SyntaxWarning` as an error. It was the only offender, and it first failed
+>   on its own docstring.
+> - **`/reviews settings` and `/reviews reinstate` were undiscoverable in
+>   agent-pack mode.** Both work there; neither was in that mode's help. The
+>   cause was three hand-maintained copies of one table, so all three are now
+>   generated from `REVIEWS_VERBS` and a test fails if a dispatched verb is
+>   missing from any of them. Two nearby claims were wrong and are fixed: those
+>   two verbs *write* (a preference, a decision), so "reads local files only"
+>   no longer says that; and the agent-pack help ended "see `/review` below"
+>   with no such row, while an empty `/reviews` told people to start one with
+>   `/review` — the one command that mode refuses.
+
 **26 September 2026, section A.** Every report-accuracy item in section A has
 since been worked through. Five are gone from this list because code now
 enforces them and a test built from the real case fails without the fix: a
@@ -578,42 +617,111 @@ offline with fake models; nothing here has been measured on a real model yet.
 
 ## D. Deployment and IT
 
-15. **The `office` model set needs IT's real model names.**
+**Items 16–19 were fixed on branch `litreview/deployment-and-it`.** What each
+one turned out to be is recorded below, because two of them were not quite what
+this list said. Item 15 is still blocked on IT, and 20 is advice rather than
+work.
+
+15. **The `office` model set needs IT's real model names.** *Still open —
+    blocked on IT, not on code.*
     - It names two placeholder models at one server address
       (`defaults/models.yaml`).
-    - *Fix:* IT decides the names, then ship them. See
-      INTEGRATION_REVIEW fix #2 and old steps 31 and 33.
-    - *Size:* big (decision).
-16. **No re-runnable setup check.**
-    - *Fix:* a `bedrock-litreview doctor` that runs preflight. It should
-      also check free disk space, and say when a company server name needs
-      `allowed_hosts`. See INTEGRATION_REVIEW #3 and #10.
-    - *Size:* small to medium.
-17. **`/review` in the app still uses chat's 120-second timeout.**
-    - INSTALL.md now tells laptop users to set `request_timeout = 600`; the
-      code does not warn.
-    - *Fix:* warn in `/review` preflight on the laptop profile. See
-      INTEGRATION_REVIEW #4.
-    - *Size:* small.
-18. **A review cannot be deleted.**
-    - `/forget` is complete for chat, not for reviews.
-    - *Fix:* add `/reviews forget` and `bedrock-litreview forget`. See
-      INTEGRATION_REVIEW #8.
-    - *Size:* medium.
-19. **Smaller integration items.** All small; details in INTEGRATION_REVIEW.
-    - report files are 0644 (#9)
-    - a chat title can run between two review calls (#11)
-    - no test checks that `package-data` covers every runtime file (#13)
-    - no test checks the "only two modules import `bedrock.inference`" rule
-      (#14)
-    - the app shows a raw `ModuleNotFoundError` for a stale install (#16)
-20. **A 16 GB laptop is not a review machine.**
+    - *What was done:* the code half, which is everything except the names.
+      `defaults/models.yaml` now says they are guesses and why (a vLLM server
+      answers to its `--served-model-name`, usually the full path such as
+      `Qwen/Qwen3-30B-A3B-Instruct-2507`). When the server lacks a model,
+      preflight and `doctor` print the names the server *does* offer and the
+      path of the `models.yaml` override to write the right ones into, so a site
+      can fix this without waiting for a release. A test covers that override
+      for the `office` set specifically.
+    - *Not done, and cannot be:* the names. IT has to say what the server serves.
+      Then correct `defaults/models.yaml` and ship it.
+    - *Assessed risk, lower than it looks:* nothing goes silently wrong. A wrong
+      name fails preflight before a run starts, with the fix written out.
+    - *Size:* small, once the decision exists.
+16. **No re-runnable setup check.** *Fixed.*
+    - `bedrock-litreview doctor` and `/reviews check`. *Main built its own
+      `doctor` (`readiness.py`) while this was in review, and it is the better
+      one* - it checks server-reported windows, structured output and
+      authentication, and works in agent-pack mode - so this branch's version
+      was dropped rather than kept beside it. What survives is what main's did
+      not have: the advice that does not stop a review (a short
+      `request_timeout`, free disk, whether a company server name needs
+      `allowed_hosts`), shown by `doctor` as information before any network
+      check so it appears even when the server is down; and `/reviews check`
+      in the app, which runs main's check through the chat's own connection.
+    - Both go through `service.preflight`, so a check cannot exist in the doctor
+      and not in a run's preflight.
+    - *Honest gap:* the free-disk threshold (10 GB) is a judgement call, not a
+      measurement, and the code says so. It is about the model server and swap —
+      a review's own files are megabytes. Worth replacing with a measured figure
+      after a full run on the office server and on a 32 GB laptop.
+17. **`/review` in the app still uses chat's 120-second timeout.** *Fixed.*
+    - `/review` now says so before the run starts, not after — the point is to
+      go and change it, and a review takes hours.
+    - *One thing this list had wrong:* litreview's `Settings` had no
+      `request_timeout` and no profile name, so the warning could not be written
+      where the issue said. Both are now copied from bedrock's settings (`doctor`
+      needed them too).
+    - *A false alarm that had to be avoided:* `bedrock-litreview` and the HTTP
+      API already raise their own timeout to 600 through `standalone_scheduler`,
+      so warning them would be telling them to fix something already fixed.
+      `timeout_floor_applied` distinguishes the two cases; `doctor` deliberately
+      reports the configured value, because it describes the machine rather than
+      one process.
+    - *The better fix, not done:* `RequestOptions` has no `timeout`, so a review
+      cannot ask for a longer one per call. Adding it is ~10 lines in
+      `inference/openai_compatible.py` and would remove the need for the warning
+      — but it touches the layer the chat uses, which is why this is a warning
+      for now.
+18. **A review cannot be deleted.** *Fixed, scoped to the run's own output.*
+    - `bedrock-litreview forget <run-id>` and `/reviews forget <run-id>`. The
+      run, its stage artifacts and its rendered report. Not reversible.
+    - *Deliberately narrow:* the question, its frozen paper set and every stored
+      paper version stay. `paper_versions` is append-only and is what lets other
+      runs be re-proved against the exact bytes they read, so deleting one to
+      tidy up after a run would break `verify-run` for every run that shared it
+      — silently, until somebody ran it months later.
+    - *A hazard this list did not mention:* a report id is the hash of the report
+      body, and an identical re-run is *designed* to produce identical bytes, so
+      two runs share one `reports` row and one directory. Deleting it with the
+      first run would leave the second finished and reportless. `runs_for_report`
+      reference-counts, and the report goes only when nothing else needs it.
+    - The CLI confirms and shows the question first (run ids are hashes, and the
+      way this goes wrong is deleting a neighbour); the app deletes on the first
+      ask, as `/digest forget` does, and says exactly what went.
+19. **Smaller integration items.** *All five fixed.*
+    - report files are 0644 (#9) — now 0700 directories and 0600 files, via the
+      `private_dir` helper that already existed. Not a live leak on the default
+      path, whose parent is already 0700; it mattered because `--out` may point
+      at a shared drive.
+    - a chat title can run between two review calls (#11) — **real, and confirmed
+      by a test that fails without the fix.** The scheduler restarted its idle
+      clock only for `Priority.CHAT`, and a review is `USER_JOB`, so every gap
+      between two review calls looked idle. On a laptop holding one model a title
+      then unloads the review's model and loads the chat's. Three lines: any
+      non-`BACKGROUND` call now restarts the clock. README:252 said the opposite
+      and has been corrected.
+    - no test checks that `package-data` covers every runtime file (#13) —
+      `tests/test_package_data.py`. The globs did cover all 13 files; the test
+      stops the next one drifting, and also fails on a glob that has stopped
+      matching anything.
+    - no test checks the "only two modules import `bedrock.inference`" rule (#14)
+      — `tests/litreview/test_inference_boundary.py`, an `ast` walk. It also
+      fails if an allow-listed module stops needing the exemption.
+    - the app shows a raw `ModuleNotFoundError` for a stale install (#16) —
+      **the location in INTEGRATION_REVIEW was wrong.** It names `app.py:385`,
+      but `start_review` calls `parse_review_command` first, and *that* imports
+      the pipeline (`review_command.py:96`). Catching it only where the review
+      said would still have crashed. Both are now handled, with a notice naming
+      the four packages and the reinstall command.
+20. **A 16 GB laptop is not a review machine.** *Advice, not work.*
     - qwen3:8b took about two hours per question on a 16 GB M4.
     - With ordinary apps open, its 6.4 GB footprint pushed the Mac into swap
       until the disk filled. The run had to be paused and resumed three
       times.
     - *Fix:* run reviews on the office server, or on machines with 32 GB or
-      more, and add the disk check in item 17.
+      more. The disk check asked for here is in item 17 and is done.
 
 ## E. Measurement
 

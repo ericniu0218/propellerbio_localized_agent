@@ -1,13 +1,16 @@
 """Command line.
 
+    bedrock-litreview doctor                # can this machine run a review? what to change
     bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
-    bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl
+    bedrock-litreview patents "If I want to prevent psoriasis, what should I target?" --out patents.jsonl
+    bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl --patents patents.jsonl
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
     bedrock-litreview ask "..." --search --deck   # also write report.pptx, the target-proposal deck
     bedrock-litreview runs                  # the most recent runs
     bedrock-litreview verify-run RUN_ID     # re-prove a stored report, and say if today's rules differ
     bedrock-litreview verify-run --all --require-same-rules   # CI: also fail on changed rules
+    bedrock-litreview forget RUN_ID         # delete one run's report and working notes
     bedrock-litreview rate REPORT_ID 4 --rater jd --comment "missed IL-36"
     bedrock-litreview integrity plan --run RUN_ID      # which identifiers a refresh would send
     bedrock-litreview integrity refresh --run RUN_ID --yes   # retractions/concerns (needs the network)
@@ -17,13 +20,19 @@ The same reviews run inside the terminal app as `/review`; this is the shell
 way in, for a script, a cron job or a machine with no app running. Both go
 through `service.run_review`, so both get one pipeline and one scheduler.
 
-`search` and `integrity refresh --yes` go to the internet. `ask` does with
-`--search`, and - unless retraction checks are set to manual - to ask PubMed
-and Crossref about its papers' identifiers before reading them. On an air-gapped machine, run `search` on one that is allowed
-out and carry the JSON-lines file across.
+`search`, `patents` and `integrity refresh --yes` go to the internet. `ask`
+does with `--search`, and - unless retraction checks are set to manual - to ask
+PubMed and Crossref about its papers' identifiers before reading them. It never
+goes out for patents: pass `--patents FILE`, always a separate, explicit step,
+because a patents file has nothing frozen between runs the way `--corpus` does.
+On an air-gapped machine, run `search` and `patents` on one that is allowed out
+and carry the files across. `patents` needs a free EPO OPS account
+(developers.epo.org) and `EPO_OPS_KEY`/`EPO_OPS_SECRET`; see
+`sources/epo_ops.py`.
 
 Only `ask` with a model opens a connection to the model server. `search`,
-`verify-run`, `rate`, `runs` and `ask --no-model` never build a backend at all.
+`patents`, `verify-run`, `rate`, `runs` and `ask --no-model` never build a
+backend at all.
 
 The benchmark has its own entry point: `python -m bedrock.litreview.bench --help`.
 """
@@ -35,9 +44,11 @@ import asyncio
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 
 from bedrock.litreview.config import ConfigError, load_settings
+from bedrock.litreview.progress import throttled
 from bedrock.litreview.sources.corpus import CorpusSearcher
 from bedrock.litreview.sources.literature import SOURCES, LiteratureSearcher, SearchFailed
 from bedrock.litreview.stages.s0_question import QuestionError
@@ -86,6 +97,16 @@ def _ask(args) -> int:
         _say(f"ask: {exc}")
         return 1
 
+    patents = None
+    if args.patents:
+        from bedrock.litreview.sources.patent_corpus import read_patents
+
+        try:
+            patents = read_patents(args.patents)
+        except (OSError, ValueError) as exc:
+            _say(f"ask: {exc}")
+            return 1
+
     request = ReviewRequest(
         question=args.question,
         corpus=args.corpus,
@@ -97,6 +118,7 @@ def _ask(args) -> int:
         sources=_searcher_overrides(args).get("sources"),
         full_text=not args.no_full_text,
         out_dir=args.out,
+        patents=patents,
         deck=args.deck,
     )
 
@@ -110,6 +132,16 @@ def _ask(args) -> int:
             return run_review(
                 request, settings=settings, scheduler=scheduler,
                 progress=_say, cancel=threading.Event(),
+                # Preflight's non-blocking findings - the disk warning, mainly.
+                # `timeout_floor_applied` because `standalone_scheduler` below
+                # has already raised this process's timeout to 600, so warning
+                # about the configured 120 would be a false alarm here.
+                warn=lambda message: _say(f"ask: {message}"),
+                timeout_floor_applied=True,
+                # A shell has no status bar to overwrite, and every line it
+                # prints is permanent, so the per-item ticks are throttled to
+                # a handful per stage rather than one per paper.
+                tick=throttled(_say, now=time.monotonic),
                 history=history, actor_id=actor_id,
             )
 
@@ -153,6 +185,103 @@ def _ask(args) -> int:
         _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
              "it opens with a warning")
         return 1
+    return 0
+
+
+def _patents(args) -> int:
+    """`patents QUESTION --out FILE`: search EPO OPS, write JSON lines.
+
+    Never opens a model connection — this is a `search`-shaped command, not an
+    `ask`-shaped one. The records it writes are read back only by `ask
+    --patents FILE`, or `/review --patents FILE` in the app, into the
+    generated "Competitor landscape" section; nothing here reaches the
+    model-facing pipeline (`sources/patents_base.py`).
+    """
+    from bedrock.litreview.knowledge import load_knowledge
+    from bedrock.litreview.sources.epo_ops import EpoOps, PatentSearchFailed
+    from bedrock.litreview.sources.patent_corpus import write_patents
+    from bedrock.litreview.sources.patents_base import PatentSearchRequest
+    from bedrock.litreview.stages.s0_question import parse_question
+
+    settings = load_settings(check_endpoint=False)
+    if not settings.epo_ops_key or not settings.epo_ops_secret:
+        _say("patents: set EPO_OPS_KEY and EPO_OPS_SECRET (free account at developers.epo.org)")
+        return 1
+    try:
+        spec = parse_question(args.question, None, model=None, knowledge=load_knowledge())
+        searcher = EpoOps(
+            settings.epo_ops_key, settings.epo_ops_secret,
+            claims_max=args.claims_max if args.claims_max is not None
+            else int(settings.knob("patents.claims_max", 40)),
+        )
+        request = PatentSearchRequest(
+            question=spec.text, spec=spec,
+            exact_terms={e.canonical: e.exact_terms for e in spec.entities},
+            max_results=args.max_results,
+        )
+        records = searcher.search(request)
+    except (QuestionError, PatentSearchFailed, ValueError) as exc:
+        _say(f"patents: {exc}")
+        return 1
+    write_patents(records, args.out)
+    print(args.out)
+    return 0
+
+
+def _forget(args) -> int:
+    """`forget RUN_ID`: delete one run's output, after saying what will go.
+
+    Confirmed by default, unlike `/digest forget`, because there is no trash to
+    recover from and a report can be hours of a machine's work. `--yes` is for
+    scripts. Naming the question first matters: run ids are hashes, and the way
+    this goes wrong is deleting a neighbour of the intended one.
+    """
+    from bedrock.litreview.api import forget_run
+    from bedrock.litreview.db import Database
+
+    settings = _db_settings()
+    db = Database(settings.db_path)
+    run = db.get_run(args.run_id)
+    if run is None:
+        _say(f"forget: no run {args.run_id!r}. `bedrock-litreview runs` lists them.")
+        return 1
+
+    if not args.yes:
+        question = db.get_question(run.question_id)
+        report_id = db.report_id_for(args.run_id)
+        _say(f"Run {args.run_id}, started {run.started}")
+        _say(f"  question: {question.text if question else '(not stored)'}")
+        _say(f"  report:   {report_id or 'none (the run did not finish)'}")
+        _say("This deletes the run, its stage artifacts and its report files. The question and "
+             "its papers stay, so the same question can be asked again. It cannot be undone.")
+        try:
+            if input("Delete it? [y/N] ").strip().lower() not in {"y", "yes"}:
+                _say("forget: left alone.")
+                return 1
+        except EOFError:  # piped input with no answer is not a yes
+            _say("forget: no answer, so nothing was deleted. Use --yes in a script.")
+            return 1
+
+    result = forget_run(args.run_id, db=db, settings=settings)
+    if result is None:  # deleted between the look-up and the delete
+        _say(f"forget: no run {args.run_id!r}.")
+        return 1
+
+    deleted = result.deleted
+    print(f"Deleted run {deleted.run_id} and {deleted.artifacts} stage artifact(s).")
+    if deleted.report_deleted:
+        print(f"Deleted report {deleted.report_id} and {len(result.files_removed)} file(s).")
+        if result.report_dir is not None and not result.files_removed:
+            # The database row went, but the rendered copy was somewhere else.
+            print(f"No files were found in {result.report_dir}. A report written with "
+                  "--out elsewhere has to be deleted by hand.")
+        if deleted.ratings:
+            print(f"Deleted {deleted.ratings} rating(s) of that report.")
+    elif deleted.report_shared_with:
+        print(f"Kept report {deleted.report_id}: run(s) {', '.join(deleted.report_shared_with)} "
+              "produced the identical report and still point at it.")
+    else:
+        print("The run wrote no report, so there was none to delete.")
     return 0
 
 
@@ -326,11 +455,20 @@ def main(argv: list[str] | None = None) -> int:
     search.add_argument("--out", type=Path, required=True, help="where to write the papers (.jsonl)")
     search.add_argument("--max-results", type=int, default=200)
 
+    patents = sub.add_parser(
+        "patents", help="search EPO OPS and save patent records as JSON lines (needs network + EPO_OPS_KEY/SECRET)")
+    patents.add_argument("question")
+    patents.add_argument("--out", type=Path, required=True, help="where to write the records (.jsonl)")
+    patents.add_argument("--max-results", type=int, default=100)
+    patents.add_argument("--claims-max", type=int, default=None,
+                         help="cap on the (per-document) claim-1 calls; default from defaults/pipeline.yaml")
+
     ask = sub.add_parser("ask", help="answer a question with a cited report")
     ask.add_argument("question")
     papers_from = ask.add_mutually_exclusive_group()
     papers_from.add_argument("--corpus", type=Path, help="papers as JSON lines (the searcher's handoff format)")
     papers_from.add_argument("--search", action="store_true", help="search the literature now (needs network)")
+    ask.add_argument("--patents", type=Path, help="patent records as JSON lines (from `bedrock-litreview patents`)")
     ask.add_argument("--models", help="model set from defaults/models.yaml (office, laptop, medgemma)")
     ask.add_argument("--out", type=Path, help="output directory (default: the reports folder in the review data directory)")
     ask.add_argument("--no-model", action="store_true", help="run without any model")
@@ -404,6 +542,11 @@ def main(argv: list[str] | None = None) -> int:
 
     runs = sub.add_parser("runs", help="list the most recent runs")
     runs.add_argument("--limit", type=int, default=20)
+
+    forget = sub.add_parser("forget", help="delete one run's report and working notes (cannot be undone)")
+    forget.add_argument("run_id")
+    forget.add_argument("--yes", action="store_true", dest="yes",
+                        help="do not ask for confirmation (for scripts)")
 
     rate = sub.add_parser("rate", help="record a scientist's rating of a report")
     rate.add_argument("report_id")
@@ -506,6 +649,9 @@ def _run(args) -> int:
         print(args.out)
         return 0
 
+    if args.command == "patents":
+        return _patents(args)
+
     if args.command == "ask":
         return _ask(args)
 
@@ -564,6 +710,9 @@ def _run(args) -> int:
                 print(f"  ! {advisory}")
             failed += bool(assessment.exit_code(require_same_rules=args.require_same_rules))
         return 1 if failed else 0
+
+    if args.command == "forget":
+        return _forget(args)
 
     if args.command == "integrity":
         return _integrity(args)

@@ -32,6 +32,38 @@ from bedrock.ui.widgets import StatusBar
 from bedrock.workspaces import WorkspaceStore
 
 
+def _readiness_for(app):
+    """A zero-argument async callable running the literature review's readiness
+    check, for `/reviews check`.
+
+    Where the review would share this app's connection to its model server, the
+    check asks that same connection: it is the one a review would really use,
+    and in a test or a locked-down site it may be the only one that exists. A
+    review that opens its own (agent-pack mode, or `[litreview] api_base`
+    pointed elsewhere) is checked through its own, which is what
+    `review_readiness` builds when it is given none.
+    """
+
+    async def run():
+        import asyncio
+
+        from bedrock.litreview.config import ConfigError, load_settings as load_review_settings
+        from bedrock.litreview.readiness import review_readiness
+
+        backend = None
+        try:
+            review_settings = await asyncio.to_thread(
+                load_review_settings, app.settings, check_endpoint=False, require_models=False
+            )
+            shared = app.shared_review_scheduler(review_settings)
+            backend = shared.backend if shared is not None else None
+        except (ConfigError, AttributeError):
+            pass  # a broken [litreview] table is a finding `review_readiness` reports itself
+        return await review_readiness(app.settings, backend=backend)
+
+    return run
+
+
 class LocalCommandsMixin:
     """Own the commands whose behavior is identical in both app modes."""
 
@@ -151,8 +183,12 @@ class LocalCommandsMixin:
 
         await run_reviews_command(
             args,
-            # Listing and verifying need the database, not a model set.
+            # Listing, verifying and forgetting need the database, not a model set.
             settings_for=lambda: load_review_settings(self.settings, check_endpoint=False, require_models=False),
+            # `check` is the same implementation `bedrock-litreview doctor`
+            # prints, so the two cannot disagree. Imported on use: it pulls in
+            # the review pipeline, which neither app pays for at launch.
+            readiness_for=_readiness_for(self),
             notify=self.post_notice,
         )
 

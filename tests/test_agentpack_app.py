@@ -1186,6 +1186,27 @@ async def test_a_scientific_job_holds_the_queue_until_it_finishes(fake_client, t
         for _ in range(4):
             await pilot.pause()
         assert fake_client.sent_messages == [("sess_fake", "what does that structure show?")]
+
+
+# ---------------------------------------------------------------------------
+# /reviews in agent-pack mode
+# ---------------------------------------------------------------------------
+
+
+async def test_the_retraction_settings_are_discoverable_here(fake_client: FakeAgentPackClient):
+    """The reported gap: `/reviews settings` and `/reviews reinstate` work in
+    agent-pack mode but were in none of its help tables."""
+    app = make_app(fake_client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press(*"/help", "enter")
+        await pilot.pause()
+
+        helped = "\n".join(str(n.source) for n in app.query(SystemNotice))
+        assert "/reviews settings" in helped, helped
+        assert "/reviews reinstate" in helped
+
+
 # ---- The unverified-citation marker (finding 8 of #30), at the app level --------
 #
 # bedrock.agentpack.citation_marker.looks_cited is unit-tested directly in

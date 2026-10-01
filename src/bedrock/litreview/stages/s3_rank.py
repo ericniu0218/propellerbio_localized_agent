@@ -316,6 +316,7 @@ def rank_papers(
     designs: dict[str, dict] | None = None,
     reservations: dict[str, int] | None = None,
     knowledge=None,
+    tick=None,
 ) -> list[RankedPaper]:
     """`selection`, when given, is filled with why each gate-passing paper was
     or was not sent for a grade, for the coverage ledger. It changes nothing.
@@ -323,7 +324,14 @@ def rank_papers(
     `policy` picks which papers get a grade within `max_graded`: `lexical`
     (the default: top BM25) or `evidence_aware` (reserved lanes by study
     design, then BM25; `evidence_aware_selection`). It never changes how a
-    grade is given."""
+    grade is given.
+
+    `tick` is called after each graded paper. One grade is one model call, and
+    this loop made up to `max_graded` of them without a word - about four
+    minutes of silence at 84 papers. It is display only: see `progress.py`."""
+    from bedrock.litreview.progress import safe_tick
+
+    tick = safe_tick(tick)
     if policy not in POLICIES:
         raise ValueError(f"unknown rank.selection {policy!r}; expected one of {', '.join(POLICIES)}")
     by_id = {p.id: p for p in papers}
@@ -369,9 +377,13 @@ def rank_papers(
         selection.update(reasons)
     if client is not None and model:
         graded_by = version_of(client, model)
-        for row in to_grade:
+        for graded_so_far, row in enumerate(to_grade, 1):
             paper = by_id[row.paper_id]
             judgement, status = grade_paper(paper, spec, client, model=model)
+            # After the call, and before the `continue` below: a paper whose
+            # grade came back unusable still cost a call and still moved the
+            # run forward, so it must still move the counter.
+            tick("rank", graded_so_far, len(to_grade))
             if judgement is None:
                 continue
             tested = check_tested(judgement.tested, paper, spec) if judgement.tested else None

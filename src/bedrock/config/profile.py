@@ -83,10 +83,12 @@ class MachineProfile:
     ``None`` means no limit. An employee can still choose a bigger one."""
 
     idle_seconds: float = 2.0
-    """With ``background="idle"``: how long after a chat reply finishes before
-    background work may start. The employee often types the next message
-    within a few seconds; a title started in that gap would only be cancelled
-    again, after making the server set aside its saved work on the chat."""
+    """With ``background="idle"``: how long after the last call somebody was
+    waiting for - a chat reply, or a ``USER_JOB`` such as one step of a
+    literature review - before background work may start. The employee often
+    types the next message within a few seconds; a title started in that gap
+    would only be cancelled again, after making the server set aside its saved
+    work on the chat."""
 
 
 PROFILES: dict[str, MachineProfile] = {

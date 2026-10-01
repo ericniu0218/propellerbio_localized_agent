@@ -61,6 +61,7 @@ from bedrock.ui.fold_command import (
 )
 from bedrock.ui.journal import JournalledAction
 from bedrock.ui.local_commands import LocalCommandsMixin
+from bedrock.ui.review_command import reviews_rows
 from bedrock.ui.rendering import safe_line
 from bedrock.ui.services import ComplianceServices
 from bedrock.ui.widgets import AssistantMessage, PromptInput, StatusBar, SystemNotice, UserMessage
@@ -80,7 +81,7 @@ PENDING_REVIEW_PREFIX = "_⏳ Drafting — not yet compliance-reviewed_\n\n---\n
 # still takes real time after that.
 REVIEWING_PREFIX = "_🔍 Reviewing before this is shown as final…_\n\n---\n\n"
 
-AGENTPACK_HELP_TEXT = r"""\
+AGENTPACK_HELP_TEXT = rf"""\
 **Commands**
 
 | Command | What it does |
@@ -94,8 +95,7 @@ AGENTPACK_HELP_TEXT = r"""\
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
 | `/review <question> [--search \| --corpus FILE]` | Run a literature review; its model calls go to the AI system's inference API |
 | `/review stop` | Stop the running review (finished stages are kept; `--resume <run-id>` carries on) |
-| `/reviews` | Literature reviews recorded on this machine |
-| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
+{reviews_rows(compact=True)}
 | `/audit` | What this client has done on this machine |
 | `@<path>` in a message | Attach a text file (or drag the file onto the terminal) |
 | `/digest <path>` | Compress a file so a model can read it cheaply |
@@ -120,11 +120,13 @@ interactively in PyMOL.”
   `/runs --project X --since 2026-07-01 --before 2026-10-01`
 - Export the action history: `/audit export "/approved/review/actions.jsonl"`
 
-`/runs`, `/confidence`, `/reviews` and `/audit` read local files only. They keep
-working when the AI system is unreachable, and nothing they show is sent to a
-model. `/review` runs the review on this machine and sends each model call to
-the AI system's inference API (named models, temperature 0, JSON-schema
-output), never through the chat; `bedrock-litreview doctor` checks it is ready.
+`/runs`, `/confidence`, `/reviews` and `/audit` keep working when the AI system
+is unreachable, and nothing they show is sent to a model. They only read, with
+three exceptions that change something on this machine and say so when you run
+them: `/reviews settings`, `/reviews reinstate` and `/reviews forget`. `/review`
+runs the review on this machine and sends each model call to the AI system's
+inference API (named models, temperature 0, JSON-schema output), never through
+the chat; `bedrock-litreview doctor` checks it is ready.
 
 A citation-shaped answer from the AI system - a PMID, `et al.`, a bracketed
 reference - has only been checked that a citation is present, never that it

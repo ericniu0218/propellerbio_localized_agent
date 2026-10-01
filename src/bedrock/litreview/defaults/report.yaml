@@ -90,6 +90,7 @@ target_identification:
   - {id: numbers, title: Key results in context, kind: generated}
   - {id: gaps, title: "Limitations, gaps and open questions", kind: generated}
   - {id: background, title: Context from review articles (not primary evidence), kind: generated}
+  - {id: competitors, title: Competitor landscape, kind: generated}
   - {id: glossary, title: Abbreviations, kind: generated}
   - {id: best_source, title: Most relevant source, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}

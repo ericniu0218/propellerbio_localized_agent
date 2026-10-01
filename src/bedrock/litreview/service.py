@@ -33,11 +33,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from bedrock.inference import InferenceError, Scheduler
-from bedrock.litreview.config import ConfigError, Settings, private_dir
+from bedrock.litreview.config import ConfigError, Settings, config_dir, private_dir
 from bedrock.litreview.db import Database
 from bedrock.litreview.journal import ReviewNotRecorded, commit_intent, commit_outcome, new_operation_id
 from bedrock.litreview.llm import ReviewInterrupted, make_client
-from bedrock.litreview.models import Paper
+from bedrock.litreview.models import Paper, PatentRecord
 from bedrock.litreview.report.deck_model import FIGURES_ARTIFACT, FigureAsset
 from bedrock.litreview.report.figures import choose_figures
 from bedrock.litreview.runner import RunResult, answer_question
@@ -79,6 +79,12 @@ class ReviewRequest:
     `_write_figure_manifest`). Off, a review does exactly what it did before
     the deck existed."""
 
+    patents: list[PatentRecord] | None = None
+    """Competitor-landscape input, from `bedrock-litreview patents` (EPO OPS).
+    Never fetched here: unlike `search`, there is no `patents=True` flag that
+    reaches the internet as part of answering a question - a patent search is
+    always its own separate, explicit step. See `sources/patents_base.py`."""
+
 
 @dataclass(frozen=True)
 class ReviewCapacity:
@@ -109,6 +115,166 @@ def _window_fix(settings: Settings, model: str) -> str:
             f"fits on a 16 GB machine - or vLLM with --max-model-len {need}, and set `context_window = {need}` in "
             f"~/.config/bedrock/config.toml (or BEDROCK_CONTEXT_WINDOW={need}). Otherwise use the `workstation` "
             "profile, or the office server.")
+
+
+REVIEW_TIMEOUT_FLOOR = 600.0
+"""The shortest `request_timeout` a review should run with, in seconds.
+
+bedrock's default is 120, which is right for a chat reply and not for a
+4,096-token extraction on a laptop model: the review fails partway as "server
+unavailable". `review_backend` and `standalone_scheduler` raise it to this for
+anything that opens its own connection: the shell command, the HTTP API, the
+benchmark, and agent-pack mode's review. `/review` in the default mode shares
+the chat's connection, built at start-up, so there the number in the config
+file is the number in use, and all a check can do is say so.
+"""
+
+FREE_DISK_WARNING_BYTES = 10 * 1024**3
+"""Free space below which a review is worth warning about, on the disk holding
+the review's data directory.
+
+This is a judgement call, not a measurement, and it is not about this package's
+own files: a run's reports and cache are megabytes. It is about the model
+server. A 16 GB machine running an 8B model has no room to spare, and the
+deploy audit's own laptop run (OPEN_ISSUES, "A 16 GB laptop is not a review
+machine") had to be paused three times because macOS swapped until the disk
+filled - the review's calls were what kept the model resident. 10 GB is roughly
+one model's weights plus swap headroom. Worth replacing with a measured figure
+once a review has been run to completion on the office server and on a 32 GB
+laptop.
+"""
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One thing worth saying about this machine before a review, that does not
+    stop it. What *does* stop one is `preflight`, which raises `ConfigError`;
+    these are the warnings that sit beside it, so a person fixing a machine sees
+    both.
+
+    `detail` is plain language and, when `ok` is False, says what to change and
+    names a number or a command, because the reader is usually a scientist
+    rather than whoever set the server up.
+    """
+
+    title: str
+    ok: bool
+    detail: str
+
+    @property
+    def mark(self) -> str:
+        return "ok  " if self.ok else "warn"
+
+
+def config_findings(settings: Settings, *, timeout_floor_applied: bool = False) -> list[Finding]:
+    """Everything checkable from configuration and this disk. Never a network call.
+
+    `timeout_floor_applied` says the review opens its own connection, which
+    `review_backend` raises to `REVIEW_TIMEOUT_FLOOR`. Without it a front end
+    would warn about a configured timeout it has already fixed for itself. The
+    shell, the HTTP API, agent-pack mode and a default-mode review aimed at a
+    different server all open their own; only a review that shares the chat's
+    connection is exposed, which is the case worth warning about.
+    """
+    findings = [_timeout_finding(settings, timeout_floor_applied), _disk_finding(settings)]
+    if (host_note := _allowed_hosts_finding(settings)) is not None:
+        findings.append(host_note)
+    return findings
+
+
+def _timeout_finding(settings: Settings, floor_applied: bool) -> Finding:
+    """`request_timeout`. A warning and never a refusal: a review that hits it
+    stops between calls and resumes with `--resume`, so a short timeout costs
+    time, not the run."""
+    if floor_applied and settings.request_timeout < REVIEW_TIMEOUT_FLOOR:
+        return Finding(
+            title="request timeout",
+            ok=True,
+            detail=(
+                f"raised to {REVIEW_TIMEOUT_FLOOR:.0f}s for this review, from the configured "
+                f"{settings.request_timeout:.0f}s, because it opens its own connection. A review that "
+                "shares the chat's connection cannot do that, so "
+                f"`request_timeout = {REVIEW_TIMEOUT_FLOOR:.0f}` in ~/.config/bedrock/config.toml is still "
+                "worth setting."
+            ),
+        )
+    if settings.request_timeout >= REVIEW_TIMEOUT_FLOOR:
+        return Finding(
+            title="request timeout",
+            ok=True,
+            detail=f"{settings.request_timeout:.0f}s, enough for an extraction call",
+        )
+    return Finding(
+        title="request timeout",
+        ok=False,
+        detail=(
+            f"`request_timeout` is {settings.request_timeout:.0f}s. One extraction call writes up to 4,096 "
+            f"tokens, which takes longer than that on a laptop model, and a review that shares the chat's "
+            f"connection uses this number.\n"
+            f"Set `request_timeout = {REVIEW_TIMEOUT_FLOOR:.0f}` in ~/.config/bedrock/config.toml and restart. "
+            "A review that does time out stops between calls and resumes with `--resume`."
+        ),
+    )
+
+
+def _disk_finding(settings: Settings) -> Finding:
+    import shutil
+
+    target = settings.data_dir
+    # The directory may not exist before the first run; the disk it will live
+    # on is what matters, so walk up to something that does.
+    while not target.exists() and target != target.parent:
+        target = target.parent
+    try:
+        free = shutil.disk_usage(target).free
+    except OSError as exc:
+        return Finding(title="free disk", ok=True, detail=f"could not be checked: {exc}")
+
+    gb = free / 1024**3
+    if free >= FREE_DISK_WARNING_BYTES:
+        return Finding(title="free disk", ok=True, detail=f"{gb:.1f} GB free on {target}")
+    return Finding(
+        title="free disk",
+        ok=False,
+        detail=(
+            f"only {gb:.1f} GB free on {target}. A review keeps the model loaded for hours, and on a 16 GB "
+            f"machine that pushes the system into swap - a review on this hardware has filled a disk and had "
+            f"to be paused. The reports themselves are small; the space is for the model server and swap. "
+            f"Free up space, or run the review on the office server."
+        ),
+    )
+
+
+def _allowed_hosts_finding(settings: Settings) -> Finding | None:
+    """Why a company server name is refused until somebody says it is allowed.
+
+    `assert_local_url` has already run by the time settings exist, so reaching
+    here means the address passed. This is the other half: `allowed_hosts` is
+    the one piece of review configuration nobody discovers by accident, so a
+    name that passed *because* it is listed is worth showing, and a name that
+    passed some other way is worth saying how to list it if a review ever
+    refuses it.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(settings.base_url).hostname or "").lower()
+    if not host or host == "localhost" or host.startswith("127.") or host == "::1":
+        return None
+    if host in settings.allowed_hosts:
+        return Finding(
+            title="model server address",
+            ok=True,
+            detail=f"{host} is allowed by `allowed_hosts` in the [litreview] table",
+        )
+    return Finding(
+        title="model server address",
+        ok=True,
+        detail=(
+            f"{host} was accepted as a local address. If a review ever refuses it "
+            f'("not a local address"), add it to the [litreview] table of '
+            f'~/.config/bedrock/config.toml as `allowed_hosts = ["{host}"]`.'
+        ),
+    )
 
 
 async def preflight(settings: Settings, backend) -> ReviewCapacity:
@@ -155,7 +321,11 @@ async def preflight(settings: Settings, backend) -> ReviewCapacity:
         else:
             pulls = "\n".join(f"  ollama pull {name}" for name in missing)
             fix = (f"On a laptop running Ollama:\n{pulls}\nOn the office server (vLLM), ask IT to serve it - a vLLM "
-                   "server offers only the model it was started with.")
+                   "server offers only the model it was started with, under whatever name it was started with "
+                   "(`--served-model-name`): often a full path such as 'Qwen/Qwen3-30B-A3B-Instruct-2507', not a "
+                   "short name.\nTo use the names this server really offers, without a new release, write them "
+                   f"into {config_dir() / 'models.yaml'} - a whole replacement for the packaged "
+                   "defaults/models.yaml, which the run then records as the file it read.")
         raise ConfigError(
             f"{_where(settings)} does not have {', '.join(repr(m) for m in missing)}, which the "
             f"`{settings.model_set}` model set needs. It offers: {have}.\n{fix}"
@@ -211,8 +381,17 @@ async def run_review(
     cancel: threading.Event,
     history: Any | None = None,
     actor_id: str = "",
+    warn: Callable[[str], None] | None = None,
+    timeout_floor_applied: bool = False,
+    tick=None,
 ) -> RunResult:
     """Run one review and return its result.
+
+    `warn` receives the non-blocking setup findings - a short `request_timeout`,
+    a nearly full disk - before the run starts. Optional: skipping it loses a
+    warning and nothing else. `timeout_floor_applied` is True when this review
+    opens its own connection (see `config_findings`). `tick` is the per-item
+    signal from inside the stages; see `litreview/progress.py`.
 
     `scheduler` may be None only when `request.use_model` is False. A run
     without a model never reaches a server, so the shell commands that do that
@@ -270,6 +449,10 @@ async def run_review(
         capacity = await preflight(settings, scheduler.backend)
         for note in capacity.notes:
             progress(note)
+        if warn is not None:
+            for advisory in config_findings(settings, timeout_floor_applied=timeout_floor_applied):
+                if not advisory.ok:
+                    warn(advisory.detail)
         client = make_client(
             settings,
             scheduler=scheduler,
@@ -325,11 +508,13 @@ async def run_review(
             use_model=request.use_model,
             searcher=searcher,
             papers=request.papers,
+            patents=request.patents,
             refresh_papers=request.refresh,
             approved_terms=request.approved_terms,
             out_dir=request.out_dir,
             resume_run_id=request.resume,
             progress=progress,
+            tick=tick,
             integrity_check=integrity_check,
         )
         if request.deck:

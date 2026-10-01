@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from bedrock.litreview.models import Paper, QuestionSpec, Rating, Run
@@ -71,6 +72,22 @@ identifiers is far below this; a larger body is recorded by hash only."""
 
 Manifest = list[tuple[str, str]]
 """(paper id, sha256 of its body), in the order the run read the papers."""
+
+
+@dataclass(frozen=True)
+class DeletedRun:
+    """What `Database.delete_run` actually removed, so a caller can say it
+    precisely rather than claiming more than happened."""
+
+    run_id: str
+    question_id: str
+    artifacts: int
+    report_id: str | None
+    report_deleted: bool
+    """False when the run wrote no report, or when another run shares it."""
+    report_shared_with: tuple[str, ...]
+    """Other runs that wrote the identical report, and therefore still need it."""
+    ratings: int
 
 
 def _sha256(text: str) -> str:
@@ -231,6 +248,71 @@ class Database:
         """Runs that got as far as writing a report."""
         rows = self.conn.execute("SELECT body FROM runs ORDER BY id").fetchall()
         return [r.id for r in (Run.model_validate_json(b) for (b,) in rows) if r.stage_reached >= 7]
+
+    def runs_for_report(self, report_id: str) -> list[str]:
+        """Every run that wrote this report — usually one, sometimes more.
+
+        A report id is the first 16 characters of the hash of the report body,
+        and asking the same question over the same papers twice is *designed* to
+        produce the same bytes. Both runs then point at one `reports` row. So
+        "which runs does this report belong to?" is answered from the runs, the
+        same way `report_id_for` answers the reverse, and not from the row's own
+        `run_id` — which only names whichever wrote it last.
+
+        This is what stops `delete_run` removing a report another run still
+        needs.
+        """
+        rows = self.conn.execute("SELECT body FROM runs").fetchall()
+        return sorted(
+            run.id for run in (Run.model_validate_json(b) for (b,) in rows)
+            if run.report_sha256 and run.report_sha256[:16] == report_id
+        )
+
+    def delete_run(self, run_id: str) -> DeletedRun | None:
+        """Delete one run's own output. Returns None if there is no such run.
+
+        What this removes is the run: its record, its stage artifacts, and its
+        report — nothing about the question it answered. The question, its frozen
+        paper set and every stored paper version stay, because they are not this
+        run's to delete: `paper_versions` is append-only by design and is what
+        lets *other* runs be re-proved against the exact bytes they read
+        (`get_paper_versions`). Deleting a paper version to tidy up after one run
+        would quietly break `verify-run` for every other run that read it.
+
+        The report row goes only when no other run points at it. Two identical
+        runs share one report row, so deleting it with the first would take away
+        the second run's report while leaving that run looking finished. Ratings
+        follow the report, since a rating of a report that no longer exists says
+        nothing about anything. Benchmark results are left alone: they are
+        measurements of the pipeline rather than part of a run's output, and they
+        normally live in a separate database.
+
+        The rendered files are not touched here — this class knows about the
+        database and not about the reports directory. `api.forget_run` does both.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            return None
+        report_id = run.report_sha256[:16] if run.report_sha256 else None
+        shared_with = tuple(r for r in self.runs_for_report(report_id) if r != run_id) if report_id else ()
+
+        with self.conn:
+            artifacts = self.conn.execute("DELETE FROM artifacts WHERE run_id = ?", (run_id,)).rowcount
+            ratings = 0
+            if report_id and not shared_with:
+                ratings = self.conn.execute("DELETE FROM ratings WHERE report_id = ?", (report_id,)).rowcount
+                self.conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+            self.conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+        return DeletedRun(
+            run_id=run_id,
+            question_id=run.question_id,
+            artifacts=artifacts,
+            report_id=report_id,
+            report_deleted=bool(report_id) and not shared_with,
+            report_shared_with=shared_with,
+            ratings=ratings,
+        )
 
     def collected_for(self, question_id: str) -> str | None:
         """The search signature the question's current paper set was collected

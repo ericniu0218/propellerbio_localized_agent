@@ -275,6 +275,28 @@ async def test_a_new_chat_during_the_quiet_period_keeps_background_waiting():
     assert backend.started == ["chat", "chat-2", "title"]
 
 
+async def test_a_user_job_keeps_background_waiting_in_the_gap_after_it():
+    """A literature review is hundreds of ``USER_JOB`` calls with short gaps
+    between them, and those gaps are not idle time. Counting only ``CHAT``
+    meant a title slotted in between two review calls; on a laptop holding one
+    model that unloads the review's model and loads the chat's, gigabytes each
+    way, which is exactly what the idle rule exists to prevent."""
+    backend = GatedBackend()
+    scheduler = Scheduler(backend, laptop(idle_seconds=0.15))
+    await _answer_a_chat(scheduler, backend)
+    title = asyncio.create_task(scheduler.complete(None, ask("title"), priority=Priority.BACKGROUND))
+    await asyncio.sleep(0.1)
+
+    backend.gate("review-step").set()
+    await scheduler.complete("m", ask("review-step"), priority=Priority.USER_JOB)
+    await asyncio.sleep(0.1)
+    assert "title" not in backend.started  # the quiet period restarted with the review's call
+
+    backend.gate("title").set()
+    await title
+    assert backend.started == ["chat", "review-step", "title"]
+
+
 async def test_background_follows_the_model_that_last_answered_a_chat():
     backend = GatedBackend()
     scheduler = Scheduler(backend, laptop())

@@ -11,8 +11,9 @@ import shlex
 from dataclasses import dataclass
 
 from bedrock.connectors.base import parse_source_ref
+from bedrock.ui.review_command import reviews_rows
 
-HELP_TEXT = """\
+HELP_TEXT = f"""\
 **Commands**
 
 | Command | What it does |
@@ -30,8 +31,7 @@ HELP_TEXT = """\
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
 | `/review <question> [--corpus FILE \\| --search]` | Write a cited literature review beside the chat |
 | `/review stop` | Stop the running review (it can be resumed) |
-| `/reviews` | Literature reviews recorded on this machine |
-| `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
+{reviews_rows(compact=True)}
 | `/runs` | Prediction runs recorded on this machine |
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
@@ -53,9 +53,10 @@ HELP_TEXT = """\
   `/runs --project X --since 2026-07-01 --before 2026-10-01`
 - Export the action history: `/audit export "/approved/review/actions.jsonl"`
 
-`/runs`, `/confidence`, `/audit` and `/reviews` read local files only. They
-work with the model server switched off, and nothing they show is sent to a
-model.
+`/runs`, `/confidence`, `/audit` and `/reviews` work with the model server
+switched off, and nothing they show is sent to a model. They only read, with
+three exceptions that change something on this machine and say so when you run
+them: `/reviews settings`, `/reviews reinstate` and `/reviews forget`.
 
 A `/fold` or a `/review` runs beside the chat: keep asking the model questions
 while it works. `Esc` stops a streaming reply, never a fold or a review.

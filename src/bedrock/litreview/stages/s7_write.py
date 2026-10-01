@@ -29,6 +29,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date
 
 from pydantic import ValidationError
 
@@ -44,6 +45,7 @@ from bedrock.litreview.models import (
     Facet,
     GateResult,
     Paper,
+    PatentRecord,
     QuestionSpec,
     RankedPaper,
     Reference,
@@ -132,6 +134,11 @@ class WriteContext:
     units_per_target: int = 5
     max_units_per_section: int = 14
     sentence_stats: Counter = field(default_factory=Counter)
+    patents: list[PatentRecord] = field(default_factory=list)
+    """Competitor-landscape input, from `bedrock-litreview patents` (EPO OPS).
+    Read only by `_competitors` below, generated (code, no model call) for
+    exactly the reason no other generated section takes one: nothing here is
+    a biological claim, so there is nothing for the citation guard to check."""
     entailment: object = None
     """A `report.entailment.EntailmentCheck`, or None (the default): the
     optional model check run on sentences the guard kept. See that module."""
@@ -818,6 +825,55 @@ def _method(ctx: WriteContext) -> str:
     return "\n".join(lines)
 
 
+def _competitors(ctx: WriteContext, limit: int = 60) -> str:
+    """Who else has filed or been granted a patent naming these entities —
+    grouped by assignee, one row per family so EP/US/CN filings of the same
+    invention are not counted three times.
+
+    No model call, no citation guard: this is a list of what the patent
+    office record says, not a claim about biology. `sources/patents_base.py`
+    has the full reasoning for why patents never reach the evidence pipeline.
+    """
+    if not ctx.patents:
+        return (
+            "No patent search was run for this question. Run "
+            "`bedrock-litreview patents \"<question>\" --out patents.jsonl` and pass "
+            "`--patents patents.jsonl` to `ask` to add one."
+        )
+
+    by_assignee: dict[str, list[PatentRecord]] = {}
+    for record in ctx.patents:
+        by_assignee.setdefault(record.assignee or "Unknown / unassigned", []).append(record)
+
+    # Distinct families, not raw records: three filings of one EP/US/CN
+    # family must read as one family, or the count contradicts the very
+    # table underneath it that just finished merging them into one row.
+    families = {r.family_id or r.id for r in ctx.patents}
+    lines = [f"{len(families)} patent famil{'y' if len(families) == 1 else 'ies'} found "
+             f"({len(ctx.patents)} filing{'' if len(ctx.patents) == 1 else 's'}), grouped by assignee.", ""]
+    lines += ["| Assignee | Earliest priority | Filings | Lead publication | Status |", "|---|---|---|---|---|"]
+    rows = []
+    for assignee, records in by_assignee.items():
+        records = sorted(records, key=lambda r: r.priority_date or date.max)
+        earliest = records[0].priority_date
+        lead = min(records, key=lambda r: r.priority_date or date.max)
+        granted = sum(1 for r in records if (r.kind_code or "").upper().startswith("B"))
+        status = f"{granted} granted, {len(records) - granted} pending" if granted else f"{len(records)} pending/unknown"
+        rows.append((
+            earliest or date.max,
+            f"| {cell(assignee)} | {earliest or '—'} | {len(records)} | "
+            f"{cell(lead.title[:90])} ({lead.id}) | {status} |",
+        ))
+    rows.sort(key=lambda r: r[0])
+    lines += [row for _, row in rows[:limit]]
+    if len(rows) > limit:
+        lines.append(f"| … | | {len(rows) - limit} more assignees | | |")
+    lines += ["", f"Source: EPO Open Patent Services. Claim 1 (never the full claim set or description) "
+                   f"is recorded for {sum(1 for p in ctx.patents if p.claim_1)} of {len(ctx.patents)} families "
+                   f"in the JSON report, for a human to read — not summarised by any model here."]
+    return "\n".join(lines)
+
+
 BACKGROUND_QUOTED = 12
 BACKGROUND_LISTED = 40
 
@@ -945,7 +1001,14 @@ def build_references(ctx: WriteContext, sections: list[ReportSection]) -> dict[s
     return {pid: i for i, pid in enumerate(order, 1)}
 
 
-def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str]) -> Report:
+def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_versions: dict[str, str],
+                 tick=None) -> Report:
+    """`tick` reports each section as it is written: one model call per
+    written section, plus one per target subsection, and nothing said between
+    them until now. Display only; see `progress.py`."""
+    from bedrock.litreview.progress import safe_tick
+
+    tick = safe_tick(tick)
     layout = load_layout(ctx.spec.question_type)
     sections: list[ReportSection] = []
     # Each written section, and each per-target subsection, sees only its own
@@ -958,6 +1021,10 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
     # repeat check possible without the sections calling each other.
     already_kept: list[set[str]] = []
 
+    # Only the written sections cost a model call; a generated one is code and
+    # returns at once, so counting all of them would make the bar jump.
+    written_total = sum(1 for s in layout if s.kind == "written")
+    written_done = 0
     for spec in layout:
         if spec.id == "prevention" and ctx.spec.goal != "prevent":
             # A treatment question does not get a prevention section: a
@@ -967,11 +1034,14 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         if spec.kind != "written":
             sections.append(ReportSection(id=spec.id, title=spec.title, kind="generated"))
             continue
+        tick("write", written_done, written_total, spec.title)
         if spec.source == "per_target":
             section = ReportSection(id=spec.id, title=spec.title, kind="written")
-            for t in ctx.summary.targets[: ctx.max_targets]:
+            targets = ctx.summary.targets[: ctx.max_targets]
+            for n, t in enumerate(targets, 1):
                 units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target,
                                    ctx.demoted)
+                tick("write", written_done, written_total, f"{spec.title} {n}/{len(targets)}")
                 sentences, note = write_section_text(ctx, spec, units, subsection=t.target, already_kept=already_kept)
                 names = [n for n in t.names_seen if n != t.target][:3]
                 title = t.target + (f" ({', '.join(names)})" if names else "")
@@ -984,6 +1054,8 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             if not section.subsections:
                 section.note = "No target-level evidence was extracted from the papers read."
             sections.append(section)
+            written_done += 1
+            tick("write", written_done, written_total)
             continue
         units = _slice(ctx, spec.source or "all")
         sentences, note = write_section_text(ctx, spec, units, already_kept=already_kept)
@@ -994,6 +1066,8 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             elif withheld:
                 note = f"{note} {withheld}" if note else withheld
         sections.append(ReportSection(id=spec.id, title=spec.title, kind="written", sentences=sentences, note=note))
+        written_done += 1
+        tick("write", written_done, written_total)
 
     refs = build_references(ctx, sections)
     if ctx.integrity_notes:
@@ -1017,6 +1091,7 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
         "evidence_table": lambda: _evidence_table(ctx, refs),
         "method": lambda: _method(ctx),
         "excluded": lambda: _excluded(ctx),
+        "competitors": lambda: _competitors(ctx),
     }
     for section in sections:
         if section.kind == "generated" and section.id != "glossary":

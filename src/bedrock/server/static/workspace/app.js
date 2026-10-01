@@ -1742,6 +1742,7 @@
     if (st.searchAvailable === false) searchIn.disabled = true;
     const modelIn = el("input", { type: "checkbox" });
     modelIn.checked = !!model.ready;
+    const deckIn = el("input", { type: "checkbox" });
     const fullIn = el("input", { type: "checkbox", checked: "checked" });
     const sourceIns = (st.sources || []).map((s) => {
       const box = el("input", { type: "checkbox", checked: "checked", value: s.name });
@@ -1756,6 +1757,7 @@
       el("div", { class: "research-checks" }, [
         el("label", { class: "check-row" }, [searchIn, "Search the literature for papers (needs internet)"]),
         el("label", { class: "check-row" }, [modelIn, "Use the model to read the papers and write the report" + (model.ready ? "" : " (not ready)")]),
+        el("label", { class: "check-row" }, [deckIn, "Also make a target-proposal PowerPoint ", el("span", { class: "small muted" }, "(paper figures are added when searching)")]),
       ]),
       el("details", { class: "research-options" }, [
         el("summary", {}, "More options"),
@@ -1773,7 +1775,7 @@
       submit.disabled = true;
       try {
         const review = await researchApi("/runs", { method: "POST", body: {
-          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked,
+          question: q, search: searchIn.checked, useModel: modelIn.checked, fullText: fullIn.checked, deck: deckIn.checked,
           sources: sourceIns.filter((s) => s.box.checked).map((s) => s.box.value), projectId: projectSel.value || null } });
         R.draft = null;
         R.reviews = [review, ...R.reviews.filter((r) => r.id !== review.id)];
@@ -1878,7 +1880,7 @@
         el("a", { class: "btn small", href: base + "?format=html&download=1" }, [icon("download"), "HTML"]),
         el("a", { class: "btn small", href: base + "?format=md&download=1" }, [icon("download"), "Markdown"]),
         el("a", { class: "btn small", href: base + "?format=json&download=1" }, [icon("download"), "JSON"]),
-        el("a", { class: "btn small", href: base + "?format=pptx&download=1", title: "A condensed slide deck made from this report; the report is the full record" }, [icon("download"), "PowerPoint"]),
+        d.deck !== false ? el("a", { class: "btn small", href: base + "?format=pptx&download=1", title: "A target-proposal slide deck made from this report; the report is the full record" }, [icon("download"), "PowerPoint"]) : null,
         deleteReviewButton(d),
       ]));
       if (saved) card.appendChild(el("p", { class: "small muted" }, `Saved to the workspace ${saved === 1 ? "once" : saved + " times"} — chats in that project (or your own chats, if no project) can use it.`));

@@ -39,7 +39,11 @@ Only two kinds of event are written here, and both are metadata only:
   request to that host or a hundred. The literature search and the automatic
   retraction check are different hosts under different decisions (see this
   package's ``CLAUDE.md`` on ``SOURCE_HOSTS`` vs ``INTEGRITY_HOSTS``), so each
-  gets its own event, named by ``source_kind``. A run that contacts nothing -
+  gets its own event, named by ``source_kind`` (``literature_search``,
+  ``retraction_check``, and ``figure_download`` for the deck's paper figures:
+  the images, and the article text re-read to find which figure a quote's
+  paragraph cites, both fetched from Europe PMC only when the review was asked
+  to both search and make the deck). A run that contacts nothing -
   a corpus file, retraction checks set to manual - writes no ``litreview.search``
   event at all. Read this as "the run was authorised and began", not as a
   request-by-request log.

@@ -59,6 +59,8 @@ class AskBody(BaseModel):
     """Search the literature for this question (needs network)."""
     refresh_papers: bool = False
     approved_terms: dict[str, list[str]] | None = None
+    deck: bool = False
+    """Also prepare the figures for the target-proposal deck (only with `search`)."""
 
 
 class RateBody(BaseModel):
@@ -177,6 +179,7 @@ def create_app(settings: Settings | None = None, *, bedrock_settings=None, backe
             search=body.search,
             refresh=body.refresh_papers,
             approved_terms=body.approved_terms,
+            deck=body.deck,
         )
         try:
             history, actor_id = local_history(bedrock_settings)

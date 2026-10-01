@@ -507,3 +507,138 @@ async def test_the_question_text_is_never_recorded(settings, tmp_path):
     dumped = json.dumps(history.rows)
     assert question not in dumped
     assert "xyzzy19260928" not in dumped
+
+
+# ---------------------------------------------------------------------------
+# run_review: the target-proposal deck's figures (`ReviewRequest.deck`)
+# ---------------------------------------------------------------------------
+
+
+def _asset(fig_id: str, *, path: str | None = None):
+    from bedrock.litreview.report.deck_model import FigureAsset
+
+    return FigureAsset(
+        paper_id="PMC100", pmcid="PMC100", fig_id=fig_id, label="Figure 2", caption="Food intake",
+        href=f"g{fig_id}", licence="CC BY 4.0", evidence_ids=["E1"], path=path,
+    )
+
+
+@pytest.fixture()
+def deck_steps(monkeypatch, tmp_path):
+    """Replaces the two things the deck step reaches for - which figures a
+    report may show, and their download - and records what each was asked."""
+    from bedrock.litreview.sources import figures as figure_files
+
+    seen = {"chosen": 0, "downloads": []}
+    image = tmp_path / "g1.jpg"
+    image.write_bytes(b"\xff\xd8\xff-picture")
+
+    def choose(report, papers):
+        seen["chosen"] += 1
+        return [_asset("F1"), _asset("F2")]
+
+    def download(figures, cache_dir, *, http=None, cancel=None):
+        seen["downloads"].append(cache_dir)
+        return [f if f.fig_id != "F1" else _asset("F1", path=str(image)) for f in figures]
+
+    monkeypatch.setattr(service, "choose_figures", choose)
+    monkeypatch.setattr(figure_files, "download_figures", download)
+    seen["image"] = image
+    return seen
+
+
+async def test_a_review_without_the_deck_writes_no_figure_manifest_and_chooses_nothing(settings, deck_steps):
+    result = await go(review(papers=corpus(), search=True, use_model=False), settings, ScriptedBackend())
+
+    assert service.deck_figures(settings, result.run.id) == []
+    db = Database(settings.db_path)
+    assert db.get_artifact(result.run.id, service.FIGURES_ARTIFACT) is None
+    assert deck_steps["chosen"] == 0 and deck_steps["downloads"] == []
+
+
+async def test_the_deck_without_a_search_writes_the_manifest_with_no_paths_and_asks_for_nothing(
+    settings, deck_steps, monkeypatch,
+):
+    import httpx
+
+    def no_network(self, *a, **k):
+        raise AssertionError("no request may be made without a search")
+
+    monkeypatch.setattr(httpx.Client, "send", no_network)
+
+    result = await go(review(papers=corpus(), deck=True, use_model=False), settings, ScriptedBackend())
+
+    figures = service.deck_figures(settings, result.run.id)
+    assert [f.fig_id for f in figures] == ["F1", "F2"]
+    assert [f.path for f in figures] == [None, None]
+    assert deck_steps["downloads"] == []
+
+
+async def test_the_deck_with_a_search_downloads_and_the_manifest_reads_back(settings, deck_steps):
+    messages: list[str] = []
+
+    result = await go(
+        review(papers=corpus(), search=True, deck=True, use_model=False), settings, ScriptedBackend(),
+        progress=messages.append,
+    )
+
+    assert "Fetching figures for the PowerPoint..." in messages
+    assert deck_steps["downloads"] == [settings.data_dir / "figures"]
+    figures = service.deck_figures(settings, result.run.id)
+    assert [(f.fig_id, f.path) for f in figures] == [("F1", str(deck_steps["image"])), ("F2", None)]
+    assert figures[0].licence == "CC BY 4.0" and figures[0].evidence_ids == ["E1"]
+
+    # The cache can be cleared between the review and the download of its deck:
+    # a path that is no longer a file is never handed to the renderer.
+    deck_steps["image"].unlink()
+    assert [f.path for f in service.deck_figures(settings, result.run.id)] == [None, None]
+
+
+async def test_a_resumed_run_with_the_deck_gets_its_manifest(settings, deck_steps):
+    first = await go(review(papers=corpus(), use_model=False), settings, ScriptedBackend())
+    assert service.deck_figures(settings, first.run.id) == []
+
+    resumed = await go(
+        review(papers=corpus(), resume=first.run.id, deck=True, use_model=False), settings, ScriptedBackend()
+    )
+
+    assert resumed.run.id == first.run.id
+    assert len(service.deck_figures(settings, first.run.id)) == 2
+
+
+async def test_a_figure_step_that_fails_never_fails_the_review(settings, monkeypatch):
+    messages: list[str] = []
+
+    def broken(report, papers):
+        raise RuntimeError("a paper nobody could parse")
+
+    monkeypatch.setattr(service, "choose_figures", broken)
+
+    result = await go(
+        review(papers=corpus(), deck=True, use_model=False), settings, ScriptedBackend(), progress=messages.append
+    )
+
+    assert result.report_id
+    assert service.deck_figures(settings, result.run.id) == []
+    assert any("figures could not be prepared" in m for m in messages)
+
+
+async def test_a_run_with_no_manifest_reads_back_as_no_figures(settings):
+    assert service.deck_figures(settings, "no-such-run") == []
+
+
+async def test_the_figure_download_is_recorded_only_when_the_deck_and_a_search_are_both_on(settings, deck_steps):
+    both, deck_only, search_only = FakeHistoryStore(), FakeHistoryStore(), FakeHistoryStore()
+
+    await go(review(papers=corpus(), search=True, deck=True, use_model=False), settings, ScriptedBackend(),
+             history=both, actor_id="alice")
+    await go(review(papers=corpus(), deck=True, use_model=False), settings, ScriptedBackend(),
+             history=deck_only, actor_id="alice")
+    await go(review(papers=corpus(), search=True, use_model=False), settings, ScriptedBackend(),
+             history=search_only, actor_id="alice")
+
+    rows = [r for r in both.rows if r["action"] == "litreview.search"]
+    assert [r["state"] for r in rows] == ["intent", "succeeded"]
+    assert all(r["details"] == {"source_kind": "figure_download", "actor_source": "config"} for r in rows)
+    assert [r for r in deck_only.rows if r["action"] == "litreview.search"] == []
+    assert [r for r in search_only.rows if r["action"] == "litreview.search"] == []

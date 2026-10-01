@@ -29,7 +29,7 @@ HELP_TEXT = f"""\
 | `/fold <fasta-path or source://id> [--project X]` | Predict one monomer with AlphaFold 2 and render it in PyMOL |
 | `/pymol [structure-path or source://id]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools` | Check AlphaFold 2 and PyMOL configuration |
-| `/review <question> [--corpus FILE \\| --search]` | Write a cited literature review beside the chat |
+| `/review <question> [--corpus FILE \\| --search] [--deck]` | Write a cited literature review beside the chat (`--deck`: also a PowerPoint) |
 | `/review stop` | Stop the running review (it can be resumed) |
 {reviews_rows(compact=True)}
 | `/runs` | Prediction runs recorded on this machine |
@@ -69,7 +69,9 @@ cites a verified quote from a paper. Give it papers with `--corpus <file>`, or
 anything leaves this machine, and only the search terms and paper identifiers
 do. `--no-model` runs the rules and code alone. `--models <set>` picks the
 models (`office`, `laptop`, `medgemma`), and `--resume <run-id>` picks up a run
-that stopped. The same reviews run from a shell as `bedrock-litreview`.
+that stopped. `--deck` also draws a target-proposal PowerPoint, `report.pptx`,
+beside the report (paper figures only with `--search`). The same reviews run
+from a shell as `bedrock-litreview`.
 
 **Attaching files**
 

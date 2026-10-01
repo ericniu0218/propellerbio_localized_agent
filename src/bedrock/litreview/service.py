@@ -713,6 +713,35 @@ def deck_figures(settings: Settings, run_id: str, *, db: Database | None = None)
     return [f if f.path is None or Path(f.path).is_file() else replace(f, path=None) for f in figures]
 
 
+def write_deck(result: RunResult, settings: Settings, *, author: str = "") -> Path:
+    """Draw the target-proposal PowerPoint and write it as `report.pptx` beside
+    the run's other report files. Returns the path.
+
+    One helper for every front end that offers the deck (`bedrock-litreview ask
+    --deck` and the terminal's `/review --deck`), so the file is named, placed
+    and dated the same way everywhere. It draws from the saved report and the
+    figures the run already prepared, so it never reaches the network, and it
+    does blocking work (reading the run's manifest, drawing, writing): an async
+    caller runs it in a worker thread.
+
+    python-pptx is imported only when the deck is drawn; without it this raises
+    `ImportError`, which the caller turns into an install hint. The report
+    itself is finished either way.
+    """
+    from datetime import datetime
+
+    from bedrock.litreview.report.slides import to_pptx
+
+    now = datetime.now()
+    deck = to_pptx(
+        result.report, f"review-{result.report_id}", figures=deck_figures(settings, result.run.id),
+        author=author, date=f"{now.day} {now:%B %Y}",
+    )
+    path = result.paths["html"].with_name("report.pptx")
+    path.write_bytes(deck)
+    return path
+
+
 def _error_code(exc: Exception) -> str:
     """A bounded, code-chosen identifier for a failed review's outcome -
     never `str(exc)`, which could carry a file path or other detail this

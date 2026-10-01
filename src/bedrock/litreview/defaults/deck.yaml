@@ -69,6 +69,7 @@ slides:
     kicker: Context from review articles - not primary evidence
     sections: {target_identification: [targets], default: []}
     background: {target_identification: [], default: [background]}
+    max_reviews: 3   # review articles shown whole here; the rest go to "Appendix: further review articles"
     candidates_kicker: From the report's candidate-target sections
   candidate_target:
     title: "Candidate target: {target}"

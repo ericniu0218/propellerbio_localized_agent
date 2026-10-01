@@ -93,7 +93,7 @@ AGENTPACK_HELP_TEXT = rf"""\
 | `/runs show <run-id>` | Settings, lineage and integrity of one run |
 | `/runs tag <run-id> --project X` | Assign an existing run to a project |
 | `/confidence <run-id>` | pLDDT bands, low-confidence regions and PAE |
-| `/review <question> [--search \| --corpus FILE]` | Run a literature review; its model calls go to the AI system's inference API |
+| `/review <question> [--search \| --corpus FILE] [--deck]` | Run a literature review (`--deck`: also a PowerPoint); its model calls go to the AI system's inference API |
 | `/review stop` | Stop the running review (finished stages are kept; `--resume <run-id>` carries on) |
 {reviews_rows(compact=True)}
 | `/audit` | What this client has done on this machine |

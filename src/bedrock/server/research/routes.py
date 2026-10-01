@@ -528,7 +528,7 @@ async def report(review_id: str, format: str = "html", download: bool = False, u
             # install surfaces from the call, not from importing slides.
             deck = await asyncio.to_thread(_deck, rep, review, user)
         except ImportError:
-            raise HTTPException(501, "PowerPoint export needs python-pptx on the server: pip install -e \".[server]\".")
+            raise HTTPException(501, 'PowerPoint export needs python-pptx on the server: pip install "python-pptx>=1.0,<2".')
         if format == "slides-pdf":
             # The same slides converted by LibreOffice (report/convert.py), so
             # the PDF and the PowerPoint cannot differ.

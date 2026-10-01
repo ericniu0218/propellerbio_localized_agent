@@ -135,7 +135,7 @@ own repository. A scientist asks a question and gets back a report in which
 every sentence cites a verified quote from a paper: `/review` beside the chat,
 `/reviews` to list and re-prove past ones, `bedrock-litreview` in a shell, and
 an optional FastAPI front door. A Research-tab checkbox (and
-`bedrock-litreview ask --deck`) also makes a target-proposal PowerPoint, drawn
+`/review --deck` in the terminal, `bedrock-litreview ask --deck`) also makes a target-proposal PowerPoint, drawn
 by code from the report, with paper figures fetched only when searching.
 Another (and `--patent-search`) adds a competitor landscape from EPO Open
 Patent Services, using an account the *server* is configured with so no

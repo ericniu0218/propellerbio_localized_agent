@@ -4,6 +4,7 @@
     bedrock-litreview search "If I want to prevent psoriasis, what should I target?" --out papers.jsonl
     bedrock-litreview patents "If I want to prevent psoriasis, what should I target?" --out patents.jsonl
     bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl --patents patents.jsonl
+    bedrock-litreview ask "..." --search --patent-search   # also search patents for the competitor landscape
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
     bedrock-litreview ask "..." --search --deck   # also write report.pptx, the target-proposal deck
@@ -21,14 +22,14 @@ way in, for a script, a cron job or a machine with no app running. Both go
 through `service.run_review`, so both get one pipeline and one scheduler.
 
 `search`, `patents` and `integrity refresh --yes` go to the internet. `ask`
-does with `--search`, and - unless retraction checks are set to manual - to ask
-PubMed and Crossref about its papers' identifiers before reading them. It never
-goes out for patents: pass `--patents FILE`, always a separate, explicit step,
-because a patents file has nothing frozen between runs the way `--corpus` does.
-On an air-gapped machine, run `search` and `patents` on one that is allowed out
-and carry the files across. `patents` needs a free EPO OPS account
-(developers.epo.org) and `EPO_OPS_KEY`/`EPO_OPS_SECRET`; see
-`sources/epo_ops.py`.
+does with `--search`, with `--patent-search`, and - unless retraction checks are
+set to manual - to ask PubMed and Crossref about its papers' identifiers before
+reading them. Patents are asked for explicitly either way and never searched by
+default: `--patent-search` looks while the run goes, and `--patents FILE` uses
+records already in hand. On an air-gapped machine, run `search` and `patents` on
+one that is allowed out and carry the files across. Both patent paths need a
+free EPO OPS account (developers.epo.org) and `EPO_OPS_KEY`/`EPO_OPS_SECRET` -
+on a shared server, set once for everyone; see `sources/epo_ops.py`.
 
 Only `ask` with a model opens a connection to the model server. `search`,
 `patents`, `verify-run`, `rate`, `runs` and `ask --no-model` never build a
@@ -119,6 +120,7 @@ def _ask(args) -> int:
         full_text=not args.no_full_text,
         out_dir=args.out,
         patents=patents,
+        patent_search=args.patent_search,
         deck=args.deck,
     )
 
@@ -198,14 +200,15 @@ def _patents(args) -> int:
     model-facing pipeline (`sources/patents_base.py`).
     """
     from bedrock.litreview.knowledge import load_knowledge
+    from bedrock.litreview.service import PATENTS_NOT_CONFIGURED, patents_configured
     from bedrock.litreview.sources.epo_ops import EpoOps, PatentSearchFailed
     from bedrock.litreview.sources.patent_corpus import write_patents
     from bedrock.litreview.sources.patents_base import PatentSearchRequest
     from bedrock.litreview.stages.s0_question import parse_question
 
     settings = load_settings(check_endpoint=False)
-    if not settings.epo_ops_key or not settings.epo_ops_secret:
-        _say("patents: set EPO_OPS_KEY and EPO_OPS_SECRET (free account at developers.epo.org)")
+    if not patents_configured(settings):
+        _say(f"patents: {PATENTS_NOT_CONFIGURED}")
         return 1
     try:
         spec = parse_question(args.question, None, model=None, knowledge=load_knowledge())
@@ -459,7 +462,12 @@ def main(argv: list[str] | None = None) -> int:
     papers_from = ask.add_mutually_exclusive_group()
     papers_from.add_argument("--corpus", type=Path, help="papers as JSON lines (the searcher's handoff format)")
     papers_from.add_argument("--search", action="store_true", help="search the literature now (needs network)")
-    ask.add_argument("--patents", type=Path, help="patent records as JSON lines (from `bedrock-litreview patents`)")
+    patents_from = ask.add_mutually_exclusive_group()
+    patents_from.add_argument("--patents", type=Path,
+                              help="patent records as JSON lines (from `bedrock-litreview patents`)")
+    patents_from.add_argument("--patent-search", action="store_true", dest="patent_search",
+                              help="search EPO OPS during this run for the competitor landscape "
+                                   "(needs network + an EPO OPS account)")
     ask.add_argument("--models", help="model set from defaults/models.yaml (office, laptop, medgemma)")
     ask.add_argument("--out", type=Path, help="output directory (default: the reports folder in the review data directory)")
     ask.add_argument("--no-model", action="store_true", help="run without any model")

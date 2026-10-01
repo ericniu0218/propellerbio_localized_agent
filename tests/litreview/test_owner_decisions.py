@@ -346,3 +346,20 @@ def test_a_review_says_at_the_start_what_the_retraction_check_will_send(settings
     assert "ID numbers (not your question) go to PubMed and Crossref" in start_notice(request, settings)
     settings.integrity_checks = "manual"
     assert "manual — nothing is sent" in start_notice(request, settings)
+
+
+def test_a_review_says_at_the_start_that_a_patent_search_sends_its_terms_out(settings):
+    """A patent search puts the question's own exact terms in a URL to the EPO.
+    The notice says so before the run, as the literature search's does, and says
+    patents are never evidence - the one thing a reader could get wrong."""
+    from bedrock.litreview.service import ReviewRequest
+    from bedrock.ui.review_command import start_notice
+
+    quiet = start_notice(ReviewRequest(question=QUESTION), settings)
+    assert "Patents" not in quiet, "a review nobody asked for patents in says nothing about them"
+
+    searched = start_notice(ReviewRequest(question=QUESTION, patent_search=True), settings)
+    assert "European Patent Office" in searched and "never evidence" in searched
+
+    from_file = start_notice(ReviewRequest(question=QUESTION, patents=[]), settings)
+    assert "records given with `--patents`" in from_file and "European Patent Office" not in from_file

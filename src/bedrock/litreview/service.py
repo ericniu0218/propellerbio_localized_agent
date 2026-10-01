@@ -80,10 +80,25 @@ class ReviewRequest:
     the deck existed."""
 
     patents: list[PatentRecord] | None = None
-    """Competitor-landscape input, from `bedrock-litreview patents` (EPO OPS).
-    Never fetched here: unlike `search`, there is no `patents=True` flag that
-    reaches the internet as part of answering a question - a patent search is
-    always its own separate, explicit step. See `sources/patents_base.py`."""
+    """Competitor-landscape input already in hand, from `bedrock-litreview
+    patents` (a JSON-lines file, as `corpus` is for papers). The air-gapped
+    way: search on a machine that is allowed out, carry the file across. When
+    this is set, `patent_search` is ignored - the records handed in are the
+    ones used. See `sources/patents_base.py`."""
+
+    patent_search: bool = False
+    """Search EPO OPS for competitor filings as part of this run, with the
+    credentials in `settings` (`epo_ops_key`/`epo_ops_secret`).
+
+    Like `search`, and for the same reason, this is off unless somebody asked:
+    a review never reaches the internet by default. Unlike `search`, it is
+    *not* part of the evidence pipeline - what comes back feeds the one
+    code-written "Competitor landscape" section and can never become evidence
+    or be read by a model for a biological claim (`sources/patents_base.py`).
+
+    On a shared server the credentials belong to the deployment, not to the
+    person asking: the Research tab's checkbox sets this flag and the server's
+    own key answers it, so a scientist is never asked for one."""
 
 
 @dataclass(frozen=True)
@@ -414,8 +429,8 @@ async def run_review(
     nothing and runs exactly as before. When a journal is supplied, this
     function commits a `litreview.review` intent - and, for a run that is
     about to contact a source outside this machine (the literature search, the
-    retraction check, the deck's figure download), one `litreview.search`
-    intent per kind - before any pipeline work; if any of those cannot be
+    retraction check, the patent search, the deck's figure download), one
+    `litreview.search` intent per kind - before any pipeline work; if any of those cannot be
     written, `ReviewNotRecorded` is raised and the pipeline never runs.
 
     After the pipeline finishes (or raises), one outcome is committed for the
@@ -462,6 +477,11 @@ async def run_review(
         )
 
     searcher = _searcher(request, settings)
+    # Built here rather than inside the pipeline so a server with no EPO
+    # account refuses in the first second, before anything is journalled or any
+    # model is called (`patent_searcher` raises `ConfigError`). None when the
+    # run was handed frozen records, which the runner prefers anyway.
+    patent_source = patent_searcher(settings) if request.patent_search and request.patents is None else None
     # A resumed run keeps what it knew when it started; only a new one checks.
     integrity_check = None if request.resume else auto_integrity_check(settings)
 
@@ -474,7 +494,7 @@ async def run_review(
     # hosts this run actually declared. See the module docstring on why this
     # is metadata about authorisation, not a log of individual HTTP requests.
     search_operations: list[tuple[str, str]] = []
-    for source_kind in _search_kinds(request, searcher, integrity_check):
+    for source_kind in _search_kinds(request, searcher, integrity_check, patent_source):
         search_operation_id = new_operation_id()
         await commit_intent(
             history, search_operation_id, actor_id=actor_id, action="litreview.search",
@@ -509,6 +529,7 @@ async def run_review(
             searcher=searcher,
             papers=request.papers,
             patents=request.patents,
+            patent_searcher=patent_source,
             refresh_papers=request.refresh,
             approved_terms=request.approved_terms,
             out_dir=request.out_dir,
@@ -560,9 +581,12 @@ async def run_review(
         )
         await _finish_searches("succeeded")
         return result
+    finally:
+        if patent_source is not None:
+            patent_source.close()
 
 
-def _search_kinds(request: ReviewRequest, searcher, integrity_check) -> list[str]:
+def _search_kinds(request: ReviewRequest, searcher, integrity_check, patent_source=None) -> list[str]:
     """Which external hosts this run is about to be authorised to contact.
 
     Matches `stages.s1_collect.collect` exactly, rather than re-deriving the
@@ -571,12 +595,17 @@ def _search_kinds(request: ReviewRequest, searcher, integrity_check) -> list[str
     search here for a request that also posted papers directly would claim
     a contact that never happens. The retraction check is a run's own
     decision (`integrity_check is not None`), already computed by the caller.
+    `patent_source` is the same shape of fact for patents: it exists only when
+    this run is really going to ask EPO OPS (`ops.epo.org`), which a run handed
+    a patents file never does.
     """
     kinds = []
     if isinstance(searcher, LiteratureSearcher) and request.papers is None:
         kinds.append("literature_search")
     if integrity_check is not None:
         kinds.append("retraction_check")
+    if patent_source is not None:
+        kinds.append("patent_search")
     if request.deck and request.search:
         # Figure images, and the article text re-read to find them, come from
         # Europe PMC (`www.ebi.ac.uk`) and only when the review was asked to
@@ -779,6 +808,37 @@ def _searcher(request: ReviewRequest, settings: Settings):
             overrides["full_text_max"] = 0
         return LiteratureSearcher.from_settings(settings, **overrides)
     return None
+
+
+PATENTS_NOT_CONFIGURED = (
+    "no EPO Open Patent Services account is configured on this machine. Whoever runs the server sets "
+    "EPO_OPS_KEY and EPO_OPS_SECRET in its environment once (or `epo_ops_key` / `epo_ops_secret` in the "
+    "[litreview] table of its config.toml), from a free account at developers.epo.org > My Apps - one "
+    "account serves everyone who uses that server, and nobody types a key per review."
+)
+
+
+def patents_configured(settings: Settings) -> bool:
+    """Whether this machine can search patents at all. A front end asks this to
+    decide whether to offer the option, rather than offering one that fails."""
+    return bool(settings.epo_ops_key and settings.epo_ops_secret)
+
+
+def patent_searcher(settings: Settings):
+    """EPO OPS, for a run that asked for the competitor landscape.
+
+    Raises `ConfigError` when no account is configured, before the run starts
+    and for the same reason `preflight` does: a scientist who ticked the box
+    should hear "this server has no patent account" in the first second, not
+    after an hour of model calls. The credentials are the deployment's, so the
+    message is addressed to whoever runs it.
+    """
+    from bedrock.litreview.sources.epo_ops import EpoOps
+
+    if not patents_configured(settings):
+        raise ConfigError(PATENTS_NOT_CONFIGURED)
+    return EpoOps(settings.epo_ops_key, settings.epo_ops_secret,
+                  claims_max=int(settings.knob("patents.claims_max", 40)))
 
 
 def review_backend(settings: Settings, *, timeout_floor: float = 600.0):

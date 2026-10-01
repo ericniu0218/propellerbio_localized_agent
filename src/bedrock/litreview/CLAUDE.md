@@ -160,6 +160,14 @@ as `improved`. Models skip these unless explicitly told not to.
   model add a term. A request may reach only `www.ebi.ac.uk` and
   `eutils.ncbi.nlm.nih.gov` (`SOURCE_HOSTS` in `sources/http.py`), redirects
   included: a search URL carries the scientist's terms in its query string
+- The patent searcher is the same rule in its own lane: never on by default,
+  asked for per run (`ReviewRequest.patent_search`, or records handed in as
+  `patents`), bound by the same allowlist (`ops.epo.org`), and declared in the
+  audit trail as `patent_search`. The EPO account is the *machine's* -
+  `epo_ops_key`/`epo_ops_secret`, read once from the environment or the
+  `[litreview]` table - so that a scientist on the server's Research tab never
+  handles a credential. Build it only through `service.patent_searcher`, which
+  refuses before a run when there is none; never ask a front end for a key
 - A question's frozen paper set records the search signature it was
   collected under (`stages/s1_collect.py`, `question_collections`): the
   required entities and their exact terms, or the corpus hash. A run whose
@@ -278,7 +286,7 @@ as `improved`. Models skip these unless explicitly told not to.
 | Publication integrity | Built and tested against captured public responses: automatic check per new review (or manual), append-only observations, run snapshot, retraction exclusion, concerns ranked last and kept out of the Answer, reinstated papers wait for a person, `bedrock-litreview integrity`, `/reviews settings`, `/reviews reinstate` |
 | Background from reviews | A code-written report section quoting reviews with links; never counted as evidence |
 | Fresh-inference determinism | Harness built (`bench determinism`, runbook in `docs/litreview/DETERMINISM_RUNBOOK.md`); not run on vLLM |
-| Patents | Built and tested offline; search confirmed live against EPO OPS. `bedrock-litreview patents`, `ask --patents`, `/review --patents`; the code-written "Competitor landscape" section only, never evidence. claim 1 confirmed live (a WO filing's leading "CLAIMS" heading is stripped); its element shape is tolerated, not confirmed against the guide — see `sources/epo_ops.py` |
+| Patents | Built and tested offline; search confirmed live against EPO OPS. Asked for by the Research tab's checkbox, `/review --patent-search`, `ask --patent-search` (searched during the run, right after Stage 0) or `--patents FILE` from `bedrock-litreview patents` (air-gapped). The account is the machine's (`epo_ops_key`/`epo_ops_secret`, `service.patent_searcher`), never the scientist's: a missing one refuses before the run, a refused one costs the landscape and never the review. The code-written "Competitor landscape" section only, never evidence. claim 1 confirmed live (a WO filing's leading "CLAIMS" heading is stripped); its element shape is tolerated, not confirmed against the guide — see `sources/epo_ops.py` |
 | Target-proposal deck (PPTX) | Built: code-rendered slides from the stored report following Propeller's template (single target, bispecific, or disease-level). Drawn by `report/slides.py` (content), `report/deck_model.py` (data), `report/deck_render.py` (rendering), with configurable layout in `defaults/deck.yaml`. Paper figures fetched only during a search-enabled run from open-access papers; stored in `deck_figures.v1` artifact. Never in Report or Paper data; always code-only |
 | Stage 9 (chat), drop folder | Not started |
 

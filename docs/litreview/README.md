@@ -753,6 +753,30 @@ full body. Patents feed the **competitor landscape section only** — *who else 
 working on this* — never the biological evidence sections, and they are marked
 as a distinct class in the UI.
 
+**Built, against EPO OPS** (`sources/epo_ops.py`), confirmed live. Three ways to
+ask for one, all reaching the same code-written section:
+
+| Where | How |
+|---|---|
+| The server's Research tab | tick **“Also search patents for a competitor landscape”** |
+| The terminal app | `/review <question> --patent-search` |
+| A shell | `bedrock-litreview ask "..." --patent-search` |
+
+The EPO account belongs to **the machine, not the scientist**: `EPO_OPS_KEY` and
+`EPO_OPS_SECRET` in the server's environment, or `epo_ops_key`/`epo_ops_secret`
+in the `[litreview]` table of its `config.toml`, set once by whoever runs the
+server. Nobody is asked to type a key, and the option is not offered where there
+is no account (the Research tab says so, and `bedrock-litreview doctor` reports
+it). One free account covers a site; EPO's fair-use quota is shared by everyone
+using that server.
+
+The search happens right after the question is read, so a refused key or an
+exhausted quota is reported in the first seconds. It can never fail a review:
+the landscape is dropped, the run says so, and the report says a search was run
+and could not be answered. On an air-gapped machine there is still
+`bedrock-litreview patents "..." --out patents.jsonl` on a machine that is
+allowed out, carried across and passed with `--patents FILE`.
+
 ---
 
 ## Repository layout
@@ -820,7 +844,8 @@ scripts/litreview/judge_answers.py  the file-judge helper
 | Local audit trail | **Built.** `/review`, `bedrock-litreview ask` and the HTTP API record a `litreview.review` intent/outcome in bedrock's local history, plus one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) - metadata only, never the question. `/audit` reads it back. See `bedrock.litreview.journal` |
 | Alias import, citation snowballing | **Built and tested offline.** Aliases wait for a person's approval; snowballing is off until measured |
 | Target-proposal deck (PPTX) | **Built.** Code-rendered from the report; Research tab checkbox and `ask --deck` toggle it. Layouts in `defaults/deck.yaml`, figures from www.ebi.ac.uk only during search runs |
-| Stage 9 (chat), patents, drop folder, GROBID PDF rung | Not started |
+| Patents | **Built**, and the search confirmed live against EPO OPS. Research-tab checkbox, `--patent-search`, or `--patents FILE`; one account per machine, never per person; the code-written competitor-landscape section only, never evidence. See [Patents](#patents) |
+| Stage 9 (chat), drop folder, GROBID PDF rung | Not started |
 
 `pytest tests/litreview` runs the pipeline's own tests with no GPU and no
 network; `pytest` runs the whole of bedrock. Measured quality on two sample

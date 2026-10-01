@@ -86,7 +86,28 @@ def test_an_unreadable_patents_file_is_a_usage_error_not_a_crash():
 
 
 def test_no_patents_option_means_no_patents():
-    assert parse_review_command("prevent psoriasis").request.patents is None
+    request = parse_review_command("prevent psoriasis").request
+    assert request.patents is None and request.patent_search is False
+
+
+def test_patent_search_asks_the_run_to_look_rather_than_reading_a_file():
+    """`--patent-search` is the other way to the competitor landscape: the run
+    searches EPO OPS itself, with the account this machine is configured with.
+    `--patents FILE` stays the way in for a machine with no way out."""
+    request = parse_review_command("prevent psoriasis --patent-search").request
+    assert request.patent_search is True and request.patents is None
+
+
+def test_a_patents_file_and_a_patent_search_together_are_refused(tmp_path):
+    """Same reasoning as `--corpus` with `--search`: the records handed in are
+    the ones a run would use, so asking for both says two different things."""
+    from bedrock.litreview.models import PatentRecord
+    from bedrock.litreview.sources.patent_corpus import write_patents
+
+    path = tmp_path / "patents.jsonl"
+    write_patents([PatentRecord(id="EP1A1", title="x")], path)
+    with pytest.raises(CommandUsageError, match="not both"):
+        parse_review_command(f"prevent psoriasis --patents {path} --patent-search")
 
 
 def test_stop_is_the_one_verb():

@@ -302,6 +302,7 @@ class StartReview(BaseModel):
     fullText: bool = True
     sources: list[str] | None = None
     projectId: str | None = None
+    deck: bool = False
 
 
 class SaveReport(BaseModel):
@@ -361,10 +362,11 @@ async def start(body: StartReview, user=Depends(identity)):
     if body.projectId:
         require_object(store(), user["id"], body.projectId, "projects")
     request = ReviewRequest(question=question, search=body.search, use_model=body.useModel,
-                            full_text=body.fullText, sources=sources if body.search else None)
+                            full_text=body.fullText, sources=sources if body.search else None,
+                            deck=body.deck)
     review = {"id": uid(), "question": question, "status": "queued", "search": body.search,
               "useModel": body.useModel, "fullText": body.fullText, "sources": list(sources),
-              "projectId": body.projectId, "startedAt": _now(), "ownerName": user["name"]}
+              "deck": body.deck, "projectId": body.projectId, "startedAt": _now(), "ownerName": user["name"]}
     return _start(user["id"], review, request)
 
 
@@ -400,7 +402,7 @@ async def resume(review_id: str, user=Depends(identity)):
     if not review.get("reviewRunId") or review.get("status") == "completed":
         raise HTTPException(409, "There is nothing to resume for this review; start it again instead.")
     request = ReviewRequest(question=review["question"], resume=review["reviewRunId"],
-                            use_model=review.get("useModel", True))
+                            use_model=review.get("useModel", True), deck=review.get("deck", False))
     review.update(status="queued", error=None, finishedAt=None)
     return _start(user["id"], review, request)
 
@@ -422,6 +424,26 @@ def _report(review: dict):
     return Report.model_validate_json(body)
 
 
+def _deck(rep, review: dict, user: dict) -> bytes:
+    """Draw the deck. Blocking, so the route runs it on a worker thread.
+
+    The figures are only read back from the run's saved manifest: nothing is
+    downloaded here, so viewing a report never reaches outside this server.
+    """
+    from bedrock.litreview import service
+    from bedrock.litreview.report.slides import to_pptx
+
+    run_id = review.get("reviewRunId")
+    figures = service.deck_figures(review_settings(), run_id) if run_id else []
+    return to_pptx(rep, f"review-{review['reportId']}", figures=figures,
+                   author=user.get("name") or user["id"], date=_today())
+
+
+def _today() -> str:
+    now = datetime.now()
+    return f"{now.day} {now:%B %Y}"
+
+
 @router.get("/runs/{review_id}/report")
 async def report(review_id: str, format: str = "html", download: bool = False, user=Depends(identity)):
     from bedrock.litreview.stages.s8_render import to_html, to_json, to_markdown
@@ -441,13 +463,19 @@ async def report(review_id: str, format: str = "html", download: bool = False, u
     if format == "json":
         return Response(to_json(rep), media_type="application/json", headers=headers)
     if format == "pptx":
-        # A condensed deck made by code from the stored report (report/slides.py):
-        # no model, and the report itself is unchanged.
+        # The target-proposal deck, made by code from the stored report
+        # (report/slides.py): no model, and the report itself is unchanged.
+        # A review started with the option off never prepared figures and was
+        # not asked for a deck; one saved before the option existed has no
+        # "deck" key and keeps the button, so only an explicit False refuses.
+        if review.get("deck") is False:
+            raise HTTPException(404, "This review was started without the PowerPoint option.")
         try:
-            from bedrock.litreview.report.slides import to_pptx
+            # python-pptx is imported when the deck is drawn, so a missing
+            # install surfaces from the call, not from importing slides.
+            deck = await asyncio.to_thread(_deck, rep, review, user)
         except ImportError:
             raise HTTPException(501, "PowerPoint export needs python-pptx on the server: pip install -e \".[server]\".")
-        deck = await asyncio.to_thread(to_pptx, rep, f"review-{review['reportId']}")
         return Response(deck, headers={"Content-Disposition": f'attachment; filename="{name}.pptx"'},
                         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation")
     raise HTTPException(400, "format is html, md, json or pptx.")

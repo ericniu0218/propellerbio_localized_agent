@@ -4,6 +4,7 @@
     bedrock-litreview ask "If I want to prevent psoriasis, what should I target?" --corpus papers.jsonl
     bedrock-litreview ask "..." --search    # search and answer in one go (needs the network)
     bedrock-litreview ask "..." --no-model  # rules + code only; no written sections
+    bedrock-litreview ask "..." --search --deck   # also write report.pptx, the target-proposal deck
     bedrock-litreview runs                  # the most recent runs
     bedrock-litreview verify-run RUN_ID     # re-prove a stored report, and say if today's rules differ
     bedrock-litreview verify-run --all --require-same-rules   # CI: also fail on changed rules
@@ -96,6 +97,7 @@ def _ask(args) -> int:
         sources=_searcher_overrides(args).get("sources"),
         full_text=not args.no_full_text,
         out_dir=args.out,
+        deck=args.deck,
     )
 
     async def go():
@@ -145,11 +147,40 @@ def _ask(args) -> int:
         return 1
 
     print(result.paths["html"])
+    if args.deck:
+        _write_deck(result, settings)
     if result.report.integrity:
         _say(f"ask: the report failed its integrity check ({len(result.report.integrity)} violation(s)); "
              "it opens with a warning")
         return 1
     return 0
+
+
+def _write_deck(result, settings) -> None:
+    """Write report.pptx beside the other report files.
+
+    The deck is drawn by code from the saved report and the figures the run
+    prepared, so this never reaches the network. A missing python-pptx is said
+    plainly and does not change the exit code: the report itself is finished.
+    """
+    import os
+    from datetime import datetime
+
+    from bedrock.litreview.report.slides import to_pptx
+    from bedrock.litreview.service import deck_figures
+
+    now = datetime.now()
+    try:
+        deck = to_pptx(
+            result.report, f"review-{result.report_id}", figures=deck_figures(settings, result.run.id),
+            author=os.environ.get("BEDROCK_USER", ""), date=f"{now.day} {now:%B %Y}",
+        )
+    except ImportError:
+        _say('ask: the PowerPoint needs python-pptx: pip install -e ".[server]"')
+        return
+    path = result.paths["html"].with_name("report.pptx")
+    path.write_bytes(deck)
+    _say(f"ask: wrote {path}")
 
 
 def _unfinished_run_id(settings) -> str:
@@ -305,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     ask.add_argument("--no-model", action="store_true", help="run without any model")
     ask.add_argument("--refresh", action="store_true", help="re-collect papers instead of reusing the frozen set")
     ask.add_argument("--resume", help="resume a run id from the stage it reached")
+    ask.add_argument("--deck", action="store_true",
+                     help="also write report.pptx, the target-proposal deck (with --search, paper figures are fetched)")
 
     for p in (search, ask):
         p.add_argument("--sources", help=f"comma-separated subset of {','.join(SOURCES)} (default: defaults/pipeline.yaml)")

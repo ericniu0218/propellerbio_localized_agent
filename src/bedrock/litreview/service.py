@@ -24,22 +24,31 @@ one beside the chat.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import threading
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from bedrock.inference import InferenceError, Scheduler
 from bedrock.litreview.config import ConfigError, Settings, private_dir
+from bedrock.litreview.db import Database
 from bedrock.litreview.journal import ReviewNotRecorded, commit_intent, commit_outcome, new_operation_id
 from bedrock.litreview.llm import ReviewInterrupted, make_client
 from bedrock.litreview.models import Paper
+from bedrock.litreview.report.deck_model import FIGURES_ARTIFACT, FigureAsset
+from bedrock.litreview.report.figures import choose_figures
 from bedrock.litreview.runner import RunResult, answer_question
+from bedrock.litreview.sources import figures as figure_files
 from bedrock.litreview.sources.corpus import CorpusSearcher
+from bedrock.litreview.sources.http import SourceHTTP
 from bedrock.litreview.sources.literature import LiteratureSearcher, SearchFailed
 from bedrock.litreview.stages.s0_question import QuestionError
 from bedrock.litreview.stages.s1_collect import NoPapers, NothingFound
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,13 @@ class ReviewRequest:
 
     approved_terms: dict[str, list[str]] | None = None
     """Extra search terms a person approved by hand. HTTP only, as in the source."""
+
+    deck: bool = False
+    """Also prepare what the target-proposal PowerPoint needs from outside the
+    report: which paper figures it may show and, when `search` is also on,
+    their image files and the article text needed to find them (see
+    `_write_figure_manifest`). Off, a review does exactly what it did before
+    the deck existed."""
 
 
 @dataclass(frozen=True)
@@ -218,8 +234,9 @@ async def run_review(
     (the default, and what every caller that predates this had) journals
     nothing and runs exactly as before. When a journal is supplied, this
     function commits a `litreview.review` intent - and, for a run that is
-    about to contact a source outside this machine, one `litreview.search`
-    intent per host - before any pipeline work; if any of those cannot be
+    about to contact a source outside this machine (the literature search, the
+    retraction check, the deck's figure download), one `litreview.search`
+    intent per kind - before any pipeline work; if any of those cannot be
     written, `ReviewNotRecorded` is raised and the pipeline never runs.
 
     After the pipeline finishes (or raises), one outcome is committed for the
@@ -315,6 +332,10 @@ async def run_review(
             progress=progress,
             integrity_check=integrity_check,
         )
+        if request.deck:
+            # The report is finished and saved; this only adds the deck's
+            # figures beside it. It cannot fail the review (see the helper).
+            await _prepare_deck_figures(request, settings, result, progress, cancel)
     except asyncio.CancelledError:
         # `asyncio.to_thread` cannot stop a thread that is already running the
         # pipeline, so whether it is still going is genuinely unknown - the
@@ -371,7 +392,111 @@ def _search_kinds(request: ReviewRequest, searcher, integrity_check) -> list[str
         kinds.append("literature_search")
     if integrity_check is not None:
         kinds.append("retraction_check")
+    if request.deck and request.search:
+        # Figure images, and the article text re-read to find them, come from
+        # Europe PMC (`www.ebi.ac.uk`) and only when the review was asked to
+        # search: the deck toggle alone never reaches outside this machine.
+        # See `_write_figure_manifest`.
+        kinds.append("figure_download")
     return kinds
+
+
+async def _prepare_deck_figures(
+    request: ReviewRequest, settings: Settings, result: RunResult,
+    progress: Callable[[str], None], cancel: threading.Event,
+) -> None:
+    """Choose, and when allowed fetch, the figures the run's deck may show.
+
+    Runs once, right after the report is finished, for a fresh run and a
+    resumed one alike - and never again at download, report viewing or
+    `verify-run`, so nothing reaches the network later. The blocking work (the
+    database, one download per paper) goes to a worker thread, like the
+    pipeline itself.
+
+    A failure here is logged and ignored: a deck without pictures is a normal
+    deck, and the review's report is already saved and checked.
+    """
+    try:
+        await asyncio.to_thread(_write_figure_manifest, request, settings, result, progress, cancel)
+    except Exception:  # noqa: BLE001 - a missing picture never fails a review
+        log.warning("the deck's figures could not be prepared for run %s", result.run.id, exc_info=True)
+        progress("The PowerPoint's figures could not be prepared; the review itself is unaffected.")
+
+
+def _write_figure_manifest(
+    request: ReviewRequest, settings: Settings, result: RunResult,
+    progress: Callable[[str], None], cancel: threading.Event,
+) -> None:
+    """Save the run's figure manifest (`FIGURES_ARTIFACT`).
+
+    Picking a figure needs each cited paper's JATS, and ingestion discards the
+    raw text once it has split a paper into sections, so a stored run's papers
+    carry none. When the review was asked to search, `ArticleTexts` re-reads
+    the articles the report cites from Europe PMC (cached on disk, a bounded
+    number per deck) and the images are then downloaded through the same
+    client. That text is used only to find the figure the paper cites beside a
+    quote the review already verified: if the article has changed upstream the
+    quote is not found and no figure is shown. Without a search nothing is
+    requested, and `choose_figures` sees the papers as stored (normally no
+    figure at all).
+
+    The manifest is written even when nothing was downloaded - every figure
+    then has `path=None`, which the deck reads as "not shown" - so a run made
+    with the deck on always says what it chose. It lives in a run artifact,
+    never in the report, so a stored report's bytes do not change.
+    """
+    papers = {paper.id: paper for paper in result.papers}
+    http = None
+    try:
+        if request.search:
+            progress("Fetching figures for the PowerPoint...")
+            http = SourceHTTP(min_interval=0.34, timeout=60.0)  # the retraction check's pace: polite to Europe PMC
+            figures = choose_figures(result.report, figure_files.ArticleTexts(
+                papers, figures_dir(settings), http=http, cancel=cancel))
+            if figures:
+                figures = figure_files.download_figures(figures, figures_dir(settings), http=http, cancel=cancel)
+        else:
+            figures = choose_figures(result.report, papers)
+    finally:
+        if http is not None:
+            http.close()
+    db = Database(settings.db_path)
+    try:
+        db.put_artifact(result.run.id, FIGURES_ARTIFACT, json.dumps([f.to_dict() for f in figures], sort_keys=True))
+    finally:
+        db.close()
+
+
+def figures_dir(settings: Settings) -> Path:
+    """Where downloaded figure images are kept, one folder per paper. Private
+    like the rest of the data directory: which papers a scientist looked at is
+    not for other accounts on the machine."""
+    return private_dir(Path(settings.data_dir) / "figures")
+
+
+def deck_figures(settings: Settings, run_id: str, *, db: Database | None = None) -> list[FigureAsset]:
+    """The figures a run's deck may show, read back from its manifest.
+
+    Empty for a run made without the deck, one that predates it, or a manifest
+    that cannot be read. A figure whose image file has since disappeared (the
+    cache was cleared) comes back with `path=None`, so the renderer never
+    meets a path that is not there.
+    """
+    own = db is None
+    db = db or Database(settings.db_path)
+    try:
+        body = db.get_artifact(run_id, FIGURES_ARTIFACT)
+    finally:
+        if own:
+            db.close()
+    if not body:
+        return []
+    try:
+        figures = [FigureAsset.from_dict(item) for item in json.loads(body)]
+    except (ValueError, TypeError, KeyError):
+        log.warning("the figure manifest of run %s could not be read", run_id)
+        return []
+    return [f if f.path is None or Path(f.path).is_file() else replace(f, path=None) for f in figures]
 
 
 def _error_code(exc: Exception) -> str:
@@ -472,8 +597,6 @@ async def standalone_scheduler(bedrock_settings, *, backend=None, timeout_floor:
     model; the review would fail as "server unavailable" halfway through.
     `backend` is for tests.
     """
-    from dataclasses import replace
-
     from bedrock.inference import create_backend
 
     own = backend is None

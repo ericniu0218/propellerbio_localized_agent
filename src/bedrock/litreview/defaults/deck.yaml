@@ -1,0 +1,109 @@
+# The target-proposal deck: which report section feeds which slide.
+#
+# report/slides.py makes the deck from a finished report, never from a model.
+# This file is its twin of report.yaml: when the report's sections change, edit
+# the lists below and nothing in the code. Like report.yaml it can be replaced
+# whole by ~/.config/bedrock/litreview/deck.yaml.
+#
+# The slide titles are Propeller's template titles. A title given as three
+# words (single / bispecific / disease) changes with what the question is
+# about: one target, two targets (a bispecific), or a disease with no target
+# named (a target-identification question).
+#
+# Under `sections`, `weaknesses` and so on, a list is chosen by the question's
+# type (target_identification, intervention_efficacy, ... as in report.yaml),
+# or `default` when the type has no entry of its own.
+#
+#   sections      the written sections whose kept sentences this slide shows
+#                 when nothing about their evidence sends them elsewhere
+#   limitations   generated sections whose "Key limitations" the slide lists
+#   background    generated sections quoted as context, never as evidence
+#
+# How a kept sentence finds its slide (the Answer always goes to the executive
+# summary): by its section. A sentence goes to the slide whose `sections` lists
+# the section it came from, so a report's Mechanism section is the MOA slide and
+# its Clinical section the human slide. Only a sentence from a section no slide
+# lists (a generic "Evidence" section, say) is placed by what it cites: all
+# human findings -> `human`; all in a live animal -> `animal`; all in cells or
+# only an association -> `moa`; a mix -> `unmapped`. In a bispecific deck, a
+# sentence citing a finding that tested the two targets together goes to
+# `bispecific` first. A section mapped to `swot` has no slide of its own: its
+# sentences are the weaknesses.
+#
+# `max_sentences` is how many kept sentences one slide shows, in the report's
+# order (a slide can name its own to override). A slide that also carries a
+# chart shows `max_sentences_with_visual` instead, so the text and the chart
+# fit one page; a paper's own figure takes the chart's place. The rest are not
+# dropped: they go on "Appendix: further findings - <slide title>" slides after
+# the SWOT, so a long report section never makes a long slide. A figure may come
+# from any sentence routed to the slide, including those that overflowed.
+#
+# Candidate targets. A target-identification report writes one subsection per
+# candidate target (ids "targets:SIK3"); a subsection belongs to its parent
+# section, so only "targets" is listed here. When `introduction` lists such a
+# section and has subsections, the introduction slide only lists the candidates
+# in the report's order, and each gets a slide of its own (`candidate_target`),
+# up to `max_target_slides`; the rest are on "Appendix: further candidate
+# targets". With no subsections the introduction counts the targets the
+# findings name instead.
+#
+# The animal slide, when no section is mapped to it for a question type (target
+# identification has no preclinical section), takes the sentences routed to
+# the slides under `in_vivo_from` whose cited findings are all in a live animal.
+
+version: deck.v1
+
+unmapped: moa
+
+max_sentences: 6
+max_sentences_with_visual: 4
+max_target_slides: 6
+
+slides:
+  executive_summary:
+    title: {single: Executive summary, bispecific: Executive summary for bispecific proposal, disease: Executive summary}
+    sections: {default: [answer]}
+    limitations: {default: [gaps]}
+  introduction:
+    title: {single: Introduction of the target, bispecific: Introduction of the targets, disease: Candidate targets}
+    kicker: Context from review articles - not primary evidence
+    sections: {target_identification: [targets], default: []}
+    background: {target_identification: [], default: [background]}
+    candidates_kicker: From the report's candidate-target sections
+  candidate_target:
+    title: "Candidate target: {target}"
+    figures: true
+  moa:
+    title: Target biology MOA (mechanism of action)
+    kicker: Cell and mechanism evidence - not results in people
+    sections: {default: [mechanism]}
+    figures: true
+  human:
+    title: Target POC (proof of concept) - human
+    kicker: Human clinical trials and human genetics
+    sections: {default: [clinical]}
+    figures: true
+  animal:
+    title: Target POC - animal
+    kicker: Animal evidence - not results in people
+    sections: {target_identification: [], default: [preclinical]}
+    in_vivo_from: [moa, indications]
+    figures: true
+  bispecific:
+    title: Biology rationale for bispecific antibody
+    kicker: Findings that tested the two targets together
+    sections: {default: []}
+  indications:
+    title: Disease indications
+    sections: {default: [prevention]}
+  competitive:
+    title: Competitive landscape
+  swot:
+    title: Target SWOT analysis
+    sections: {default: [negative, safety]}
+    opportunities: {default: [gaps]}
+    threats: {default: [disagreements]}
+  references:
+    title: References
+  appendix:
+    title: "Appendix: evidence quotes"

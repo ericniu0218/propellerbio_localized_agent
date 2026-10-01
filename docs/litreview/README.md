@@ -510,16 +510,11 @@ before the check existed.
 JSON → Markdown → self-contained HTML (no external assets; hovering a citation
 shows the exact sentence it rests on; a table of contents and links from each
 claim to its evidence and from each reference to the sentences that cite it,
-with no scripts). The report is structured data, so **the PowerPoint deck is a
-renderer, not a rewrite**: [report/slides.py](../../src/bedrock/litreview/report/slides.py)
-condenses a finished report into slides (question and scope, Answer with key
-limitations, how the studies line up, one slide per written section, Safety
-with "no reported harm is not evidence of safety", limitations, linked
-references, and the verbatim quotes behind every cited sentence). Every
-statement on a slide is one the report kept; text that does not fit continues
-on a "(cont.)" slide rather than being cut or shrunk; there are no charts. The
-Research tab's **PowerPoint** button downloads it
-(`/report?format=pptx`; needs `python-pptx`, in the `server` extra).
+with no scripts).
+
+The report is structured data, so **the PowerPoint deck is a renderer, not a rewrite**: [report/slides.py](../../src/bedrock/litreview/report/slides.py) renders a finished report into presentation slides drawn in ArcDeck format (layouts, visual elements, native charts) with python-pptx, following Propeller's target-proposal template: single-target, bispecific when the question names two targets, or disease-level with an overview plus one slide per candidate target. Slide content comes from verified sentences with their [n], code-generated lines (counts, comparisons), paper captions and quotes. A slide shows at most 6 of its sentences (4 beside a chart); the rest go to "Appendix: further findings" slides, and text that does not fit a page continues on a "(cont.)" slide, never shrunk. Every page footer lists its references with links. Paper figures are chosen by code from the paper's own xref in the paragraph where a verified quote came from; only open-access papers with a license; fetched only during runs with both `deck` and `search` enabled, at most 8 papers and 2 figures each, cached from www.ebi.ac.uk. Competitive landscape and SWOT are assembled by written rule and marked "Assembled by rule from the report - review before presenting"; company, stage and unmet need say "fill in".
+
+A Research-tab checkbox "Also make a target-proposal PowerPoint" sets `deck` on the review; without it, only the text report is written. `bedrock-litreview ask --deck` also makes the deck. The download button (`/research/runs/{id}/report?format=pptx`) is hidden for reviews without a deck but available for older runs that predate the option. Layouts and text rules are configurable at `~/.config/bedrock/litreview/deck.yaml`, defaulting to `src/bedrock/litreview/defaults/deck.yaml`.
 
 ### Stage 9 — Chat
 
@@ -808,7 +803,8 @@ scripts/litreview/judge_answers.py  the file-judge helper
 | In bedrock | **Built.** `/review` and `/reviews` in the terminal app, `bedrock-litreview` in a shell, the FastAPI app as the optional `api` extra. Every model call goes through bedrock's `Scheduler` at `USER_JOB` |
 | Local audit trail | **Built.** `/review`, `bedrock-litreview ask` and the HTTP API record a `litreview.review` intent/outcome in bedrock's local history, plus one `litreview.search` per outside host a run is allowed to contact (the literature search, the automatic retraction check) - metadata only, never the question. `/audit` reads it back. See `bedrock.litreview.journal` |
 | Alias import, citation snowballing | **Built and tested offline.** Aliases wait for a person's approval; snowballing is off until measured |
-| Stage 9 (chat), PPTX, patents, drop folder, GROBID PDF rung | Not started |
+| Target-proposal deck (PPTX) | **Built.** Code-rendered from the report; Research tab checkbox and `ask --deck` toggle it. Layouts in `defaults/deck.yaml`, figures from www.ebi.ac.uk only during search runs |
+| Stage 9 (chat), patents, drop folder, GROBID PDF rung | Not started |
 
 `pytest tests/litreview` runs the pipeline's own tests with no GPU and no
 network; `pytest` runs the whole of bedrock. Measured quality on two sample
@@ -928,7 +924,7 @@ quotes verified.
 The only part anyone outside the team will look at.
 
 Builds: the project setup form · the report · **the review screen** (click a
-finding, see the sentence it came from) · the excluded-papers list · later, PPTX.
+finding, see the sentence it came from) · the excluded-papers list · the PPTX deck.
 
 **Done when:** a junior scientist reads a report start to finish without asking
 what anything means.

@@ -82,6 +82,8 @@ _SUBGROUP = re.compile(
     r"\bconsistent\s+across\s+subgroups\b", re.I)
 # "regardless of the G allele" is not a subgroup comparison: it says the
 # treated people's result held in every subgroup, which is the drug's result.
+_REGARDLESS = re.compile(r"\b(?:regardless|irrespective)\s+of\s+(?:the\s+)?(?:[\w-]+\s+){0,4}?"
+                         r"(?:subgroups?|genotypes?|alleles?|carriers?|status|presence)\b", re.I)
 _WITHIN = re.compile(r"\bwithin[- ]group\b|\bfrom\s+baseline\b|\bcompared\s+with\s+baseline\b|\bvs\.?\s+baseline\b|"
                      r"\bbaseline\s+values\b", re.I)
 _BETWEEN = re.compile(r"\bbetween[- ]group\b|\bintergroup\b|\bversus\b|\bvs\.?\b|\bcompared\s+(?:with|to)\b|"
@@ -134,7 +136,9 @@ def contrast_of(u: EvidenceUnit, spec: QuestionSpec, paper: Paper | None) -> str
     baseline ("Both groups showed significant reductions in body weight") is
     still the drug's within-arm change, counted as such."""
     quote = u.quote
-    if _SUBGROUP.search(quote):
+    # "... regardless of the genotype subgroup" says the treated people's
+    # result held in every subgroup: the drug's result, not a comparison.
+    if _SUBGROUP.search(_REGARDLESS.sub(" ", quote)):
         return "subgroup"
     # "compared with baseline values" compares with the start, not with a
     # control: read before the between-arm words, which it would otherwise match.
@@ -283,7 +287,7 @@ def _type_from_design(u: EvidenceUnit, tier: str | None) -> str | None:
 def assess(u: EvidenceUnit, spec: QuestionSpec, paper: Paper | None, tier: str | None = None) -> Assessment:
     """The one decision on how this finding may be used. `tier` is its
     paper's study tier (`synthesis.Study.tier`) when known."""
-    from bedrock.litreview.extract.verify import other_work_reason
+    from bedrock.litreview.extract.verify import other_work_reason, reports_result
     from bedrock.litreview.report.synthesis import substantive
 
     quote = u.quote
@@ -296,8 +300,11 @@ def assess(u: EvidenceUnit, spec: QuestionSpec, paper: Paper | None, tier: str |
         excluded.append("background")
     if _UNRESOLVED.search(quote):
         excluded.append("unresolved")
-    if not substantive(u) or (_SETTING.search(quote) and not re.search(
-            r"\b(?:reduc|improv|decreas|increas|lower|higher|greater|significant)", quote, re.I)):
+    # A setting sentence ("was conducted at ...", "276 were included") is not
+    # a result - unless it also reports one ("Of 190 randomised, MASH resolved
+    # in 62% versus 21%"), judged by the same deliberately wide test the
+    # extraction uses, because a false "not a result" withholds real evidence.
+    if not substantive(u) or (_SETTING.search(quote) and not reports_result(quote)):
         excluded.append("not_a_result")
     if statistical_anomalies(quote):
         excluded.append("anomaly")

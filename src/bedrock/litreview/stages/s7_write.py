@@ -1167,8 +1167,8 @@ def write_report(ctx: WriteContext, *, model_versions: dict[str, str], prompt_ve
             section = ReportSection(id=spec.id, title=spec.title, kind="written")
             targets = ctx.summary.targets[: ctx.max_targets]
             for n, t in enumerate(targets, 1):
-                units = best_units([ctx.by_unit_id[i] for i in t.unit_ids], ctx.rank_of, ctx.units_per_target,
-                                   ctx.demoted)
+                units = best_units([ctx.by_unit_id[i] for i in t.unit_ids if ctx.usable(ctx.by_unit_id[i])],
+                                   ctx.rank_of, ctx.units_per_target, ctx.demoted)
                 tick("write", written_done, written_total, f"{spec.title} {n}/{len(targets)}")
                 sentences, note = write_section_text(ctx, spec, units, subsection=t.target, already_kept=already_kept)
                 names = [n for n in t.names_seen if n != t.target][:3]
@@ -1345,7 +1345,7 @@ def _decisive_fallback(ctx: WriteContext, sections: list[ReportSection], refs: d
                 and not claims.statistical_anomalies(u.quote))
 
     for tiers in (("rct",), synthesis.HUMAN_TIERS):
-        best = [u for u in ctx.summary.units if decisive(u, tiers)]
+        best = [u for u in ctx.summary.units if ctx.usable(u, counted_only=True) and decisive(u, tiers)]
         if best:
             break
     else:

@@ -349,3 +349,19 @@ def test_a_report_stored_before_statuses_existed_still_re_serialises_to_its_own_
     assert to_json(Report.model_validate_json(body)) == body
     new = old.model_copy(update={"evidence_status": {"u1": EvidenceStatus(status="excluded", reasons=["x"])}})
     assert to_json(Report.model_validate_json(to_json(new))) == to_json(new)
+
+
+def test_a_randomised_result_is_never_withheld_as_a_setting_sentence():
+    """The setting rule's paired negative: a result that mentions randomisation
+    or enrolment is still a result."""
+    result = u("Of 190 participants who were randomised, MASH resolution occurred in 62% with tirzepatide versus "
+               "21% with placebo.")
+    assert claims.assess(result, SPEC, TZP_PAPER).status == claims.COUNTED
+
+
+def test_regardless_of_the_genotype_subgroup_is_the_drugs_result():  # E9
+    e9 = u("Tirzepatide-treated participants experienced significant (p < 0.001) reductions at Week 52 in LFC and "
+           "body weight regardless of the genotype subgroup.")
+    assert claims.contrast_of(e9, SPEC, TZP_PAPER) != "subgroup"
+    assert claims.contrast_of(u("There were no differences between any of the genotype subgroups.",
+                                outcome="no_effect"), SPEC, TZP_PAPER) == "subgroup"

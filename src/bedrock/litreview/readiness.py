@@ -56,10 +56,11 @@ async def review_readiness(bedrock_settings=None, *, env=None, backend=None) -> 
     with advice that does not stop a review set just before the verdict.
 
     The advice - a `request_timeout` too short for an extraction call, a nearly
-    full disk, a company server name that may need `allowed_hosts` - is
-    configuration and the disk, so it needs no server and is shown even when the
-    server is down, which is when someone is most likely to be reading this. It
-    is information, never failure: `operational()` ignores it.
+    full disk, a company server name that may need `allowed_hosts`, whether
+    patent search has an account to use - is configuration and the disk, so it
+    needs no server and is shown even when the server is down, which is when
+    someone is most likely to be reading this. It is information, never failure:
+    `operational()` ignores it.
 
     It goes *before the last check*, not at the top: the checks that matter keep
     the positions callers and tests read them at (the model server, then the
@@ -71,7 +72,7 @@ async def review_readiness(bedrock_settings=None, *, env=None, backend=None) -> 
         settings = load_settings(bedrock_settings, env=env)
     except ConfigError:
         return checks  # the configuration failure is already the finding
-    from bedrock.litreview.service import config_findings
+    from bedrock.litreview.service import PATENTS_NOT_CONFIGURED, config_findings, patents_configured
 
     # A review opens its own connection (and so has its timeout raised) unless
     # it shares the chat's, which only a default-mode review aimed at bedrock's
@@ -80,6 +81,12 @@ async def review_readiness(bedrock_settings=None, *, env=None, backend=None) -> 
         Check(f.title, True if f.ok else None, f.detail if f.ok else f"worth knowing: {f.detail}")
         for f in config_findings(settings, timeout_floor_applied=settings.endpoint_source != "api_base")
     ]
+    # Information, never a failure: patents are an option a review can be asked
+    # for, not something a review needs. It is here because this is where
+    # whoever sets a server up looks to find out whether they finished the job -
+    # a key that is not set is otherwise only discovered by ticking the box.
+    advice.append(Check("Patent search", None, "configured (EPO Open Patent Services)"
+                        if patents_configured(settings) else f"not offered: {PATENTS_NOT_CONFIGURED}"))
     return checks[:-1] + advice + checks[-1:]
 
 

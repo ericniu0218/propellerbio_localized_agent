@@ -327,3 +327,91 @@ def test_the_research_form_offers_the_powerpoint_and_hides_the_button_when_it_wa
     js = (STATIC / "app.js").read_text()
     assert "Also make a target-proposal PowerPoint" in js and "deck: deckIn.checked" in js
     assert "d.deck !== false ? el(" in js and "format=pptx" in js
+
+
+# ---------------------------------------------------------------------------
+# Patents: a tick box, answered by the server's own EPO account
+#
+# The thing these protect is that a scientist is never asked for a key. The
+# account is the deployment's, set once by whoever runs the server, and the
+# option is simply not offered where there is none.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def patent_office(monkeypatch, settings):  # noqa: F811 - the imported fixture
+    """An EPO account on the server, and `EpoOps` replaced so nothing dials out."""
+    from tests.litreview.test_service import FakePatentOffice
+
+    settings.epo_ops_key, settings.epo_ops_secret = "the-servers-key", "the-servers-secret"
+    FakePatentOffice.instances = []
+    monkeypatch.setattr(FakePatentOffice, "fail_with", None)
+    monkeypatch.setattr("bedrock.litreview.sources.epo_ops.EpoOps", FakePatentOffice)
+    return FakePatentOffice
+
+
+def test_the_form_offers_patents_and_the_tick_box_reaches_the_review(client, review_env, patent_office, requests_seen):
+    login(client)
+    js = (STATIC / "app.js").read_text()
+    assert "Also search patents for a competitor landscape" in js
+    assert "patents: patentIn.checked" in js
+    assert "if (!patents.available) patentIn.disabled = true;" in js
+
+    status = client.get("/workspace/api/research/status").json()
+    assert status["patents"] == {"available": True, "reason": ""}
+
+    started = client.post("/workspace/api/research/runs", json={"question": QUESTION, "patents": True})
+    assert started.status_code == 200, started.text
+    assert requests_seen[-1].patent_search is True and started.json()["patents"] is True
+
+    review = wait_for(client, started.json()["id"])
+    assert review["status"] == "completed", review
+    office = patent_office.instances[0]
+    assert office.credentials == ("the-servers-key", "the-servers-secret"), "nobody typed a key"
+    report = client.get(f"/workspace/api/research/runs/{review['id']}/report?format=md")
+    assert "Competitor landscape" in report.text and "Genentech" in report.text
+
+
+def test_a_server_with_no_epo_account_does_not_offer_patents_and_refuses_the_flag(client, review_env):
+    login(client)
+    status = client.get("/workspace/api/research/status").json()
+    assert status["patents"]["available"] is False
+    assert "EPO_OPS_KEY" in status["patents"]["reason"], "the page says what is missing and whose job it is"
+
+    refused = client.post("/workspace/api/research/runs", json={"question": QUESTION, "patents": True})
+    assert refused.status_code == 409
+    assert "EPO_OPS_KEY" in refused.json()["detail"]
+    assert client.get("/workspace/api/research/runs").json() == [], "nothing was started"
+
+
+def test_an_air_gapped_server_refuses_patents_and_says_what_to_do_instead(client, review_env, patent_office, monkeypatch):
+    monkeypatch.setattr(research, "_airgapped", lambda: True)
+    login(client)
+    refused = client.post("/workspace/api/research/runs", json={"question": QUESTION, "patents": True, "search": False})
+    assert refused.status_code == 409 and "air-gapped" in refused.json()["detail"]
+    assert "bedrock-litreview patents" in refused.json()["detail"]
+
+    status = client.get("/workspace/api/research/status").json()
+    assert status["patents"]["available"] is False and "air-gapped" in status["patents"]["reason"]
+
+
+def test_a_review_started_without_patents_searches_none(client, review_env, patent_office, requests_seen):
+    login(client)
+    started = client.post("/workspace/api/research/runs", json={"question": QUESTION})
+    assert requests_seen[-1].patent_search is False and started.json()["patents"] is False
+    wait_for(client, started.json()["id"])
+    assert patent_office.instances == []
+
+
+def test_resuming_a_review_keeps_the_patent_option(client, review_env, patent_office, requests_seen):
+    review_env.fail_after = 3
+    login(client)
+    review = wait_for(client, client.post("/workspace/api/research/runs",
+                                         json={"question": QUESTION, "patents": True}).json()["id"])
+    assert review["status"] == "stopped" and review["patents"] is True
+
+    review_env.fail_after = None
+    resumed = client.post(f"/workspace/api/research/runs/{review['id']}/resume")
+    assert resumed.status_code == 200, resumed.text
+    assert requests_seen[-1].patent_search is True
+    assert wait_for(client, review["id"])["status"] == "completed"

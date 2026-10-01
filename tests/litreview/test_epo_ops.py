@@ -474,8 +474,18 @@ def test_missing_credentials_are_refused_up_front():
 
 
 def test_no_patents_says_how_to_add_them():
-    body = _competitors(SimpleNamespace(patents=[]))
-    assert "bedrock-litreview patents" in body
+    body = _competitors(SimpleNamespace(patents=[], patent_search_failed=False))
+    assert "Also search patents" in body and "bedrock-litreview patents" in body
+
+
+def test_a_search_that_failed_is_not_reported_as_one_nobody_asked_for():
+    """The section is written from `patents` alone, so an empty list after a
+    failed search would read "No patent search was run" - a false statement in a
+    report that did ask for one."""
+    body = _competitors(SimpleNamespace(patents=[], patent_search_failed=True))
+    assert "could not answer it" in body
+    assert "No patent search was run" not in body
+    assert "never evidence" in body, "and the reader is told nothing else depended on it"
 
 
 def test_competitors_are_grouped_by_assignee_one_row_per_family():

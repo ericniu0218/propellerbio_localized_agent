@@ -63,6 +63,10 @@ class AskBody(BaseModel):
     approved_terms: dict[str, list[str]] | None = None
     deck: bool = False
     """Also prepare the figures for the target-proposal deck (only with `search`)."""
+    patent_search: bool = False
+    """Also search EPO OPS for the competitor landscape (needs network, and an
+    account configured on this machine: `service.patent_searcher`). Never
+    evidence - see `sources/patents_base.py`. A 503 says no account is set."""
 
 
 class RateBody(BaseModel):
@@ -262,6 +266,7 @@ def create_app(settings: Settings | None = None, *, bedrock_settings=None, backe
             refresh=body.refresh_papers,
             approved_terms=body.approved_terms,
             deck=body.deck,
+            patent_search=body.patent_search,
         )
         try:
             history, actor_id = local_history(bedrock_settings)

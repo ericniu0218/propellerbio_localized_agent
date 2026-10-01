@@ -7,6 +7,15 @@ preprints and PubMed, keeps the papers about the exact subject, reads them,
 extracts findings whose quotes are checked against the paper, and writes a
 report in which every sentence cites them.
 
+A tick box also searches EPO Open Patent Services for competitor filings. That
+is a separate, lower-confidence lane: nothing it returns is read by a model or
+cited as evidence, only the report's code-written "Competitor landscape"
+section (``litreview/sources/patents_base.py``). It uses the EPO account *this
+server* is configured with, so every scientist's patent search is answered by
+one account that whoever runs the server set once, and nobody is ever asked to
+type a key. The option is offered only when that account exists and the server
+is not air-gapped (``/status``).
+
 Everything goes through ``service.run_review``, as ``service.py`` asks of every
 front end, so the browser gets the same pipeline, the same checks and the same
 reports as the terminal. Reports land in the review's own data directory
@@ -58,6 +67,9 @@ KIND = "research"
 MAX_RUNNING = 2
 MAX_EVENTS = 200
 SOURCE_NAMES = {"europepmc": "Europe PMC", "biorxiv": "Preprints (bioRxiv / medRxiv)", "pubmed": "PubMed"}
+PATENT_AIRGAP_REFUSAL = ("This server is air-gapped, so it cannot reach the patent office. Run "
+                         "`bedrock-litreview patents` on a machine that is allowed out and bring the "
+                         "file back.")
 STAT_KEYS = ("papers_collected", "gate_pass", "papers_read", "evidence_units", "findings_proposed",
              "sentences_kept", "sentences_dropped")
 
@@ -303,6 +315,10 @@ class StartReview(BaseModel):
     sources: list[str] | None = None
     projectId: str | None = None
     deck: bool = False
+    patents: bool = False
+    """Also search EPO Open Patent Services for competitor filings, with the
+    account this server is configured with - never one the person asking has to
+    supply. See `litreview.service.patent_searcher`."""
 
 
 class SaveReport(BaseModel):
@@ -319,7 +335,7 @@ async def status(user=Depends(identity)):
     if _status_cache["body"] is not None and time.monotonic() - _status_cache["at"] < 20:
         return _status_cache["body"]
     from bedrock.litreview.config import ConfigError
-    from bedrock.litreview.service import preflight
+    from bedrock.litreview.service import PATENTS_NOT_CONFIGURED, patents_configured, preflight
     from bedrock.litreview.sources.literature import SOURCES
 
     body = {"available": True, "reason": "", "searchAvailable": not _airgapped(),
@@ -334,6 +350,16 @@ async def status(user=Depends(identity)):
         return body
     body["model"].update(baseUrl=settings.base_url, modelSet=settings.model_set)
     body["integrityChecks"] = settings.integrity_checks
+    # Patents are offered only when this server itself can search them, so the
+    # page never shows a tick box whose only outcome is a failed review. The
+    # account is the server's; nobody is ever asked for a key.
+    # The shared message reads as the tail of a sentence everywhere else ("…
+    # cannot be searched: no EPO account is configured…"); on the page it is
+    # the whole sentence, so it starts with a capital.
+    no_account = PATENTS_NOT_CONFIGURED[0].upper() + PATENTS_NOT_CONFIGURED[1:]
+    body["patents"] = {"available": patents_configured(settings) and not _airgapped(),
+                       "reason": PATENT_AIRGAP_REFUSAL if _airgapped()
+                       else "" if patents_configured(settings) else no_account}
     try:
         body["model"]["models"] = sorted({settings.model_for(j) for j in settings.jobs})
         scheduler = await review_scheduler()
@@ -349,13 +375,21 @@ async def status(user=Depends(identity)):
 
 @router.post("/runs")
 async def start(body: StartReview, user=Depends(identity)):
-    from bedrock.litreview.service import ReviewRequest
+    from bedrock.litreview.service import PATENTS_NOT_CONFIGURED, ReviewRequest, patents_configured
     from bedrock.litreview.sources.literature import SOURCES
 
     question = " ".join(body.question.split())
     if body.search and _airgapped():
         raise HTTPException(409, "This server is air-gapped and cannot search the literature. Turn off "
                                  "“Search the literature” to re-read papers already collected for this question.")
+    if body.patents:
+        # Refused here rather than in the review, so a scientist who ticked the
+        # box is told now instead of watching a review fail. `run_review`
+        # checks again for every other front end.
+        if _airgapped():
+            raise HTTPException(409, PATENT_AIRGAP_REFUSAL)
+        if not patents_configured(await asyncio.to_thread(review_settings)):
+            raise HTTPException(409, "Patents cannot be searched: " + PATENTS_NOT_CONFIGURED)
     sources = tuple(s for s in (body.sources or SOURCES) if s in SOURCES)
     if body.search and not sources:
         raise HTTPException(422, "Choose at least one place to search.")
@@ -363,10 +397,11 @@ async def start(body: StartReview, user=Depends(identity)):
         require_object(store(), user["id"], body.projectId, "projects")
     request = ReviewRequest(question=question, search=body.search, use_model=body.useModel,
                             full_text=body.fullText, sources=sources if body.search else None,
-                            deck=body.deck)
+                            deck=body.deck, patent_search=body.patents)
     review = {"id": uid(), "question": question, "status": "queued", "search": body.search,
               "useModel": body.useModel, "fullText": body.fullText, "sources": list(sources),
-              "deck": body.deck, "projectId": body.projectId, "startedAt": _now(), "ownerName": user["name"]}
+              "deck": body.deck, "patents": body.patents, "projectId": body.projectId,
+              "startedAt": _now(), "ownerName": user["name"]}
     return _start(user["id"], review, request)
 
 
@@ -401,8 +436,12 @@ async def resume(review_id: str, user=Depends(identity)):
         raise HTTPException(409, "This review is already running.")
     if not review.get("reviewRunId") or review.get("status") == "completed":
         raise HTTPException(409, "There is nothing to resume for this review; start it again instead.")
+    # The patent search is not resumed from a stage the way the pipeline is
+    # (`runner.py`): a resumed run searches again, which is what a review
+    # started with the option on should still produce.
     request = ReviewRequest(question=review["question"], resume=review["reviewRunId"],
-                            use_model=review.get("useModel", True), deck=review.get("deck", False))
+                            use_model=review.get("useModel", True), deck=review.get("deck", False),
+                            patent_search=review.get("patents", False))
     review.update(status="queued", error=None, finishedAt=None)
     return _start(user["id"], review, request)
 

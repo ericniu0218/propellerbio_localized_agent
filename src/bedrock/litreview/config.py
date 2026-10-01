@@ -63,7 +63,7 @@ DEFAULT_CONFIG_DIR = Path.home() / ".config" / "bedrock" / "litreview"
 
 #: Every key the `[litreview]` table in bedrock's config.toml may contain.
 KNOWN_KEYS = ("model_set", "data_dir", "allowed_hosts", "contact_email", "entailment_check", "integrity_checks",
-              "api_base", "context_window")
+              "api_base", "context_window", "epo_ops_key", "epo_ops_secret")
 
 #: Which model set a machine profile gets when nothing says otherwise.
 PROFILE_MODEL_SETS = {"server": "office"}
@@ -178,9 +178,18 @@ class Settings:
     epo_ops_key: str = ""
     epo_ops_secret: str = ""
     """Consumer key/secret from developers.epo.org > My Apps. Patents are a
-    separate, lower-confidence lane (sources/patents_base.py) — these are
-    read only by `bedrock-litreview patents`, never by the model-facing
-    pipeline."""
+    separate, lower-confidence lane (sources/patents_base.py): these reach
+    `sources/epo_ops.py` and nothing else, never the model-facing pipeline.
+
+    One account serves a whole deployment. On the company server these are set
+    once, by whoever runs it - EPO_OPS_KEY/EPO_OPS_SECRET in the server's
+    environment, or `epo_ops_key`/`epo_ops_secret` in the [litreview] table of
+    its config.toml - and every scientist's patent search on the Research tab
+    uses them. A scientist is never asked for a key, and no key is stored per
+    person. The config file holds a secret, so it belongs to the account that
+    runs the server and should not be world-readable; the environment is the
+    better place where the deployment makes that easy. Empty means patent
+    search is simply not offered (`service.patent_searcher`)."""
     entailment_check: bool = False
     """Run the optional local entailment check in Stage 7
     (`report/entailment.py`). Off by default: no scientist has yet checked
@@ -336,8 +345,8 @@ def load_settings(
         allowed_hosts=allowed,
         ncbi_api_key=env.get("NCBI_API_KEY", ""),
         contact_email=str(env.get("SOURCES_CONTACT_EMAIL") or table.get("contact_email") or ""),
-        epo_ops_key=env.get("EPO_OPS_KEY", ""),
-        epo_ops_secret=env.get("EPO_OPS_SECRET", ""),
+        epo_ops_key=str(env.get("EPO_OPS_KEY") or table.get("epo_ops_key") or ""),
+        epo_ops_secret=str(env.get("EPO_OPS_SECRET") or table.get("epo_ops_secret") or ""),
         entailment_check=_flag(env.get("BEDROCK_LITREVIEW_ENTAILMENT_CHECK"), table.get("entailment_check", False),
                                "entailment_check"),
         endpoint_source=endpoint_source,

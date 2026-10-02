@@ -14,7 +14,7 @@
 #   all           the strongest evidence overall
 #
 # generated sections: glance, synthesis, disagreements, numbers, glossary, best_source,
-# background, gaps, plan, ranking, evidence_table, method, excluded.
+# background, competitors, gaps, plan, ranking, evidence_table, method, excluded.
 # `background` quotes review articles for context; they are never counted as
 # evidence. glance/synthesis/disagreements/numbers/glossary are report/synthesis.py: study
 # designs, independent-study counts, agreement and an evidence level by a
@@ -88,9 +88,9 @@ target_identification:
     sentences: "1 to 4"
     instructions: Summarise the adverse effects and risks reported for acting on these targets.
   - {id: numbers, title: Key results in context, kind: generated}
+  - {id: competitors, title: Competitor landscape, kind: generated}
   - {id: gaps, title: "Limitations, gaps and open questions", kind: generated}
   - {id: background, title: Context from review articles (not primary evidence), kind: generated}
-  - {id: competitors, title: Competitor landscape, kind: generated}
   - {id: glossary, title: Abbreviations, kind: generated}
   - {id: best_source, title: Most relevant source, kind: generated}
   - {id: plan, title: What the answer needed, kind: generated}

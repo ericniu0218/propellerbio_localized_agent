@@ -85,7 +85,7 @@ uses http://localhost:8080. Real model setup is covered in
 | `/fold <fasta or src://id> [--project X]` | Predict one monomer with AlphaFold 2 |
 | `/pymol [structure or src://id]` | Open a structure, or the latest prediction, in PyMOL |
 | `/tools`         | Check AlphaFold 2 and PyMOL configuration |
-| `/review <question> [--corpus FILE \| --search]` | Write a cited literature review beside the chat |
+| `/review <question> [--corpus FILE \| --search] [--patent-search]` | Write a cited literature review beside the chat, optionally with a competitor landscape from patents |
 | `/review stop`   | Stop the running review (it can be resumed) |
 | `/reviews`       | Literature reviews recorded on this machine |
 | `/reviews verify <run-id>` | Re-prove one report against the papers it pinned |
@@ -319,11 +319,25 @@ whether the server has the models the set names, and which `models.yaml` it
 read. `/review` runs the same checks before it starts and says exactly what to
 change, rather than failing forty minutes in.
 
-**What leaves this machine.** Only `--search` sends anything anywhere, and only
-search terms and paper identifiers, only to Europe PMC (`www.ebi.ac.uk`) and
-NCBI (`eutils.ncbi.nlm.nih.gov`) — enforced in code, redirects included. Your
-question, the papers and the report stay here. Without `--search`, a review
-reads a JSON-lines file you already have and touches no network at all.
+**What leaves this machine.** `--search` sends search terms and paper
+identifiers to Europe PMC (`www.ebi.ac.uk`) and NCBI (`eutils.ncbi.nlm.nih.gov`);
+`--patent-search` sends the question's exact terms and the leading targets' names to
+the European Patent Office (`ops.epo.org`); and the automatic retraction check sends
+paper identifiers (never the question) to PubMed and Crossref unless set to manual
+with `/reviews settings`. All enforced in code, redirects included. Your question,
+the papers and the report stay here. With none of those, a review reads a
+JSON-lines file you already have and touches no network at all.
+
+**Patents.** A review can add a *Competitor landscape*: who else has filed on the
+leading targets, and what each filing says it covers - its title, abstract and first
+claim are read by the model, which only copies; code checks every quote and every
+sentence against the filing. It says what filers *claim*, never that something works:
+patents are not evidence in this report, the section is not a legal view, and "no
+filing found" is not freedom to operate. The EPO account is the machine's, set once
+by whoever runs the server (`EPO_OPS_KEY` / `EPO_OPS_SECRET`, or in the `[litreview]`
+table); on the browser Research tab it is a checkbox and nobody types a key. On a
+machine with no way out, `bedrock-litreview patents "<question>" --out patents.jsonl`
+elsewhere and `--patents patents.jsonl` here.
 
 **Where files go.** `~/.local/share/bedrock/litreview/` (change it with
 `BEDROCK_LITREVIEW_DIR` or `data_dir`): the SQLite database, the model-call

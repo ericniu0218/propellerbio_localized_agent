@@ -48,6 +48,10 @@ patents:
   # target keeps at most `per_target` filings, so it cannot use the whole
   # `max_results` and leave the next one unsearched.
   max_targets: 5
+  # Filings a model reads (stages/s6c_patent_extract.py), one call each: about 8
+  # seconds each on a laptop model, so 60 took 8 minutes. More than this are
+  # listed and not read, the ones least likely to be about a target last.
+  extract_max: 40
   per_target: 40
   # Claim 1 costs a second API call per patent (p.66 of the OPS reference
   # guide); capped the same way full-text fetching is capped for papers, so a
